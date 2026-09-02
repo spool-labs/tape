@@ -44,7 +44,7 @@ pub struct GatewayHttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
-    staging: Arc<StagingStore>,
+    staging: Arc<StagingStore<Db>>,
     http_config: HttpConfig,
     cancel: CancellationToken,
 }
@@ -62,7 +62,7 @@ where
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         slice_cache: Arc<GatewaySliceCache<Db>>,
         meter: Arc<GatewayMeter>,
-        staging: Arc<StagingStore>,
+        staging: Arc<StagingStore<Db>>,
         http_config: HttpConfig,
         cancel: CancellationToken,
     ) -> Self {
@@ -227,12 +227,33 @@ where
     }
 }
 
+/// Load the delegate keypair that signs S3 writes, when one is configured.
+///
+/// With no key — or a key that fails to load — the listener still serves reads
+/// and only writes are unavailable, rather than taking the node down.
+pub fn load_delegate(s3_config: &S3Config) -> Option<Arc<S3WriteContext>> {
+    let path = s3_config.delegate_key.as_deref()?;
+    match S3WriteContext::load(path) {
+        Ok(write_ctx) => {
+            info!(delegate = %write_ctx.delegate_address(), "s3 delegate signer loaded");
+            Some(Arc::new(write_ctx))
+        }
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "s3 delegate key failed to load; writes disabled, reads still served"
+            );
+            None
+        }
+    }
+}
+
 /// S3-compatible gateway listener
 pub struct GatewayS3Server<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
-    staging: Arc<StagingStore>,
+    staging: Arc<StagingStore<Db>>,
     write_ctx: Option<Arc<S3WriteContext>>,
     accounting: Arc<Accounting>,
     admission: Arc<dyn Admission>,
@@ -253,32 +274,13 @@ where
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         slice_cache: Arc<GatewaySliceCache<Db>>,
         meter: Arc<GatewayMeter>,
-        staging: Arc<StagingStore>,
+        staging: Arc<StagingStore<Db>>,
+        write_ctx: Option<Arc<S3WriteContext>>,
         accounting: Arc<Accounting>,
         admission: Arc<dyn Admission>,
         s3_config: S3Config,
         cancel: CancellationToken,
     ) -> Self {
-        // Load the delegate keypair that signs S3 writes, when configured. With
-        // no key — or a key that fails to load — the listener still serves reads
-        // and only writes are unavailable, rather than taking the node down.
-        let write_ctx = match s3_config.delegate_key.as_deref() {
-            Some(path) => match S3WriteContext::load(path) {
-                Ok(ctx) => {
-                    info!(delegate = %ctx.delegate_address(), "s3 delegate signer loaded");
-                    Some(Arc::new(ctx))
-                }
-                Err(error) => {
-                    tracing::error!(
-                        %error,
-                        "s3 delegate key failed to load; writes disabled, reads still served"
-                    );
-                    None
-                }
-            },
-            None => None,
-        };
-
         Self {
             context,
             slice_cache,

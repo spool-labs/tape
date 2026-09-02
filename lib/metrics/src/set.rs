@@ -4,7 +4,8 @@ use std::sync::OnceLock;
 
 use prometheus::{
     register_histogram_vec_with_registry, register_int_counter_vec_with_registry,
-    register_int_counter_with_registry, HistogramVec, IntCounter, IntCounterVec, Registry,
+    register_int_counter_with_registry, register_int_gauge_with_registry, HistogramVec, IntCounter,
+    IntCounterVec, IntGauge, Registry,
 };
 
 use crate::MetricsRegistry;
@@ -33,6 +34,9 @@ pub struct Metrics {
 
     pub cache_requests_total: IntCounterVec,
     pub cache_evicted_total: IntCounter,
+
+    pub pending_writes_total: IntCounterVec,
+    pub pending_writes_queued: IntGauge,
 
     // Stats endpoint only — intentionally NOT registered, so the HTTP histogram
     // stays the single Prometheus source for request and byte rates.
@@ -134,6 +138,20 @@ impl Metrics {
                 registry
             )
             .expect("register tape_gw_cache_evicted_total"),
+
+            pending_writes_total: register_int_counter_vec_with_registry!(
+                "tape_gw_pending_writes_total",
+                "Queued S3 writes by outcome",
+                &["outcome"],
+                registry
+            )
+            .expect("register tape_gw_pending_writes_total"),
+            pending_writes_queued: register_int_gauge_with_registry!(
+                "tape_gw_pending_writes_queued",
+                "S3 writes queued and not yet applied on chain",
+                registry
+            )
+            .expect("register tape_gw_pending_writes_queued"),
 
             requests_total: IntCounter::new("tape_node_requests_total", "Requests handled")
                 .expect("tape_node_requests_total"),

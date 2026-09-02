@@ -32,8 +32,9 @@ use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::ApiError;
 use tape_sdk::error::{TapedriveError, UploadError};
+use tape_sdk::track::write::content_etag;
 use tape_store::ops::{CredentialOps, ObjectListOps, ObjectListPage, TapeOps};
-use tape_store::types::{CredentialScope, ObjectListEntry};
+use tape_store::types::{CredentialScope, ObjectListEntry, PendingOp, PendingState, PendingWrite};
 
 use crate::http::handlers::object::{
     CachePolicy, ObjectResponseMetadata, range_header, read_object_response,
@@ -42,7 +43,6 @@ use crate::http::handlers::track::track_with_pending;
 use crate::http::state::AppState;
 use crate::http::handlers::object::response::object_response_ranged;
 use crate::http::handlers::s3::response::head_response_parts;
-use crate::staging::StagedObject;
 use crate::meter::{GatewayMeterDecision, MeterCaller};
 use super::accounting;
 use super::authz::{Auth, WriteOp, WritePermit, authorize_multipart_read, authorize_write};
@@ -354,26 +354,29 @@ fn indexed_entry(name: &[u8], entry: &ObjectListEntry) -> ObjectEntry {
     }
 }
 
-/// Render one staged row from what the write recorded, since the object has no
-/// on-chain record to read it from yet.
-fn staged_entry(name: &[u8], staged: &StagedObject) -> ObjectEntry {
-    ObjectEntry {
-        key: String::from_utf8_lossy(name).into_owned(),
-        last_modified: Some(staged.block_time),
-        etag: staged.etag.to_string(),
-        size: staged.size,
-        storage_class: STORAGE_CLASS_STANDARD,
+/// Render one queued row from what the write recorded, since the object has no
+/// on-chain record to read it from yet. A queued delete has no row.
+fn queued_entry(name: &[u8], write: &PendingWrite) -> Option<ObjectEntry> {
+    match write.op {
+        PendingOp::Put { etag, size, block_time, content_type: _ } => Some(ObjectEntry {
+            key: String::from_utf8_lossy(name).into_owned(),
+            last_modified: Some(block_time),
+            etag: etag.to_string(),
+            size,
+            storage_class: STORAGE_CLASS_STANDARD,
+        }),
+        PendingOp::Delete => None,
     }
 }
 
-/// List a bucket, including objects that exist only in staging.
+/// List a bucket, including objects that exist only in the write queue.
 ///
 /// The index is authoritative and wins on every key it holds, which matches the
-/// GET path: that resolves on chain first and falls back to staging only on a
+/// GET path: that resolves on chain first and falls back to the queue only on a
 /// miss. Listing has to agree, or the two surfaces disagree about the same key.
 ///
 /// Without this a client that writes and then lists does not see its own key
-/// until the track certifies, seconds later.
+/// until the drain applies the write and the track certifies, seconds later.
 fn list_objects_merged<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     bucket: Address,
@@ -387,85 +390,78 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let mut page = state
+    let page = state
         .context
         .store
         .list_objects(bucket, prefix, delimiter, start, max_keys)
         .map_err(|error| S3Error::Internal(error.to_string()))?;
-    // A key deleted here stays out of the listing until the chain has the delete too.
-    page.objects.retain(|(name, _)| {
-        std::str::from_utf8(name).is_ok_and(|key| !state.staging.is_deleted(bucket, key))
-    });
 
     // The index treats `start` as inclusive and never seeks before the prefix.
-    // Staged keys have to be filtered the same way or the two halves paginate
+    // Queued keys have to be filtered the same way or the two halves paginate
     // differently.
     let start_name: Vec<u8> = match start {
         Some(seek) if seek > prefix => seek.to_vec(),
         _ => prefix.to_vec(),
     };
-    let staged = state.staging.staged_from(bucket, prefix, &start_name);
-    if staged.is_empty() {
-        return Ok(MergedListing {
-            contents: page.objects.iter().map(|(name, entry)| indexed_entry(name, entry)).collect(),
-            common_prefixes: page
-                .common_prefixes
-                .iter()
-                .map(|folder| String::from_utf8_lossy(folder).into_owned())
-                .collect(),
-            next: page.next,
-            is_truncated: page.is_truncated,
-        });
-    }
+    let queued = state
+        .staging
+        .queued_from(bucket, prefix, &start_name)
+        .map_err(|error| S3Error::Internal(error.to_string()))?;
 
-    Ok(merge_listing(&page, &staged, prefix, delimiter, max_keys))
+    Ok(merge_listing(&page, &queued, prefix, delimiter, max_keys))
 }
 
-/// Merge staged rows into an index page.
+/// Merge queued rows into an index page.
 ///
 /// Split out from the fetch so the ordering, folding and truncation rules can
 /// be tested without a store or a running gateway.
 fn merge_listing(
     page: &ObjectListPage,
-    staged: &[(Vec<u8>, StagedObject)],
+    queued: &[(Vec<u8>, PendingWrite)],
     prefix: &[u8],
     delimiter: Option<&[u8]>,
     max_keys: usize,
 ) -> MergedListing {
-    let mut contents: Vec<(Vec<u8>, ObjectEntry)> = page
-        .objects
+    // A key deleted here stays out of the listing until the chain has the delete too.
+    let deleted: HashSet<&[u8]> = queued
         .iter()
-        .map(|(name, entry)| (name.clone(), indexed_entry(name, entry)))
+        .filter(|(_, write)| matches!(write.op, PendingOp::Delete))
+        .map(|(name, _)| name.as_slice())
         .collect();
+
+    let mut contents: Vec<(Vec<u8>, ObjectEntry)> = Vec::new();
+    let mut indexed: HashSet<&[u8]> = HashSet::new();
+    for (name, entry) in &page.objects {
+        if deleted.contains(name.as_slice()) {
+            continue;
+        }
+        indexed.insert(name.as_slice());
+        contents.push((name.clone(), indexed_entry(name, entry)));
+    }
     let mut prefixes: Vec<Vec<u8>> = page.common_prefixes.clone();
 
-    if !staged.is_empty() {
-        let indexed: HashSet<&[u8]> = page
-            .objects
-            .iter()
-            .map(|(name, _)| name.as_slice())
-            .collect();
+    for (name, write) in queued {
+        if indexed.contains(name.as_slice()) {
+            continue;
+        }
+        let Some(entry) = queued_entry(name, write) else {
+            continue;
+        };
 
-        for (name, object) in staged {
-            if indexed.contains(name.as_slice()) {
-                continue;
-            }
-
-            // Fold into a folder exactly as the index would, so a staged key
-            // never shows up beside the prefix that should have hidden it.
-            let folder = delimiter.and_then(|delimiter| {
-                let rest = &name[prefix.len()..];
-                find_subslice(rest, delimiter)
-                    .map(|position| name[..prefix.len() + position + delimiter.len()].to_vec())
-            });
-            match folder {
-                Some(folder) => {
-                    if !prefixes.contains(&folder) {
-                        prefixes.push(folder);
-                    }
+        // Fold into a folder exactly as the index would, so a queued key never
+        // shows up beside the prefix that should have hidden it.
+        let folder = delimiter.and_then(|delimiter| {
+            let rest = &name[prefix.len()..];
+            find_subslice(rest, delimiter)
+                .map(|position| name[..prefix.len() + position + delimiter.len()].to_vec())
+        });
+        match folder {
+            Some(folder) => {
+                if !prefixes.contains(&folder) {
+                    prefixes.push(folder);
                 }
-                None => contents.push((name.clone(), staged_entry(name, object))),
             }
+            None => contents.push((name.clone(), entry)),
         }
     }
 
@@ -752,7 +748,7 @@ fn resolve_readable<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<(ResolvedObject, CompressedTrack), S3Error> {
     let bucket = parse_bucket(bucket_label)?;
     let resolved = resolve_object(state, bucket, key)?.ok_or(S3Error::NoSuchKey)?;
-    if state.staging.is_deleted(bucket, key) {
+    if is_deleted(state, bucket, key)? {
         return Err(S3Error::NoSuchKey);
     }
     readable_track(state, resolved)
@@ -772,14 +768,72 @@ fn readable_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok((resolved, track))
 }
 
-/// What a streamed write staged, as the read path resolves it
-fn staged_resolved(staged: &StagedObject, track: Address) -> ResolvedObject {
+/// Whether a queued delete hides this key from the read path
+fn is_deleted<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    bucket: Address,
+    key: &str,
+) -> Result<bool, S3Error> {
+    state
+        .staging
+        .is_deleted(bucket, key.as_bytes())
+        .map_err(|error| S3Error::Internal(error.to_string()))
+}
+
+/// The queued Put for a key, or `None` when the queue holds nothing servable
+fn queued_put<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    bucket: Address,
+    key: &str,
+) -> Result<Option<PendingWrite>, S3Error> {
+    let entry = state
+        .staging
+        .entry(bucket, key.as_bytes())
+        .map_err(|error| S3Error::Internal(error.to_string()))?;
+    Ok(entry.filter(|write| matches!(write.op, PendingOp::Put { .. })))
+}
+
+/// The queued bytes for a key, when the entry carries the object whole
+fn queued_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    bucket: Address,
+    key: &str,
+) -> Result<Option<Vec<u8>>, S3Error> {
+    state
+        .staging
+        .bytes(bucket, key.as_bytes())
+        .map_err(|error| S3Error::Internal(error.to_string()))
+}
+
+/// What a queued Put whose bytes already reached the chain resolves to
+fn queued_resolved(metadata: &QueuedObject, track: Address) -> ResolvedObject {
     ResolvedObject {
         track_address: track,
-        size: staged.size,
-        etag: staged.etag,
-        block_time: Some(staged.block_time),
-        content_type: staged.content_type,
+        size: metadata.size,
+        etag: metadata.etag,
+        block_time: Some(metadata.block_time),
+        content_type: metadata.content_type,
+    }
+}
+
+/// The metadata a queued Put answers GET and HEAD with
+struct QueuedObject {
+    size: u64,
+    content_type: ContentType,
+    etag: Hash,
+    block_time: i64,
+}
+
+/// The metadata of a queued Put, or `None` for a queued Delete
+fn queued_metadata(write: &PendingWrite) -> Option<QueuedObject> {
+    match write.op {
+        PendingOp::Put { content_type, etag, size, block_time } => Some(QueuedObject {
+            size,
+            content_type,
+            etag,
+            block_time,
+        }),
+        PendingOp::Delete => None,
     }
 }
 
@@ -827,36 +881,29 @@ where
 {
     check_request_rate(&state, &caller)?;
 
-    // On chain first, so once the index catches up the staged copy is never read
-    // again and its memory frees on eviction.
+    // On chain first, so once the index catches up the queued copy is never read
+    // again and its rows are dropped.
     let tape = parse_bucket(&bucket)?;
     let (resolved, track) = match resolve_readable(&state, &bucket, &key) {
         Ok(readable) => readable,
         Err(S3Error::NoSuchKey) => {
-            let Some(staged) = state.staging.get(tape, &key) else {
+            let Some(write) = queued_put(&state, tape, &key)? else {
                 return Err(S3Error::NoSuchKey);
             };
-            match (staged.bytes.clone(), staged.track) {
-                (Some(bytes), _) => {
-                    let metadata = ObjectResponseMetadata {
-                        content_type: staged.content_type,
-                        filename: None,
-                        cache: CachePolicy::Immutable,
-                    };
-                    let mut response = object_response_ranged(
-                        bytes.to_vec(),
-                        &metadata,
-                        staged.etag,
-                        range.as_deref(),
-                        StatusCode::OK,
-                    )
-                    .map_err(S3Error::from)?;
-                    set_last_modified(response.headers_mut(), Some(staged.block_time));
-                    return Ok(response);
-                }
-                // The bytes went straight to their tracks, so the read goes there too.
-                (None, Some(track)) => readable_track(&state, staged_resolved(&staged, track))?,
-                (None, None) => return Err(S3Error::NoSuchKey),
+            let Some(metadata) = queued_metadata(&write) else {
+                return Err(S3Error::NoSuchKey);
+            };
+            match queued_bytes(&state, tape, &key)? {
+                Some(bytes) => return queued_response(bytes, &metadata, range.as_deref()),
+                // A streamed write sent its bytes straight to their tracks, so
+                // the read goes there too.
+                None => match write.state {
+                    PendingState::Landed { track } => {
+                        readable_track(&state, queued_resolved(&metadata, track))?
+                    }
+                    PendingState::Queued => return Err(S3Error::NoSuchKey),
+                    PendingState::Failed { .. } => return Err(S3Error::NoSuchKey),
+                },
             }
         }
         Err(error) => return Err(error),
@@ -924,19 +971,38 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
     match resolve_readable(state, bucket, key) {
         Ok((resolved, _track)) => head_response(&resolved, range),
         Err(S3Error::NoSuchKey) => {
-            let Some(staged) = state.staging.get(tape, key) else {
+            let queued = queued_put(state, tape, key)?.as_ref().and_then(queued_metadata);
+            let Some(metadata) = queued else {
                 return Err(S3Error::NoSuchKey);
             };
             head_response_parts(
-                staged.size,
-                staged.etag,
-                staged.content_type,
-                Some(staged.block_time),
+                metadata.size,
+                metadata.etag,
+                metadata.content_type,
+                Some(metadata.block_time),
                 range,
             )
         }
         Err(error) => Err(error),
     }
+}
+
+/// Serve a queued object straight from its stored bytes.
+fn queued_response(
+    bytes: Vec<u8>,
+    metadata: &QueuedObject,
+    range: Option<&str>,
+) -> Result<Response, S3Error> {
+    let response_metadata = ObjectResponseMetadata {
+        content_type: metadata.content_type,
+        filename: None,
+        cache: CachePolicy::Immutable,
+    };
+    let mut response =
+        object_response_ranged(bytes, &response_metadata, metadata.etag, range, StatusCode::OK)
+            .map_err(S3Error::from)?;
+    set_last_modified(response.headers_mut(), Some(metadata.block_time));
+    Ok(response)
 }
 
 /// The metering identity for an S3 read: the resolved caller IP, plus the
@@ -985,11 +1051,10 @@ fn check_request_rate<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 /// `PUT /{bucket}/{key}` -> PutObject, or UploadPart when `?uploadId=` is set
 ///
-/// PutObject is signed by the configured delegate keypair. A signed-hash request is
-/// buffered and integrity-checked, then written as one track or a multi-track
-/// stream depending on size; an `UNSIGNED-PAYLOAD` / `aws-chunked` request is
-/// streamed straight onto chunk tracks with bounded memory. UploadPart buffers
-/// the part bytes under the upload id.
+/// PutObject is signed by the configured delegate keypair. A signed-hash request
+/// is buffered, integrity-checked and queued for the drain, which writes it as
+/// one track; a body past the buffer streams straight onto chunk tracks on chain
+/// with bounded memory. UploadPart buffers the part bytes under the upload id.
 async fn put_object<Db, Cluster, Blockchain>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(auth): Extension<Auth>,
@@ -1049,24 +1114,17 @@ where
     // (1..=MAX_NAME_LEN bytes) up front for a precise client error.
     validate_object_key(&key)?;
 
-    // The track this key is bound to now, if any. A PUT that overwrites it writes
-    // a new track and rebinds the name, orphaning this one; capture it so the
-    // write below can reclaim it once the rebinding lands.
-    let prior = match state.staging.is_deleted(tape, &key) {
-        true => None,
-        false => resolve_object(&state, tape, &key)?,
-    };
-
     let content_type = content_type_from_headers(headers);
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
 
-    // A body that fits the buffer is written as one track whatever its signing mode,
-    // so a small streamed upload costs a track rather than a stream with a manifest.
-    // Past the buffer the body streams onto segment tracks, bounded in memory, and
-    // what gets staged is where the bytes went. Either way the write chokepoint
-    // reserves before the write and commits/refunds after.
-    let (written_etag, staged) = match streamed_object_size(signed_payload, headers)? {
+    // A body that fits the buffer is queued and acknowledged here, because the
+    // bucket's tape account admits one chain write per block and a client that
+    // writes one small object per event cannot wait a block each. Past the buffer
+    // the body streams onto segment tracks on chain, bounded in memory, and the
+    // queue holds only where the bytes went. Either way the write chokepoint
+    // reserves before and commits/refunds after.
+    let etag = match streamed_object_size(signed_payload, headers)? {
         Some(size) if size > max_buffered_bytes as u64 => {
             if size > max_object_bytes as u64 {
                 return Err(S3Error::EntityTooLarge(format!(
@@ -1088,7 +1146,19 @@ where
             );
             let (etag, manifest) =
                 settle_streamed(permit, &state, size, write_result, producer_result)?;
-            (etag, Staged::Routed { size, track: manifest })
+            state
+                .staging
+                .enqueue_landed_put(
+                    tape,
+                    key.as_bytes(),
+                    size,
+                    content_type,
+                    etag,
+                    now_unix(),
+                    manifest,
+                )
+                .map_err(|error| S3Error::Internal(error.to_string()))?;
+            etag
         }
         streamed => {
             let data = match streamed {
@@ -1104,46 +1174,58 @@ where
             };
             let size = data.len() as u64;
             let permit = authorize_write(&state, auth, tape, &key, WriteOp::Put, size).await?;
-            let result = write_ctx
-                .write_object(
-                    state.context.as_ref(),
-                    tape,
-                    key.as_bytes(),
-                    content_type,
-                    &data,
-                    prior.as_ref().map(|object| object.track_address),
-                )
-                .await;
-            (settle_write(permit, &state, size, result)?, Staged::Whole(data))
+            enqueue_put(&state, permit, tape, &key, content_type, data).await?
         }
     };
-
-    // Prefer the canonical object-list ETag (matches GET/HEAD exactly); fall back
-    // to the write's content hash until the local index catches up. Making PutObject
-    // and GET agree without that dependency folds into the ingestor-computed ETag
-    // plan — see docs/s3-gateway-status.md (ETag).
-    let etag = resolve_object(&state, tape, &key)?
-        .map(|resolved| resolved.etag)
-        .unwrap_or(written_etag);
-
-    // Read-after-write: hold the object here until the ingestor tails the slot
-    // and the track certifies, so a read or a listing issued straight after this
-    // response does not miss the key it was just told about.
-    let staged = match staged {
-        Staged::Whole(data) => StagedObject::new(data, content_type, etag, now_unix()),
-        Staged::Routed { size, track } => {
-            StagedObject::metadata(size, content_type, etag, now_unix(), track)
-        }
-    };
-    state.staging.put(tape, key.clone(), staged);
 
     put_response(etag)
 }
 
-/// What a write leaves for staging: the bytes it held, or where it sent them
-enum Staged {
-    Whole(Bytes),
-    Routed { size: u64, track: Address },
+/// Queue a buffered object and acknowledge it, settling the write permit.
+///
+/// The ETag is the one the object index will record, computed here so the client
+/// is never told one value now and served another once the drain has landed the
+/// write.
+async fn enqueue_put<Db, Cluster, Blockchain>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    permit: WritePermit,
+    tape: Address,
+    key: &str,
+    content_type: ContentType,
+    data: Bytes,
+) -> Result<Hash, S3Error>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let size = data.len() as u64;
+    let computed = match content_etag(&data).await {
+        Ok(computed) => computed,
+        Err(error) => {
+            permit.refund(state);
+            return Err(s3_write_error(error));
+        }
+    };
+
+    let queued = state.staging.enqueue_put(
+        tape,
+        key.as_bytes(),
+        Vec::from(data),
+        content_type,
+        computed.etag,
+        now_unix(),
+    );
+    match queued {
+        Ok(()) => {
+            permit.commit(state, size);
+            Ok(computed.etag)
+        }
+        Err(error) => {
+            permit.refund(state);
+            Err(S3Error::Internal(error.to_string()))
+        }
+    }
 }
 
 /// Buffer a streamed body whole, de-framed when aws-chunked, bounded by `max_bytes`
@@ -1231,29 +1313,6 @@ where
         Err(_) => permit.refund(state),
     }
     result
-}
-
-fn settle_write<Db, Cluster, Blockchain>(
-    permit: WritePermit,
-    state: &AppState<Db, Cluster, Blockchain>,
-    size: u64,
-    result: Result<Hash, TapedriveError>,
-) -> Result<Hash, S3Error>
-where
-    Db: Store + 'static,
-    Cluster: Api + 'static,
-    Blockchain: Rpc + 'static,
-{
-    match result {
-        Ok(etag) => {
-            permit.commit(state, size);
-            Ok(etag)
-        }
-        Err(error) => {
-            permit.refund(state);
-            Err(s3_write_error(error))
-        }
-    }
 }
 
 /// Reconcile a streamed write against both the write pipeline and the body
@@ -1427,51 +1486,55 @@ where
 {
     // Writes require a configured delegate keypair; without one the gateway
     // holds no key any tape can authorize.
-    let Some(write_ctx) = state.write_ctx.as_ref() else {
+    if state.write_ctx.is_none() {
         return Err(write_not_implemented(false, "DeleteObject"));
-    };
+    }
 
     // Authorization chokepoint runs before the existence check so an
     // unauthorized caller cannot probe which keys exist via the response code.
     let permit = authorize_write(state, auth, tape, key, WriteOp::Delete, 0).await?;
 
-    // S3 DeleteObject is idempotent: a key absent from the object-list index, or
-    // deleted here already, is "deleted", so report success without touching the
-    // chain. Nothing was spent, so release the reservation.
-    let resolved = match state.staging.is_deleted(tape, key) {
-        true => None,
-        false => resolve_object(state, tape, key)?,
-    };
-    let Some(resolved) = resolved else {
-        state.staging.tombstone(tape, key);
+    // S3 DeleteObject is idempotent: a key with nothing queued and nothing in the
+    // object-list index is already "deleted", so report success without queueing
+    // anything. Nothing was spent, so release the reservation.
+    if !object_present(state, tape, key)? {
         permit.refund(state);
         return Ok(());
-    };
+    }
 
-    match write_ctx
-        .delete_object(state.context.as_ref(), tape, resolved.track_address)
-        .await
-    {
+    // Hidden from readers the moment this is queued, so the window before the
+    // drain reaches the chain never serves what the client just deleted.
+    match state.staging.enqueue_delete(tape, key.as_bytes()) {
         Ok(()) => {
-            // Hidden here from now on, so the read-after-write window never serves
-            // what the chain is about to drop.
-            state.staging.tombstone(tape, key);
             permit.commit(state, 0);
-            Ok(())
-        }
-        // A track that raced to deletion (no longer resolvable on-chain) is
-        // treated as an idempotent success, matching S3; nothing was spent, so
-        // refund the reservation.
-        Err(TapedriveError::NotFound) => {
-            state.staging.tombstone(tape, key);
-            permit.refund(state);
             Ok(())
         }
         Err(error) => {
             permit.refund(state);
-            Err(s3_write_error(error))
+            Err(S3Error::Internal(error.to_string()))
         }
     }
+}
+
+/// Whether a key has anything to delete: a queued Put, or an index row no queued
+/// delete already hides
+fn object_present<Db, Cluster, Blockchain>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    tape: Address,
+    key: &str,
+) -> Result<bool, S3Error>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    if queued_put(state, tape, key)?.is_some() {
+        return Ok(true);
+    }
+    if is_deleted(state, tape, key)? {
+        return Ok(false);
+    }
+    Ok(resolve_object(state, tape, key)?.is_some())
 }
 
 /// S3 caps a DeleteObjects request at 1000 keys
@@ -1847,7 +1910,7 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let write_ctx = require_write_ctx(state, "CompleteMultipartUpload")?;
+    require_write_ctx(state, "CompleteMultipartUpload")?;
     let bucket = parse_bucket(&bucket_label)?;
     let upload_id = require_upload_id(query)?;
     let store = state.context.store.as_ref();
@@ -1867,51 +1930,29 @@ where
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let assembled = multipart::assemble(store, &upload_id, bucket, &key, &requested, max_object_bytes)?;
 
-    // Prior binding for this key; a completed multipart that overwrites it
-    // orphans this track, reclaimed after the new write lands (see PutObject).
-    let prior = resolve_object(state, bucket, &assembled.key)?;
-
     // Authorization chokepoint.
     let size = assembled.data.len() as u64;
     let permit = authorize_write(state, auth, bucket, &key, WriteOp::CompleteMultipart, size).await?;
-    let result = write_ctx
-        .write_object(
-            state.context.as_ref(),
-            bucket,
-            assembled.key.as_bytes(),
-            assembled.content_type,
-            &assembled.data,
-            prior.as_ref().map(|object| object.track_address),
-        )
-        .await;
-    // On failure `?` returns before the upload is dropped, so it stays intact for
-    // the client to retry or abort.
-    let written_etag = settle_write(permit, state, size, result)?;
+
+    // Queued and acknowledged exactly like PutObject: the assembled object is a
+    // finished object, readable and listable the moment this returns. On failure
+    // `?` returns before the upload is dropped, so it stays intact for the client
+    // to retry or abort.
+    let etag = enqueue_put(
+        state,
+        permit,
+        bucket,
+        &assembled.key,
+        assembled.content_type,
+        Bytes::from(assembled.data),
+    )
+    .await?;
 
     // The object is durable; drop the persisted upload state. A delete failure
     // only leaks reclaimable upload state, so log it rather than fail the write.
     if let Err(error) = multipart::remove(store, &upload_id) {
         tracing::warn!(?error, "s3 CompleteMultipartUpload: failed to drop upload state");
     }
-
-    // Mirror PutObject's ETag resolution.
-    let etag = resolve_object(state, bucket, &assembled.key)?
-        .map(|resolved| resolved.etag)
-        .unwrap_or(written_etag);
-
-    // Read-after-write, same as PutObject: a completed multipart upload is a
-    // finished object, so it has to be readable and listable the moment this
-    // returns rather than once the ingestor catches up.
-    state.staging.put(
-        bucket,
-        assembled.key.clone(),
-        StagedObject::new(
-            Bytes::from(assembled.data),
-            assembled.content_type,
-            etag,
-            now_unix(),
-        ),
-    );
 
     // Location is the configured public endpoint URL, else a path-style resource.
     let location = match &state.context.config.gateway.s3.public_endpoint {
@@ -2017,15 +2058,30 @@ mod tests {
         ));
     }
 
-    fn staged(key: &str, size: usize) -> (Vec<u8>, StagedObject) {
+    fn queued(key: &str, size: usize) -> (Vec<u8>, PendingWrite) {
         (
             key.as_bytes().to_vec(),
-            StagedObject::new(
-                axum::body::Bytes::from(vec![0u8; size]),
-                ContentType::Unknown,
-                Hash([9u8; 32]),
-                123,
-            ),
+            PendingWrite {
+                seq: 1,
+                op: PendingOp::Put {
+                    content_type: ContentType::Unknown,
+                    etag: Hash([9u8; 32]),
+                    size: size as u64,
+                    block_time: 123,
+                },
+                state: PendingState::Queued,
+            },
+        )
+    }
+
+    fn queued_delete(key: &str) -> (Vec<u8>, PendingWrite) {
+        (
+            key.as_bytes().to_vec(),
+            PendingWrite {
+                seq: 2,
+                op: PendingOp::Delete,
+                state: PendingState::Landed { track: Address::default() },
+            },
         )
     }
 
@@ -2059,11 +2115,11 @@ mod tests {
         listing.contents.iter().map(|row| row.key.clone()).collect()
     }
 
-    // a key that only exists in staging still lists, in sorted position
+    // a key that only exists in the queue still lists, in sorted position
     #[test]
-    fn staged_only() {
+    fn queued_only() {
         let page = indexed(&["a.txt", "c.txt"]);
-        let merged = merge_listing(&page, &[staged("b.txt", 4)], b"", None, 100);
+        let merged = merge_listing(&page, &[queued("b.txt", 4)], b"", None, 100);
         assert_eq!(keys(&merged), vec!["a.txt", "b.txt", "c.txt"]);
     }
 
@@ -2071,16 +2127,33 @@ mod tests {
     #[test]
     fn index_wins() {
         let page = indexed(&["dup.txt"]);
-        let merged = merge_listing(&page, &[staged("dup.txt", 4096)], b"", None, 100);
+        let merged = merge_listing(&page, &[queued("dup.txt", 4096)], b"", None, 100);
         assert_eq!(keys(&merged), vec!["dup.txt"]);
         assert_eq!(merged.contents[0].size, 10, "the indexed row survived");
     }
 
-    // a staged key under a folder folds into the prefix, it does not sit beside it
+    // a landed delete hides the index row it is about to remove
     #[test]
-    fn staged_folds() {
+    fn delete_hides() {
+        let page = indexed(&["a.txt", "gone.txt"]);
+        let merged = merge_listing(&page, &[queued_delete("gone.txt")], b"", None, 100);
+        assert_eq!(keys(&merged), vec!["a.txt"]);
+    }
+
+    // a put queued after a delete brings the key back into the listing
+    #[test]
+    fn put_after_delete() {
+        let page = indexed(&["a.txt"]);
+        let merged = merge_listing(&page, &[queued("a.txt", 4)], b"", None, 100);
+        assert_eq!(keys(&merged), vec!["a.txt"]);
+        assert_eq!(merged.contents[0].size, 10, "the indexed row still wins");
+    }
+
+    // a queued key under a folder folds into the prefix, it does not sit beside it
+    #[test]
+    fn queued_folds() {
         let page = indexed(&["top.txt"]);
-        let merged = merge_listing(&page, &[staged("logs/2026/a.log", 4)], b"", Some(b"/"), 100);
+        let merged = merge_listing(&page, &[queued("logs/2026/a.log", 4)], b"", Some(b"/"), 100);
         assert_eq!(keys(&merged), vec!["top.txt"]);
         assert_eq!(merged.common_prefixes, vec!["logs/".to_string()]);
     }
@@ -2090,7 +2163,7 @@ mod tests {
     fn duplicate_prefix() {
         let mut page = indexed(&[]);
         page.common_prefixes = vec![b"logs/".to_vec()];
-        let merged = merge_listing(&page, &[staged("logs/b.log", 4)], b"", Some(b"/"), 100);
+        let merged = merge_listing(&page, &[queued("logs/b.log", 4)], b"", Some(b"/"), 100);
         assert_eq!(merged.common_prefixes, vec!["logs/".to_string()]);
     }
 
@@ -2098,15 +2171,15 @@ mod tests {
     #[test]
     fn shared_budget() {
         let page = indexed(&["a.txt", "b.txt"]);
-        let merged = merge_listing(&page, &[staged("c.txt", 4), staged("d.txt", 4)], b"", None, 3);
+        let merged = merge_listing(&page, &[queued("c.txt", 4), queued("d.txt", 4)], b"", None, 3);
         assert_eq!(keys(&merged), vec!["a.txt", "b.txt", "c.txt"]);
         assert!(merged.is_truncated);
         assert_eq!(merged.next.as_deref(), Some(b"d.txt".as_slice()));
     }
 
-    // with nothing staged the page is passed through untouched
+    // with nothing queued the page is passed through untouched
     #[test]
-    fn empty_staging() {
+    fn empty_queue() {
         let mut page = indexed(&["a.txt"]);
         page.is_truncated = true;
         page.next = Some(b"z.txt".to_vec());

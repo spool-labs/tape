@@ -253,7 +253,7 @@ fn lookup<Db: Store, Cluster: Api, Blockchain: Rpc>(
     tape: Address,
     name: &str,
 ) -> Result<Option<ResolvedObject>, RouteError> {
-    resolve_object(state, tape, name).map_err(store_error)
+    resolve_object(state.context.store.as_ref(), tape, name.as_bytes()).map_err(store_error)
 }
 
 /// Resolve what a missing path serves: the index page when the single-page

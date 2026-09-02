@@ -16,10 +16,13 @@ use store::Store;
 use tape_crypto::address::Address;
 use tape_node::context::NodeContext;
 use tape_protocol::Api;
-use tape_store::ops::{AuditOps, AuthStateOps, CredentialOps, LedgerOps, PolicyOps};
+use tape_store::ops::{
+    AuditOps, AuthStateOps, CredentialOps, LedgerOps, PendingWriteOps, PolicyOps,
+};
 use tape_store::types::{
     AuditDecision, AuditEntry, AuditOp, BudgetLimits, Credential, CredentialCaps, CredentialScope,
-    CredentialStatus, LedgerEntry, PolicyAction, PolicyEffect, PolicyRule, PolicyRuleKey,
+    CredentialStatus, LedgerEntry, PendingOp, PendingState, PendingWrite, PolicyAction,
+    PolicyEffect, PolicyRule, PolicyRuleKey,
 };
 use tape_store::TapeStore;
 
@@ -89,6 +92,7 @@ where
             get(get_budgets::<Db, Cluster, Blockchain>)
                 .put(set_budgets::<Db, Cluster, Blockchain>),
         )
+        .route("/pending", get(get_pending::<Db, Cluster, Blockchain>))
         .route(
             "/ledger/{principal}",
             get(get_ledger::<Db, Cluster, Blockchain>),
@@ -544,6 +548,83 @@ where
     Ok(Json(request))
 }
 
+// Queued S3 writes
+
+/// `GET /pending` — what the write queue holds per bucket, and why anything failed
+async fn get_pending<Db, Cluster, Blockchain>(
+    State(state): State<AdminState<Db, Cluster, Blockchain>>,
+) -> Result<Json<PendingView>, AdminError>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    let store = state.context.store.as_ref();
+    let tapes = store
+        .pending_write_tapes()
+        .map_err(|error| AdminError::internal(format!("pending store: {error}")))?;
+
+    let now = now_unix();
+    let mut buckets = Vec::new();
+    let mut failures = Vec::new();
+    for tape in tapes {
+        let entries = store
+            .scan_pending_writes(tape)
+            .map_err(|error| AdminError::internal(format!("pending store: {error}")))?;
+        buckets.push(summarize_pending(tape, &entries, now, &mut failures));
+    }
+    Ok(Json(PendingView { buckets, failed: failures }))
+}
+
+/// Fold one bucket's queue into its counts, collecting its failures.
+fn summarize_pending(
+    tape: Address,
+    entries: &[(Vec<u8>, PendingWrite)],
+    now: i64,
+    failures: &mut Vec<PendingFailure>,
+) -> PendingBucketView {
+    let mut view = PendingBucketView {
+        bucket: tape.to_string(),
+        queued: 0,
+        landed: 0,
+        failed: 0,
+        oldest_queued_age_secs: 0,
+    };
+
+    for (key, write) in entries {
+        let is_waiting = match &write.state {
+            PendingState::Queued => {
+                view.queued += 1;
+                true
+            }
+            PendingState::Landed { .. } => {
+                view.landed += 1;
+                false
+            }
+            PendingState::Failed { error, attempts } => {
+                view.failed += 1;
+                failures.push(PendingFailure {
+                    bucket: tape.to_string(),
+                    key: String::from_utf8_lossy(key).into_owned(),
+                    error: error.clone(),
+                    attempts: *attempts,
+                });
+                true
+            }
+        };
+
+        // A delete carries no accept time, so the age reads off the puts.
+        if let PendingOp::Put { block_time, .. } = write.op {
+            if is_waiting {
+                let age = now.saturating_sub(block_time).max(0) as u64;
+                view.oldest_queued_age_secs = view.oldest_queued_age_secs.max(age);
+            }
+        }
+    }
+
+    view
+}
+
 // Per-principal accounting ledger
 
 /// `GET /ledger/{principal}` — a principal's accounting usage and budget override
@@ -810,6 +891,32 @@ impl From<BudgetLimits> for BudgetView {
 
 /// A principal's accounting ledger: outstanding reservations, windowed committed
 /// usage, lifetime meters, and any per-principal budget override
+/// What the durable write queue holds, per bucket and overall.
+#[derive(Serialize)]
+struct PendingView {
+    buckets: Vec<PendingBucketView>,
+    failed: Vec<PendingFailure>,
+}
+
+/// One bucket's queue counts.
+#[derive(Serialize)]
+struct PendingBucketView {
+    bucket: String,
+    queued: u64,
+    landed: u64,
+    failed: u64,
+    oldest_queued_age_secs: u64,
+}
+
+/// One entry the drain has given up on for now, with the error it reports.
+#[derive(Serialize)]
+struct PendingFailure {
+    bucket: String,
+    key: String,
+    error: String,
+    attempts: u32,
+}
+
 #[derive(Serialize)]
 struct LedgerView {
     principal: String,

@@ -46,7 +46,7 @@ pub fn tape_site_policy<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return TapeSitePolicy::default();
     }
 
-    let resolved = match resolve_object(state, tape, SITE_POLICY_OBJECT) {
+    let resolved = match resolve_object(state.context.store.as_ref(), tape, SITE_POLICY_OBJECT.as_bytes()) {
         Ok(Some(resolved)) => resolved,
         Ok(None) => return TapeSitePolicy::default(),
         Err(error) => {

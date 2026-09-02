@@ -41,3 +41,17 @@ pub fn inc_cache_evicted(count: u64) {
     #[cfg(feature = "metrics")]
     tape_metrics::metrics().cache_evicted_total.inc_by(count);
 }
+
+/// Count one queued-write outcome: `enqueued`, `landed` or `failed`.
+#[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
+pub fn inc_pending_write(outcome: &str) {
+    #[cfg(feature = "metrics")]
+    tape_metrics::metrics().pending_writes_total.with_label_values(&[outcome]).inc();
+}
+
+/// Report how many writes are queued and not yet applied on chain.
+#[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
+pub fn set_pending_writes_queued(count: u64) {
+    #[cfg(feature = "metrics")]
+    tape_metrics::metrics().pending_writes_queued.set(count as i64);
+}

@@ -34,7 +34,7 @@ pub fn resolve_object<Db: Store, Cluster: Api, Blockchain: Rpc>(
     bucket: Address,
     key: &str,
 ) -> Result<Option<ResolvedObject>, S3Error> {
-    resolve::resolve_object(state, bucket, key)
+    resolve::resolve_object(state.context.store.as_ref(), bucket, key.as_bytes())
         .map_err(|error| S3Error::Internal(format!("object index lookup: {error}")))
 }
 

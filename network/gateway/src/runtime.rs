@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -27,10 +26,11 @@ use tracing::Instrument;
 
 use crate::admission::{AdmitAll, Admission};
 use crate::cache::GatewaySliceCache;
+use crate::drain::WriteDrain;
 use crate::http::handlers::s3::accounting::Accounting;
-use crate::http::server::{GatewayHttpServer, GatewayS3AdminServer, GatewayS3Server};
+use crate::http::server::{load_delegate, GatewayHttpServer, GatewayS3AdminServer, GatewayS3Server};
 use crate::meter::GatewayMeter;
-use crate::staging::{StagingLimits, StagingStore};
+use crate::staging::StagingStore;
 use crate::store::GatewayStoreManager;
 
 
@@ -40,7 +40,7 @@ async fn supervise_with_context<Db, Cluster, Blockchain>(
     admission: Arc<dyn Admission>,
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
-    staging: Arc<StagingStore>,
+    staging: Arc<StagingStore<Db>>,
     start_slot: SlotNumber,
     cancel: CancellationToken,
     http_server: JoinHandle<Result<(), NodeError>>,
@@ -89,17 +89,29 @@ where
             .saturating_add(1);
         accounting.seed_audit_sequence(next_audit_sequence);
 
+        let write_ctx = load_delegate(&config.gateway.s3);
         let s3_server = GatewayS3Server::new(
             context.clone(),
             slice_cache.clone(),
             meter.clone(),
             staging.clone(),
+            write_ctx.clone(),
             accounting.clone(),
             admission,
             config.gateway.s3.clone(),
             cancel.clone(),
         );
         supervisor.spawn(ServiceName::S3Server, s3_server.run());
+
+        // Queued writes reach the chain here, one in-flight write per bucket,
+        // which is why a PutObject does not wait a block. Without a delegate key
+        // nothing can be written, so nothing queues either.
+        if let Some(write_ctx) = write_ctx {
+            supervisor.spawn(
+                ServiceName::S3WriteDrain,
+                WriteDrain::new(context.clone(), write_ctx, staging.clone(), cancel.clone()).run(),
+            );
+        }
 
         // The write-authorization admin control plane runs on its own listener,
         // authenticated by an operator token. It is started only when that token
@@ -188,12 +200,12 @@ where
             .map_err(|error| NodeError::Store(error.to_string()))?,
     );
     let meter = Arc::new(GatewayMeter::new(context.config.gateway.metering.clone()));
-    // One staging store across both listeners, so an object written on the S3
+    // One write queue across both listeners, so an object written on the S3
     // listener is readable and listable on the native one straight away.
-    let staging = Arc::new(StagingStore::with_limits(StagingLimits {
-        max_bytes: context.config.gateway.s3.staging_max_bytes,
-        ttl: Duration::from_secs(context.config.gateway.s3.staging_ttl_secs),
-    }));
+    let staging = Arc::new(
+        StagingStore::try_new(context.store.clone())
+            .map_err(|error| NodeError::Store(error.to_string()))?,
+    );
 
     let http_server = GatewayHttpServer::new(
         context.clone(),

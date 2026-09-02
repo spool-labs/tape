@@ -30,11 +30,12 @@ pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// TXT-proven host bindings for self-serve site domains. `None` when
     /// txt domains are disabled or no system resolver is available.
     pub site_hosts: Option<Arc<SiteHostBindings>>,
-    /// Objects written but not yet resolvable on chain.
+    /// Writes acknowledged to the client but not yet applied on chain.
     ///
-    /// Reads and listings serve from here until the ingestor tails the slot and
-    /// the track certifies, which is what gives an S3 client read-after-write.
-    pub staging: Arc<StagingStore>,
+    /// Reads and listings serve from here until the drain lands the write and
+    /// the ingestor indexes it, which is what gives an S3 client
+    /// read-after-write without waiting a block per object.
+    pub staging: Arc<StagingStore<Db>>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, Blockchain> {

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use rpc::Rpc;
 use store::Store;
+use tape_api::program::tapedrive::track_pda;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::{Keypair, Pubkey};
@@ -92,7 +93,8 @@ impl S3WriteContext {
         Ok(TapeDelegate::new(self.delegate_keypair()?, tape))
     }
 
-    /// Write an in-memory object to `tape` as the delegate, returning its ETag.
+    /// Write an in-memory object to `tape` as the delegate, returning its ETag
+    /// and the track it landed on.
     ///
     /// `existing` is the object's current track address, if the caller resolved
     /// it (an S3 overwrite). A single-track write then resumes a matching
@@ -106,7 +108,7 @@ impl S3WriteContext {
         content_type: ContentType,
         data: &[u8],
         existing: Option<Address>,
-    ) -> Result<Hash, TapedriveError>
+    ) -> Result<(Hash, Address), TapedriveError>
     where
         Db: Store,
         Cluster: Api,
@@ -122,7 +124,8 @@ impl S3WriteContext {
             let written = client
                 .write_or_resume_track_as(&operator, name, content_type, data, existing)
                 .await?;
-            Ok(written.etag)
+            let track = track_pda(written.track.tape, written.track.track_number).0;
+            Ok((written.etag, track))
         } else {
             // A stream is written fresh (its manifest embeds per-chunk track
             // numbers, so it cannot resume in place), then the prior object this
@@ -135,7 +138,7 @@ impl S3WriteContext {
                     tracing::warn!(%error, %tape, %prior, "overwrite reclaim failed; prior object left for later sweep");
                 }
             }
-            Ok(receipt.manifest_value_hash)
+            Ok((receipt.manifest_value_hash, receipt.manifest))
         }
     }
 

@@ -4,17 +4,14 @@
 //! name-ordered object index to the track the decode/read path consumes.
 //! Shared by the S3 listener and the site route.
 
-use rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::ContentType;
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
-use tape_protocol::Api;
+use tape_store::TapeStore;
 use tape_store::error::TapeStoreError;
 use tape_store::ops::ObjectListOps;
-
-use crate::http::state::AppState;
 
 /// A resolved object location plus the metadata needed to build response
 /// headers without re-reading the object body
@@ -32,16 +29,12 @@ pub struct ResolvedObject {
 }
 
 /// Resolve a tape address and object name to the backing object track
-pub fn resolve_object<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
+pub fn resolve_object<Db: Store>(
+    store: &TapeStore<Db>,
     tape: Address,
-    name: &str,
+    name: &[u8],
 ) -> Result<Option<ResolvedObject>, TapeStoreError> {
-    let Some(entry) = state
-        .context
-        .store
-        .get_object_entry(tape, name.as_bytes())?
-    else {
+    let Some(entry) = store.get_object_entry(tape, name)? else {
         return Ok(None);
     };
 
