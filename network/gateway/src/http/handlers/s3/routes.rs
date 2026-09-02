@@ -1005,8 +1005,15 @@ where
         // UploadPart buffers the part bytes under the upload id; the assembled
         // object is written at CompleteMultipartUpload.
         let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
-        let part = buffer_object_body(body, max_buffered_bytes).await?;
-        verify_signed_body(&signed_payload, &part)?;
+        // A streaming-signed part arrives aws-chunked, the same framing PutObject strips.
+        let part = match signed_payload.is_aws_chunked() {
+            true => buffer_streamed_body(body, true, max_buffered_bytes).await?,
+            false => {
+                let part = buffer_object_body(body, max_buffered_bytes).await?;
+                verify_signed_body(&signed_payload, &part)?;
+                part
+            }
+        };
         return upload_part(&state, &auth, bucket, key, query.as_deref(), part).await;
     }
 
