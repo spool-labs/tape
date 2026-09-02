@@ -360,8 +360,9 @@ async fn read_write_inner() {
     eprintln!("s3_gateway: credential issued + policy allow rule created via admin API");
 
     // ListBuckets is credential-scoped: a signed request lists exactly the bucket
-    // the credential is scoped to; an anonymous request is denied (account op).
-    assert_s3_list_buckets(&s3_base, &host, &bucket_label).await;
+    // the credential is scoped to, named by its lowercase label; an anonymous
+    // request is denied (account op).
+    assert_s3_list_buckets(&s3_base, &host, &bucket.to_subdomain_label()).await;
     assert_s3_list_buckets_anonymous_denied(&s3_base).await;
     eprintln!("s3_gateway: ListBuckets listed the scoped bucket (signed) and denied anonymous");
 
@@ -448,10 +449,11 @@ async fn read_write_inner() {
     wait_sdk_object_listed(&harness, &bucket, "uploads/", overwrite_key, active_timeout).await;
     let v1_track = sdk_object_track_number(&harness, &bucket, "uploads/", overwrite_key).await;
 
-    // The gateway ingests independently of the committee nodes, and the overwrite's
-    // reclaim resolves the prior track from the gateway's own index. Wait until the
-    // gateway has v1 before overwriting, or its PutObject sees no prior to reclaim.
-    wait_s3_head_ok(&s3_base, &bucket_label, overwrite_key, Duration::from_secs(180)).await;
+    // A PutObject is acknowledged from the durable write queue, so HEAD answering
+    // proves nothing about the gateway's index. The overwrite's reclaim resolves
+    // the prior track from that index, so wait until the queue has drained and the
+    // index holds v1, or the overwrite sees no prior to reclaim.
+    wait_pending_drained(&admin_base, OPERATOR_TOKEN, Duration::from_secs(180)).await;
 
     assert_s3_signed_put(&s3_base, &host, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE).await;
     wait_track_reclaimed(&harness, &bucket, v1_track, Duration::from_secs(180)).await;
@@ -551,6 +553,27 @@ async fn wait_admin_healthy(admin_base: &str, operator_token: &str, timeout: Dur
             panic!("admin control plane never became healthy within {timeout:?} (last {last:?})");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// `GET /pending` — poll the write queue until no bucket has an entry left,
+/// meaning every queued write reached the chain and the gateway's index shows it.
+async fn wait_pending_drained(admin_base: &str, operator_token: &str, timeout: Duration) {
+    let url = format!("{admin_base}/pending");
+    let start = Instant::now();
+    loop {
+        let response = admin_request(Method::GET, &url, operator_token, None).await;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        assert_eq!(status, StatusCode::OK, "GET /pending returned {status}: {body}");
+        // Only buckets with entries are listed, so an empty list is a drained queue.
+        if body.contains(r#""buckets":[]"#) {
+            return;
+        }
+        if start.elapsed() >= timeout {
+            panic!("write queue never drained within {timeout:?}: {body}");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
