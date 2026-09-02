@@ -559,7 +559,7 @@ where
 
 // Queued S3 writes
 
-/// `GET /pending` — what the write queue holds per bucket, and why anything failed
+/// `GET /pending`: what the write queue holds per bucket, and why anything failed
 async fn get_pending<Db, Cluster, Blockchain>(
     State(state): State<AdminState<Db, Cluster, Blockchain>>,
 ) -> Result<Json<PendingView>, AdminError>

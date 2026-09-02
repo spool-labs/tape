@@ -1,12 +1,6 @@
-//! A live S3 gateway over simnet, held up until the process is killed
+//! A live S3 gateway over simnet for outside clients, held up until the process is killed
 //!
-//! Boots the same network `s3_gateway.rs` boots, issues one credential for one
-//! bucket, prints the connection details, and then keeps the chain running so an
-//! off-the-shelf S3 client can be pointed at it. Run with:
-//!
-//! `cargo test -p tape-e2e-simnet --release --test s3_playground -- --ignored --nocapture`
-//!
-//! `S3_PLAYGROUND_ENV` names a file the details are also written to, in `KEY=value` lines.
+//! `S3_PLAYGROUND_ENV` names a file the connection details are also written to.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;

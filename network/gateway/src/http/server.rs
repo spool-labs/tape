@@ -228,10 +228,7 @@ where
     }
 }
 
-/// Load the delegate keypair that signs S3 writes, when one is configured.
-///
-/// With no key — or a key that fails to load — the listener still serves reads
-/// and only writes are unavailable, rather than taking the node down.
+/// Load the delegate keypair that signs S3 writes; without one the listener serves reads only.
 pub fn load_delegate(s3_config: &S3Config) -> Option<Arc<S3WriteContext>> {
     let path = s3_config.delegate_key.as_deref()?;
     match S3WriteContext::load(path) {
@@ -312,8 +309,7 @@ where
 
         let body_limit = DefaultBodyLimit::max(self.s3_config.max_buffered_bytes);
 
-        // The bucket may arrive in the Host header; the rewrite has to run before routing,
-        // so the S3 router sits behind a thin outer router the way the site rewrite does.
+        // The host-to-path rewrite has to run before routing, so the S3 router sits behind an outer one.
         Router::new()
             .fallback_service(router(state, verifier))
             .layer(from_fn(shape_request))

@@ -93,8 +93,7 @@ impl S3WriteContext {
         Ok(TapeDelegate::new(self.delegate_keypair()?, tape))
     }
 
-    /// Write an in-memory object to `tape` as the delegate, returning its ETag
-    /// and the track it landed on.
+    /// Write an in-memory object to `tape` as the delegate, returning its ETag and track.
     ///
     /// `existing` is the object's current track address, if the caller resolved
     /// it (an S3 overwrite). A single-track write then resumes a matching

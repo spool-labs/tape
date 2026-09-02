@@ -509,10 +509,7 @@ pub fn delete_result_body(deleted: &[String], errors: &[DeleteErrorEntry]) -> St
     out
 }
 
-/// Parse a `DeleteObjects` request body into its object keys and quiet flag
-///
-/// `<VersionId>` elements are ignored: buckets are unversioned, so a key names
-/// exactly one object.
+/// Parse a `DeleteObjects` request body into its object keys and quiet flag; VersionId is ignored
 pub fn parse_delete_objects(body: &str) -> Result<(Vec<String>, bool), String> {
     let mut keys = Vec::new();
     for_each_element(body, "Object", |block| {

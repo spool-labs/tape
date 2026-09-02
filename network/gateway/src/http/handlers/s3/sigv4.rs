@@ -405,11 +405,7 @@ fn signed_path(request: &Request) -> &str {
 #[derive(Clone, Debug)]
 pub struct SignedPath(pub String);
 
-/// Put the request in the one shape the router knows: bucket in the path, no trailing slash
-///
-/// A bucket may arrive in the Host header, the way S3 serves `bucket.endpoint`, and a
-/// bucket request may carry a trailing slash. Runs before routing. The path the client
-/// signed is kept beside the request so the signature still verifies against what was sent.
+/// Put the request in the one shape the router knows, bucket in the path and no trailing slash, keeping the signed path beside it
 pub async fn shape_request(mut request: Request, next: Next) -> Response {
     let host = request
         .headers()

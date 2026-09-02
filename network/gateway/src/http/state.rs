@@ -30,11 +30,7 @@ pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// TXT-proven host bindings for self-serve site domains. `None` when
     /// txt domains are disabled or no system resolver is available.
     pub site_hosts: Option<Arc<SiteHostBindings>>,
-    /// Writes acknowledged to the client but not yet applied on chain.
-    ///
-    /// Reads and listings serve from here until the drain lands the write and the
-    /// ingestor indexes it, so a client gets read-after-write without waiting a
-    /// block per object.
+    /// Writes acknowledged to the client but not yet applied on chain; reads serve from here first.
     pub staging: Arc<StagingStore<Db>>,
 }
 

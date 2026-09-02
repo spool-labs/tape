@@ -188,9 +188,7 @@ impl TestGateway {
         Ok((s3_addr, admin_addr))
     }
 
-    /// Move the S3 listener to `addr`, for a run that has to be reachable from outside the process
-    ///
-    /// Only meaningful before start, and after the listener was enabled.
+    /// Move the S3 listener to `addr` before start, for a run reachable from outside the process
     pub fn set_s3_listen(&mut self, addr: SocketAddr) {
         self.app_config.gateway.s3.listen = addr;
         self.s3_listen = Some(addr);

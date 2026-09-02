@@ -1,9 +1,4 @@
-//! S3 `(bucket, key)` to backing object-track resolution
-//!
-//! An S3 bucket is a tape address, written either in base58 or as the lowercase
-//! label S3 clients accept as a bucket name; an object key is a name in the
-//! store's object index. The shared resolver does the lookup and this module
-//! maps its errors into the S3 error domain.
+//! S3 `(bucket, key)` to backing object-track resolution, with errors mapped into the S3 domain
 
 use rpc::Rpc;
 use store::Store;

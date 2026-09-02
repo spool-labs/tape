@@ -1,8 +1,4 @@
 //! Applies queued S3 writes to the chain, one in-flight write per bucket.
-//!
-//! A bucket's tape account admits one write per block, so the S3 surface
-//! acknowledges a write once it is durable in the queue and this service applies
-//! it afterwards. Buckets drain in parallel, each in queue order.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -34,17 +30,13 @@ const RETRY_MIN: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 /// Retry interval once an entry has been marked failed.
 const FAILED_RETRY: Duration = Duration::from_secs(300);
-/// Consecutive permanent failures before an entry is marked failed; it is still
-/// retried after that, because funds and capacity can be topped up.
+/// Consecutive permanent failures before an entry is parked.
 const MAX_ATTEMPTS: u32 = 3;
 /// How often one bucket's transient outage is logged, however many entries hit it.
 const OUTAGE_LOG_INTERVAL: Duration = Duration::from_secs(60);
 /// How often the delegate's SOL balance is read.
 const BALANCE_INTERVAL: Duration = Duration::from_secs(60);
-/// Balance below which chain attempts pause.
-///
-/// A payer under the rent floor has its transactions dropped, which reaches the
-/// drain as a timeout rather than as the funding problem it is.
+/// Balance below which chain attempts pause, since an underfunded payer only shows up as timeouts.
 const DELEGATE_LAMPORTS_FLOOR: u64 = 50_000_000;
 
 /// Program errors that fail the same way until an operator acts.
@@ -104,10 +96,7 @@ fn is_transient_rpc(error: &RpcError) -> bool {
     }
 }
 
-/// Classify a transaction failure by the message the runtime returned.
-///
-/// An unrecognised failure counts as transient, so it keeps retrying rather
-/// than parking.
+/// Classify a transaction failure by its message; unrecognised failures stay transient.
 fn is_transient_message(message: &str) -> bool {
     let message = message.to_lowercase();
     for permanent in PERMANENT_TRANSACTION_ERRORS {
@@ -123,9 +112,9 @@ fn is_transient_message(message: &str) -> bool {
     true
 }
 
-/// What the drain remembers between passes about a struggling entry.
+/// Retry state for one entry.
 struct Retry {
-    /// Failures of any kind, driving the exponential backoff.
+    /// Failures of any kind, for the backoff curve.
     steps: u32,
     /// Permanent failures only; a transient one never parks the entry.
     attempts: u32,
@@ -148,7 +137,7 @@ pub struct DrainStatus {
 }
 
 impl DrainStatus {
-    /// An empty status, which is what the admin plane sees with no drain running.
+    /// An empty status.
     pub fn new() -> Self {
         Self::default()
     }
@@ -176,8 +165,7 @@ pub struct WriteDrain<Db: Store, Cluster: Api, Blockchain: Rpc> {
     write_ctx: Arc<S3WriteContext>,
     staging: Arc<StagingStore<Db>>,
     retries: Mutex<HashMap<(Address, Vec<u8>), Retry>>,
-    /// When each bucket's transient outage was last logged, so an outage costs
-    /// one line a minute rather than one per attempt.
+    /// When each bucket's outage was last logged.
     outage_logged: Mutex<HashMap<Address, Instant>>,
     status: Arc<DrainStatus>,
     cancel: CancellationToken,
@@ -228,14 +216,12 @@ where
         }
     }
 
-    /// Read the delegate's balance, publish it, and hold chain attempts while it
-    /// is under the floor.
+    /// Read the delegate's balance and hold chain attempts while it is under the floor.
     async fn read_delegate_balance(&self) {
         let delegate = self.write_ctx.delegate_address();
         let lamports = match self.context.rpc.rpc().get_account(&delegate).await {
             Ok(account) => account.lamports,
-            // An account that does not exist holds nothing, which is the funding
-            // problem the floor is there to catch, not a failed lookup.
+            // A missing account holds nothing, which is exactly what the floor catches.
             Err(RpcError::AccountNotFound(_)) => 0,
             Err(error) => {
                 warn!(%error, %delegate, "s3 drain: delegate balance unavailable");
@@ -355,8 +341,7 @@ where
             Ok(track) => {
                 self.clear_retry(tape, key);
                 metrics::inc_pending_write("landed");
-                // A false return means the write was superseded in flight, and
-                // the track went to the entry that replaced it.
+                // Superseded in flight: the track went to the entry that replaced it.
                 if let Err(error) =
                     self.staging.set_state(tape, key, write.seq, PendingState::Landed { track })
                 {
@@ -387,11 +372,7 @@ where
         }
     }
 
-    /// Write a queued object, resuming or overwriting whatever it supersedes.
-    ///
-    /// `prior` is the track a superseded write landed, which the index may not
-    /// show yet; without it the track comes from the index, resolved now so an
-    /// overwrite reclaims what the name binds when the write goes out.
+    /// Write a queued object, overwriting the track it supersedes.
     async fn put(
         &self,
         tape: Address,
@@ -423,9 +404,6 @@ where
     }
 
     /// Delete the track a queued delete names; an already-gone key is a success.
-    ///
-    /// `landed` is the track a superseded Put wrote, which the index may not
-    /// show yet; without it the track comes from the index.
     async fn delete(
         &self,
         tape: Address,
@@ -464,10 +442,7 @@ where
         }
     }
 
-    /// Record a failed attempt and back off.
-    ///
-    /// A transient failure never parks the entry, so the bucket resumes at full
-    /// speed the moment the cluster is back.
+    /// Record a failed attempt and back off; only permanent failures count towards parking.
     fn record_failure(
         &self,
         tape: Address,
@@ -547,8 +522,7 @@ where
     }
 }
 
-/// The wait before the next attempt: exponential from a second to a minute, or
-/// the slow steady beat once the entry has been parked.
+/// The wait before the next attempt: exponential to a minute, or the slow beat once parked.
 fn retry_delay(steps: u32, is_parked: bool) -> Duration {
     if is_parked {
         return FAILED_RETRY;

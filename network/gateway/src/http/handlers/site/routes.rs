@@ -176,9 +176,7 @@ async fn serve_site<
         match lookup(&state, tape, &name)? {
             Some(readable) => (readable, StatusCode::OK, name.as_str()),
             None => {
-                // Every static host redirects a directory path to its slash form,
-                // and Astro's default build makes half a site's routes look
-                // like this.
+                // Static hosts redirect a directory path to its slash form.
                 if let Some(redirect) = directory_redirect(&state, tape, path)? {
                     return Ok(redirect);
                 }
@@ -198,8 +196,7 @@ async fn serve_site<
         }
     }
 
-    // Fallback pages take their type and download name from the object served,
-    // not the requested path, so a missing /route never mislabels index.html.
+    // Fallback pages take their type from the object served, not the requested path.
     let metadata = site_metadata(readable.content_type(), served_name, download, max_age_secs);
     let resolved = match readable {
         Readable::Queued(object) => {
@@ -234,8 +231,7 @@ async fn serve_site<
     .await
 }
 
-/// A redirect to the slash form when `path` names a directory whose index page
-/// exists, which the browser needs before relative links in that page resolve.
+/// A redirect to the slash form when `path` names a directory with an index page.
 fn directory_redirect<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     tape: Address,
@@ -263,8 +259,7 @@ fn directory_index_name(path: &str) -> Option<String> {
     Some(format!("{path}/{INDEX_OBJECT}"))
 }
 
-/// The slash form as a relative location, so it resolves correctly under the
-/// path prefix and under a site host alike.
+/// The slash form as a relative location, valid under a path prefix and a site host alike.
 fn slash_location(path: &str) -> Option<HeaderValue> {
     let segment = path.rsplit('/').next().unwrap_or(path);
     HeaderValue::try_from(format!("{segment}/")).ok()
@@ -308,8 +303,7 @@ fn resolve_site_name(path: &str) -> String {
     path.to_string()
 }
 
-/// Resolve a site object name, the write queue first, so a page overwritten a
-/// moment ago serves its new bytes rather than the index's older row.
+/// Resolve a site object name, the write queue first.
 fn lookup<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     tape: Address,

@@ -449,14 +449,12 @@ pub enum PendingOp {
         size: u64,
         /// Last-modified time in unix seconds, set when the write was accepted
         block_time: i64,
-        /// The track a superseded write already landed, so this one overwrites
-        /// and reclaims it. `None` leaves the drain to read the index.
+        /// The track a superseded write landed, reclaimed on overwrite; `None` reads the index
         prior: Option<Address>,
     },
     /// Delete the object's track
     Delete {
-        /// The track a superseded Put already landed. `None` leaves the drain to
-        /// read the index.
+        /// The track a superseded Put landed; `None` reads the index
         track: Option<Address>,
     },
 }
@@ -471,7 +469,7 @@ pub enum PendingState {
         /// Track the write produced, for a Put
         track: Address,
     },
-    /// Ten attempts failed; still retried, still served to readers
+    /// Parked after repeated permanent failures; still retried, still served
     Failed {
         /// The last error, as reported by `/pending`
         error: String,
@@ -480,10 +478,7 @@ pub enum PendingState {
     },
 }
 
-/// One queued S3 write, keyed in `s3_pending_write` by `(tape, object key)`.
-///
-/// A PUT or DELETE is acknowledged once this row and its bytes are durable, so
-/// the client never waits a block; the drain applies it on chain after.
+/// One queued S3 write, keyed by tape and object key.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
 pub struct PendingWrite {
     /// Enqueue order within the gateway; the newest entry for a key wins reads
@@ -494,8 +489,7 @@ pub struct PendingWrite {
     pub state: PendingState,
 }
 
-/// The queued bytes of a pending Put, stored apart from its metadata so a
-/// listing or a drain scan never reads object payloads.
+/// The queued bytes of a pending Put, stored apart from its metadata.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
 pub struct PendingWriteData {
     /// Object bytes exactly as the client sent them

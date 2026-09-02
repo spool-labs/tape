@@ -4,8 +4,7 @@ use store::Column;
 
 use crate::types::{PendingWrite, PendingWriteData, PendingWriteKey};
 
-/// Queued S3 writes, keyed by `(tape, object key)` so one bucket's queue scans
-/// together in object-key order.
+/// Queued S3 writes, keyed by tape and object key so one bucket scans together
 pub struct S3PendingWriteCol;
 
 impl Column for S3PendingWriteCol {

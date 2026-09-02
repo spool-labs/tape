@@ -90,12 +90,7 @@ impl Readable {
     }
 }
 
-/// Resolve a name to what a read serves, the write queue first.
-///
-/// The queue wins on every name it holds, whatever the entry's state, or an
-/// overwrite keeps serving the older index row until the drain lands it. An
-/// entry is dropped once the index agrees, so this never serves anything staler
-/// than the index would.
+/// Resolve a name to what a read serves, the write queue first; an entry is never staler than the index.
 pub fn resolve_readable<Db: Store>(
     store: &TapeStore<Db>,
     staging: &StagingStore<Db>,
@@ -119,8 +114,7 @@ pub fn resolve_readable<Db: Store>(
         })));
     }
 
-    // A streamed write sent its bytes straight to their tracks, so the read
-    // goes there; anything else queued without bytes is a corrupt row.
+    // A streamed write's bytes went straight to their tracks; anything else without bytes is corrupt.
     match entry.state {
         PendingState::Landed { track } => Ok(Some(Readable::Track(ResolvedObject {
             track_address: track,

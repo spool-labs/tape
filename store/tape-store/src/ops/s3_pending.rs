@@ -1,7 +1,4 @@
 //! Durable queue of S3 writes waiting to reach the chain.
-//!
-//! A bucket's tape account admits one write per block, so a PUT or DELETE is
-//! acknowledged once it is durable here and applied on chain afterwards.
 
 use std::future::Future;
 
@@ -30,11 +27,7 @@ fn decode_entry(value: &[u8]) -> Result<PendingWrite> {
 
 /// Operations for the durable queue of S3 writes
 pub trait PendingWriteOps {
-    /// Queue `write` for `(tape, key)`, replacing any entry already there and
-    /// dropping its bytes.
-    ///
-    /// Awaited, because acknowledging a write promises it survives a crash and
-    /// only the awaited batch is a durability point.
+    /// Queue `write` for `(tape, key)`, replacing any entry and its bytes; awaited so the ack is durable.
     fn put_pending_write(
         &self,
         tape: Address,
@@ -43,14 +36,10 @@ pub trait PendingWriteOps {
         data: Option<Vec<u8>>,
     ) -> impl Future<Output = Result<()>> + Send;
 
-    /// Overwrite the queue entry for `(tape, key)`, leaving its bytes alone.
-    ///
-    /// A state change must not rewrite the payload, or a large object is copied
-    /// on every pass of the drain.
+    /// Overwrite the entry for `(tape, key)`, leaving its bytes alone.
     fn put_pending_entry(&self, tape: Address, key: &[u8], write: &PendingWrite) -> Result<()>;
 
-    /// Record the track a superseded write landed on the entry for `(tape, key)`,
-    /// when it does not name one yet. Returns whether the entry changed.
+    /// Record a landed track on the entry for `(tape, key)` when it names none; returns whether it changed.
     fn attach_landed_track(&self, tape: Address, key: &[u8], track: Address) -> Result<bool>;
 
     /// The queue entry for `(tape, key)`, if present
@@ -62,8 +51,7 @@ pub trait PendingWriteOps {
     /// Whether `(tape, key)` has a stored payload, without reading it
     fn has_pending_write_data(&self, tape: Address, key: &[u8]) -> Result<bool>;
 
-    /// One tape's queue entries whose key starts with `prefix`, from the
-    /// inclusive `start` key, in key order and without reading any payload
+    /// One tape's entries under `prefix` from the inclusive `start` key, without payloads
     fn scan_pending_writes_from(
         &self,
         tape: Address,
@@ -80,8 +68,7 @@ pub trait PendingWriteOps {
     /// Drop the queue entry for `(tape, key)` and its bytes
     fn delete_pending_write(&self, tape: Address, key: &[u8]) -> Result<()>;
 
-    /// Every queue entry as `(tape, key, entry)`, for the open-time scan that
-    /// seeds the sequence and the byte totals
+    /// Every queue entry as `(tape, key, entry)`, for the open-time scan
     fn pending_write_entries(&self) -> Result<Vec<(Address, Vec<u8>, PendingWrite)>>;
 }
 
@@ -98,8 +85,7 @@ impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
 
         let mut batch = WriteBatch::new();
         batch.put(S3PendingWriteCol::CF_NAME, &row_key, &entry);
-        // A Delete replacing a Put clears the Put's bytes, or the payload
-        // outlives the entry that owns it.
+        // A Delete replacing a Put clears the Put's bytes.
         match data {
             Some(data) => {
                 let payload = encode(&PendingWriteData { data }, "pending write payload")?;

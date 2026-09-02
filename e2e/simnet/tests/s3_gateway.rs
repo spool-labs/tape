@@ -449,19 +449,14 @@ async fn read_write_inner() {
     wait_sdk_object_listed(&harness, &bucket, "uploads/", overwrite_key, active_timeout).await;
     let v1_track = sdk_object_track_number(&harness, &bucket, "uploads/", overwrite_key).await;
 
-    // A PutObject is acknowledged from the durable write queue, so HEAD answering
-    // proves nothing about the gateway's index. The overwrite's reclaim resolves
-    // the prior track from that index, so wait until the queue has drained and the
-    // index holds v1, or the overwrite sees no prior to reclaim.
+    // HEAD answers from the queue, so wait for the drain before the overwrite needs v1 in the index.
     wait_pending_drained(&admin_base, OPERATOR_TOKEN, Duration::from_secs(180)).await;
 
     let v2_etag =
         assert_s3_signed_put(&s3_base, &host, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE)
             .await;
 
-    // The overwrite is answered from the queue, so HEAD has to report the new
-    // size and ETag straight away. Reporting v1 is what makes rclone call the
-    // transfer corrupted.
+    // HEAD right after an overwrite must report the new size and ETag.
     let head_etag =
         assert_s3_head_object(&s3_base, &bucket_label, overwrite_key, v2.len(), PUT_CONTENT_TYPE)
             .await;
@@ -475,11 +470,7 @@ async fn read_write_inner() {
     wait_s3_get_size(&s3_base, &bucket_label, overwrite_key, v2.len(), Duration::from_secs(180)).await;
     assert_s3_get_object(&s3_base, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE).await;
     eprintln!("s3_gateway: overwrite reclaimed prior {v1_track} and served v2 ({} bytes)", v2.len());
-    // (2e) DeleteObjects (`POST /{bucket}?delete`) removes both gateway-written
-    // objects in one signed request and reports a never-existing key as deleted
-    // too (S3 delete is idempotent). Each key is a real delegate-signed on-chain
-    // delete; the objects then vanish from the S3 read surface once the gateway
-    // ingests the removals.
+    // (2e) DeleteObjects removes both objects in one request and reports a missing key as deleted too.
     assert_s3_delete_objects(
         &s3_base,
         &host,
@@ -571,8 +562,7 @@ async fn wait_admin_healthy(admin_base: &str, operator_token: &str, timeout: Dur
     }
 }
 
-/// `GET /pending` — poll the write queue until no bucket has an entry left,
-/// meaning every queued write reached the chain and the gateway's index shows it.
+/// Poll `GET /pending` until every queued write reached the chain and the index shows it.
 async fn wait_pending_drained(admin_base: &str, operator_token: &str, timeout: Duration) {
     let url = format!("{admin_base}/pending");
     let start = Instant::now();
@@ -1342,8 +1332,7 @@ async fn wait_sdk_object_listed(
     }
 }
 
-/// DeleteObjects (`POST /{bucket}?delete`): send the signed bulk-delete XML and
-/// assert `200` with a `<Deleted>` entry for every key and no `<Error>` entries.
+/// Send a signed DeleteObjects request and assert every key is reported deleted.
 async fn assert_s3_delete_objects(base: &str, host: &str, bucket: &str, keys: &[&str]) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
@@ -1394,9 +1383,7 @@ async fn assert_s3_delete_objects(base: &str, host: &str, bucket: &str, keys: &[
     }
 }
 
-/// Poll `HEAD /{bucket}/{key}` until it returns `expected`: `200` for an object
-/// becoming readable, `404` for a deleted object disappearing once the gateway
-/// ingests the removal.
+/// Poll `HEAD /{bucket}/{key}` until it returns `expected`.
 async fn wait_s3_head_status(
     base: &str,
     bucket: &str,

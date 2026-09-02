@@ -103,9 +103,7 @@ where
         );
         supervisor.spawn(ServiceName::S3Server, s3_server.run());
 
-        // Queued writes reach the chain here, one in-flight write per bucket,
-        // which is why a PutObject does not wait a block. Without a delegate key
-        // nothing can be written, so nothing queues either.
+        // Without a delegate key nothing can be written, so nothing queues either.
         let drain_status = Arc::new(DrainStatus::new());
         if let Some(write_ctx) = write_ctx {
             supervisor.spawn(

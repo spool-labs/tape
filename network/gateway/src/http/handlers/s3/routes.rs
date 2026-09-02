@@ -367,11 +367,7 @@ fn queued_entry(name: &[u8], write: &PendingWrite) -> Option<ObjectEntry> {
     }
 }
 
-/// List a bucket, including objects that exist only in the write queue.
-///
-/// The index wins on every key it holds, matching the GET path, or the two
-/// surfaces disagree about the same key. Without the queued rows a client that
-/// writes and then lists does not see its own key for seconds.
+/// List a bucket, the write queue merged in.
 fn list_objects_merged<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     bucket: Address,
@@ -406,7 +402,7 @@ where
     Ok(merge_listing(&page, &queued, prefix, delimiter, max_keys))
 }
 
-/// Merge queued rows into an index page.
+/// Merge queued rows into an index page; the queue wins on every key it holds.
 ///
 /// Split out from the fetch so the ordering, folding and truncation rules can
 /// be tested without a store or a running gateway.
@@ -417,8 +413,6 @@ fn merge_listing(
     delimiter: Option<&[u8]>,
     max_keys: usize,
 ) -> MergedListing {
-    // The queue wins on every key it holds, so an overwrite lists its new size
-    // and ETag and a queued delete drops the row the index still has.
     let queued_names: HashSet<&[u8]> = queued.iter().map(|(name, _)| name.as_slice()).collect();
 
     let mut contents: Vec<(Vec<u8>, ObjectEntry)> = Vec::new();
@@ -435,8 +429,7 @@ fn merge_listing(
             continue;
         };
 
-        // Fold into a folder exactly as the index would, so a queued key never
-        // shows up beside the prefix that should have hidden it.
+        // Fold into a folder exactly as the index would.
         let folder = delimiter.and_then(|delimiter| {
             let rest = &name[prefix.len()..];
             find_subslice(rest, delimiter)
@@ -688,10 +681,7 @@ where
     state.context.rpc.get_tape_by_address(&tape).await.is_ok()
 }
 
-/// `PUT /{bucket}` -> CreateBucket
-///
-/// Clients create the bucket before their first write. A tape already reserved is the
-/// one bucket that can exist, and `BucketAlreadyOwnedByYou` is the answer they take as success.
+/// `PUT /{bucket}` -> CreateBucket; a reserved tape answers BucketAlreadyOwnedByYou, which clients take as success
 async fn create_bucket<Db, Cluster, Blockchain>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(bucket): Path<String>,
@@ -719,13 +709,7 @@ async fn delete_bucket(Path(bucket): Path<String>) -> Result<Response, S3Error> 
     ))
 }
 
-/// Resolve an S3 `(bucket, key)` to what a read serves.
-///
-/// The write queue wins on every key it holds, so an overwrite answers with its
-/// new size and ETag rather than the index row the drain has not replaced yet.
-/// A bucket label that is not a tape address maps to NoSuchBucket; a key neither
-/// queued nor indexed, hidden by a queued delete, or whose track is missing or
-/// uncertified maps to NoSuchKey. Shared by GET and HEAD so both agree.
+/// Resolve an S3 `(bucket, key)` to what a read serves, shared by GET and HEAD
 fn resolve_readable<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     bucket_label: &str,
@@ -987,10 +971,7 @@ fn check_request_rate<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 /// `PUT /{bucket}/{key}` -> PutObject, or UploadPart when `?uploadId=` is set
 ///
-/// PutObject is signed by the configured delegate keypair. A signed-hash request
-/// is buffered, integrity-checked and queued for the drain, which writes it as
-/// one track; a body past the buffer streams straight onto chunk tracks on chain
-/// with bounded memory. UploadPart buffers the part bytes under the upload id.
+/// PutObject queues a body within the buffer for the drain and streams a larger one onto chunk tracks; UploadPart buffers the part
 async fn put_object<Db, Cluster, Blockchain>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(auth): Extension<Auth>,
@@ -1054,10 +1035,7 @@ where
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
 
-    // A body that fits the buffer is queued and acknowledged here, because the
-    // tape account admits one chain write per block. Past the buffer the body
-    // streams onto segment tracks on chain and the queue holds only where the
-    // bytes went. Either way the chokepoint reserves before and settles after.
+    // Within the buffer the body is queued and acknowledged; past it, it streams onto chunk tracks.
     let etag = match streamed_object_size(signed_payload, headers)? {
         Some(size) if size > max_buffered_bytes as u64 => {
             if size > max_object_bytes as u64 {
@@ -1121,9 +1099,6 @@ where
 const QUEUE_FULL_RETRY_AFTER: Duration = Duration::from_secs(5);
 
 /// Refuse a write the queue has no room for, before any budget is reserved.
-///
-/// Only the drain empties the queue, so an outage would otherwise grow it until
-/// the disk filled.
 fn check_queue_budget<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     size: u64,
@@ -1140,10 +1115,7 @@ where
     Ok(())
 }
 
-/// Queue a buffered object and acknowledge it, settling the write permit.
-///
-/// The ETag is the one the object index will record, so the client is never told
-/// one value now and served another later.
+/// Queue a buffered object and acknowledge it with the ETag the index will record.
 async fn enqueue_put<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     permit: WritePermit,
@@ -1198,8 +1170,7 @@ async fn buffer_streamed_body(
     let (reader, producer) = object_reader(body, is_aws_chunked);
     let mut data = Vec::new();
     let read = reader.take(max_bytes as u64 + 1).read_to_end(&mut data).await;
-    // A body longer than declared is left unread, so the producer is released
-    // before it is awaited.
+    // A body longer than declared is left unread, so release the producer before awaiting it.
     let produced = producer.await;
     if data.len() > max_bytes {
         return Err(S3Error::EntityTooLarge(format!(
@@ -1455,8 +1426,7 @@ where
     // unauthorized caller cannot probe which keys exist via the response code.
     let permit = authorize_write(state, auth, tape, key, WriteOp::Delete, 0).await?;
 
-    // S3 DeleteObject is idempotent: a key with nothing queued and nothing
-    // indexed is already deleted. Nothing was spent, so release the reservation.
+    // DeleteObject is idempotent: nothing queued and nothing indexed is already deleted.
     if !object_present(state, tape, key)? {
         permit.refund(state);
         return Ok(());
@@ -1475,8 +1445,7 @@ where
     }
 }
 
-/// Whether a key has anything to delete: a queued Put, or an index row no queued
-/// delete already hides
+/// Whether a key has anything to delete
 fn object_present<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     tape: Address,
@@ -1514,8 +1483,7 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    // The delete-list XML is itself signed; verify it hashes to the signed
-    // x-amz-content-sha256 before parsing.
+    // The delete list is part of the signed payload, so check it before parsing.
     verify_signed_body(&signed_payload, &body)?;
 
     if has_query_param(query.as_deref(), "delete", None) {
@@ -1524,12 +1492,7 @@ where
     Err(not_implemented("bucket POST"))
 }
 
-/// `POST /{bucket}?delete` -> DeleteObjects
-///
-/// Every key runs the same authorization and on-chain delete as a single
-/// DeleteObject; a failing key becomes an `<Error>` entry in the
-/// `DeleteResult` body instead of failing the batch. Quiet mode reports only
-/// failures.
+/// `POST /{bucket}?delete` -> DeleteObjects; a failing key becomes an Error entry, not a failed batch
 async fn delete_objects<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     auth: &Auth,
@@ -1544,8 +1507,7 @@ where
     if state.write_ctx.is_none() {
         return Err(write_not_implemented(false, "DeleteObjects"));
     }
-    // A malformed bucket or request body fails the whole batch; everything
-    // after this point is reported per key.
+    // From here on failures are reported per key.
     let tape = parse_bucket(bucket)?;
     let body_text = std::str::from_utf8(body).map_err(|_| {
         S3Error::InvalidRequest("DeleteObjects body is not valid UTF-8".to_string())
@@ -1558,9 +1520,7 @@ where
         )));
     }
 
-    // Deletes run one at a time: each landed delete rewrites the tape's track
-    // tree, so the next proof only verifies once the previous delete is
-    // visible. This also paces a bulk purge to one in-flight transaction.
+    // One delete at a time, since each rewrites the tape's track tree.
     let mut deleted = Vec::new();
     let mut errors = Vec::new();
     for key in keys {
@@ -1895,8 +1855,7 @@ where
     check_queue_budget(state, size)?;
     let permit = authorize_write(state, auth, bucket, &key, WriteOp::CompleteMultipart, size).await?;
 
-    // Queued exactly like PutObject. On failure `?` returns before the upload is
-    // dropped, so it stays intact for the client to retry or abort.
+    // On failure the upload stays intact for the client to retry or abort.
     let etag = enqueue_put(
         state,
         permit,

@@ -64,8 +64,7 @@ fn site_policy<Db: Store>(
         return TapeSitePolicy::default();
     }
 
-    // Queue first, or a site's policy is ignored for the minute between its
-    // deploy and the drain landing it, and a single-page app 404s its routes.
+    // Queue first, or a freshly deployed policy is ignored until the drain lands it.
     let readable = match resolve_readable(store, staging, tape, SITE_POLICY_OBJECT.as_bytes()) {
         Ok(Some(readable)) => readable,
         Ok(None) => return TapeSitePolicy::default(),

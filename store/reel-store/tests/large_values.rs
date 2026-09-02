@@ -1,7 +1,4 @@
 //! Values wider than an allocation chunk read back whole
-//!
-//! Found by a 300 MiB multipart upload through the S3 gateway: 5 MiB parts came
-//! back with zero runs ending on 4 MiB file offsets.
 
 use reel_store::open_harness_store;
 use tape_crypto::Hash;
