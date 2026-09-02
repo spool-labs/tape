@@ -250,6 +250,11 @@ impl<Db: Store> StagingStore<Db> {
         self.store.get_pending_write_data(tape, key)
     }
 
+    /// Whether the entry for one key carries bytes, without reading them.
+    pub fn has_bytes(&self, tape: Address, key: &[u8]) -> Result<bool, TapeStoreError> {
+        self.store.has_pending_write_data(tape, key)
+    }
+
     /// Whether a queued delete hides this key, whatever the index still holds.
     pub fn is_deleted(&self, tape: Address, key: &[u8]) -> Result<bool, TapeStoreError> {
         let Some(entry) = self.store.get_pending_write(tape, key)? else {

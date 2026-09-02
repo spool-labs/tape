@@ -12,6 +12,9 @@ use tape_crypto::address::Address;
 use tape_store::TapeStore;
 use tape_store::error::TapeStoreError;
 use tape_store::ops::ObjectListOps;
+use tape_store::types::{PendingOp, PendingState};
+
+use crate::staging::StagingStore;
 
 /// A resolved object location plus the metadata needed to build response
 /// headers without re-reading the object body
@@ -47,4 +50,194 @@ pub fn resolve_object<Db: Store>(
         block_time: entry.block_time,
         content_type: entry.content_type,
     }))
+}
+
+/// The metadata a queued write answers a read with, before the index has it.
+pub struct QueuedObject {
+    /// Object size in bytes
+    pub size: u64,
+    /// Object content type recorded when the write was accepted
+    pub content_type: ContentType,
+    /// ETag the client was already given
+    pub etag: Hash,
+    /// Last-modified time in unix seconds
+    pub block_time: i64,
+}
+
+/// What a read serves for a name.
+pub enum Readable {
+    /// The write queue still holds the bytes; serve them directly
+    Queued(QueuedObject),
+    /// Decode the object from its track
+    Track(ResolvedObject),
+}
+
+impl Readable {
+    /// The ETag to answer with, whichever copy serves.
+    pub fn etag(&self) -> Hash {
+        match self {
+            Self::Queued(object) => object.etag,
+            Self::Track(resolved) => resolved.etag,
+        }
+    }
+
+    /// The content type to answer with, whichever copy serves.
+    pub fn content_type(&self) -> ContentType {
+        match self {
+            Self::Queued(object) => object.content_type,
+            Self::Track(resolved) => resolved.content_type,
+        }
+    }
+}
+
+/// Resolve a name to what a read serves, the write queue first.
+///
+/// The queue wins on every name it holds, whatever the entry's state, or an
+/// overwrite keeps serving the older index row until the drain lands it. An
+/// entry is dropped once the index agrees, so this never serves anything staler
+/// than the index would.
+pub fn resolve_readable<Db: Store>(
+    store: &TapeStore<Db>,
+    staging: &StagingStore<Db>,
+    tape: Address,
+    name: &[u8],
+) -> Result<Option<Readable>, TapeStoreError> {
+    let Some(entry) = staging.entry(tape, name)? else {
+        return Ok(resolve_object(store, tape, name)?.map(Readable::Track));
+    };
+
+    // A queued delete hides the name even while the index still lists it.
+    let PendingOp::Put { content_type, etag, size, block_time, .. } = entry.op else {
+        return Ok(None);
+    };
+    if staging.has_bytes(tape, name)? {
+        return Ok(Some(Readable::Queued(QueuedObject {
+            size,
+            content_type,
+            etag,
+            block_time,
+        })));
+    }
+
+    // A streamed write sent its bytes straight to their tracks, so the read
+    // goes there; anything else queued without bytes is a corrupt row.
+    match entry.state {
+        PendingState::Landed { track } => Ok(Some(Readable::Track(ResolvedObject {
+            track_address: track,
+            size,
+            etag,
+            block_time: Some(block_time),
+            content_type,
+        }))),
+        PendingState::Queued => Ok(None),
+        PendingState::Failed { .. } => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use store_memory::MemoryStore;
+    use tape_core::types::{StorageUnits, TrackNumber};
+    use tape_store::types::ObjectListEntry;
+
+    use super::*;
+
+    fn parts() -> (Arc<TapeStore<MemoryStore>>, StagingStore<MemoryStore>) {
+        let store = Arc::new(TapeStore::new(MemoryStore::new()));
+        let staging = StagingStore::try_new(store.clone()).expect("open queue");
+        (store, staging)
+    }
+
+    fn index(store: &TapeStore<MemoryStore>, tape: Address, name: &[u8], size: u64) {
+        let entry = ObjectListEntry {
+            size: StorageUnits::from_bytes(size),
+            etag: Hash([1u8; 32]),
+            block_time: Some(1),
+            slot: Default::default(),
+            data_tape: tape,
+            track_number: TrackNumber(1),
+            kind: 0,
+            content_type: ContentType::TextHtml,
+        };
+        store.put_object_entry(tape, name, entry).expect("index entry");
+    }
+
+    async fn queue(staging: &StagingStore<MemoryStore>, tape: Address, name: &[u8], body: &[u8]) {
+        staging
+            .enqueue_put(
+                tape,
+                name,
+                body.to_vec(),
+                ContentType::TextHtml,
+                Hash([9u8; 32]),
+                1_700_000_000,
+            )
+            .await
+            .expect("enqueue put");
+    }
+
+    // an overwrite serves its queued size and etag, not the older indexed row
+    #[tokio::test]
+    async fn queue_wins() {
+        let (store, staging) = parts();
+        let tape = Address::new([1u8; 32]);
+        index(&store, tape, b"index.html", 140_291);
+        queue(&staging, tape, b"index.html", &vec![0u8; 13_180]).await;
+
+        let readable = resolve_readable(&store, &staging, tape, b"index.html")
+            .expect("resolve")
+            .expect("readable");
+
+        let Readable::Queued(object) = readable else {
+            panic!("the queued copy should win over the index row");
+        };
+        assert_eq!(object.size, 13_180);
+        assert_eq!(object.etag, Hash([9u8; 32]));
+    }
+
+    // a directory's index page resolves from the queue the same way
+    #[tokio::test]
+    async fn queued_directory_index() {
+        let (store, staging) = parts();
+        let tape = Address::new([2u8; 32]);
+        queue(&staging, tape, b"about/index.html", b"<html>").await;
+
+        let readable = resolve_readable(&store, &staging, tape, b"about/index.html")
+            .expect("resolve")
+            .expect("readable");
+
+        assert!(matches!(readable, Readable::Queued(_)));
+    }
+
+    // a queued delete hides a key the index still lists
+    #[tokio::test]
+    async fn queued_delete_hides() {
+        let (store, staging) = parts();
+        let tape = Address::new([3u8; 32]);
+        index(&store, tape, b"gone.html", 10);
+        staging.enqueue_delete(tape, b"gone.html").await.expect("enqueue delete");
+
+        assert!(resolve_readable(&store, &staging, tape, b"gone.html")
+            .expect("resolve")
+            .is_none());
+    }
+
+    // with nothing queued the index answers
+    #[tokio::test]
+    async fn index_answers() {
+        let (store, staging) = parts();
+        let tape = Address::new([4u8; 32]);
+        index(&store, tape, b"index.html", 42);
+
+        let readable = resolve_readable(&store, &staging, tape, b"index.html")
+            .expect("resolve")
+            .expect("readable");
+
+        let Readable::Track(resolved) = readable else {
+            panic!("the index row should answer");
+        };
+        assert_eq!(resolved.size, 42);
+    }
 }

@@ -25,7 +25,6 @@ use rpc::{Rpc, RpcError};
 use store::Store;
 use tape_api::instruction::MAX_NAME_LEN;
 use tape_api::program::tapedrive::tape_pda;
-use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
@@ -34,7 +33,7 @@ use tape_protocol::api::ApiError;
 use tape_sdk::error::{TapedriveError, UploadError};
 use tape_sdk::track::write::content_etag;
 use tape_store::ops::{CredentialOps, ObjectListOps, ObjectListPage, TapeOps};
-use tape_store::types::{CredentialScope, ObjectListEntry, PendingOp, PendingState, PendingWrite};
+use tape_store::types::{CredentialScope, ObjectListEntry, PendingOp, PendingWrite};
 
 use crate::http::handlers::object::{
     CachePolicy, ObjectResponseMetadata, range_header, read_object_response,
@@ -51,7 +50,7 @@ use super::clock::now_unix;
 use super::error::S3Error;
 use super::multipart::{self, CompletedPartRef};
 use super::resolve::{parse_bucket, resolve_object, bucket_name};
-use crate::http::handlers::resolve::ResolvedObject;
+use crate::http::handlers::resolve::{self, QueuedObject, Readable, ResolvedObject};
 use super::response::{
     delete_response, head_response, put_response, set_last_modified, upload_part_response,
 };
@@ -418,28 +417,20 @@ fn merge_listing(
     delimiter: Option<&[u8]>,
     max_keys: usize,
 ) -> MergedListing {
-    // A key deleted here stays out of the listing until the chain has the delete too.
-    let deleted: HashSet<&[u8]> = queued
-        .iter()
-        .filter(|(_, write)| matches!(write.op, PendingOp::Delete { .. }))
-        .map(|(name, _)| name.as_slice())
-        .collect();
+    // The queue wins on every key it holds, so an overwrite lists its new size
+    // and ETag and a queued delete drops the row the index still has.
+    let queued_names: HashSet<&[u8]> = queued.iter().map(|(name, _)| name.as_slice()).collect();
 
     let mut contents: Vec<(Vec<u8>, ObjectEntry)> = Vec::new();
-    let mut indexed: HashSet<&[u8]> = HashSet::new();
     for (name, entry) in &page.objects {
-        if deleted.contains(name.as_slice()) {
+        if queued_names.contains(name.as_slice()) {
             continue;
         }
-        indexed.insert(name.as_slice());
         contents.push((name.clone(), indexed_entry(name, entry)));
     }
     let mut prefixes: Vec<Vec<u8>> = page.common_prefixes.clone();
 
     for (name, write) in queued {
-        if indexed.contains(name.as_slice()) {
-            continue;
-        }
         let Some(entry) = queued_entry(name, write) else {
             continue;
         };
@@ -728,43 +719,49 @@ async fn delete_bucket(Path(bucket): Path<String>) -> Result<Response, S3Error> 
     ))
 }
 
-/// Resolve an S3 `(bucket, key)` to its listing entry and the backing,
-/// certified track that the read path consumes.
+/// Resolve an S3 `(bucket, key)` to what a read serves.
 ///
-/// Maps a bucket label that is not a tape address to S3Error::NoSuchBucket,
-/// a key absent from the object-list index to S3Error::NoSuchKey, and a
-/// listed key whose track is missing or not yet certified (so it cannot be
-/// served) to S3Error::NoSuchKey as well — the object simply is not
-/// retrievable. Shared by GET (which decodes the track) and HEAD (which only
-/// reports the entry metadata) so both agree on what is readable.
+/// The write queue wins on every key it holds, so an overwrite answers with its
+/// new size and ETag rather than the index row the drain has not replaced yet.
+/// A bucket label that is not a tape address maps to NoSuchBucket; a key neither
+/// queued nor indexed, hidden by a queued delete, or whose track is missing or
+/// uncertified maps to NoSuchKey. Shared by GET and HEAD so both agree.
 fn resolve_readable<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     bucket_label: &str,
     key: &str,
-) -> Result<(ResolvedObject, CompressedTrack), S3Error> {
+) -> Result<Readable, S3Error> {
     let bucket = parse_bucket(bucket_label)?;
-    let resolved = resolve_object(state, bucket, key)?.ok_or(S3Error::NoSuchKey)?;
-    if is_deleted(state, bucket, key)? {
-        return Err(S3Error::NoSuchKey);
+    let readable = resolve::resolve_readable(
+        state.context.store.as_ref(),
+        state.staging.as_ref(),
+        bucket,
+        key.as_bytes(),
+    )
+    .map_err(|error| S3Error::Internal(format!("object index lookup: {error}")))?
+    .ok_or(S3Error::NoSuchKey)?;
+
+    match readable {
+        Readable::Queued(object) => Ok(Readable::Queued(object)),
+        Readable::Track(resolved) => readable_track(state, resolved),
     }
-    readable_track(state, resolved)
 }
 
 /// The certified track behind a resolved object, or NoSuchKey while it cannot be served
 fn readable_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     resolved: ResolvedObject,
-) -> Result<(ResolvedObject, CompressedTrack), S3Error> {
+) -> Result<Readable, S3Error> {
     let track = track_with_pending(state, resolved.track_address)
         .map_err(S3Error::from)?
         .ok_or(S3Error::NoSuchKey)?;
     if !track.is_certified() {
         return Err(S3Error::NoSuchKey);
     }
-    Ok((resolved, track))
+    Ok(Readable::Track(resolved))
 }
 
-/// Whether a queued delete hides this key from the read path
+/// Whether a queued delete hides this key from the write path
 fn is_deleted<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     bucket: Address,
@@ -776,17 +773,16 @@ fn is_deleted<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(|error| S3Error::Internal(error.to_string()))
 }
 
-/// The queued Put for a key, or `None` when the queue holds nothing servable
-fn queued_put<Db: Store, Cluster: Api, Blockchain: Rpc>(
+/// The queued entry for a key, whatever its state
+fn queued_write<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     bucket: Address,
     key: &str,
 ) -> Result<Option<PendingWrite>, S3Error> {
-    let entry = state
+    state
         .staging
         .entry(bucket, key.as_bytes())
-        .map_err(|error| S3Error::Internal(error.to_string()))?;
-    Ok(entry.filter(|write| matches!(write.op, PendingOp::Put { .. })))
+        .map_err(|error| S3Error::Internal(error.to_string()))
 }
 
 /// The queued bytes for a key, when the entry carries the object whole
@@ -799,38 +795,6 @@ fn queued_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .staging
         .bytes(bucket, key.as_bytes())
         .map_err(|error| S3Error::Internal(error.to_string()))
-}
-
-/// What a queued Put whose bytes already reached the chain resolves to
-fn queued_resolved(metadata: &QueuedObject, track: Address) -> ResolvedObject {
-    ResolvedObject {
-        track_address: track,
-        size: metadata.size,
-        etag: metadata.etag,
-        block_time: Some(metadata.block_time),
-        content_type: metadata.content_type,
-    }
-}
-
-/// The metadata a queued Put answers GET and HEAD with
-struct QueuedObject {
-    size: u64,
-    content_type: ContentType,
-    etag: Hash,
-    block_time: i64,
-}
-
-/// The metadata of a queued Put, or `None` for a queued Delete
-fn queued_metadata(write: &PendingWrite) -> Option<QueuedObject> {
-    match write.op {
-        PendingOp::Put { content_type, etag, size, block_time, prior: _ } => Some(QueuedObject {
-            size,
-            content_type,
-            etag,
-            block_time,
-        }),
-        PendingOp::Delete { .. } => None,
-    }
 }
 
 /// `GET /{bucket}/{key}` -> GetObject
@@ -877,32 +841,17 @@ where
 {
     check_request_rate(&state, &caller)?;
 
-    // On chain first, so once the index catches up the queued copy is never read.
     let tape = parse_bucket(&bucket)?;
-    let (resolved, track) = match resolve_readable(&state, &bucket, &key) {
-        Ok(readable) => readable,
-        Err(S3Error::NoSuchKey) => {
-            let Some(write) = queued_put(&state, tape, &key)? else {
-                return Err(S3Error::NoSuchKey);
-            };
-            let Some(metadata) = queued_metadata(&write) else {
-                return Err(S3Error::NoSuchKey);
-            };
-            match queued_bytes(&state, tape, &key)? {
-                Some(bytes) => return queued_response(bytes, &metadata, range.as_deref()),
-                // A streamed write sent its bytes straight to their tracks, so
-                // the read goes there too.
-                None => match write.state {
-                    PendingState::Landed { track } => {
-                        readable_track(&state, queued_resolved(&metadata, track))?
-                    }
-                    PendingState::Queued => return Err(S3Error::NoSuchKey),
-                    PendingState::Failed { .. } => return Err(S3Error::NoSuchKey),
-                },
-            }
+    let resolved = match resolve_readable(&state, &bucket, &key)? {
+        Readable::Queued(object) => {
+            let bytes = queued_bytes(&state, tape, &key)?.ok_or(S3Error::NoSuchKey)?;
+            return queued_response(bytes, &object, range.as_deref());
         }
-        Err(error) => return Err(error),
+        Readable::Track(resolved) => resolved,
     };
+    let track = track_with_pending(&state, resolved.track_address)
+        .map_err(S3Error::from)?
+        .ok_or(S3Error::NoSuchKey)?;
     // The S3 content type comes from the object-list index; objects carry no
     // separate filename, so no Content-Disposition is set.
     let metadata = ObjectResponseMetadata {
@@ -962,41 +911,33 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
     range: Option<&str>,
 ) -> Result<Response, S3Error> {
     check_request_rate(state, caller)?;
-    let tape = parse_bucket(bucket)?;
-    match resolve_readable(state, bucket, key) {
-        Ok((resolved, _track)) => head_response(&resolved, range),
-        Err(S3Error::NoSuchKey) => {
-            let queued = queued_put(state, tape, key)?.as_ref().and_then(queued_metadata);
-            let Some(metadata) = queued else {
-                return Err(S3Error::NoSuchKey);
-            };
-            head_response_parts(
-                metadata.size,
-                metadata.etag,
-                metadata.content_type,
-                Some(metadata.block_time),
-                range,
-            )
-        }
-        Err(error) => Err(error),
+    match resolve_readable(state, bucket, key)? {
+        Readable::Queued(object) => head_response_parts(
+            object.size,
+            object.etag,
+            object.content_type,
+            Some(object.block_time),
+            range,
+        ),
+        Readable::Track(resolved) => head_response(&resolved, range),
     }
 }
 
 /// Serve a queued object straight from its stored bytes.
 fn queued_response(
     bytes: Vec<u8>,
-    metadata: &QueuedObject,
+    object: &QueuedObject,
     range: Option<&str>,
 ) -> Result<Response, S3Error> {
-    let response_metadata = ObjectResponseMetadata {
-        content_type: metadata.content_type,
+    let metadata = ObjectResponseMetadata {
+        content_type: object.content_type,
         filename: None,
         cache: CachePolicy::Immutable,
     };
     let mut response =
-        object_response_ranged(bytes, &response_metadata, metadata.etag, range, StatusCode::OK)
+        object_response_ranged(bytes, &metadata, object.etag, range, StatusCode::OK)
             .map_err(S3Error::from)?;
-    set_last_modified(response.headers_mut(), Some(metadata.block_time));
+    set_last_modified(response.headers_mut(), Some(object.block_time));
     Ok(response)
 }
 
@@ -1546,7 +1487,8 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    if queued_put(state, tape, key)?.is_some() {
+    let queued = queued_write(state, tape, key)?;
+    if queued.is_some_and(|write| matches!(write.op, PendingOp::Put { .. })) {
         return Ok(true);
     }
     if is_deleted(state, tape, key)? {
@@ -1986,8 +1928,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tape_core::types::StorageUnits;
+    use tape_store::types::PendingState;
+
+    use super::*;
 
     // query lookup returns the percent-decoded value
     #[test]
@@ -2141,13 +2085,14 @@ mod tests {
         assert_eq!(keys(&merged), vec!["a.txt", "b.txt", "c.txt"]);
     }
 
-    // the index is authoritative, matching how GET resolves
+    // a queued overwrite replaces the indexed row, matching how GET resolves
     #[test]
-    fn index_wins() {
+    fn queue_wins() {
         let page = indexed(&["dup.txt"]);
         let merged = merge_listing(&page, &[queued("dup.txt", 4096)], b"", None, 100);
         assert_eq!(keys(&merged), vec!["dup.txt"]);
-        assert_eq!(merged.contents[0].size, 10, "the indexed row survived");
+        assert_eq!(merged.contents[0].size, 4096, "the queued size replaced the indexed one");
+        assert_eq!(merged.contents[0].etag, Hash([9u8; 32]).to_string());
     }
 
     // a landed delete hides the index row it is about to remove
@@ -2158,13 +2103,13 @@ mod tests {
         assert_eq!(keys(&merged), vec!["a.txt"]);
     }
 
-    // a put queued after a delete brings the key back into the listing
+    // a put queued after a delete brings the key back at its new size
     #[test]
     fn put_after_delete() {
         let page = indexed(&["a.txt"]);
         let merged = merge_listing(&page, &[queued("a.txt", 4)], b"", None, 100);
         assert_eq!(keys(&merged), vec!["a.txt"]);
-        assert_eq!(merged.contents[0].size, 10, "the indexed row still wins");
+        assert_eq!(merged.contents[0].size, 4);
     }
 
     // a queued key under a folder folds into the prefix, it does not sit beside it

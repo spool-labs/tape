@@ -455,7 +455,22 @@ async fn read_write_inner() {
     // index holds v1, or the overwrite sees no prior to reclaim.
     wait_pending_drained(&admin_base, OPERATOR_TOKEN, Duration::from_secs(180)).await;
 
-    assert_s3_signed_put(&s3_base, &host, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE).await;
+    let v2_etag =
+        assert_s3_signed_put(&s3_base, &host, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE)
+            .await;
+
+    // The overwrite is answered from the queue, so HEAD has to report the new
+    // size and ETag straight away. Reporting v1 is what makes rclone call the
+    // transfer corrupted.
+    let head_etag =
+        assert_s3_head_object(&s3_base, &bucket_label, overwrite_key, v2.len(), PUT_CONTENT_TYPE)
+            .await;
+    assert_eq!(
+        head_etag, v2_etag,
+        "HEAD straight after an overwrite must report the ETag the PUT returned"
+    );
+    eprintln!("s3_gateway: HEAD after the overwrite reported v2 before the drain landed it");
+
     wait_track_reclaimed(&harness, &bucket, v1_track, Duration::from_secs(180)).await;
     wait_s3_get_size(&s3_base, &bucket_label, overwrite_key, v2.len(), Duration::from_secs(180)).await;
     assert_s3_get_object(&s3_base, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE).await;
