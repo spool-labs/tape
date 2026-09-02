@@ -881,6 +881,61 @@ impl<'de> SchemaRead<'de> for LedgerReservationKey {
     }
 }
 
+/// Key for one queued S3 write: `[tape 32 bytes][object key bytes]`.
+///
+/// The tape address is a fixed 32-byte prefix, so one bucket's queue scans
+/// together in object-key order without touching another bucket's.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct PendingWriteKey {
+    /// Bucket tape the write lands on.
+    pub tape: Address,
+    /// Object key, the on-chain track name.
+    pub key: Vec<u8>,
+}
+
+impl PendingWriteKey {
+    /// Create a queue key for `tape` and object `key`.
+    pub fn new(tape: Address, key: Vec<u8>) -> Self {
+        Self { tape, key }
+    }
+
+    /// Prefix bytes for scanning one tape's queue (32 bytes).
+    pub fn tape_prefix(tape: Address) -> [u8; 32] {
+        tape.to_bytes()
+    }
+}
+
+impl SchemaWrite for PendingWriteKey {
+    type Src = Self;
+
+    fn size_of(src: &Self::Src) -> WriteResult<usize> {
+        Ok(32 + src.key.len())
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(src.tape.as_ref())?;
+        writer.write_exact(&src.key)?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for PendingWriteKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<PendingWriteKey>) -> ReadResult<()> {
+        // SAFETY: get_t reads a fixed 32-byte array for the Pod tape address; the
+        // key's leading field is that known fixed width.
+        let tape: [u8; 32] = unsafe { reader.get_t()? };
+        let remaining = reader.as_slice().len();
+        let key = reader.read_borrowed(remaining)?.to_vec();
+        dst.write(PendingWriteKey {
+            tape: Address::from(tape),
+            key,
+        });
+        Ok(())
+    }
+}
+
 /// Key for a buffered multipart part (36 bytes).
 ///
 /// Format: `[upload 32 bytes][part_number BE 4 bytes]`. The upload digest is a

@@ -430,6 +430,72 @@ pub struct MultipartPartData {
     pub data: Vec<u8>,
 }
 
+/// Decode limit for a queued object body: S3's 5 GiB single-object maximum.
+const PENDING_WRITE_BYTES_LIMIT: usize = 5 * 1024 * 1024 * 1024;
+
+/// Queued object bytes with a widened decode limit
+type PendingWriteBytes = WincodeVec<Pod<u8>, BincodeLen<PENDING_WRITE_BYTES_LIMIT>>;
+
+/// The chain operation a queued S3 write will perform.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
+pub enum PendingOp {
+    /// Write the queued bytes as the object's track
+    Put {
+        /// Content type reported on GET and HEAD until the index has the key
+        content_type: ContentType,
+        /// ETag the client was already given
+        etag: Hash,
+        /// Object size in bytes
+        size: u64,
+        /// Last-modified time in unix seconds, set when the write was accepted
+        block_time: i64,
+    },
+    /// Delete the object's track
+    Delete,
+}
+
+/// How far a queued S3 write has got.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
+pub enum PendingState {
+    /// Not yet attempted, or attempted and retryable
+    Queued,
+    /// The chain write landed; the entry is dropped once the index agrees
+    Landed {
+        /// Track the write produced, for a Put
+        track: Address,
+    },
+    /// Ten attempts failed; still retried, still served to readers
+    Failed {
+        /// The last error, as reported by `/pending`
+        error: String,
+        /// Attempts made so far
+        attempts: u32,
+    },
+}
+
+/// One queued S3 write, keyed in `s3_pending_write` by `(tape, object key)`.
+///
+/// A PUT or DELETE is acknowledged once this row and its bytes are durable, so
+/// the client never waits for a block; the drain applies it on chain after.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
+pub struct PendingWrite {
+    /// Enqueue order within the gateway; the newest entry for a key wins reads
+    pub seq: u64,
+    /// The chain operation to apply
+    pub op: PendingOp,
+    /// How far the drain has got with it
+    pub state: PendingState,
+}
+
+/// The queued bytes of a pending Put, stored apart from its metadata so a
+/// listing or a drain scan never reads object payloads.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
+pub struct PendingWriteData {
+    /// Object bytes exactly as the client sent them
+    #[wincode(with = "PendingWriteBytes")]
+    pub data: Vec<u8>,
+}
+
 #[cfg(test)]
 mod tests {
     use tape_core::encoding::EncodingProfile;
