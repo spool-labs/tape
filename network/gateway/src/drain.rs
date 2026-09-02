@@ -243,6 +243,9 @@ where
         let delegate = self.write_ctx.delegate_address();
         let lamports = match self.context.rpc.rpc().get_account(&delegate).await {
             Ok(account) => account.lamports,
+            // An account that does not exist holds nothing, which is the funding
+            // problem the floor is there to catch, not a failed lookup.
+            Err(RpcError::AccountNotFound(_)) => 0,
             Err(error) => {
                 warn!(%error, %delegate, "s3 drain: delegate balance unavailable");
                 return;
@@ -407,11 +410,18 @@ where
         content_type: ContentType,
         prior: Option<Address>,
     ) -> Result<Address, TapedriveError> {
+        // A queued Put with no payload is a corrupt row, not an outage: retrying
+        // it forever would report the chain as unreachable and never say why.
         let bytes = self
             .staging
             .bytes(tape, key)
             .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?
-            .ok_or(TapedriveError::NotFound)?;
+            .ok_or_else(|| {
+                TapedriveError::InvalidArgument(format!(
+                    "queued object {} on {tape} has no stored payload",
+                    String::from_utf8_lossy(key)
+                ))
+            })?;
 
         let existing = match prior {
             Some(track) => Some(track),
@@ -611,6 +621,9 @@ mod tests {
             available: StorageUnits::from_bytes(1),
         }));
         assert!(!is_transient(&TapedriveError::InvalidArgument("name too long".into())));
+        assert!(!is_transient(&TapedriveError::InvalidArgument(
+            "queued object a.txt has no stored payload".into()
+        )));
         assert!(!is_transient(&TapedriveError::MissingPayer));
         assert!(!is_transient(&transaction_error(
             "Transfer: insufficient lamports 100, need 5000"

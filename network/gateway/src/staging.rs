@@ -21,45 +21,63 @@ use tokio::sync::Notify;
 
 use crate::metrics;
 
-/// Bytes waiting to reach the chain, in total and per bucket.
+/// What one entry counts towards each byte total.
+#[derive(Clone, Copy, Default)]
+struct Counts {
+    /// Payload bytes on the gateway's disk, whatever the entry's state.
+    held: u64,
+    /// Payload bytes that have not reached the chain.
+    unlanded: u64,
+}
+
+/// The entry's contribution to each total.
 ///
-/// Counts only writes that have not landed: the total bounds the disk a chain
-/// outage can consume, and the per-bucket figure is what a tape's free capacity
-/// has to be reduced by, since the chain does not know about these writes yet.
+/// A landed entry keeps its payload until the index catches up, so it still
+/// costs disk; it no longer costs the tape capacity, which the chain has taken.
+fn counts_for(write: &PendingWrite, has_payload: bool) -> Counts {
+    let (size, is_landed) = match (&write.op, &write.state) {
+        (PendingOp::Put { size, .. }, PendingState::Landed { .. }) => (*size, true),
+        (PendingOp::Put { size, .. }, _) => (*size, false),
+        (PendingOp::Delete { .. }, _) => (0, true),
+    };
+    Counts {
+        held: if has_payload { size } else { 0 },
+        unlanded: if is_landed { 0 } else { size },
+    }
+}
+
+/// Bytes the queue accounts for: held on disk in total, unlanded per bucket.
+///
+/// The held total bounds the disk a chain or ingestor outage can consume. The
+/// per-bucket unlanded figure is what a tape's free capacity has to be reduced
+/// by, since the chain does not know about those writes yet.
 #[derive(Default)]
 struct QueuedBytes {
-    total: u64,
+    held: u64,
     per_tape: HashMap<Address, u64>,
 }
 
 impl QueuedBytes {
-    /// Count `size` against `tape`.
-    fn add(&mut self, tape: Address, size: u64) {
-        self.total = self.total.saturating_add(size);
-        let held = self.per_tape.entry(tape).or_insert(0);
-        *held = held.saturating_add(size);
+    /// Start counting `counts` against `tape`.
+    fn add(&mut self, tape: Address, counts: Counts) {
+        self.held = self.held.saturating_add(counts.held);
+        if counts.unlanded == 0 {
+            return;
+        }
+        let unlanded = self.per_tape.entry(tape).or_insert(0);
+        *unlanded = unlanded.saturating_add(counts.unlanded);
     }
 
-    /// Stop counting `size` against `tape`, dropping an emptied bucket.
-    fn remove(&mut self, tape: Address, size: u64) {
-        self.total = self.total.saturating_sub(size);
-        let Some(held) = self.per_tape.get_mut(&tape) else {
+    /// Stop counting `counts` against `tape`, dropping an emptied bucket.
+    fn remove(&mut self, tape: Address, counts: Counts) {
+        self.held = self.held.saturating_sub(counts.held);
+        let Some(unlanded) = self.per_tape.get_mut(&tape) else {
             return;
         };
-        *held = held.saturating_sub(size);
-        if *held == 0 {
+        *unlanded = unlanded.saturating_sub(counts.unlanded);
+        if *unlanded == 0 {
             self.per_tape.remove(&tape);
         }
-    }
-}
-
-/// The bytes one entry counts against the queue: an unlanded Put's payload.
-fn counted_bytes(write: &PendingWrite) -> u64 {
-    match (&write.op, &write.state) {
-        (PendingOp::Put { size, .. }, PendingState::Queued) => *size,
-        (PendingOp::Put { size, .. }, PendingState::Failed { .. }) => *size,
-        (PendingOp::Put { .. }, PendingState::Landed { .. }) => 0,
-        (PendingOp::Delete { .. }, _) => 0,
     }
 }
 
@@ -80,9 +98,10 @@ impl<Db: Store> StagingStore<Db> {
     pub fn try_new(store: Arc<TapeStore<Db>>) -> Result<Self, TapeStoreError> {
         let mut highest = 0;
         let mut queued = QueuedBytes::default();
-        for (tape, write) in store.pending_write_entries()? {
+        for (tape, key, write) in store.pending_write_entries()? {
             highest = highest.max(write.seq);
-            queued.add(tape, counted_bytes(&write));
+            let has_payload = store.has_pending_write_data(tape, &key)?;
+            queued.add(tape, counts_for(&write, has_payload));
         }
         Ok(Self {
             store,
@@ -92,11 +111,11 @@ impl<Db: Store> StagingStore<Db> {
         })
     }
 
-    /// Bytes queued across every bucket.
+    /// Payload bytes the queue holds on disk, across every bucket.
     pub fn queued_bytes(&self) -> u64 {
         match self.queued_bytes.lock() {
-            Ok(queued) => queued.total,
-            Err(poisoned) => poisoned.into_inner().total,
+            Ok(queued) => queued.held,
+            Err(poisoned) => poisoned.into_inner().held,
         }
     }
 
@@ -114,18 +133,17 @@ impl<Db: Store> StagingStore<Db> {
         self.queued_bytes().saturating_add(size) > max_queued_bytes
     }
 
-    /// What `(tape, key)` counts against the queue right now.
-    fn counted(&self, tape: Address, key: &[u8]) -> u64 {
-        self.store
-            .get_pending_write(tape, key)
-            .ok()
-            .flatten()
-            .as_ref()
-            .map_or(0, counted_bytes)
+    /// What `(tape, key)` counts towards each total right now.
+    fn counted(&self, tape: Address, key: &[u8]) -> Counts {
+        let Some(entry) = self.store.get_pending_write(tape, key).ok().flatten() else {
+            return Counts::default();
+        };
+        let has_payload = self.store.has_pending_write_data(tape, key).unwrap_or(false);
+        counts_for(&entry, has_payload)
     }
 
-    /// Apply a completed write's effect on the count, read before it and after.
-    fn settle_count(&self, tape: Address, removed: u64, added: u64) {
+    /// Apply a completed write's effect on the totals, read before it and after.
+    fn settle_count(&self, tape: Address, removed: Counts, added: Counts) {
         let mut queued = match self.queued_bytes.lock() {
             Ok(queued) => queued,
             Err(poisoned) => poisoned.into_inner(),
@@ -156,7 +174,7 @@ impl<Db: Store> StagingStore<Db> {
         };
         let replaced = self.counted(tape, key);
         self.store.put_pending_write(tape, key, &write, Some(data)).await?;
-        self.settle_count(tape, replaced, counted_bytes(&write));
+        self.settle_count(tape, replaced, counts_for(&write, true));
         metrics::inc_pending_write("enqueued");
         self.wake.notify_one();
         Ok(())
@@ -181,7 +199,7 @@ impl<Db: Store> StagingStore<Db> {
         };
         let replaced = self.counted(tape, key);
         self.store.put_pending_write(tape, key, &write, None).await?;
-        self.settle_count(tape, replaced, counted_bytes(&write));
+        self.settle_count(tape, replaced, counts_for(&write, false));
         metrics::inc_pending_write("enqueued");
         self.wake.notify_one();
         Ok(())
@@ -201,7 +219,7 @@ impl<Db: Store> StagingStore<Db> {
         };
         let replaced = self.counted(tape, key);
         self.store.put_pending_write(tape, key, &write, None).await?;
-        self.settle_count(tape, replaced, counted_bytes(&write));
+        self.settle_count(tape, replaced, counts_for(&write, false));
         metrics::inc_pending_write("enqueued");
         self.wake.notify_one();
         Ok(())
@@ -290,10 +308,11 @@ impl<Db: Store> StagingStore<Db> {
             }
             return Ok(false);
         }
-        let before = counted_bytes(&entry);
+        let before = self.counted(tape, key);
         entry.state = state;
         self.store.put_pending_entry(tape, key, &entry)?;
-        self.settle_count(tape, before, counted_bytes(&entry));
+        let has_payload = self.store.has_pending_write_data(tape, key).unwrap_or(false);
+        self.settle_count(tape, before, counts_for(&entry, has_payload));
         Ok(true)
     }
 
@@ -305,8 +324,9 @@ impl<Db: Store> StagingStore<Db> {
         if entry.seq != seq {
             return Ok(());
         }
+        let removed = self.counted(tape, key);
         self.store.delete_pending_write(tape, key)?;
-        self.settle_count(tape, counted_bytes(&entry), 0);
+        self.settle_count(tape, removed, Counts::default());
         Ok(())
     }
 
@@ -523,7 +543,7 @@ mod tests {
         assert_eq!(reopened.bytes(tape, b"a.txt").expect("bytes"), Some(b"alpha".to_vec()));
         assert_eq!(reopened.bytes(tape, b"b.txt").expect("bytes"), Some(b"beta".to_vec()));
         assert!(reopened.is_deleted(tape, b"c.txt").expect("deleted"));
-        assert_eq!(reopened.queued_bytes(), 9, "the byte count is recounted at open");
+        assert_eq!(reopened.queued_bytes(), 9, "the byte totals are recounted at open");
 
         reopened.enqueue_delete(tape, b"d.txt").await.expect("enqueue delete");
         let next = reopened.entry(tape, b"d.txt").expect("entry").expect("queued").seq;
@@ -542,11 +562,39 @@ mod tests {
         assert!(staging.is_over_budget(1, 10));
         assert!(!staging.is_over_budget(1, 16));
 
-        // A landed write no longer holds the bucket's capacity down.
+        // A landed write no longer holds the bucket's capacity down, but its
+        // payload is still on disk until the index catches up and it is removed.
         let seq = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
         staging
             .set_state(tape, b"a.txt", seq, PendingState::Landed { track: Address::default() })
             .expect("set state");
+        assert_eq!(staging.tape_queued_bytes(tape), 0);
+        assert_eq!(staging.queued_bytes(), 10);
+        assert!(staging.is_over_budget(1, 10), "a landed payload still fills the budget");
+
+        staging.remove(tape, b"a.txt", seq).expect("remove");
+        assert_eq!(staging.queued_bytes(), 0);
+    }
+
+    // a landed write that never held bytes here costs the budget nothing
+    #[tokio::test]
+    async fn landed_put_holds_nothing() {
+        let staging = staging();
+        let tape = Address::new([0x34; 32]);
+
+        staging
+            .enqueue_landed_put(
+                tape,
+                b"streamed.bin",
+                1 << 30,
+                ContentType::Unknown,
+                Hash([2u8; 32]),
+                1_700_000_000,
+                Address::new([0xAB; 32]),
+            )
+            .await
+            .expect("enqueue landed put");
+
         assert_eq!(staging.queued_bytes(), 0);
         assert_eq!(staging.tape_queued_bytes(tape), 0);
     }

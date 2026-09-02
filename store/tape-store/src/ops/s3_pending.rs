@@ -61,6 +61,9 @@ pub trait PendingWriteOps {
     /// The queued bytes for `(tape, key)`, if present
     fn get_pending_write_data(&self, tape: Address, key: &[u8]) -> Result<Option<Vec<u8>>>;
 
+    /// Whether `(tape, key)` has a stored payload, without reading it
+    fn has_pending_write_data(&self, tape: Address, key: &[u8]) -> Result<bool>;
+
     /// One tape's queue entries whose key starts with `prefix`, from the
     /// inclusive `start` key, in key order and without reading any payload
     fn scan_pending_writes_from(
@@ -79,9 +82,9 @@ pub trait PendingWriteOps {
     /// Drop the queue entry for `(tape, key)` and its bytes
     fn delete_pending_write(&self, tape: Address, key: &[u8]) -> Result<()>;
 
-    /// Every queue entry with the tape it belongs to, for the open-time scan
-    /// that seeds both the sequence and the queued-byte totals
-    fn pending_write_entries(&self) -> Result<Vec<(Address, PendingWrite)>>;
+    /// Every queue entry as `(tape, key, entry)`, for the open-time scan that
+    /// seeds the sequence and the byte totals
+    fn pending_write_entries(&self) -> Result<Vec<(Address, Vec<u8>, PendingWrite)>>;
 }
 
 impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
@@ -137,6 +140,15 @@ impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
         Ok(self
             .get::<S3PendingWriteDataCol>(&PendingWriteKey::new(tape, key.to_vec()))?
             .map(|payload| payload.data))
+    }
+
+    fn has_pending_write_data(&self, tape: Address, key: &[u8]) -> Result<bool> {
+        let row_key = encode(&PendingWriteKey::new(tape, key.to_vec()), "pending write key")?;
+        let keys = self
+            .inner()
+            .inner()
+            .iter_keys_prefix(S3PendingWriteDataCol::CF_NAME, &row_key)?;
+        Ok(!keys.is_empty())
     }
 
     fn scan_pending_writes_from(
@@ -212,7 +224,7 @@ impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
         Ok(())
     }
 
-    fn pending_write_entries(&self) -> Result<Vec<(Address, PendingWrite)>> {
+    fn pending_write_entries(&self) -> Result<Vec<(Address, Vec<u8>, PendingWrite)>> {
         let mut entries = Vec::new();
         for (row_key, value) in self.inner().inner().iter(S3PendingWriteCol::CF_NAME)? {
             if row_key.len() < 32 {
@@ -220,7 +232,7 @@ impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
             }
             let mut bytes = [0u8; 32];
             bytes.copy_from_slice(&row_key[..32]);
-            entries.push((Address::from(bytes), decode_entry(&value)?));
+            entries.push((Address::from(bytes), row_key[32..].to_vec(), decode_entry(&value)?));
         }
         Ok(entries)
     }
@@ -374,9 +386,25 @@ mod tests {
 
         let entries = store.pending_write_entries().expect("entries");
         assert_eq!(entries.len(), 3);
-        assert!(entries.iter().all(|(owner, _)| *owner == tape));
-        let highest = entries.iter().map(|(_, write)| write.seq).max();
+        assert!(entries.iter().all(|(owner, _, _)| *owner == tape));
+        let highest = entries.iter().map(|(_, _, write)| write.seq).max();
         assert_eq!(highest, Some(9));
+    }
+
+    // a payload is reported present without reading it
+    #[tokio::test]
+    async fn payload_presence() {
+        let store = store();
+        let tape = Address::new([0x14; 32]);
+        queue_put(&store, tape, "a.txt", 1, b"payload").await;
+        store
+            .put_pending_write(tape, b"b.txt", &delete_entry(2), None)
+            .await
+            .expect("queue delete");
+
+        assert!(store.has_pending_write_data(tape, b"a.txt").expect("presence"));
+        assert!(!store.has_pending_write_data(tape, b"b.txt").expect("presence"));
+        assert!(!store.has_pending_write_data(tape, b"missing").expect("presence"));
     }
 
     // a state change leaves the payload row untouched
