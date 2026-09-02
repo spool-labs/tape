@@ -883,8 +883,7 @@ impl<'de> SchemaRead<'de> for LedgerReservationKey {
 
 /// Key for one queued S3 write: `[tape 32 bytes][object key bytes]`.
 ///
-/// The tape address is a fixed 32-byte prefix, so one bucket's queue scans
-/// together in object-key order without touching another bucket's.
+/// The 32-byte tape prefix scans one bucket's queue in object-key order.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct PendingWriteKey {
     /// Bucket tape the write lands on.

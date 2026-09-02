@@ -1,8 +1,7 @@
 //! Durable queue of S3 writes waiting to reach the chain.
 //!
 //! A bucket's tape account admits one write per block, so a PUT or DELETE is
-//! acknowledged once it is durable here and applied on chain afterwards. Reads
-//! serve from this queue until the object index has the key.
+//! acknowledged once it is durable here and applied on chain afterwards.
 
 use std::future::Future;
 
@@ -32,9 +31,10 @@ fn decode_entry(value: &[u8]) -> Result<PendingWrite> {
 /// Operations for the durable queue of S3 writes
 pub trait PendingWriteOps {
     /// Queue `write` for `(tape, key)`, replacing any entry already there and
-    /// dropping its bytes. The entry and its payload land in one atomic batch,
-    /// awaited: acknowledging a write to a client promises it survives a crash,
-    /// and only the awaited batch is a durability point.
+    /// dropping its bytes.
+    ///
+    /// Awaited, because acknowledging a write promises it survives a crash and
+    /// only the awaited batch is a durability point.
     fn put_pending_write(
         &self,
         tape: Address,
@@ -45,14 +45,12 @@ pub trait PendingWriteOps {
 
     /// Overwrite the queue entry for `(tape, key)`, leaving its bytes alone.
     ///
-    /// A state change must not rewrite the payload; a large object would be read
-    /// and written back on every pass of the drain.
+    /// A state change must not rewrite the payload, or a large object is copied
+    /// on every pass of the drain.
     fn put_pending_entry(&self, tape: Address, key: &[u8], write: &PendingWrite) -> Result<()>;
 
-    /// Record `track` on the entry for `(tape, key)` as the track a superseded
-    /// write already landed, when the entry does not name one yet.
-    ///
-    /// Returns whether the entry changed.
+    /// Record the track a superseded write landed on the entry for `(tape, key)`,
+    /// when it does not name one yet. Returns whether the entry changed.
     fn attach_landed_track(&self, tape: Address, key: &[u8], track: Address) -> Result<bool>;
 
     /// The queue entry for `(tape, key)`, if present
@@ -100,7 +98,7 @@ impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
 
         let mut batch = WriteBatch::new();
         batch.put(S3PendingWriteCol::CF_NAME, &row_key, &entry);
-        // A Delete replacing a Put has to clear the Put's bytes, or the payload
+        // A Delete replacing a Put clears the Put's bytes, or the payload
         // outlives the entry that owns it.
         match data {
             Some(data) => {

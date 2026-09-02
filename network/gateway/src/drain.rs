@@ -2,8 +2,7 @@
 //!
 //! A bucket's tape account admits one write per block, so the S3 surface
 //! acknowledges a write once it is durable in the queue and this service applies
-//! it afterwards. Buckets drain in parallel; one bucket's entries go in the order
-//! they were queued.
+//! it afterwards. Buckets drain in parallel, each in queue order.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -42,13 +41,13 @@ const MAX_ATTEMPTS: u32 = 3;
 const OUTAGE_LOG_INTERVAL: Duration = Duration::from_secs(60);
 /// How often the delegate's SOL balance is read.
 const BALANCE_INTERVAL: Duration = Duration::from_secs(60);
-/// Balance below which chain attempts pause: a payer under the rent floor gets
-/// its transactions dropped, which reaches the drain as a timeout rather than as
-/// the funding problem it is.
+/// Balance below which chain attempts pause.
+///
+/// A payer under the rent floor has its transactions dropped, which reaches the
+/// drain as a timeout rather than as the funding problem it is.
 const DELEGATE_LAMPORTS_FLOOR: u64 = 50_000_000;
 
-/// Program errors that mean the write will fail the same way until an operator
-/// acts, matched on the transaction message the runtime returned.
+/// Program errors that fail the same way until an operator acts.
 const PERMANENT_TRANSACTION_ERRORS: &[&str] = &[
     "insufficient funds",
     "insufficient lamports",
@@ -57,8 +56,7 @@ const PERMANENT_TRANSACTION_ERRORS: &[&str] = &[
     "invalid account data for instruction",
 ];
 
-/// Transport and cluster failures that clear on their own, matched on text the
-/// typed variants do not separate.
+/// Transport and cluster failures the typed variants do not separate.
 const TRANSIENT_TRANSACTION_ERRORS: &[&str] = &[
     "blockhash",
     "unreachable",
@@ -69,9 +67,6 @@ const TRANSIENT_TRANSACTION_ERRORS: &[&str] = &[
 ];
 
 /// Whether an error will clear on its own once the cluster or a peer is back.
-///
-/// A transient error never marks an entry failed: the moment the chain is back
-/// the queue has to move at the backoff ceiling, not once every five minutes.
 fn is_transient(error: &TapedriveError) -> bool {
     match error {
         TapedriveError::Rpc(rpc_error) => is_transient_rpc(rpc_error),
@@ -111,8 +106,8 @@ fn is_transient_rpc(error: &RpcError) -> bool {
 
 /// Classify a transaction failure by the message the runtime returned.
 ///
-/// A message naming a permanent program error wins; anything else is treated as
-/// transient, so an unrecognised failure keeps retrying rather than parking.
+/// An unrecognised failure counts as transient, so it keeps retrying rather
+/// than parking.
 fn is_transient_message(message: &str) -> bool {
     let message = message.to_lowercase();
     for permanent in PERMANENT_TRANSACTION_ERRORS {
@@ -146,7 +141,7 @@ pub struct DrainHealth {
     pub paused_reason: Option<String>,
 }
 
-/// The drain's health, published for the admin control plane to read.
+/// The drain's health, published for the admin control plane.
 #[derive(Default)]
 pub struct DrainStatus {
     health: Mutex<DrainHealth>,
@@ -235,10 +230,6 @@ where
 
     /// Read the delegate's balance, publish it, and hold chain attempts while it
     /// is under the floor.
-    ///
-    /// A payer below the rent floor has its transactions silently dropped, so
-    /// attempting anyway burns the backoff and reports timeouts that say nothing
-    /// about the real cause.
     async fn read_delegate_balance(&self) {
         let delegate = self.write_ctx.delegate_address();
         let lamports = match self.context.rpc.rpc().get_account(&delegate).await {
@@ -364,15 +355,14 @@ where
             Ok(track) => {
                 self.clear_retry(tape, key);
                 metrics::inc_pending_write("landed");
-                // A false return means the client replaced this write while it
-                // was in flight; the track went to the replacement instead.
+                // A false return means the write was superseded in flight, and
+                // the track went to the entry that replaced it.
                 if let Err(error) =
                     self.staging.set_state(tape, key, write.seq, PendingState::Landed { track })
                 {
                     warn!(%error, %tape, "s3 drain: marking an entry landed failed");
                 }
-                // The index has not seen the write yet, so the entry stays until
-                // the next pass reaps it.
+                // The index has not seen the write yet, so the entry stays.
                 false
             }
             Err(error) => {
@@ -400,9 +390,8 @@ where
     /// Write a queued object, resuming or overwriting whatever it supersedes.
     ///
     /// `prior` is the track a superseded write landed, which the index may not
-    /// show yet; without it the track comes from the index, resolved now rather
-    /// than at enqueue so an overwrite reclaims what the name binds at the moment
-    /// the write actually goes out.
+    /// show yet; without it the track comes from the index, resolved now so an
+    /// overwrite reclaims what the name binds when the write goes out.
     async fn put(
         &self,
         tape: Address,
@@ -410,8 +399,7 @@ where
         content_type: ContentType,
         prior: Option<Address>,
     ) -> Result<Address, TapedriveError> {
-        // A queued Put with no payload is a corrupt row, not an outage: retrying
-        // it forever would report the chain as unreachable and never say why.
+        // A queued Put with no payload is a corrupt row, not an outage.
         let bytes = self
             .staging
             .bytes(tape, key)
@@ -436,8 +424,8 @@ where
 
     /// Delete the track a queued delete names; an already-gone key is a success.
     ///
-    /// `landed` is the track a superseded Put wrote, which the index may not show
-    /// yet; without it the track comes from the index.
+    /// `landed` is the track a superseded Put wrote, which the index may not
+    /// show yet; without it the track comes from the index.
     async fn delete(
         &self,
         tape: Address,
@@ -478,10 +466,8 @@ where
 
     /// Record a failed attempt and back off.
     ///
-    /// A transient failure keeps the entry queued and the backoff capped, so the
-    /// bucket resumes at full speed the moment the cluster is back. A permanent
-    /// one parks the entry after a few tries; it is still retried on the slow
-    /// beat, and still served to readers.
+    /// A transient failure never parks the entry, so the bucket resumes at full
+    /// speed the moment the cluster is back.
     fn record_failure(
         &self,
         tape: Address,
@@ -535,9 +521,6 @@ where
     }
 
     /// Push the next attempt out, returning the consecutive permanent-failure count.
-    ///
-    /// A transient failure backs off on the same curve but does not count towards
-    /// parking the entry.
     fn back_off(&self, tape: Address, key: &[u8], is_transient: bool) -> u32 {
         let Ok(mut retries) = self.retries.lock() else {
             return 0;
@@ -566,9 +549,6 @@ where
 
 /// The wait before the next attempt: exponential from a second to a minute, or
 /// the slow steady beat once the entry has been parked.
-///
-/// A transient failure never reaches the slow beat, however long the outage runs,
-/// so a bucket resumes at the ceiling the moment the cluster is back.
 fn retry_delay(steps: u32, is_parked: bool) -> Duration {
     if is_parked {
         return FAILED_RETRY;

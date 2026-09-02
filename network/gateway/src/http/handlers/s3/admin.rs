@@ -911,8 +911,7 @@ impl From<BudgetLimits> for BudgetView {
 
 /// A principal's accounting ledger: outstanding reservations, windowed committed
 /// usage, lifetime meters, and any per-principal budget override
-/// What the durable write queue holds, per bucket and overall, plus what the
-/// drain reports about its own health.
+/// What the write queue holds, per bucket and overall, plus the drain's health.
 #[derive(Serialize)]
 struct PendingView {
     buckets: Vec<PendingBucketView>,
@@ -933,7 +932,7 @@ struct PendingBucketView {
     oldest_queued_age_secs: u64,
 }
 
-/// One entry the drain has given up on for now, with the error it reports.
+/// One entry the drain has parked, with the error it reports.
 #[derive(Serialize)]
 struct PendingFailure {
     bucket: String,

@@ -32,9 +32,9 @@ pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub site_hosts: Option<Arc<SiteHostBindings>>,
     /// Writes acknowledged to the client but not yet applied on chain.
     ///
-    /// Reads and listings serve from here until the drain lands the write and
-    /// the ingestor indexes it, which is what gives an S3 client
-    /// read-after-write without waiting a block per object.
+    /// Reads and listings serve from here until the drain lands the write and the
+    /// ingestor indexes it, so a client gets read-after-write without waiting a
+    /// block per object.
     pub staging: Arc<StagingStore<Db>>,
 }
 

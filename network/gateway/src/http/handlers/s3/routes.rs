@@ -354,8 +354,7 @@ fn indexed_entry(name: &[u8], entry: &ObjectListEntry) -> ObjectEntry {
     }
 }
 
-/// Render one queued row from what the write recorded, since the object has no
-/// on-chain record to read it from yet. A queued delete has no row.
+/// Render one queued row from what the write recorded. A queued delete has none.
 fn queued_entry(name: &[u8], write: &PendingWrite) -> Option<ObjectEntry> {
     match write.op {
         PendingOp::Put { etag, size, block_time, content_type: _, prior: _ } => Some(ObjectEntry {
@@ -371,12 +370,9 @@ fn queued_entry(name: &[u8], write: &PendingWrite) -> Option<ObjectEntry> {
 
 /// List a bucket, including objects that exist only in the write queue.
 ///
-/// The index is authoritative and wins on every key it holds, which matches the
-/// GET path: that resolves on chain first and falls back to the queue only on a
-/// miss. Listing has to agree, or the two surfaces disagree about the same key.
-///
-/// Without this a client that writes and then lists does not see its own key
-/// until the drain applies the write and the track certifies, seconds later.
+/// The index wins on every key it holds, matching the GET path, or the two
+/// surfaces disagree about the same key. Without the queued rows a client that
+/// writes and then lists does not see its own key for seconds.
 fn list_objects_merged<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     bucket: Address,
@@ -881,8 +877,7 @@ where
 {
     check_request_rate(&state, &caller)?;
 
-    // On chain first, so once the index catches up the queued copy is never read
-    // again and its rows are dropped.
+    // On chain first, so once the index catches up the queued copy is never read.
     let tape = parse_bucket(&bucket)?;
     let (resolved, track) = match resolve_readable(&state, &bucket, &key) {
         Ok(readable) => readable,
@@ -1119,11 +1114,9 @@ where
     let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
 
     // A body that fits the buffer is queued and acknowledged here, because the
-    // bucket's tape account admits one chain write per block and a client that
-    // writes one small object per event cannot wait a block each. Past the buffer
-    // the body streams onto segment tracks on chain, bounded in memory, and the
-    // queue holds only where the bytes went. Either way the write chokepoint
-    // reserves before and commits/refunds after.
+    // tape account admits one chain write per block. Past the buffer the body
+    // streams onto segment tracks on chain and the queue holds only where the
+    // bytes went. Either way the chokepoint reserves before and settles after.
     let etag = match streamed_object_size(signed_payload, headers)? {
         Some(size) if size > max_buffered_bytes as u64 => {
             if size > max_object_bytes as u64 {
@@ -1188,8 +1181,8 @@ const QUEUE_FULL_RETRY_AFTER: Duration = Duration::from_secs(5);
 
 /// Refuse a write the queue has no room for, before any budget is reserved.
 ///
-/// The drain is the only thing that empties the queue, so a chain outage would
-/// otherwise grow it until the disk filled. S3 clients retry a 503 SlowDown.
+/// Only the drain empties the queue, so an outage would otherwise grow it until
+/// the disk filled.
 fn check_queue_budget<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     size: u64,
@@ -1208,9 +1201,8 @@ where
 
 /// Queue a buffered object and acknowledge it, settling the write permit.
 ///
-/// The ETag is the one the object index will record, computed here so the client
-/// is never told one value now and served another once the drain has landed the
-/// write.
+/// The ETag is the one the object index will record, so the client is never told
+/// one value now and served another later.
 async fn enqueue_put<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     permit: WritePermit,
@@ -1522,16 +1514,14 @@ where
     // unauthorized caller cannot probe which keys exist via the response code.
     let permit = authorize_write(state, auth, tape, key, WriteOp::Delete, 0).await?;
 
-    // S3 DeleteObject is idempotent: a key with nothing queued and nothing in the
-    // object-list index is already "deleted", so report success without queueing
-    // anything. Nothing was spent, so release the reservation.
+    // S3 DeleteObject is idempotent: a key with nothing queued and nothing
+    // indexed is already deleted. Nothing was spent, so release the reservation.
     if !object_present(state, tape, key)? {
         permit.refund(state);
         return Ok(());
     }
 
-    // Hidden from readers the moment this is queued, so the window before the
-    // drain reaches the chain never serves what the client just deleted.
+    // Hidden from readers the moment this is queued.
     match state.staging.enqueue_delete(tape, key.as_bytes()).await {
         Ok(()) => {
             permit.commit(state, 0);
@@ -1963,10 +1953,8 @@ where
     check_queue_budget(state, size)?;
     let permit = authorize_write(state, auth, bucket, &key, WriteOp::CompleteMultipart, size).await?;
 
-    // Queued and acknowledged exactly like PutObject: the assembled object is a
-    // finished object, readable and listable the moment this returns. On failure
-    // `?` returns before the upload is dropped, so it stays intact for the client
-    // to retry or abort.
+    // Queued exactly like PutObject. On failure `?` returns before the upload is
+    // dropped, so it stays intact for the client to retry or abort.
     let etag = enqueue_put(
         state,
         permit,

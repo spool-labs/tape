@@ -449,15 +449,14 @@ pub enum PendingOp {
         size: u64,
         /// Last-modified time in unix seconds, set when the write was accepted
         block_time: i64,
-        /// The track a superseded write already landed, when the queue knew it.
-        /// The write overwrites and reclaims it instead of orphaning it; `None`
-        /// leaves the drain to resolve the track from the object index.
+        /// The track a superseded write already landed, so this one overwrites
+        /// and reclaims it. `None` leaves the drain to read the index.
         prior: Option<Address>,
     },
     /// Delete the object's track
     Delete {
-        /// The track a superseded Put already landed, when the queue knew it.
-        /// `None` leaves the drain to resolve the track from the object index.
+        /// The track a superseded Put already landed. `None` leaves the drain to
+        /// read the index.
         track: Option<Address>,
     },
 }
@@ -484,7 +483,7 @@ pub enum PendingState {
 /// One queued S3 write, keyed in `s3_pending_write` by `(tape, object key)`.
 ///
 /// A PUT or DELETE is acknowledged once this row and its bytes are durable, so
-/// the client never waits for a block; the drain applies it on chain after.
+/// the client never waits a block; the drain applies it on chain after.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
 pub struct PendingWrite {
     /// Enqueue order within the gateway; the newest entry for a key wins reads

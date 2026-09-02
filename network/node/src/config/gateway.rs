@@ -148,8 +148,8 @@ pub struct S3Config {
     #[serde(default = "default_s3_max_buffered_bytes")]
     pub max_buffered_bytes: usize,
 
-    /// Bytes the durable write queue may hold before a write is refused with
-    /// `SlowDown`. Bounds the disk a chain outage can consume.
+    /// Payload bytes the write queue may hold before a write is refused with
+    /// `SlowDown`. Bounds the disk a chain or ingestor outage can consume.
     #[serde(default = "default_s3_max_queued_bytes")]
     pub max_queued_bytes: u64,
 

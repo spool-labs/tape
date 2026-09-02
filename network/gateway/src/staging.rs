@@ -1,9 +1,8 @@
 //! Durable queue of S3 writes the gateway has already acknowledged.
 //!
 //! A bucket's tape account admits one write per block, so a PUT or DELETE is
-//! answered once it is durable in this queue and applied on chain afterwards by
-//! the drain. Reads and listings serve from here until the object index has the
-//! key, which is what gives an S3 client read-after-write.
+//! answered once it is durable here and applied on chain by the drain. Reads and
+//! listings serve from here until the object index has the key.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -33,7 +32,7 @@ struct Counts {
 /// The entry's contribution to each total.
 ///
 /// A landed entry keeps its payload until the index catches up, so it still
-/// costs disk; it no longer costs the tape capacity, which the chain has taken.
+/// costs disk but no longer costs the tape capacity.
 fn counts_for(write: &PendingWrite, has_payload: bool) -> Counts {
     let (size, is_landed) = match (&write.op, &write.state) {
         (PendingOp::Put { size, .. }, PendingState::Landed { .. }) => (*size, true),
@@ -48,9 +47,8 @@ fn counts_for(write: &PendingWrite, has_payload: bool) -> Counts {
 
 /// Bytes the queue accounts for: held on disk in total, unlanded per bucket.
 ///
-/// The held total bounds the disk a chain or ingestor outage can consume. The
-/// per-bucket unlanded figure is what a tape's free capacity has to be reduced
-/// by, since the chain does not know about those writes yet.
+/// The held total bounds the disk a chain or ingestor outage can consume; the
+/// unlanded figure is what a tape's free capacity has to be reduced by.
 #[derive(Default)]
 struct QueuedBytes {
     held: u64,
@@ -81,8 +79,8 @@ impl QueuedBytes {
     }
 }
 
-/// The durable write queue, plus the counter that orders entries and the signal
-/// that wakes the drain.
+/// The durable write queue, the counter that orders entries, and the signal that
+/// wakes the drain.
 pub struct StagingStore<Db: Store> {
     store: Arc<TapeStore<Db>>,
     /// Enqueue order, seeded from the highest stored seq so it keeps rising
@@ -93,8 +91,8 @@ pub struct StagingStore<Db: Store> {
 }
 
 impl<Db: Store> StagingStore<Db> {
-    /// Open the queue over `store`, continuing its sequence where it left off
-    /// and recounting the bytes it still holds.
+    /// Open the queue over `store`, continuing its sequence and recounting its
+    /// bytes.
     pub fn try_new(store: Arc<TapeStore<Db>>) -> Result<Self, TapeStoreError> {
         let mut highest = 0;
         let mut queued = QueuedBytes::default();
@@ -154,8 +152,8 @@ impl<Db: Store> StagingStore<Db> {
 
     /// Queue a written object with its bytes, superseding whatever the key held.
     ///
-    /// A superseded write that already landed hands its track over, so this one
-    /// overwrites and reclaims it rather than leaving it orphaned.
+    /// A superseded write hands its landed track over, so this one overwrites and
+    /// reclaims it rather than orphaning it.
     pub async fn enqueue_put(
         &self,
         tape: Address,
@@ -207,9 +205,8 @@ impl<Db: Store> StagingStore<Db> {
 
     /// Queue a delete, dropping any queued Put for the same key and its bytes.
     ///
-    /// A Put that already landed carries its track over, or the drain would find
-    /// no index row yet, call the delete a no-op, and let the object reappear
-    /// once the ingestor caught up.
+    /// A landed Put hands its track over, or the drain finds no index row, calls
+    /// the delete a no-op, and the object reappears once the ingestor catches up.
     pub async fn enqueue_delete(&self, tape: Address, key: &[u8]) -> Result<(), TapeStoreError> {
         let landed = self.landed_put_track(tape, key)?;
         let write = PendingWrite {
@@ -236,8 +233,7 @@ impl<Db: Store> StagingStore<Db> {
         };
         match (entry.op, entry.state) {
             (PendingOp::Put { .. }, PendingState::Landed { track }) => Ok(Some(track)),
-            // A write still in flight has not landed, but it may itself be
-            // carrying the track of the write it superseded.
+            // Still in flight, but it may carry the track of what it superseded.
             (PendingOp::Put { prior, .. }, PendingState::Queued) => Ok(prior),
             (PendingOp::Put { prior, .. }, PendingState::Failed { .. }) => Ok(prior),
             (PendingOp::Delete { track }, _) => Ok(track),
@@ -263,7 +259,7 @@ impl<Db: Store> StagingStore<Db> {
     }
 
     /// One tape's queue entries under `prefix`, from the inclusive `start` key,
-    /// in key order. Feeds the listing merge.
+    /// in key order, for the listing merge.
     pub fn queued_from(
         &self,
         tape: Address,
@@ -288,10 +284,9 @@ impl<Db: Store> StagingStore<Db> {
     /// Record how far the drain got with one entry, leaving its bytes in place,
     /// and report whether it applied.
     ///
-    /// A newer entry for the same key means the client replaced this write while
-    /// it was in flight. Its outcome is not written back, but a track it landed
-    /// is handed to that newer entry, or the object would be orphaned on chain
-    /// and reappear once the ingestor indexed it.
+    /// A newer entry means the write was superseded in flight. Its outcome is
+    /// discarded, but a track it landed is handed to that newer entry, or the
+    /// object is orphaned on chain and reappears once the ingestor indexes it.
     pub fn set_state(
         &self,
         tape: Address,

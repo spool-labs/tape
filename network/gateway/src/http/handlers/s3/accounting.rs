@@ -265,9 +265,9 @@ where
     };
     let current_epoch = state.context.state().epoch();
 
-    // Writes already acknowledged and waiting for the drain have not reached the
-    // chain, so the on-chain `used` figure does not include them. Charging them
-    // here is what stops a burst queueing more than the tape can ever hold.
+    // Acknowledged writes waiting for the drain are not in the on-chain `used`
+    // figure, so charging them here stops a burst queueing more than the tape
+    // can hold.
     let queued_bytes = state.staging.tape_queued_bytes(tape);
 
     // Fast path: a fresh cached snapshot avoids the RPC entirely.
