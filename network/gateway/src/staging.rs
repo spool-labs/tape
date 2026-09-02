@@ -48,14 +48,18 @@ impl Default for StagingLimits {
 /// on-chain index.
 #[derive(Clone)]
 pub struct StagedObject {
-    /// Object bytes exactly as written.
-    pub bytes: Bytes,
+    /// Object bytes exactly as written, when the write held them whole.
+    pub bytes: Option<Bytes>,
+    /// Object size in bytes.
+    pub size: u64,
     /// Content type reported on GET and HEAD.
     pub content_type: ContentType,
     /// ETag the client was given at write time.
     pub etag: Hash,
     /// Last-modified time in unix seconds.
     pub block_time: i64,
+    /// The track a GET reads when the bytes were not held.
+    pub track: Option<Address>,
     /// Insertion time, driving the TTL and the eviction order.
     inserted: Instant,
 }
@@ -64,12 +68,38 @@ impl StagedObject {
     /// Capture an object with the instant it entered staging.
     pub fn new(bytes: Bytes, content_type: ContentType, etag: Hash, block_time: i64) -> Self {
         Self {
-            bytes,
+            size: bytes.len() as u64,
+            bytes: Some(bytes),
             content_type,
             etag,
             block_time,
+            track: None,
             inserted: Instant::now(),
         }
+    }
+
+    /// Capture a streamed object by its metadata and the track its bytes went to.
+    pub fn metadata(
+        size: u64,
+        content_type: ContentType,
+        etag: Hash,
+        block_time: i64,
+        track: Address,
+    ) -> Self {
+        Self {
+            bytes: None,
+            size,
+            content_type,
+            etag,
+            block_time,
+            track: Some(track),
+            inserted: Instant::now(),
+        }
+    }
+
+    /// Bytes this entry holds against the budget.
+    fn held(&self) -> usize {
+        self.bytes.as_ref().map_or(0, Bytes::len)
     }
 }
 
@@ -78,6 +108,8 @@ impl StagedObject {
 #[derive(Default)]
 struct StagingEntries {
     objects: HashMap<(Address, String), StagedObject>,
+    /// Keys deleted here, hidden until the chain has the delete too.
+    tombstones: HashMap<(Address, String), Instant>,
     total_bytes: usize,
 }
 
@@ -85,16 +117,17 @@ impl StagingEntries {
     /// Remove one entry, keeping the byte total in step.
     fn remove(&mut self, map_key: &(Address, String)) -> Option<StagedObject> {
         let removed = self.objects.remove(map_key)?;
-        self.total_bytes -= removed.bytes.len();
+        self.total_bytes -= removed.held();
         Some(removed)
     }
 
     /// Insert one entry (replacing any same-key copy), keeping the byte total
-    /// in step.
+    /// in step. A write brings a deleted key back.
     fn insert(&mut self, map_key: (Address, String), object: StagedObject) {
-        self.total_bytes += object.bytes.len();
+        self.tombstones.remove(&map_key);
+        self.total_bytes += object.held();
         if let Some(replaced) = self.objects.insert(map_key, object) {
-            self.total_bytes -= replaced.bytes.len();
+            self.total_bytes -= replaced.held();
         }
     }
 
@@ -104,10 +137,11 @@ impl StagingEntries {
         self.objects.retain(|_, staged| {
             let is_fresh = staged.inserted.elapsed() < ttl;
             if !is_fresh {
-                *total_bytes -= staged.bytes.len();
+                *total_bytes -= staged.held();
             }
             is_fresh
         });
+        self.tombstones.retain(|_, deleted| deleted.elapsed() < ttl);
     }
 }
 
@@ -139,7 +173,7 @@ impl StagingStore {
             return;
         };
         entries.prune_expired(self.limits.ttl);
-        while entries.total_bytes + object.bytes.len() > self.limits.max_bytes {
+        while entries.total_bytes + object.held() > self.limits.max_bytes {
             let Some(oldest) = entries
                 .objects
                 .iter()
@@ -155,7 +189,7 @@ impl StagingStore {
                 warn!(
                     bucket = %oldest.0,
                     key = %oldest.1,
-                    bytes = evicted.bytes.len(),
+                    bytes = evicted.held(),
                     staged_bytes = entries.total_bytes,
                     max_bytes = self.limits.max_bytes,
                     "staging over budget, evicted an object still inside its window"
@@ -211,10 +245,28 @@ impl StagingStore {
         staged
     }
 
-    /// Drop a staged object so a staged copy never outlives a delete of its key.
-    pub fn remove(&self, tape: Address, key: &str) {
+    /// Mark a key deleted, so neither a staged copy nor the index row outlives the delete.
+    pub fn tombstone(&self, tape: Address, key: &str) {
         if let Ok(mut entries) = self.entries.lock() {
-            entries.remove(&(tape, key.to_string()));
+            let map_key = (tape, key.to_string());
+            entries.remove(&map_key);
+            entries.tombstones.insert(map_key, Instant::now());
+        }
+    }
+
+    /// Whether a fresh delete still hides the key.
+    pub fn is_deleted(&self, tape: Address, key: &str) -> bool {
+        let Ok(mut entries) = self.entries.lock() else {
+            return false;
+        };
+        let map_key = (tape, key.to_string());
+        match entries.tombstones.get(&map_key) {
+            Some(deleted) if deleted.elapsed() < self.limits.ttl => true,
+            Some(_) => {
+                entries.tombstones.remove(&map_key);
+                false
+            }
+            None => false,
         }
     }
 }
@@ -241,10 +293,58 @@ mod tests {
 
         store.put(tape, "a/b.bin".to_string(), staged(0xAB, 16));
         let hit = store.get(tape, "a/b.bin").expect("staged object present");
-        assert_eq!(hit.bytes.as_ref(), &[0xAB; 16]);
+        assert_eq!(hit.bytes.as_deref(), Some(&[0xAB; 16][..]));
 
-        store.remove(tape, "a/b.bin");
+        store.tombstone(tape, "a/b.bin");
         assert!(store.get(tape, "a/b.bin").is_none());
+    }
+
+    // a deleted key stays hidden until it is written again
+    #[test]
+    fn tombstone_until_rewrite() {
+        let store = StagingStore::new();
+        let tape = Address::new([4u8; 32]);
+        store.tombstone(tape, "gone");
+        assert!(store.is_deleted(tape, "gone"));
+        store.put(tape, "gone".to_string(), staged(0x01, 4));
+        assert!(!store.is_deleted(tape, "gone"));
+        assert!(store.get(tape, "gone").is_some());
+    }
+
+    // a tombstone expires with the window
+    #[test]
+    fn tombstone_expires() {
+        let store = StagingStore::with_limits(StagingLimits {
+            max_bytes: DEFAULT_STAGING_MAX_BYTES,
+            ttl: Duration::from_millis(1),
+        });
+        let tape = Address::new([5u8; 32]);
+        store.tombstone(tape, "gone");
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!store.is_deleted(tape, "gone"));
+    }
+
+    // a metadata entry costs the budget nothing and is never what eviction picks
+    #[test]
+    fn metadata_is_free() {
+        let store = StagingStore::with_limits(StagingLimits {
+            max_bytes: 8,
+            ttl: DEFAULT_STAGING_TTL,
+        });
+        let tape = Address::new([6u8; 32]);
+        let routed = StagedObject::metadata(
+            1 << 30,
+            ContentType::Unknown,
+            Hash::default(),
+            1_700_000_000,
+            Address::new([9u8; 32]),
+        );
+        store.put(tape, "big".to_string(), routed);
+        store.put(tape, "small".to_string(), staged(0x01, 8));
+        let hit = store.get(tape, "big").expect("metadata entry present");
+        assert!(hit.bytes.is_none());
+        assert_eq!(hit.size, 1 << 30);
+        assert!(store.get(tape, "small").is_some());
     }
 
     // a different bucket with the same key does not collide

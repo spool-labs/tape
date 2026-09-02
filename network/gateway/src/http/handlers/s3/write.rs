@@ -148,7 +148,7 @@ impl S3WriteContext {
         content_type: ContentType,
         size: StorageUnits,
         reader: Reader,
-    ) -> Result<Hash, TapedriveError>
+    ) -> Result<(Hash, Address), TapedriveError>
     where
         Db: Store,
         Cluster: Api,
@@ -160,7 +160,7 @@ impl S3WriteContext {
         let receipt = client
             .write_named_stream_as(&operator, name, content_type, size, reader)
             .await?;
-        Ok(receipt.manifest_value_hash)
+        Ok((receipt.manifest_value_hash, receipt.manifest))
     }
 
     /// Delete the `track` backing an object on `tape` as the delegate.

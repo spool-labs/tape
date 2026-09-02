@@ -1,7 +1,6 @@
 //! Protocol request/response types for the node API.
 
 use core::mem::size_of;
-use std::collections::BTreeMap;
 
 use tape_core::{
     bls::BlsSignature,
@@ -165,16 +164,6 @@ pub struct NodeStats {
     pub bootstrap_target_slot: u64,
     #[serde(default)]
     pub fee_payer_lamports: Option<u64>,
-    #[serde(default)]
-    pub challenge_refusals: BTreeMap<String, u64>,
-    #[serde(default)]
-    pub challenge_realigns: u64,
-    #[serde(default)]
-    pub challenge_realign_failures: u64,
-    #[serde(default)]
-    pub challenge_divergence_observed: u64,
-    #[serde(default)]
-    pub challenge_divergence_signers: u64,
 }
 
 /// Project the wire stats onto the dashboard's per-node stats.
@@ -302,11 +291,6 @@ impl From<ProofOfAccessPayload> for ProofOfAccess {
 }
 
 /// Wire representation of an observer's attestation for a round.
-///
-/// `digest` rides along as the signer's view of the settled epoch, zero while
-/// its epoch is still in transition. It carries its own signature rather than
-/// joining the attestation's: attestations aggregate across a group and only do
-/// so while every signer signs identical bytes.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct AttestationPayload {
     pub epoch: EpochNumber,
@@ -316,8 +300,6 @@ pub struct AttestationPayload {
     pub block: Hash,
     pub signer: Address,
     pub signature: BlsSignature,
-    pub digest: Hash,
-    pub digest_signature: BlsSignature,
 }
 
 /// Payload for slice upload requests.

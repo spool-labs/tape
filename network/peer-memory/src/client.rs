@@ -162,8 +162,6 @@ impl Api for MemoryApi {
             block: req.block,
             signer: req.signer,
             signature: req.signature,
-            digest: req.digest,
-            digest_signature: req.digest_signature,
         }, Attest)
     }
 

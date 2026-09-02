@@ -5,12 +5,13 @@ use std::sync::Arc;
 use rpc::Rpc;
 use store::Store;
 use tape_core::types::SlotNumber;
+use tape_protocol::fetch::fetch_state;
 use tape_protocol::Api;
-use tape_retry::RetryConfig;
+use tape_retry::{retry_if, RetryConfig};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, Instrument, info};
+use tracing::{debug, warn, Instrument, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::node::NodeConfig;
@@ -34,7 +35,6 @@ use crate::features::snapshot::manager::SnapshotManager;
 use crate::features::spool::manager::SpoolManager;
 use crate::features::store::manager::StoreManager;
 use crate::features::state::manager::StateManager;
-use crate::features::state::realign::{EpochFloor, refetch_state};
 #[cfg(feature = "metrics")]
 use crate::observe::{register_block_channels, register_core_collectors, BalanceMonitor};
 use crate::supervisor::Supervisor;
@@ -178,7 +178,14 @@ where
     Blockchain: Rpc,
 {
 
-    let state = refetch_state(context, Some(cancel), EpochFloor::Any, RetryConfig::infinite()).await?;
+    let state = retry_if(
+        RetryConfig::infinite(),
+        Some(cancel),
+        || fetch_state(&context.rpc),
+        |error| error.is_retriable() && !error.is_skipped_slot(),
+    )
+    .await
+    .map_err(NodeError::from)?;
 
     debug!(
         epoch = state.epoch().0,
@@ -186,6 +193,12 @@ where
         committee_size = state.current.committee.len(),
         "loaded protocol state from RPC"
     );
+
+    context.set_state(state)?;
+
+    if let Err(error) = context.refresh_peers().await {
+        warn!(error = %error, "peer resolution failed during startup");
+    }
 
     Ok(())
 }
@@ -451,10 +464,7 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    // A token of this run's own, published on the context so a realign started
-    // from a request path is wound up by the same shutdown that stops the
-    // managers. A context that is started again gets another.
-    let cancel = context.rearm_shutdown();
+    let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
     let (start_slot, http_server) = bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),
@@ -474,7 +484,7 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let cancel = context.rearm_shutdown();
+    let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
     let (start_slot, http_server) = bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),

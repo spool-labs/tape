@@ -20,6 +20,10 @@ const AMZ_REQUEST_ID: &str = "x-amz-request-id";
 pub enum S3Error {
     /// The specified bucket does not exist. HTTP 404
     NoSuchBucket,
+    /// The bucket a client asked to create is already its own. HTTP 409
+    BucketAlreadyOwnedByYou,
+    /// The bucket label cannot name a tape. HTTP 400
+    InvalidBucketName(String),
     /// The specified key does not exist. HTTP 404
     NoSuchKey,
     /// The specified multipart upload id does not exist (unknown, already
@@ -59,6 +63,8 @@ impl S3Error {
     pub fn code(&self) -> &'static str {
         match self {
             Self::NoSuchBucket => "NoSuchBucket",
+            Self::BucketAlreadyOwnedByYou => "BucketAlreadyOwnedByYou",
+            Self::InvalidBucketName(_) => "InvalidBucketName",
             Self::NoSuchKey => "NoSuchKey",
             Self::NoSuchUpload => "NoSuchUpload",
             Self::AccessDenied(_) => "AccessDenied",
@@ -79,7 +85,9 @@ impl S3Error {
         match self {
             Self::NoSuchBucket | Self::NoSuchKey | Self::NoSuchUpload => StatusCode::NOT_FOUND,
             Self::AccessDenied(_) | Self::SignatureDoesNotMatch => StatusCode::FORBIDDEN,
-            Self::ContentSha256Mismatch
+            Self::BucketAlreadyOwnedByYou => StatusCode::CONFLICT,
+            Self::InvalidBucketName(_)
+            | Self::ContentSha256Mismatch
             | Self::EntityTooLarge(_)
             | Self::EntityTooSmall(_)
             | Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
@@ -94,6 +102,10 @@ impl S3Error {
     fn message(&self) -> String {
         match self {
             Self::NoSuchBucket => "The specified bucket does not exist.".to_string(),
+            Self::BucketAlreadyOwnedByYou => {
+                "Your previous request to create the named bucket succeeded and you already own it."
+                    .to_string()
+            }
             Self::NoSuchKey => "The specified key does not exist.".to_string(),
             Self::NoSuchUpload => {
                 "The specified multipart upload does not exist. The upload id may be invalid, \
@@ -116,6 +128,7 @@ impl S3Error {
             // server-side (see `internal_detail`) and never sent to the client.
             Self::Internal(_) => "We encountered an internal error. Please try again.".to_string(),
             Self::AccessDenied(detail)
+            | Self::InvalidBucketName(detail)
             | Self::EntityTooLarge(detail)
             | Self::EntityTooSmall(detail)
             | Self::InvalidRequest(detail)
@@ -129,6 +142,8 @@ impl S3Error {
         match self {
             Self::Internal(detail) => Some(detail),
             Self::NoSuchBucket
+            | Self::BucketAlreadyOwnedByYou
+            | Self::InvalidBucketName(_)
             | Self::NoSuchKey
             | Self::NoSuchUpload
             | Self::AccessDenied(_)
@@ -166,6 +181,8 @@ impl IntoResponse for S3Error {
         let retry_after = match &self {
             Self::SlowDown { retry_after_seconds } => Some(*retry_after_seconds),
             Self::NoSuchBucket
+            | Self::BucketAlreadyOwnedByYou
+            | Self::InvalidBucketName(_)
             | Self::NoSuchKey
             | Self::NoSuchUpload
             | Self::AccessDenied(_)

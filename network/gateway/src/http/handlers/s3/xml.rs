@@ -113,6 +113,11 @@ pub struct BucketEntry {
     pub creation_date: i64,
 }
 
+/// Build a `LocationConstraint` (GetBucketLocation) body; empty is what S3 says for us-east-1
+pub fn location_constraint_body() -> String {
+    format!("{XML_DECL}<LocationConstraint xmlns=\"{S3_XMLNS}\"></LocationConstraint>")
+}
+
 /// Build a `ListAllMyBucketsResult` (ListBuckets) response body
 pub fn list_all_my_buckets_body(owner: &Owner, buckets: &[BucketEntry]) -> String {
     let mut out = String::with_capacity(256);
@@ -481,6 +486,16 @@ fn normalize_part_etag(raw: &str) -> String {
 }
 
 /// Reverse escape_into
+/// Decode `&#NN;` or `&#xHH;`, or `None` for anything else
+fn character_reference(entity: &str) -> Option<char> {
+    let digits = entity.strip_prefix("&#")?.strip_suffix(';')?;
+    let code = match digits.strip_prefix(['x', 'X']) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+        None => digits.parse::<u32>().ok()?,
+    };
+    char::from_u32(code)
+}
+
 fn unescape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
@@ -495,8 +510,11 @@ fn unescape(value: &str) -> String {
                 "&gt;" => out.push('>'),
                 "&quot;" => out.push('"'),
                 "&apos;" => out.push('\''),
-                // Unknown entity: pass it through verbatim.
-                other => out.push_str(other),
+                // A numeric character reference, which is how Go's encoder writes a quote.
+                other => match character_reference(other) {
+                    Some(decoded) => out.push(decoded),
+                    None => out.push_str(other),
+                },
             }
             rest = &tail[semi + 1..];
         } else {
@@ -511,6 +529,15 @@ fn unescape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    // a quoted part ETag written as numeric character references, the way Go's encoder writes it
+    #[test]
+    fn numeric_quotes() {
+        let body = "<CompleteMultipartUpload><Part><ETag>&#34;ABCDEF&#34;</ETag><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>";
+        let parts = super::parse_complete_multipart_upload(body).expect("parse");
+        assert_eq!(parts, vec![(1, "abcdef".to_string())]);
+        assert_eq!(super::unescape("&#x22;a&#x22; &amp; b"), "\"a\" & b");
+    }
+
     use super::*;
 
     // the unix epoch renders as the 1970 ISO 8601 instant

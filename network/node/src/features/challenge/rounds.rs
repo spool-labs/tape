@@ -117,12 +117,6 @@ impl RoundBuffer {
         entries.retain(|key, _| (key.epoch, key.round) >= (epoch, round));
     }
 
-    /// Every round still held, for a sweep that no arrival drives.
-    pub fn keys(&self) -> Vec<RoundKey> {
-        let entries = self.entries.lock().expect("round buffer");
-        entries.keys().copied().collect()
-    }
-
     pub fn len(&self) -> usize {
         self.entries.lock().expect("round buffer").len()
     }
@@ -347,8 +341,7 @@ mod protocol_tests {
         Round, accept_answer, attest_message, expected_sample,
     };
     use crate::features::challenge::manager::challenge_schedule;
-    use crate::features::challenge::refusal::RefusalReason;
-    use crate::features::challenge::certify::agreement_threshold;
+    use crate::features::http::handlers::challenge::agreement_threshold;
     use crate::harness::{NodeHarness, TestContext, coded_track};
 
     const PAYLOAD_BYTES: usize = 300_000;
@@ -632,10 +625,12 @@ mod protocol_tests {
         let target = fixture.other();
         let answer = fixture.answer_from(target);
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, true),
-            Ok(())
-        );
+        assert!(accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &answer,
+            true
+        ));
 
         let signed = fixture.attestations(target, agreement_threshold(GROUP_SIZE));
         let certificate = fixture.certify(target, signed);
@@ -678,19 +673,18 @@ mod protocol_tests {
 
         // The same fixture accepts the leaf it did ask for, so this is refusing the
         // substitution rather than failing for some unrelated reason.
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &fixture.answer_from(target), true),
-            Ok(())
-        );
-        assert_eq!(
-            accept_answer(
-                &fixture.ctx,
-                &fixture.state,
-                &fixture.answer_from_leaf(target, Some(elsewhere)),
-                true
-            ),
-            Err(RefusalReason::SampleMismatch)
-        );
+        assert!(accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &fixture.answer_from(target),
+            true
+        ));
+        assert!(!accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &fixture.answer_from_leaf(target, Some(elsewhere)),
+            true
+        ));
     }
 
     // the set is cut at the round window's base slot, so a write finalizing inside
@@ -841,20 +835,14 @@ mod protocol_tests {
             signature: fixture.keys[&target].sign(message.to_bytes()).expect("sign"),
         };
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, true),
-            Ok(())
-        );
+        assert!(accept_answer(&fixture.ctx, &fixture.state, &answer, true));
 
         // A payload that does not hash to the registered value is refused.
         let mut rotten = answer.clone();
         rotten.proof = SampleProof::Inline {
             payload: b"not what was written".to_vec(),
         };
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &rotten, true),
-            Err(RefusalReason::BadProof)
-        );
+        assert!(!accept_answer(&fixture.ctx, &fixture.state, &rotten, true));
     }
 
     // a leaf that does not hash into the track's commitment is refused
@@ -867,10 +855,12 @@ mod protocol_tests {
             proof.sub_leaf[0] ^= 0xFF;
         }
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, true),
-            Err(RefusalReason::BadProof)
-        );
+        assert!(!accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &answer,
+            true
+        ));
     }
 
     // the signature is checked against the key registered for the spool being
@@ -884,10 +874,12 @@ mod protocol_tests {
             .sign(answer.message().to_bytes())
             .expect("sign");
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, true),
-            Err(RefusalReason::BadSignature)
-        );
+        assert!(!accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &answer,
+            true
+        ));
     }
 
     // an answer that arrives after the round's deadline is refused
@@ -897,10 +889,12 @@ mod protocol_tests {
         let target = fixture.other();
         let answer = fixture.answer_from(target);
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, false),
-            Err(RefusalReason::Late)
-        );
+        assert!(!accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &answer,
+            false
+        ));
     }
 
     // nothing to attest to means nothing aggregates, which is the one thing the
@@ -989,10 +983,7 @@ mod protocol_tests {
         let mut answer = fixture.answer_from(target);
         answer.group = GroupIndex(fixture.group.as_u64() + 1);
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, true),
-            Err(RefusalReason::NoLocalQuestion)
-        );
+        assert!(!accept_answer(&fixture.ctx, &fixture.state, &answer, true));
     }
 
     // acceptance is a function of the answer and this node's own derivation, with
@@ -1007,10 +998,7 @@ mod protocol_tests {
         // Byte-identical copies, as a relay would forward them.
         let forwarded = answer.clone();
         assert_eq!(forwarded, answer);
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &forwarded, true),
-            Ok(())
-        );
+        assert!(accept_answer(&fixture.ctx, &fixture.state, &forwarded, true));
 
         let signed = fixture.attestations(target, agreement_threshold(GROUP_SIZE));
         let certificate = fixture.certify(target, signed);

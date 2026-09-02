@@ -208,8 +208,6 @@ pub struct AttestReq {
     pub block: Hash,
     pub signer: Address,
     pub signature: BlsSignature,
-    pub digest: Hash,
-    pub digest_signature: BlsSignature,
 }
 
 #[derive(Clone, Debug)]

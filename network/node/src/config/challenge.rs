@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use tape_core::challenge::record::MAX_CONSECUTIVE_MISSES;
 
 /// Controls storage challenge participation.
 ///
@@ -11,26 +10,16 @@ pub struct ChallengeConfig {
     /// Whether to run challenge rounds and serve the challenge routes.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    /// Blank rounds in a row before the node re-reads protocol state.
-    #[serde(default = "default_realign_after_blank_rounds")]
-    pub realign_after_blank_rounds: u64,
 }
 
 impl Default for ChallengeConfig {
     fn default() -> Self {
         Self {
             enabled: default_enabled(),
-            realign_after_blank_rounds: default_realign_after_blank_rounds(),
         }
     }
 }
 
 fn default_enabled() -> bool {
     true
-}
-
-/// `MAX_CONSECUTIVE_MISSES` rounds, so the tripwire fires on the same round the
-/// run arm would first condemn a peer rather than seven rounds after it.
-fn default_realign_after_blank_rounds() -> u64 {
-    MAX_CONSECUTIVE_MISSES
 }
