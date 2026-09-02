@@ -4,6 +4,8 @@
 //! acknowledged once it is durable here and applied on chain afterwards. Reads
 //! serve from this queue until the object index has the key.
 
+use std::future::Future;
+
 use store::{Column, Direction, Store, WriteBatch};
 use tape_crypto::address::Address;
 
@@ -30,14 +32,16 @@ fn decode_entry(value: &[u8]) -> Result<PendingWrite> {
 /// Operations for the durable queue of S3 writes
 pub trait PendingWriteOps {
     /// Queue `write` for `(tape, key)`, replacing any entry already there and
-    /// dropping its bytes. The entry and its payload land in one atomic batch.
+    /// dropping its bytes. The entry and its payload land in one atomic batch,
+    /// awaited: acknowledging a write to a client promises it survives a crash,
+    /// and only the awaited batch is a durability point.
     fn put_pending_write(
         &self,
         tape: Address,
         key: &[u8],
         write: &PendingWrite,
         data: Option<Vec<u8>>,
-    ) -> Result<()>;
+    ) -> impl Future<Output = Result<()>> + Send;
 
     /// Overwrite the queue entry for `(tape, key)`, leaving its bytes alone.
     ///
@@ -75,12 +79,13 @@ pub trait PendingWriteOps {
     /// Drop the queue entry for `(tape, key)` and its bytes
     fn delete_pending_write(&self, tape: Address, key: &[u8]) -> Result<()>;
 
-    /// The highest `seq` in the queue, or 0 when it is empty
-    fn max_pending_write_seq(&self) -> Result<u64>;
+    /// Every queue entry with the tape it belongs to, for the open-time scan
+    /// that seeds both the sequence and the queued-byte totals
+    fn pending_write_entries(&self) -> Result<Vec<(Address, PendingWrite)>>;
 }
 
 impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
-    fn put_pending_write(
+    async fn put_pending_write(
         &self,
         tape: Address,
         key: &[u8],
@@ -101,7 +106,7 @@ impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
             }
             None => batch.delete(S3PendingWriteDataCol::CF_NAME, &row_key),
         }
-        self.inner().inner().write_batch(batch)?;
+        self.inner().inner().write_batch_wait(batch).await?;
         Ok(())
     }
 
@@ -207,12 +212,17 @@ impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
         Ok(())
     }
 
-    fn max_pending_write_seq(&self) -> Result<u64> {
-        let mut highest = 0;
-        for (_key, value) in self.inner().inner().iter(S3PendingWriteCol::CF_NAME)? {
-            highest = highest.max(decode_entry(&value)?.seq);
+    fn pending_write_entries(&self) -> Result<Vec<(Address, PendingWrite)>> {
+        let mut entries = Vec::new();
+        for (row_key, value) in self.inner().inner().iter(S3PendingWriteCol::CF_NAME)? {
+            if row_key.len() < 32 {
+                continue;
+            }
+            let mut bytes = [0u8; 32];
+            bytes.copy_from_slice(&row_key[..32]);
+            entries.push((Address::from(bytes), decode_entry(&value)?));
         }
-        Ok(highest)
+        Ok(entries)
     }
 }
 
@@ -252,20 +262,27 @@ mod tests {
         }
     }
 
-    fn queue_put(store: &TapeStore<MemoryStore>, tape: Address, key: &str, seq: u64, data: &[u8]) {
+    async fn queue_put(
+        store: &TapeStore<MemoryStore>,
+        tape: Address,
+        key: &str,
+        seq: u64,
+        data: &[u8],
+    ) {
         store
             .put_pending_write(tape, key.as_bytes(), &put_entry(seq, data), Some(data.to_vec()))
+            .await
             .expect("queue put");
     }
 
     // a queued put reads back with its bytes, and removal clears both rows
-    #[test]
-    fn put_round_trip() {
+    #[tokio::test]
+    async fn put_round_trip() {
         let store = store();
         let tape = Address::new([1u8; 32]);
         assert!(store.get_pending_write(tape, b"a.txt").expect("get").is_none());
 
-        queue_put(&store, tape, "a.txt", 1, b"hello");
+        queue_put(&store, tape, "a.txt", 1, b"hello").await;
 
         let entry = store.get_pending_write(tape, b"a.txt").expect("get").expect("queued");
         assert_eq!(entry.seq, 1);
@@ -280,14 +297,15 @@ mod tests {
     }
 
     // re-queueing a key replaces the entry and drops the bytes it held
-    #[test]
-    fn replace_drops_bytes() {
+    #[tokio::test]
+    async fn replace_drops_bytes() {
         let store = store();
         let tape = Address::new([2u8; 32]);
-        queue_put(&store, tape, "a.txt", 1, b"old");
+        queue_put(&store, tape, "a.txt", 1, b"old").await;
 
         store
             .put_pending_write(tape, b"a.txt", &delete_entry(2), None)
+            .await
             .expect("queue delete");
 
         let entry = store.get_pending_write(tape, b"a.txt").expect("get").expect("queued");
@@ -297,14 +315,14 @@ mod tests {
     }
 
     // a prefix scan starts at the given key and stops leaving the prefix
-    #[test]
-    fn scan_from_start() {
+    #[tokio::test]
+    async fn scan_from_start() {
         let store = store();
         let tape = Address::new([3u8; 32]);
-        queue_put(&store, tape, "logs/a", 1, b"a");
-        queue_put(&store, tape, "logs/b", 2, b"b");
-        queue_put(&store, tape, "logs/c", 3, b"c");
-        queue_put(&store, tape, "other", 4, b"d");
+        queue_put(&store, tape, "logs/a", 1, b"a").await;
+        queue_put(&store, tape, "logs/b", 2, b"b").await;
+        queue_put(&store, tape, "logs/c", 3, b"c").await;
+        queue_put(&store, tape, "other", 4, b"d").await;
 
         let scanned = store
             .scan_pending_writes_from(tape, b"logs/", b"logs/b")
@@ -315,13 +333,13 @@ mod tests {
     }
 
     // a tape's scan sees only its own entries
-    #[test]
-    fn scan_scoped() {
+    #[tokio::test]
+    async fn scan_scoped() {
         let store = store();
         let one = Address::new([4u8; 32]);
         let two = Address::new([5u8; 32]);
-        queue_put(&store, one, "k", 1, b"a");
-        queue_put(&store, two, "k", 2, b"b");
+        queue_put(&store, one, "k", 1, b"a").await;
+        queue_put(&store, two, "k", 2, b"b").await;
 
         assert_eq!(store.scan_pending_writes(one).expect("scan").len(), 1);
         assert_eq!(store.scan_pending_writes(two).expect("scan").len(), 1);
@@ -329,40 +347,44 @@ mod tests {
     }
 
     // the tape list names each queued bucket once
-    #[test]
-    fn tape_list() {
+    #[tokio::test]
+    async fn tape_list() {
         let store = store();
         let one = Address::new([6u8; 32]);
         let two = Address::new([7u8; 32]);
-        queue_put(&store, one, "a", 1, b"a");
-        queue_put(&store, one, "b", 2, b"b");
-        queue_put(&store, two, "a", 3, b"c");
+        queue_put(&store, one, "a", 1, b"a").await;
+        queue_put(&store, one, "b", 2, b"b").await;
+        queue_put(&store, two, "a", 3, b"c").await;
 
         let mut tapes = store.pending_write_tapes().expect("tapes");
         tapes.sort();
         assert_eq!(tapes, vec![one, two]);
     }
 
-    // the seed reads the highest stored seq back after a restart
-    #[test]
-    fn highest_seq() {
+    // the open-time scan reports every entry with its tape
+    #[tokio::test]
+    async fn entry_scan() {
         let store = store();
         let tape = Address::new([8u8; 32]);
-        assert_eq!(store.max_pending_write_seq().expect("seq"), 0);
+        assert!(store.pending_write_entries().expect("entries").is_empty());
 
-        queue_put(&store, tape, "a", 4, b"a");
-        queue_put(&store, tape, "b", 9, b"b");
-        queue_put(&store, tape, "c", 2, b"c");
+        queue_put(&store, tape, "a", 4, b"a").await;
+        queue_put(&store, tape, "b", 9, b"b").await;
+        queue_put(&store, tape, "c", 2, b"c").await;
 
-        assert_eq!(store.max_pending_write_seq().expect("seq"), 9);
+        let entries = store.pending_write_entries().expect("entries");
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().all(|(owner, _)| *owner == tape));
+        let highest = entries.iter().map(|(_, write)| write.seq).max();
+        assert_eq!(highest, Some(9));
     }
 
     // a state change leaves the payload row untouched
-    #[test]
-    fn entry_only_write() {
+    #[tokio::test]
+    async fn entry_only_write() {
         let store = store();
         let tape = Address::new([0x11; 32]);
-        queue_put(&store, tape, "a.txt", 1, b"payload");
+        queue_put(&store, tape, "a.txt", 1, b"payload").await;
 
         let mut entry = put_entry(1, b"payload");
         entry.state = PendingState::Landed { track: Address::new([0xCD; 32]) };
@@ -380,8 +402,8 @@ mod tests {
     }
 
     // an entry-only write never creates a payload row
-    #[test]
-    fn entry_only_leaves_no_payload() {
+    #[tokio::test]
+    async fn entry_only_leaves_no_payload() {
         let store = store();
         let tape = Address::new([0x12; 32]);
 
@@ -393,8 +415,8 @@ mod tests {
     }
 
     // attaching a landed track fills in a delete that named none
-    #[test]
-    fn attach_to_delete() {
+    #[tokio::test]
+    async fn attach_to_delete() {
         let store = store();
         let tape = Address::new([0x13; 32]);
         let track = Address::new([0xEF; 32]);
@@ -413,8 +435,8 @@ mod tests {
     }
 
     // a landed or failed state survives the round trip the drain needs
-    #[test]
-    fn states_round_trip() {
+    #[tokio::test]
+    async fn states_round_trip() {
         let store = store();
         let tape = Address::new([9u8; 32]);
         let track = Address::new([0xAB; 32]);
@@ -422,6 +444,7 @@ mod tests {
         entry.state = PendingState::Landed { track };
         store
             .put_pending_write(tape, b"a", &entry, Some(b"x".to_vec()))
+            .await
             .expect("queue landed");
         assert_eq!(
             store.get_pending_write(tape, b"a").expect("get").expect("queued").state,
@@ -434,6 +457,7 @@ mod tests {
         };
         store
             .put_pending_write(tape, b"a", &entry, Some(b"x".to_vec()))
+            .await
             .expect("queue failed");
         assert_eq!(
             store.get_pending_write(tape, b"a").expect("get").expect("queued").state,

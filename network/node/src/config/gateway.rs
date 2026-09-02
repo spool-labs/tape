@@ -148,6 +148,11 @@ pub struct S3Config {
     #[serde(default = "default_s3_max_buffered_bytes")]
     pub max_buffered_bytes: usize,
 
+    /// Bytes the durable write queue may hold before a write is refused with
+    /// `SlowDown`. Bounds the disk a chain outage can consume.
+    #[serde(default = "default_s3_max_queued_bytes")]
+    pub max_queued_bytes: u64,
+
     /// Public base URL clients reach this gateway at (e.g. `https://s3.example.com`),
     /// used for the `Location` of a completed multipart upload. When unset, a
     /// path-style resource (`/{bucket}/{key}`) is returned.
@@ -166,6 +171,7 @@ impl Default for S3Config {
             write: S3WriteConfig::default(),
             max_object_bytes: default_s3_max_object_bytes(),
             max_buffered_bytes: default_s3_max_buffered_bytes(),
+            max_queued_bytes: default_s3_max_queued_bytes(),
             public_endpoint: None,
         }
     }
@@ -184,6 +190,7 @@ impl std::fmt::Debug for S3Config {
             .field("write", &self.write)
             .field("max_object_bytes", &self.max_object_bytes)
             .field("max_buffered_bytes", &self.max_buffered_bytes)
+            .field("max_queued_bytes", &self.max_queued_bytes)
             .field("public_endpoint", &self.public_endpoint)
             .finish()
     }
@@ -201,6 +208,11 @@ fn default_s3_max_object_bytes() -> usize {
 /// Default in-memory buffered-write ceiling: 256 MiB.
 fn default_s3_max_buffered_bytes() -> usize {
     256 * 1024 * 1024
+}
+
+/// Default write-queue ceiling: 4 GiB.
+fn default_s3_max_queued_bytes() -> u64 {
+    4 * 1024 * 1024 * 1024
 }
 
 

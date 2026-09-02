@@ -5,7 +5,8 @@
 //! the drain. Reads and listings serve from here until the object index has the
 //! key, which is what gives an S3 client read-after-write.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use store::Store;
@@ -20,6 +21,48 @@ use tokio::sync::Notify;
 
 use crate::metrics;
 
+/// Bytes waiting to reach the chain, in total and per bucket.
+///
+/// Counts only writes that have not landed: the total bounds the disk a chain
+/// outage can consume, and the per-bucket figure is what a tape's free capacity
+/// has to be reduced by, since the chain does not know about these writes yet.
+#[derive(Default)]
+struct QueuedBytes {
+    total: u64,
+    per_tape: HashMap<Address, u64>,
+}
+
+impl QueuedBytes {
+    /// Count `size` against `tape`.
+    fn add(&mut self, tape: Address, size: u64) {
+        self.total = self.total.saturating_add(size);
+        let held = self.per_tape.entry(tape).or_insert(0);
+        *held = held.saturating_add(size);
+    }
+
+    /// Stop counting `size` against `tape`, dropping an emptied bucket.
+    fn remove(&mut self, tape: Address, size: u64) {
+        self.total = self.total.saturating_sub(size);
+        let Some(held) = self.per_tape.get_mut(&tape) else {
+            return;
+        };
+        *held = held.saturating_sub(size);
+        if *held == 0 {
+            self.per_tape.remove(&tape);
+        }
+    }
+}
+
+/// The bytes one entry counts against the queue: an unlanded Put's payload.
+fn counted_bytes(write: &PendingWrite) -> u64 {
+    match (&write.op, &write.state) {
+        (PendingOp::Put { size, .. }, PendingState::Queued) => *size,
+        (PendingOp::Put { size, .. }, PendingState::Failed { .. }) => *size,
+        (PendingOp::Put { .. }, PendingState::Landed { .. }) => 0,
+        (PendingOp::Delete { .. }, _) => 0,
+    }
+}
+
 /// The durable write queue, plus the counter that orders entries and the signal
 /// that wakes the drain.
 pub struct StagingStore<Db: Store> {
@@ -27,25 +70,75 @@ pub struct StagingStore<Db: Store> {
     /// Enqueue order, seeded from the highest stored seq so it keeps rising
     /// across a restart.
     next_seq: AtomicU64,
+    queued_bytes: Mutex<QueuedBytes>,
     wake: Notify,
 }
 
 impl<Db: Store> StagingStore<Db> {
-    /// Open the queue over `store`, continuing its sequence where it left off.
+    /// Open the queue over `store`, continuing its sequence where it left off
+    /// and recounting the bytes it still holds.
     pub fn try_new(store: Arc<TapeStore<Db>>) -> Result<Self, TapeStoreError> {
-        let highest = store.max_pending_write_seq()?;
+        let mut highest = 0;
+        let mut queued = QueuedBytes::default();
+        for (tape, write) in store.pending_write_entries()? {
+            highest = highest.max(write.seq);
+            queued.add(tape, counted_bytes(&write));
+        }
         Ok(Self {
             store,
             next_seq: AtomicU64::new(highest.saturating_add(1)),
+            queued_bytes: Mutex::new(queued),
             wake: Notify::new(),
         })
+    }
+
+    /// Bytes queued across every bucket.
+    pub fn queued_bytes(&self) -> u64 {
+        match self.queued_bytes.lock() {
+            Ok(queued) => queued.total,
+            Err(poisoned) => poisoned.into_inner().total,
+        }
+    }
+
+    /// Bytes queued for one bucket, which its free on-chain capacity has to cover.
+    pub fn tape_queued_bytes(&self, tape: Address) -> u64 {
+        let queued = match self.queued_bytes.lock() {
+            Ok(queued) => queued,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        queued.per_tape.get(&tape).copied().unwrap_or(0)
+    }
+
+    /// Whether `size` more bytes would take the queue past `max_queued_bytes`.
+    pub fn is_over_budget(&self, size: u64, max_queued_bytes: u64) -> bool {
+        self.queued_bytes().saturating_add(size) > max_queued_bytes
+    }
+
+    /// What `(tape, key)` counts against the queue right now.
+    fn counted(&self, tape: Address, key: &[u8]) -> u64 {
+        self.store
+            .get_pending_write(tape, key)
+            .ok()
+            .flatten()
+            .as_ref()
+            .map_or(0, counted_bytes)
+    }
+
+    /// Apply a completed write's effect on the count, read before it and after.
+    fn settle_count(&self, tape: Address, removed: u64, added: u64) {
+        let mut queued = match self.queued_bytes.lock() {
+            Ok(queued) => queued,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        queued.remove(tape, removed);
+        queued.add(tape, added);
     }
 
     /// Queue a written object with its bytes, superseding whatever the key held.
     ///
     /// A superseded write that already landed hands its track over, so this one
     /// overwrites and reclaims it rather than leaving it orphaned.
-    pub fn enqueue_put(
+    pub async fn enqueue_put(
         &self,
         tape: Address,
         key: &[u8],
@@ -61,7 +154,9 @@ impl<Db: Store> StagingStore<Db> {
             op: PendingOp::Put { content_type, etag, size, block_time, prior },
             state: PendingState::Queued,
         };
-        self.store.put_pending_write(tape, key, &write, Some(data))?;
+        let replaced = self.counted(tape, key);
+        self.store.put_pending_write(tape, key, &write, Some(data)).await?;
+        self.settle_count(tape, replaced, counted_bytes(&write));
         metrics::inc_pending_write("enqueued");
         self.wake.notify_one();
         Ok(())
@@ -69,7 +164,7 @@ impl<Db: Store> StagingStore<Db> {
 
     /// Queue an object whose bytes already reached the chain, so reads resolve it
     /// through `track` until the index catches up.
-    pub fn enqueue_landed_put(
+    pub async fn enqueue_landed_put(
         &self,
         tape: Address,
         key: &[u8],
@@ -84,7 +179,9 @@ impl<Db: Store> StagingStore<Db> {
             op: PendingOp::Put { content_type, etag, size, block_time, prior: None },
             state: PendingState::Landed { track },
         };
-        self.store.put_pending_write(tape, key, &write, None)?;
+        let replaced = self.counted(tape, key);
+        self.store.put_pending_write(tape, key, &write, None).await?;
+        self.settle_count(tape, replaced, counted_bytes(&write));
         metrics::inc_pending_write("enqueued");
         self.wake.notify_one();
         Ok(())
@@ -95,14 +192,16 @@ impl<Db: Store> StagingStore<Db> {
     /// A Put that already landed carries its track over, or the drain would find
     /// no index row yet, call the delete a no-op, and let the object reappear
     /// once the ingestor caught up.
-    pub fn enqueue_delete(&self, tape: Address, key: &[u8]) -> Result<(), TapeStoreError> {
+    pub async fn enqueue_delete(&self, tape: Address, key: &[u8]) -> Result<(), TapeStoreError> {
         let landed = self.landed_put_track(tape, key)?;
         let write = PendingWrite {
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
             op: PendingOp::Delete { track: landed },
             state: PendingState::Queued,
         };
-        self.store.put_pending_write(tape, key, &write, None)?;
+        let replaced = self.counted(tape, key);
+        self.store.put_pending_write(tape, key, &write, None).await?;
+        self.settle_count(tape, replaced, counted_bytes(&write));
         metrics::inc_pending_write("enqueued");
         self.wake.notify_one();
         Ok(())
@@ -191,8 +290,10 @@ impl<Db: Store> StagingStore<Db> {
             }
             return Ok(false);
         }
+        let before = counted_bytes(&entry);
         entry.state = state;
         self.store.put_pending_entry(tape, key, &entry)?;
+        self.settle_count(tape, before, counted_bytes(&entry));
         Ok(true)
     }
 
@@ -204,7 +305,9 @@ impl<Db: Store> StagingStore<Db> {
         if entry.seq != seq {
             return Ok(());
         }
-        self.store.delete_pending_write(tape, key)
+        self.store.delete_pending_write(tape, key)?;
+        self.settle_count(tape, counted_bytes(&entry), 0);
+        Ok(())
     }
 
     /// Wait until a write is queued; the drain also ticks on its own.
@@ -223,7 +326,7 @@ mod tests {
         StagingStore::try_new(Arc::new(TapeStore::new(MemoryStore::new()))).expect("open queue")
     }
 
-    fn put(staging: &StagingStore<MemoryStore>, tape: Address, key: &[u8], data: &[u8]) {
+    async fn put(staging: &StagingStore<MemoryStore>, tape: Address, key: &[u8], data: &[u8]) {
         staging
             .enqueue_put(
                 tape,
@@ -233,15 +336,16 @@ mod tests {
                 Hash([1u8; 32]),
                 1_700_000_000,
             )
+            .await
             .expect("enqueue put");
     }
 
     // a queued put serves its bytes back and is not hidden
-    #[test]
-    fn put_visible() {
+    #[tokio::test]
+    async fn put_visible() {
         let staging = staging();
         let tape = Address::new([1u8; 32]);
-        put(&staging, tape, b"a.txt", b"hello");
+        put(&staging, tape, b"a.txt", b"hello").await;
 
         assert!(staging.entry(tape, b"a.txt").expect("entry").is_some());
         assert_eq!(staging.bytes(tape, b"a.txt").expect("bytes"), Some(b"hello".to_vec()));
@@ -249,38 +353,38 @@ mod tests {
     }
 
     // a delete over a queued put hides the key and drops the bytes
-    #[test]
-    fn delete_supersedes() {
+    #[tokio::test]
+    async fn delete_supersedes() {
         let staging = staging();
         let tape = Address::new([2u8; 32]);
-        put(&staging, tape, b"a.txt", b"hello");
+        put(&staging, tape, b"a.txt", b"hello").await;
 
-        staging.enqueue_delete(tape, b"a.txt").expect("enqueue delete");
+        staging.enqueue_delete(tape, b"a.txt").await.expect("enqueue delete");
 
         assert!(staging.is_deleted(tape, b"a.txt").expect("deleted"));
         assert!(staging.bytes(tape, b"a.txt").expect("bytes").is_none());
     }
 
     // a put after a delete brings the key back
-    #[test]
-    fn put_supersedes() {
+    #[tokio::test]
+    async fn put_supersedes() {
         let staging = staging();
         let tape = Address::new([3u8; 32]);
-        staging.enqueue_delete(tape, b"a.txt").expect("enqueue delete");
+        staging.enqueue_delete(tape, b"a.txt").await.expect("enqueue delete");
 
-        put(&staging, tape, b"a.txt", b"back");
+        put(&staging, tape, b"a.txt", b"back").await;
 
         assert!(!staging.is_deleted(tape, b"a.txt").expect("deleted"));
         assert_eq!(staging.bytes(tape, b"a.txt").expect("bytes"), Some(b"back".to_vec()));
     }
 
     // entries come back in enqueue order, which is the order the drain applies
-    #[test]
-    fn drain_order() {
+    #[tokio::test]
+    async fn drain_order() {
         let staging = staging();
         let tape = Address::new([4u8; 32]);
-        put(&staging, tape, b"z.txt", b"z");
-        put(&staging, tape, b"a.txt", b"a");
+        put(&staging, tape, b"z.txt", b"z").await;
+        put(&staging, tape, b"a.txt", b"a").await;
 
         let keys: Vec<Vec<u8>> = staging
             .entries(tape)
@@ -292,33 +396,33 @@ mod tests {
     }
 
     // a delete over a landed put carries the track the put already wrote
-    #[test]
-    fn delete_carries_track() {
+    #[tokio::test]
+    async fn delete_carries_track() {
         let staging = staging();
         let tape = Address::new([9u8; 32]);
         let track = Address::new([0xAB; 32]);
-        put(&staging, tape, b"a.txt", b"one");
+        put(&staging, tape, b"a.txt", b"one").await;
         let seq = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
         staging
             .set_state(tape, b"a.txt", seq, PendingState::Landed { track })
             .expect("set state");
 
-        staging.enqueue_delete(tape, b"a.txt").expect("enqueue delete");
+        staging.enqueue_delete(tape, b"a.txt").await.expect("enqueue delete");
 
         let entry = staging.entry(tape, b"a.txt").expect("entry").expect("queued");
         assert_eq!(entry.op, PendingOp::Delete { track: Some(track) });
     }
 
     // a delete queued while a put is in flight still gets the track that lands
-    #[test]
-    fn supersede_by_delete() {
+    #[tokio::test]
+    async fn supersede_by_delete() {
         let staging = staging();
         let tape = Address::new([0x21; 32]);
         let track = Address::new([0xAB; 32]);
-        put(&staging, tape, b"a.txt", b"one");
+        put(&staging, tape, b"a.txt", b"one").await;
         let inflight = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
 
-        staging.enqueue_delete(tape, b"a.txt").expect("enqueue delete");
+        staging.enqueue_delete(tape, b"a.txt").await.expect("enqueue delete");
         let is_applied = staging
             .set_state(tape, b"a.txt", inflight, PendingState::Landed { track })
             .expect("set state");
@@ -329,15 +433,15 @@ mod tests {
     }
 
     // a put queued while a put is in flight carries the landed track as its prior
-    #[test]
-    fn supersede_by_put() {
+    #[tokio::test]
+    async fn supersede_by_put() {
         let staging = staging();
         let tape = Address::new([0x22; 32]);
         let track = Address::new([0xCD; 32]);
-        put(&staging, tape, b"a.txt", b"one");
+        put(&staging, tape, b"a.txt", b"one").await;
         let inflight = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
 
-        put(&staging, tape, b"a.txt", b"two");
+        put(&staging, tape, b"a.txt", b"two").await;
         let is_applied = staging
             .set_state(tape, b"a.txt", inflight, PendingState::Landed { track })
             .expect("set state");
@@ -349,11 +453,11 @@ mod tests {
     }
 
     // a state change keeps the queued bytes rather than rewriting them
-    #[test]
-    fn state_keeps_bytes() {
+    #[tokio::test]
+    async fn state_keeps_bytes() {
         let staging = staging();
         let tape = Address::new([0x23; 32]);
-        put(&staging, tape, b"a.txt", b"payload");
+        put(&staging, tape, b"a.txt", b"payload").await;
         let seq = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
 
         let is_applied = staging
@@ -365,13 +469,13 @@ mod tests {
     }
 
     // a state update for a superseded entry is discarded
-    #[test]
-    fn stale_state() {
+    #[tokio::test]
+    async fn stale_state() {
         let staging = staging();
         let tape = Address::new([5u8; 32]);
-        put(&staging, tape, b"a.txt", b"one");
+        put(&staging, tape, b"a.txt", b"one").await;
         let first = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
-        put(&staging, tape, b"a.txt", b"two");
+        put(&staging, tape, b"a.txt", b"two").await;
 
         staging
             .set_state(tape, b"a.txt", first, PendingState::Landed { track: Address::default() })
@@ -383,13 +487,13 @@ mod tests {
     }
 
     // a removal only drops the entry the drain actually finished
-    #[test]
-    fn stale_remove() {
+    #[tokio::test]
+    async fn stale_remove() {
         let staging = staging();
         let tape = Address::new([6u8; 32]);
-        put(&staging, tape, b"a.txt", b"one");
+        put(&staging, tape, b"a.txt", b"one").await;
         let first = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
-        put(&staging, tape, b"a.txt", b"two");
+        put(&staging, tape, b"a.txt", b"two").await;
 
         staging.remove(tape, b"a.txt", first).expect("remove");
 
@@ -397,16 +501,16 @@ mod tests {
     }
 
     // the sequence resumes past the highest stored entry after a restart
-    #[test]
-    fn seq_resumes() {
+    #[tokio::test]
+    async fn seq_resumes() {
         let store = Arc::new(TapeStore::new(MemoryStore::new()));
         let tape = Address::new([7u8; 32]);
         let first = StagingStore::try_new(store.clone()).expect("open queue");
-        put(&first, tape, b"a.txt", b"a");
+        put(&first, tape, b"a.txt", b"a").await;
         let seq = first.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
 
         let second = StagingStore::try_new(store).expect("reopen queue");
-        second.enqueue_delete(tape, b"b.txt").expect("enqueue delete");
+        second.enqueue_delete(tape, b"b.txt").await.expect("enqueue delete");
 
         assert!(second.entry(tape, b"b.txt").expect("entry").expect("queued").seq > seq);
     }

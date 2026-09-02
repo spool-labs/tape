@@ -265,15 +265,34 @@ where
     };
     let current_epoch = state.context.state().epoch();
 
+    // Writes already acknowledged and waiting for the drain have not reached the
+    // chain, so the on-chain `used` figure does not include them. Charging them
+    // here is what stops a burst queueing more than the tape can ever hold.
+    let queued_bytes = state.staging.tape_queued_bytes(tape);
+
     // Fast path: a fresh cached snapshot avoids the RPC entirely.
     if let Some(cached) = cache_get(state.accounting.as_ref(), &tape) {
-        return evaluate_precondition(&cached, our_delegate, current_epoch, size_bytes, &tape);
+        return evaluate_precondition(
+            &cached,
+            our_delegate,
+            current_epoch,
+            size_bytes,
+            queued_bytes,
+            &tape,
+        );
     }
 
     // Cache miss: fetch on-chain. The await is deliberately outside any lock.
     let tape_account = fetch_tape_state(&state.context, &tape).await?;
     cache_put(state.accounting.as_ref(), tape, tape_account);
-    evaluate_precondition(&tape_account, our_delegate, current_epoch, size_bytes, &tape)
+    evaluate_precondition(
+        &tape_account,
+        our_delegate,
+        current_epoch,
+        size_bytes,
+        queued_bytes,
+        &tape,
+    )
 }
 
 /// Fetch the on-chain tape precondition fields, mapping any RPC failure to a
@@ -306,6 +325,7 @@ fn evaluate_precondition(
     our_delegate: Address,
     current_epoch: EpochNumber,
     size_bytes: u64,
+    queued_bytes: u64,
     tape: &Address,
 ) -> Result<(), String> {
     if tape_state.delegate != our_delegate {
@@ -316,7 +336,10 @@ fn evaluate_precondition(
     if tape_state.expiry_epoch <= current_epoch {
         return Err(format!("bucket tape {tape} has expired"));
     }
-    let remaining = tape_state.capacity_bytes.saturating_sub(tape_state.used_bytes);
+    let remaining = tape_state
+        .capacity_bytes
+        .saturating_sub(tape_state.used_bytes)
+        .saturating_sub(queued_bytes);
     if remaining < size_bytes {
         // No S3 code maps cleanly to "insufficient storage" (507).
         return Err(format!(

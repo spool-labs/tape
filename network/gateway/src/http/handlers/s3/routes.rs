@@ -1157,6 +1157,7 @@ where
                     now_unix(),
                     manifest,
                 )
+                .await
                 .map_err(|error| S3Error::Internal(error.to_string()))?;
             etag
         }
@@ -1173,12 +1174,36 @@ where
                 }
             };
             let size = data.len() as u64;
+            check_queue_budget(&state, size)?;
             let permit = authorize_write(&state, auth, tape, &key, WriteOp::Put, size).await?;
             enqueue_put(&state, permit, tape, &key, content_type, data).await?
         }
     };
 
     put_response(etag)
+}
+
+/// Seconds an S3 client waits before retrying a write the queue had no room for.
+const QUEUE_FULL_RETRY_AFTER: Duration = Duration::from_secs(5);
+
+/// Refuse a write the queue has no room for, before any budget is reserved.
+///
+/// The drain is the only thing that empties the queue, so a chain outage would
+/// otherwise grow it until the disk filled. S3 clients retry a 503 SlowDown.
+fn check_queue_budget<Db, Cluster, Blockchain>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    size: u64,
+) -> Result<(), S3Error>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let max_queued_bytes = state.context.config.gateway.s3.max_queued_bytes;
+    if state.staging.is_over_budget(size, max_queued_bytes) {
+        return Err(S3Error::slow_down(QUEUE_FULL_RETRY_AFTER));
+    }
+    Ok(())
 }
 
 /// Queue a buffered object and acknowledge it, settling the write permit.
@@ -1208,14 +1233,17 @@ where
         }
     };
 
-    let queued = state.staging.enqueue_put(
-        tape,
-        key.as_bytes(),
-        Vec::from(data),
-        content_type,
-        computed.etag,
-        now_unix(),
-    );
+    let queued = state
+        .staging
+        .enqueue_put(
+            tape,
+            key.as_bytes(),
+            Vec::from(data),
+            content_type,
+            computed.etag,
+            now_unix(),
+        )
+        .await;
     match queued {
         Ok(()) => {
             permit.commit(state, size);
@@ -1504,7 +1532,7 @@ where
 
     // Hidden from readers the moment this is queued, so the window before the
     // drain reaches the chain never serves what the client just deleted.
-    match state.staging.enqueue_delete(tape, key.as_bytes()) {
+    match state.staging.enqueue_delete(tape, key.as_bytes()).await {
         Ok(()) => {
             permit.commit(state, 0);
             Ok(())
@@ -1932,6 +1960,7 @@ where
 
     // Authorization chokepoint.
     let size = assembled.data.len() as u64;
+    check_queue_budget(state, size)?;
     let permit = authorize_write(state, auth, bucket, &key, WriteOp::CompleteMultipart, size).await?;
 
     // Queued and acknowledged exactly like PutObject: the assembled object is a
