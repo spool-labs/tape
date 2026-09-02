@@ -365,7 +365,7 @@ fn queued_entry(name: &[u8], write: &PendingWrite) -> Option<ObjectEntry> {
             size,
             storage_class: STORAGE_CLASS_STANDARD,
         }),
-        PendingOp::Delete => None,
+        PendingOp::Delete { .. } => None,
     }
 }
 
@@ -425,7 +425,7 @@ fn merge_listing(
     // A key deleted here stays out of the listing until the chain has the delete too.
     let deleted: HashSet<&[u8]> = queued
         .iter()
-        .filter(|(_, write)| matches!(write.op, PendingOp::Delete))
+        .filter(|(_, write)| matches!(write.op, PendingOp::Delete { .. }))
         .map(|(name, _)| name.as_slice())
         .collect();
 
@@ -833,7 +833,7 @@ fn queued_metadata(write: &PendingWrite) -> Option<QueuedObject> {
             etag,
             block_time,
         }),
-        PendingOp::Delete => None,
+        PendingOp::Delete { .. } => None,
     }
 }
 
@@ -2079,7 +2079,7 @@ mod tests {
             key.as_bytes().to_vec(),
             PendingWrite {
                 seq: 2,
-                op: PendingOp::Delete,
+                op: PendingOp::Delete { track: None },
                 state: PendingState::Landed { track: Address::default() },
             },
         )

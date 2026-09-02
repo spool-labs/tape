@@ -215,7 +215,7 @@ mod tests {
     fn delete_entry(seq: u64) -> PendingWrite {
         PendingWrite {
             seq,
-            op: PendingOp::Delete,
+            op: PendingOp::Delete { track: None },
             state: PendingState::Queued,
         }
     }
@@ -260,7 +260,7 @@ mod tests {
 
         let entry = store.get_pending_write(tape, b"a.txt").expect("get").expect("queued");
         assert_eq!(entry.seq, 2);
-        assert_eq!(entry.op, PendingOp::Delete);
+        assert_eq!(entry.op, PendingOp::Delete { track: None });
         assert!(store.get_pending_write_data(tape, b"a.txt").expect("data").is_none());
     }
 

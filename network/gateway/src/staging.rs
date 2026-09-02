@@ -87,16 +87,38 @@ impl<Db: Store> StagingStore<Db> {
     }
 
     /// Queue a delete, dropping any queued Put for the same key and its bytes.
+    ///
+    /// A Put that already landed carries its track over, or the drain would find
+    /// no index row yet, call the delete a no-op, and let the object reappear
+    /// once the ingestor caught up.
     pub fn enqueue_delete(&self, tape: Address, key: &[u8]) -> Result<(), TapeStoreError> {
+        let landed = self.landed_put_track(tape, key)?;
         let write = PendingWrite {
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
-            op: PendingOp::Delete,
+            op: PendingOp::Delete { track: landed },
             state: PendingState::Queued,
         };
         self.store.put_pending_write(tape, key, &write, None)?;
         metrics::inc_pending_write("enqueued");
         self.wake.notify_one();
         Ok(())
+    }
+
+    /// The track a queued Put has already written, when it has one.
+    fn landed_put_track(
+        &self,
+        tape: Address,
+        key: &[u8],
+    ) -> Result<Option<Address>, TapeStoreError> {
+        let Some(entry) = self.store.get_pending_write(tape, key)? else {
+            return Ok(None);
+        };
+        match (entry.op, entry.state) {
+            (PendingOp::Put { .. }, PendingState::Landed { track }) => Ok(Some(track)),
+            (PendingOp::Put { .. }, PendingState::Queued) => Ok(None),
+            (PendingOp::Put { .. }, PendingState::Failed { .. }) => Ok(None),
+            (PendingOp::Delete { track }, _) => Ok(track),
+        }
     }
 
     /// The queue entry for one key, if it has one.
@@ -114,7 +136,7 @@ impl<Db: Store> StagingStore<Db> {
         let Some(entry) = self.store.get_pending_write(tape, key)? else {
             return Ok(false);
         };
-        Ok(matches!(entry.op, PendingOp::Delete))
+        Ok(matches!(entry.op, PendingOp::Delete { .. }))
     }
 
     /// One tape's queue entries under `prefix`, from the inclusive `start` key,
@@ -255,6 +277,24 @@ mod tests {
             .map(|(key, _)| key)
             .collect();
         assert_eq!(keys, vec![b"z.txt".to_vec(), b"a.txt".to_vec()]);
+    }
+
+    // a delete over a landed put carries the track the put already wrote
+    #[test]
+    fn delete_carries_track() {
+        let staging = staging();
+        let tape = Address::new([9u8; 32]);
+        let track = Address::new([0xAB; 32]);
+        put(&staging, tape, b"a.txt", b"one");
+        let seq = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
+        staging
+            .set_state(tape, b"a.txt", seq, PendingState::Landed { track })
+            .expect("set state");
+
+        staging.enqueue_delete(tape, b"a.txt").expect("enqueue delete");
+
+        let entry = staging.entry(tape, b"a.txt").expect("entry").expect("queued");
+        assert_eq!(entry.op, PendingOp::Delete { track: Some(track) });
     }
 
     // a state update for a superseded entry is discarded

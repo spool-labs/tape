@@ -451,7 +451,11 @@ pub enum PendingOp {
         block_time: i64,
     },
     /// Delete the object's track
-    Delete,
+    Delete {
+        /// The track a superseded Put already landed, when the queue knew it.
+        /// `None` leaves the drain to resolve the track from the object index.
+        track: Option<Address>,
+    },
 }
 
 /// How far a queued S3 write has got.

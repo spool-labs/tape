@@ -153,7 +153,7 @@ where
             PendingOp::Put { etag, .. } => {
                 indexed.is_some_and(|resolved| resolved.etag == etag)
             }
-            PendingOp::Delete => indexed.is_none(),
+            PendingOp::Delete { .. } => indexed.is_none(),
         };
         if !is_visible {
             return false;
@@ -202,7 +202,7 @@ where
     ) -> Result<Address, TapedriveError> {
         match write.op {
             PendingOp::Put { content_type, .. } => self.put(tape, key, content_type).await,
-            PendingOp::Delete => self.delete(tape, key).await,
+            PendingOp::Delete { track } => self.delete(tape, key, track).await,
         }
     }
 
@@ -230,8 +230,20 @@ where
     }
 
     /// Delete the track a queued delete names; an already-gone key is a success.
-    async fn delete(&self, tape: Address, key: &[u8]) -> Result<Address, TapedriveError> {
-        let Some(track) = self.indexed_track(tape, key)? else {
+    ///
+    /// `landed` is the track a superseded Put wrote, which the index may not show
+    /// yet; without it the track comes from the index.
+    async fn delete(
+        &self,
+        tape: Address,
+        key: &[u8],
+        landed: Option<Address>,
+    ) -> Result<Address, TapedriveError> {
+        let track = match landed {
+            Some(track) => Some(track),
+            None => self.indexed_track(tape, key)?,
+        };
+        let Some(track) = track else {
             return Ok(Address::default());
         };
         match self.write_ctx.delete_object(self.context.as_ref(), tape, track).await {
