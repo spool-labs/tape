@@ -177,6 +177,8 @@ where
             Ok(track) => {
                 self.clear_retry(tape, key);
                 metrics::inc_pending_write("landed");
+                // A false return means the client replaced this write while it
+                // was in flight; the track went to the replacement instead.
                 if let Err(error) =
                     self.staging.set_state(tape, key, write.seq, PendingState::Landed { track })
                 {
@@ -201,17 +203,25 @@ where
         write: &PendingWrite,
     ) -> Result<Address, TapedriveError> {
         match write.op {
-            PendingOp::Put { content_type, .. } => self.put(tape, key, content_type).await,
+            PendingOp::Put { content_type, prior, .. } => {
+                self.put(tape, key, content_type, prior).await
+            }
             PendingOp::Delete { track } => self.delete(tape, key, track).await,
         }
     }
 
-    /// Write a queued object, resuming or overwriting whatever the index binds.
+    /// Write a queued object, resuming or overwriting whatever it supersedes.
+    ///
+    /// `prior` is the track a superseded write landed, which the index may not
+    /// show yet; without it the track comes from the index, resolved now rather
+    /// than at enqueue so an overwrite reclaims what the name binds at the moment
+    /// the write actually goes out.
     async fn put(
         &self,
         tape: Address,
         key: &[u8],
         content_type: ContentType,
+        prior: Option<Address>,
     ) -> Result<Address, TapedriveError> {
         let bytes = self
             .staging
@@ -219,9 +229,10 @@ where
             .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?
             .ok_or(TapedriveError::NotFound)?;
 
-        // Resolved now rather than at enqueue: an overwrite has to reclaim the
-        // track the index binds at the moment the write actually goes out.
-        let existing = self.indexed_track(tape, key)?;
+        let existing = match prior {
+            Some(track) => Some(track),
+            None => self.indexed_track(tape, key)?,
+        };
         let (_etag, track) = self
             .write_ctx
             .write_object(self.context.as_ref(), tape, key, content_type, &bytes, existing)

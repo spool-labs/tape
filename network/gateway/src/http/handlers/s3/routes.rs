@@ -358,7 +358,7 @@ fn indexed_entry(name: &[u8], entry: &ObjectListEntry) -> ObjectEntry {
 /// on-chain record to read it from yet. A queued delete has no row.
 fn queued_entry(name: &[u8], write: &PendingWrite) -> Option<ObjectEntry> {
     match write.op {
-        PendingOp::Put { etag, size, block_time, content_type: _ } => Some(ObjectEntry {
+        PendingOp::Put { etag, size, block_time, content_type: _, prior: _ } => Some(ObjectEntry {
             key: String::from_utf8_lossy(name).into_owned(),
             last_modified: Some(block_time),
             etag: etag.to_string(),
@@ -827,7 +827,7 @@ struct QueuedObject {
 /// The metadata of a queued Put, or `None` for a queued Delete
 fn queued_metadata(write: &PendingWrite) -> Option<QueuedObject> {
     match write.op {
-        PendingOp::Put { content_type, etag, size, block_time } => Some(QueuedObject {
+        PendingOp::Put { content_type, etag, size, block_time, prior: _ } => Some(QueuedObject {
             size,
             content_type,
             etag,
@@ -2068,6 +2068,7 @@ mod tests {
                     etag: Hash([9u8; 32]),
                     size: size as u64,
                     block_time: 123,
+                    prior: None,
                 },
                 state: PendingState::Queued,
             },

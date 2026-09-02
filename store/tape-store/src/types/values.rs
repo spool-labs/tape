@@ -449,6 +449,10 @@ pub enum PendingOp {
         size: u64,
         /// Last-modified time in unix seconds, set when the write was accepted
         block_time: i64,
+        /// The track a superseded write already landed, when the queue knew it.
+        /// The write overwrites and reclaims it instead of orphaning it; `None`
+        /// leaves the drain to resolve the track from the object index.
+        prior: Option<Address>,
     },
     /// Delete the object's track
     Delete {

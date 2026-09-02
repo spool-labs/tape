@@ -9,7 +9,7 @@ use tape_crypto::address::Address;
 
 use crate::columns::{S3PendingWriteCol, S3PendingWriteDataCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{PendingWrite, PendingWriteData, PendingWriteKey};
+use crate::types::{PendingOp, PendingWrite, PendingWriteData, PendingWriteKey};
 use crate::TapeStore;
 
 /// Serialize a value to raw bytes for a write batch.
@@ -38,6 +38,18 @@ pub trait PendingWriteOps {
         write: &PendingWrite,
         data: Option<Vec<u8>>,
     ) -> Result<()>;
+
+    /// Overwrite the queue entry for `(tape, key)`, leaving its bytes alone.
+    ///
+    /// A state change must not rewrite the payload; a large object would be read
+    /// and written back on every pass of the drain.
+    fn put_pending_entry(&self, tape: Address, key: &[u8], write: &PendingWrite) -> Result<()>;
+
+    /// Record `track` on the entry for `(tape, key)` as the track a superseded
+    /// write already landed, when the entry does not name one yet.
+    ///
+    /// Returns whether the entry changed.
+    fn attach_landed_track(&self, tape: Address, key: &[u8], track: Address) -> Result<bool>;
 
     /// The queue entry for `(tape, key)`, if present
     fn get_pending_write(&self, tape: Address, key: &[u8]) -> Result<Option<PendingWrite>>;
@@ -91,6 +103,25 @@ impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
         }
         self.inner().inner().write_batch(batch)?;
         Ok(())
+    }
+
+    fn put_pending_entry(&self, tape: Address, key: &[u8], write: &PendingWrite) -> Result<()> {
+        self.put::<S3PendingWriteCol>(&PendingWriteKey::new(tape, key.to_vec()), write)?;
+        Ok(())
+    }
+
+    fn attach_landed_track(&self, tape: Address, key: &[u8], track: Address) -> Result<bool> {
+        let Some(mut entry) = self.get_pending_write(tape, key)? else {
+            return Ok(false);
+        };
+        match &mut entry.op {
+            PendingOp::Put { prior: prior @ None, .. } => *prior = Some(track),
+            PendingOp::Delete { track: named @ None } => *named = Some(track),
+            PendingOp::Put { .. } => return Ok(false),
+            PendingOp::Delete { .. } => return Ok(false),
+        }
+        self.put_pending_entry(tape, key, &entry)?;
+        Ok(true)
     }
 
     fn get_pending_write(&self, tape: Address, key: &[u8]) -> Result<Option<PendingWrite>> {
@@ -207,6 +238,7 @@ mod tests {
                 etag: hash(data),
                 size: data.len() as u64,
                 block_time: 1_700_000_000,
+                prior: None,
             },
             state: PendingState::Queued,
         }
@@ -323,6 +355,61 @@ mod tests {
         queue_put(&store, tape, "c", 2, b"c");
 
         assert_eq!(store.max_pending_write_seq().expect("seq"), 9);
+    }
+
+    // a state change leaves the payload row untouched
+    #[test]
+    fn entry_only_write() {
+        let store = store();
+        let tape = Address::new([0x11; 32]);
+        queue_put(&store, tape, "a.txt", 1, b"payload");
+
+        let mut entry = put_entry(1, b"payload");
+        entry.state = PendingState::Landed { track: Address::new([0xCD; 32]) };
+        store.put_pending_entry(tape, b"a.txt", &entry).expect("entry write");
+
+        assert_eq!(
+            store.get_pending_write_data(tape, b"a.txt").expect("data"),
+            Some(b"payload".to_vec()),
+            "the payload row was not rewritten or dropped"
+        );
+        assert!(matches!(
+            store.get_pending_write(tape, b"a.txt").expect("get").expect("queued").state,
+            PendingState::Landed { .. }
+        ));
+    }
+
+    // an entry-only write never creates a payload row
+    #[test]
+    fn entry_only_leaves_no_payload() {
+        let store = store();
+        let tape = Address::new([0x12; 32]);
+
+        store
+            .put_pending_entry(tape, b"a.txt", &delete_entry(1))
+            .expect("entry write");
+
+        assert!(store.get_pending_write_data(tape, b"a.txt").expect("data").is_none());
+    }
+
+    // attaching a landed track fills in a delete that named none
+    #[test]
+    fn attach_to_delete() {
+        let store = store();
+        let tape = Address::new([0x13; 32]);
+        let track = Address::new([0xEF; 32]);
+        store
+            .put_pending_entry(tape, b"a.txt", &delete_entry(2))
+            .expect("entry write");
+
+        assert!(store.attach_landed_track(tape, b"a.txt", track).expect("attach"));
+
+        let entry = store.get_pending_write(tape, b"a.txt").expect("get").expect("queued");
+        assert_eq!(entry.op, PendingOp::Delete { track: Some(track) });
+        assert!(
+            !store.attach_landed_track(tape, b"a.txt", Address::default()).expect("attach"),
+            "a track already named is never replaced"
+        );
     }
 
     // a landed or failed state survives the round trip the drain needs

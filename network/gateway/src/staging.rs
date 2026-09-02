@@ -42,6 +42,9 @@ impl<Db: Store> StagingStore<Db> {
     }
 
     /// Queue a written object with its bytes, superseding whatever the key held.
+    ///
+    /// A superseded write that already landed hands its track over, so this one
+    /// overwrites and reclaims it rather than leaving it orphaned.
     pub fn enqueue_put(
         &self,
         tape: Address,
@@ -52,9 +55,10 @@ impl<Db: Store> StagingStore<Db> {
         block_time: i64,
     ) -> Result<(), TapeStoreError> {
         let size = data.len() as u64;
+        let prior = self.landed_put_track(tape, key)?;
         let write = PendingWrite {
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
-            op: PendingOp::Put { content_type, etag, size, block_time },
+            op: PendingOp::Put { content_type, etag, size, block_time, prior },
             state: PendingState::Queued,
         };
         self.store.put_pending_write(tape, key, &write, Some(data))?;
@@ -77,7 +81,7 @@ impl<Db: Store> StagingStore<Db> {
     ) -> Result<(), TapeStoreError> {
         let write = PendingWrite {
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
-            op: PendingOp::Put { content_type, etag, size, block_time },
+            op: PendingOp::Put { content_type, etag, size, block_time, prior: None },
             state: PendingState::Landed { track },
         };
         self.store.put_pending_write(tape, key, &write, None)?;
@@ -115,8 +119,10 @@ impl<Db: Store> StagingStore<Db> {
         };
         match (entry.op, entry.state) {
             (PendingOp::Put { .. }, PendingState::Landed { track }) => Ok(Some(track)),
-            (PendingOp::Put { .. }, PendingState::Queued) => Ok(None),
-            (PendingOp::Put { .. }, PendingState::Failed { .. }) => Ok(None),
+            // A write still in flight has not landed, but it may itself be
+            // carrying the track of the write it superseded.
+            (PendingOp::Put { prior, .. }, PendingState::Queued) => Ok(prior),
+            (PendingOp::Put { prior, .. }, PendingState::Failed { .. }) => Ok(prior),
             (PendingOp::Delete { track }, _) => Ok(track),
         }
     }
@@ -162,26 +168,32 @@ impl<Db: Store> StagingStore<Db> {
         Ok(entries)
     }
 
-    /// Record how far the drain got with one entry, leaving its bytes in place.
+    /// Record how far the drain got with one entry, leaving its bytes in place,
+    /// and report whether it applied.
     ///
-    /// A newer entry for the same key means the client has since replaced this
-    /// write, so the outcome of the old one is discarded rather than written back.
+    /// A newer entry for the same key means the client replaced this write while
+    /// it was in flight. Its outcome is not written back, but a track it landed
+    /// is handed to that newer entry, or the object would be orphaned on chain
+    /// and reappear once the ingestor indexed it.
     pub fn set_state(
         &self,
         tape: Address,
         key: &[u8],
         seq: u64,
         state: PendingState,
-    ) -> Result<(), TapeStoreError> {
+    ) -> Result<bool, TapeStoreError> {
         let Some(mut entry) = self.store.get_pending_write(tape, key)? else {
-            return Ok(());
+            return Ok(false);
         };
         if entry.seq != seq {
-            return Ok(());
+            if let PendingState::Landed { track } = state {
+                self.store.attach_landed_track(tape, key, track)?;
+            }
+            return Ok(false);
         }
-        let data = self.store.get_pending_write_data(tape, key)?;
         entry.state = state;
-        self.store.put_pending_write(tape, key, &entry, data)
+        self.store.put_pending_entry(tape, key, &entry)?;
+        Ok(true)
     }
 
     /// Drop an entry the index has caught up with.
@@ -295,6 +307,61 @@ mod tests {
 
         let entry = staging.entry(tape, b"a.txt").expect("entry").expect("queued");
         assert_eq!(entry.op, PendingOp::Delete { track: Some(track) });
+    }
+
+    // a delete queued while a put is in flight still gets the track that lands
+    #[test]
+    fn supersede_by_delete() {
+        let staging = staging();
+        let tape = Address::new([0x21; 32]);
+        let track = Address::new([0xAB; 32]);
+        put(&staging, tape, b"a.txt", b"one");
+        let inflight = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
+
+        staging.enqueue_delete(tape, b"a.txt").expect("enqueue delete");
+        let is_applied = staging
+            .set_state(tape, b"a.txt", inflight, PendingState::Landed { track })
+            .expect("set state");
+
+        assert!(!is_applied, "the in-flight write was already superseded");
+        let entry = staging.entry(tape, b"a.txt").expect("entry").expect("queued");
+        assert_eq!(entry.op, PendingOp::Delete { track: Some(track) });
+    }
+
+    // a put queued while a put is in flight carries the landed track as its prior
+    #[test]
+    fn supersede_by_put() {
+        let staging = staging();
+        let tape = Address::new([0x22; 32]);
+        let track = Address::new([0xCD; 32]);
+        put(&staging, tape, b"a.txt", b"one");
+        let inflight = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
+
+        put(&staging, tape, b"a.txt", b"two");
+        let is_applied = staging
+            .set_state(tape, b"a.txt", inflight, PendingState::Landed { track })
+            .expect("set state");
+
+        assert!(!is_applied, "the in-flight write was already superseded");
+        let entry = staging.entry(tape, b"a.txt").expect("entry").expect("queued");
+        assert!(matches!(entry.op, PendingOp::Put { prior: Some(carried), .. } if carried == track));
+        assert_eq!(staging.bytes(tape, b"a.txt").expect("bytes"), Some(b"two".to_vec()));
+    }
+
+    // a state change keeps the queued bytes rather than rewriting them
+    #[test]
+    fn state_keeps_bytes() {
+        let staging = staging();
+        let tape = Address::new([0x23; 32]);
+        put(&staging, tape, b"a.txt", b"payload");
+        let seq = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
+
+        let is_applied = staging
+            .set_state(tape, b"a.txt", seq, PendingState::Landed { track: Address::default() })
+            .expect("set state");
+
+        assert!(is_applied);
+        assert_eq!(staging.bytes(tape, b"a.txt").expect("bytes"), Some(b"payload".to_vec()));
     }
 
     // a state update for a superseded entry is discarded
