@@ -133,3 +133,30 @@ fn concurrent_size_sweep() {
     }
     assert!(faulty.is_empty(), "sizes with wrong values (bytes, count): {faulty:?}");
 }
+
+/// The same concurrent writes on the posix backend, wherever the test runs
+#[test]
+#[ignore = "reel corrupts multi-MiB values written concurrently; red until the engine race is fixed"]
+fn concurrent_parts_posix() {
+    use reel::IoBackend;
+    use reel_store::{node_config, ReelStore, Reserve, DEFAULT_SYNC_BYTES, TAPE_COLUMNS};
+    use tape_store::TapeStore;
+
+    let dir = TempDir::new().expect("temp dir");
+    let config = node_config(0, DEFAULT_SYNC_BYTES, IoBackend::Posix, Reserve::Small);
+    let store = TapeStore::new(ReelStore::open(dir.path(), config, TAPE_COLUMNS).expect("open posix"));
+    std::thread::scope(|scope| {
+        for lane in 0..4u32 {
+            let store = &store;
+            scope.spawn(move || {
+                for number in (1..=PARTS).filter(|number| number % 4 == lane) {
+                    store
+                        .put_multipart_part("upload", &part(number), pattern(number as u64, PART_BYTES))
+                        .expect("put part");
+                }
+            });
+        }
+    });
+    let bad = mismatches(&store);
+    assert!(bad.is_empty(), "posix parts differ after concurrent writes (number, len, first bad, bad bytes): {bad:?}");
+}
