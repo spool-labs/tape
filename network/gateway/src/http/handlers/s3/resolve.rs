@@ -1,7 +1,8 @@
 //! S3 `(bucket, key)` to backing object-track resolution
 //!
-//! An S3 bucket is a base58 tape address and an object key is a name in the
-//! store's object index; the shared resolver does the lookup and this module
+//! An S3 bucket is a tape address, written either in base58 or as the lowercase
+//! label S3 clients accept as a bucket name; an object key is a name in the
+//! store's object index. The shared resolver does the lookup and this module
 //! maps its errors into the S3 error domain.
 
 use rpc::Rpc;
@@ -13,9 +14,18 @@ use super::error::S3Error;
 use crate::http::handlers::resolve::{self, ResolvedObject};
 use crate::http::state::AppState;
 
-/// Parse an S3 bucket label as a base58 tape Address.
+/// Parse an S3 bucket label as a tape Address, base58 or the lowercase label
 pub fn parse_bucket(bucket: &str) -> Result<Address, S3Error> {
-    bucket.parse().map_err(|_| S3Error::NoSuchBucket)
+    bucket
+        .parse()
+        .ok()
+        .or_else(|| Address::try_from_subdomain_label(bucket))
+        .ok_or(S3Error::NoSuchBucket)
+}
+
+/// The bucket name a client is handed: lowercase, so every S3 client's name check passes
+pub fn bucket_name(tape: Address) -> String {
+    tape.to_subdomain_label()
 }
 
 /// Resolve an S3 `(bucket, key)` pair to its backing object track
@@ -37,6 +47,14 @@ mod tests {
     fn valid_bucket() {
         // 32 base58 '1' digits decode to the 32-zero (default) address.
         assert!(parse_bucket("11111111111111111111111111111111").is_ok());
+    }
+
+    // the lowercase label names the same tape as its base58 form
+    #[test]
+    fn label_bucket() {
+        let tape = Address::new([9u8; 32]);
+        assert_eq!(parse_bucket(&bucket_name(tape)).expect("label parses"), tape);
+        assert_eq!(parse_bucket(&tape.to_string()).expect("base58 parses"), tape);
     }
 
     // a non-address bucket label maps to NoSuchBucket

@@ -50,7 +50,7 @@ use super::chunked::object_reader;
 use super::clock::now_unix;
 use super::error::S3Error;
 use super::multipart::{self, CompletedPartRef};
-use super::resolve::{parse_bucket, resolve_object};
+use super::resolve::{parse_bucket, resolve_object, bucket_name};
 use crate::http::handlers::resolve::ResolvedObject;
 use super::response::{
     delete_response, head_response, put_response, set_last_modified, upload_part_response,
@@ -191,7 +191,7 @@ where
         Some((_, CredentialScope::Buckets(addresses))) => addresses
             .into_iter()
             .map(|address| BucketEntry {
-                name: address.to_string(),
+                name: bucket_name(address),
                 creation_date: 0,
             })
             .collect(),
@@ -208,7 +208,7 @@ where
                 .is_some();
             if reserved {
                 vec![BucketEntry {
-                    name: tape.to_string(),
+                    name: bucket_name(tape),
                     creation_date: 0,
                 }]
             } else {

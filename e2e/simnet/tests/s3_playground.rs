@@ -181,6 +181,7 @@ async fn playground_inner() {
 
     let admin_base = gateway.s3_admin_base_url();
     let bucket_label = bucket.to_string();
+    let label = bucket.to_subdomain_label();
     let principal_label = principal.to_string();
     admin_issue_credential(&admin_base, &principal_label, &bucket_label).await;
     admin_create_policy_rule(&admin_base, &principal_label, &bucket_label).await;
@@ -193,6 +194,7 @@ async fn playground_inner() {
         "S3_ENDPOINT={endpoint}\n\
          S3_DOCKER_ENDPOINT=http://host.docker.internal:{S3_PORT}\n\
          S3_BUCKET={bucket_label}\n\
+         S3_BUCKET_LABEL={label}\n\
          AWS_ACCESS_KEY_ID={ACCESS_KEY_ID}\n\
          AWS_SECRET_ACCESS_KEY={SECRET_ACCESS_KEY}\n\
          S3_ADMIN={admin_base}\n\
