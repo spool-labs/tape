@@ -500,6 +500,71 @@ mod tests {
         assert!(staging.entry(tape, b"a.txt").expect("entry").is_some());
     }
 
+    // a reopened queue keeps every entry, its bytes and a rising sequence
+    #[tokio::test]
+    async fn restart_resume() {
+        let store = Arc::new(TapeStore::new(MemoryStore::new()));
+        let tape = Address::new([0x31; 32]);
+        let mut highest = 0;
+        {
+            let staging = StagingStore::try_new(store.clone()).expect("open queue");
+            put(&staging, tape, b"a.txt", b"alpha").await;
+            put(&staging, tape, b"b.txt", b"beta").await;
+            staging.enqueue_delete(tape, b"c.txt").await.expect("enqueue delete");
+            for (_, write) in staging.entries(tape).expect("entries") {
+                highest = highest.max(write.seq);
+            }
+        }
+
+        let reopened = StagingStore::try_new(store).expect("reopen queue");
+
+        let entries = reopened.entries(tape).expect("entries");
+        assert_eq!(entries.len(), 3);
+        assert_eq!(reopened.bytes(tape, b"a.txt").expect("bytes"), Some(b"alpha".to_vec()));
+        assert_eq!(reopened.bytes(tape, b"b.txt").expect("bytes"), Some(b"beta".to_vec()));
+        assert!(reopened.is_deleted(tape, b"c.txt").expect("deleted"));
+        assert_eq!(reopened.queued_bytes(), 9, "the byte count is recounted at open");
+
+        reopened.enqueue_delete(tape, b"d.txt").await.expect("enqueue delete");
+        let next = reopened.entry(tape, b"d.txt").expect("entry").expect("queued").seq;
+        assert!(next > highest, "the sequence continues past every stored entry");
+    }
+
+    // the byte budget refuses a write once the queue is full
+    #[tokio::test]
+    async fn byte_budget() {
+        let staging = staging();
+        let tape = Address::new([0x32; 32]);
+        put(&staging, tape, b"a.txt", b"0123456789").await;
+
+        assert_eq!(staging.queued_bytes(), 10);
+        assert_eq!(staging.tape_queued_bytes(tape), 10);
+        assert!(staging.is_over_budget(1, 10));
+        assert!(!staging.is_over_budget(1, 16));
+
+        // A landed write no longer holds the bucket's capacity down.
+        let seq = staging.entry(tape, b"a.txt").expect("entry").expect("queued").seq;
+        staging
+            .set_state(tape, b"a.txt", seq, PendingState::Landed { track: Address::default() })
+            .expect("set state");
+        assert_eq!(staging.queued_bytes(), 0);
+        assert_eq!(staging.tape_queued_bytes(tape), 0);
+    }
+
+    // a replaced entry stops counting the bytes it held
+    #[tokio::test]
+    async fn replace_recounts() {
+        let staging = staging();
+        let tape = Address::new([0x33; 32]);
+        put(&staging, tape, b"a.txt", b"0123456789").await;
+
+        put(&staging, tape, b"a.txt", b"01").await;
+        assert_eq!(staging.queued_bytes(), 2);
+
+        staging.enqueue_delete(tape, b"a.txt").await.expect("enqueue delete");
+        assert_eq!(staging.queued_bytes(), 0, "a delete holds no bytes");
+    }
+
     // the sequence resumes past the highest stored entry after a restart
     #[tokio::test]
     async fn seq_resumes() {

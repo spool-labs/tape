@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::future::join_all;
-use rpc::Rpc;
+use rpc::{Rpc, RpcError};
 use store::Store;
 use tape_core::types::ContentType;
 use tape_crypto::address::Address;
@@ -35,13 +35,144 @@ const RETRY_MIN: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 /// Retry interval once an entry has been marked failed.
 const FAILED_RETRY: Duration = Duration::from_secs(300);
-/// Attempts before an entry is marked failed; it is still retried after that.
-const MAX_ATTEMPTS: u32 = 10;
+/// Consecutive permanent failures before an entry is marked failed; it is still
+/// retried after that, because funds and capacity can be topped up.
+const MAX_ATTEMPTS: u32 = 3;
+/// How often one bucket's transient outage is logged, however many entries hit it.
+const OUTAGE_LOG_INTERVAL: Duration = Duration::from_secs(60);
+/// How often the delegate's SOL balance is read.
+const BALANCE_INTERVAL: Duration = Duration::from_secs(60);
+/// Balance below which chain attempts pause: a payer under the rent floor gets
+/// its transactions dropped, which reaches the drain as a timeout rather than as
+/// the funding problem it is.
+const DELEGATE_LAMPORTS_FLOOR: u64 = 50_000_000;
+
+/// Program errors that mean the write will fail the same way until an operator
+/// acts, matched on the transaction message the runtime returned.
+const PERMANENT_TRANSACTION_ERRORS: &[&str] = &[
+    "insufficient funds",
+    "insufficient lamports",
+    "insufficient capacity",
+    "account already in use",
+    "invalid account data for instruction",
+];
+
+/// Transport and cluster failures that clear on their own, matched on text the
+/// typed variants do not separate.
+const TRANSIENT_TRANSACTION_ERRORS: &[&str] = &[
+    "blockhash",
+    "unreachable",
+    "connection",
+    "timed out",
+    "timeout",
+    "quorum",
+];
+
+/// Whether an error will clear on its own once the cluster or a peer is back.
+///
+/// A transient error never marks an entry failed: the moment the chain is back
+/// the queue has to move at the backoff ceiling, not once every five minutes.
+fn is_transient(error: &TapedriveError) -> bool {
+    match error {
+        TapedriveError::Rpc(rpc_error) => is_transient_rpc(rpc_error),
+        TapedriveError::Network(_) => true,
+        TapedriveError::Peer(_) => true,
+        TapedriveError::RateLimited { .. } => true,
+        TapedriveError::Io(_) => true,
+        TapedriveError::Certification(_) => true,
+        TapedriveError::Upload(_) => true,
+        TapedriveError::Download(_) => true,
+        TapedriveError::NotFound => true,
+        TapedriveError::InsufficientCapacity { .. } => false,
+        TapedriveError::WriteConflict { .. } => false,
+        TapedriveError::CommitmentMismatch => false,
+        TapedriveError::MissingPayer => false,
+        TapedriveError::Encoding(_) => false,
+        TapedriveError::InvalidArgument(_) => false,
+        TapedriveError::Stream(_) => false,
+    }
+}
+
+/// Whether one RPC failure is transient.
+fn is_transient_rpc(error: &RpcError) -> bool {
+    match error {
+        RpcError::Transaction { message, .. } => is_transient_message(message),
+        RpcError::Request(_) => true,
+        RpcError::Timeout(_) => true,
+        RpcError::BlockNotAvailable => true,
+        RpcError::AllEndpointsFailed { .. } => true,
+        RpcError::AccountNotFound(_) => true,
+        RpcError::TransactionNotFound(_) => true,
+        RpcError::BlockhashExpired => true,
+        RpcError::Internal(_) => true,
+        RpcError::Deserialization(_) => false,
+    }
+}
+
+/// Classify a transaction failure by the message the runtime returned.
+///
+/// A message naming a permanent program error wins; anything else is treated as
+/// transient, so an unrecognised failure keeps retrying rather than parking.
+fn is_transient_message(message: &str) -> bool {
+    let message = message.to_lowercase();
+    for permanent in PERMANENT_TRANSACTION_ERRORS {
+        if message.contains(permanent) {
+            return false;
+        }
+    }
+    for transient in TRANSIENT_TRANSACTION_ERRORS {
+        if message.contains(transient) {
+            return true;
+        }
+    }
+    true
+}
 
 /// What the drain remembers between passes about a struggling entry.
 struct Retry {
+    /// Failures of any kind, driving the exponential backoff.
+    steps: u32,
+    /// Permanent failures only; a transient one never parks the entry.
     attempts: u32,
     next_attempt: Instant,
+}
+
+/// What the drain reports about its own health.
+#[derive(Clone, Debug, Default)]
+pub struct DrainHealth {
+    /// Delegate signer balance in lamports, once it has been read.
+    pub delegate_lamports: Option<u64>,
+    /// Why chain attempts are held, when they are.
+    pub paused_reason: Option<String>,
+}
+
+/// The drain's health, published for the admin control plane to read.
+#[derive(Default)]
+pub struct DrainStatus {
+    health: Mutex<DrainHealth>,
+}
+
+impl DrainStatus {
+    /// An empty status, which is what the admin plane sees with no drain running.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The last published health.
+    pub fn health(&self) -> DrainHealth {
+        match self.health.lock() {
+            Ok(health) => health.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Replace the published health.
+    fn publish(&self, health: DrainHealth) {
+        match self.health.lock() {
+            Ok(mut current) => *current = health,
+            Err(poisoned) => *poisoned.into_inner() = health,
+        }
+    }
 }
 
 /// Drains the durable S3 write queue onto the chain.
@@ -50,6 +181,10 @@ pub struct WriteDrain<Db: Store, Cluster: Api, Blockchain: Rpc> {
     write_ctx: Arc<S3WriteContext>,
     staging: Arc<StagingStore<Db>>,
     retries: Mutex<HashMap<(Address, Vec<u8>), Retry>>,
+    /// When each bucket's transient outage was last logged, so an outage costs
+    /// one line a minute rather than one per attempt.
+    outage_logged: Mutex<HashMap<Address, Instant>>,
+    status: Arc<DrainStatus>,
     cancel: CancellationToken,
 }
 
@@ -64,6 +199,7 @@ where
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         write_ctx: Arc<S3WriteContext>,
         staging: Arc<StagingStore<Db>>,
+        status: Arc<DrainStatus>,
         cancel: CancellationToken,
     ) -> Self {
         Self {
@@ -71,12 +207,15 @@ where
             write_ctx,
             staging,
             retries: Mutex::new(HashMap::new()),
+            outage_logged: Mutex::new(HashMap::new()),
+            status,
             cancel,
         }
     }
 
     /// Drain until cancelled, waking on each enqueue and ticking regardless.
     pub async fn run(self) -> Result<(), NodeError> {
+        let mut balance_read_at = Instant::now() - BALANCE_INTERVAL;
         loop {
             tokio::select! {
                 // Safe: cancellation carries no partial state.
@@ -86,8 +225,52 @@ where
                 // Safe: sleep is cancellation-safe.
                 _ = tokio::time::sleep(DRAIN_TICK) => {}
             }
+            if balance_read_at.elapsed() >= BALANCE_INTERVAL {
+                self.read_delegate_balance().await;
+                balance_read_at = Instant::now();
+            }
             self.pass().await;
         }
+    }
+
+    /// Read the delegate's balance, publish it, and hold chain attempts while it
+    /// is under the floor.
+    ///
+    /// A payer below the rent floor has its transactions silently dropped, so
+    /// attempting anyway burns the backoff and reports timeouts that say nothing
+    /// about the real cause.
+    async fn read_delegate_balance(&self) {
+        let delegate = self.write_ctx.delegate_address();
+        let lamports = match self.context.rpc.rpc().get_account(&delegate).await {
+            Ok(account) => account.lamports,
+            Err(error) => {
+                warn!(%error, %delegate, "s3 drain: delegate balance unavailable");
+                return;
+            }
+        };
+        metrics::set_delegate_lamports(lamports);
+
+        let was_paused = self.status.health().paused_reason.is_some();
+        let paused_reason = match lamports < DELEGATE_LAMPORTS_FLOOR {
+            true => Some(format!(
+                "delegate {delegate} holds {lamports} lamports, under the {DELEGATE_LAMPORTS_FLOOR} floor"
+            )),
+            false => None,
+        };
+        if let Some(reason) = &paused_reason {
+            if !was_paused {
+                warn!(%reason, "s3 drain: chain writes paused, queue holding");
+            }
+        }
+        self.status.publish(DrainHealth {
+            delegate_lamports: Some(lamports),
+            paused_reason,
+        });
+    }
+
+    /// Whether chain attempts are held right now.
+    fn is_paused(&self) -> bool {
+        self.status.health().paused_reason.is_some()
     }
 
     /// One sweep of every bucket with queued work.
@@ -106,6 +289,7 @@ where
         }
         let remaining: u64 = join_all(passes).await.into_iter().sum();
         metrics::set_pending_writes_queued(remaining);
+        metrics::set_pending_writes_queued_bytes(self.staging.queued_bytes());
     }
 
     /// Apply one bucket's entries in queue order, returning how many are left.
@@ -169,7 +353,7 @@ where
 
     /// Try the chain write for one entry, honouring its backoff.
     async fn attempt(&self, tape: Address, key: &[u8], write: &PendingWrite) -> bool {
-        if !self.is_due(tape, key) {
+        if self.is_paused() || !self.is_due(tape, key) {
             return false;
         }
 
@@ -282,8 +466,12 @@ where
         }
     }
 
-    /// Record a failed attempt, backing off and marking the entry failed once it
-    /// has run out of attempts. It is still retried and still served to readers.
+    /// Record a failed attempt and back off.
+    ///
+    /// A transient failure keeps the entry queued and the backoff capped, so the
+    /// bucket resumes at full speed the moment the cluster is back. A permanent
+    /// one parks the entry after a few tries; it is still retried on the slow
+    /// beat, and still served to readers.
     fn record_failure(
         &self,
         tape: Address,
@@ -291,15 +479,20 @@ where
         write: &PendingWrite,
         error: &TapedriveError,
     ) {
-        let attempts = self.back_off(tape, key);
+        let is_transient = is_transient(error);
+        let attempts = self.back_off(tape, key, is_transient);
+        if is_transient {
+            self.log_outage(tape, error);
+            return;
+        }
+
         warn!(
             %error,
             %tape,
             key = %String::from_utf8_lossy(key),
             attempts,
-            "s3 drain: chain write failed, will retry"
+            "s3 drain: chain write rejected, will retry"
         );
-
         if attempts < MAX_ATTEMPTS {
             return;
         }
@@ -316,17 +509,40 @@ where
         }
     }
 
-    /// Bump the attempt count and push the next attempt out, returning the count.
-    fn back_off(&self, tape: Address, key: &[u8]) -> u32 {
+    /// Log one bucket's outage at most once a minute.
+    fn log_outage(&self, tape: Address, error: &TapedriveError) {
+        let Ok(mut logged) = self.outage_logged.lock() else {
+            return;
+        };
+        let now = Instant::now();
+        match logged.get(&tape) {
+            Some(last) if now.duration_since(*last) < OUTAGE_LOG_INTERVAL => return,
+            Some(_) => {}
+            None => {}
+        }
+        logged.insert(tape, now);
+        warn!(%error, %tape, "s3 drain: chain unreachable, queue holding");
+    }
+
+    /// Push the next attempt out, returning the consecutive permanent-failure count.
+    ///
+    /// A transient failure backs off on the same curve but does not count towards
+    /// parking the entry.
+    fn back_off(&self, tape: Address, key: &[u8], is_transient: bool) -> u32 {
         let Ok(mut retries) = self.retries.lock() else {
             return 0;
         };
         let retry = retries.entry((tape, key.to_vec())).or_insert(Retry {
+            steps: 0,
             attempts: 0,
             next_attempt: Instant::now(),
         });
-        retry.attempts = retry.attempts.saturating_add(1);
-        retry.next_attempt = Instant::now() + retry_delay(retry.attempts);
+        retry.steps = retry.steps.saturating_add(1);
+        if !is_transient {
+            retry.attempts = retry.attempts.saturating_add(1);
+        }
+        let is_parked = !is_transient && retry.attempts >= MAX_ATTEMPTS;
+        retry.next_attempt = Instant::now() + retry_delay(retry.steps, is_parked);
         retry.attempts
     }
 
@@ -338,27 +554,78 @@ where
     }
 }
 
-/// The wait before attempt `attempts + 1`: exponential to a ceiling while an
-/// entry is still retryable, then a slow steady beat once it has failed.
-fn retry_delay(attempts: u32) -> Duration {
-    if attempts >= MAX_ATTEMPTS {
+/// The wait before the next attempt: exponential from a second to a minute, or
+/// the slow steady beat once the entry has been parked.
+///
+/// A transient failure never reaches the slow beat, however long the outage runs,
+/// so a bucket resumes at the ceiling the moment the cluster is back.
+fn retry_delay(steps: u32, is_parked: bool) -> Duration {
+    if is_parked {
         return FAILED_RETRY;
     }
-    let doubled = RETRY_MIN.saturating_mul(1u32 << attempts.saturating_sub(1).min(6));
+    let doubled = RETRY_MIN.saturating_mul(1u32 << steps.saturating_sub(1).min(6));
     doubled.min(RETRY_MAX)
 }
 
 #[cfg(test)]
 mod tests {
+    use tape_core::types::StorageUnits;
+    use tape_sdk::error::UploadError;
+
     use super::*;
 
-    // backoff doubles from a second to a minute, then settles at the failed beat
+    // backoff doubles from a second to a minute, and a parked entry gets the slow beat
     #[test]
     fn backoff_curve() {
-        assert_eq!(retry_delay(1), Duration::from_secs(1));
-        assert_eq!(retry_delay(2), Duration::from_secs(2));
-        assert_eq!(retry_delay(5), Duration::from_secs(16));
-        assert_eq!(retry_delay(7), Duration::from_secs(60));
-        assert_eq!(retry_delay(MAX_ATTEMPTS), FAILED_RETRY);
+        assert_eq!(retry_delay(1, false), Duration::from_secs(1));
+        assert_eq!(retry_delay(2, false), Duration::from_secs(2));
+        assert_eq!(retry_delay(5, false), Duration::from_secs(16));
+        assert_eq!(retry_delay(7, false), Duration::from_secs(60));
+        assert_eq!(retry_delay(99, false), RETRY_MAX, "an outage never exceeds the ceiling");
+        assert_eq!(retry_delay(4, true), FAILED_RETRY);
+    }
+
+    // transport, cluster and peer failures clear on their own
+    #[test]
+    fn transient_errors() {
+        assert!(is_transient(&TapedriveError::Rpc(RpcError::Timeout(RETRY_MIN))));
+        assert!(is_transient(&TapedriveError::Rpc(RpcError::AllEndpointsFailed {
+            attempts: 3
+        })));
+        assert!(is_transient(&TapedriveError::Rpc(RpcError::Request("502".into()))));
+        assert!(is_transient(&TapedriveError::Upload(UploadError::InsufficientQuorum {
+            got: 1,
+            need: 14,
+        })));
+        assert!(is_transient(&TapedriveError::Rpc(RpcError::BlockhashExpired)));
+        assert!(is_transient(&TapedriveError::NotFound));
+        assert!(is_transient(&transaction_error("Blockhash not found")));
+        assert!(is_transient(&transaction_error("peer was unreachable")));
+    }
+
+    // funds, capacity and authorization failures need an operator
+    #[test]
+    fn permanent_errors() {
+        assert!(!is_transient(&TapedriveError::InsufficientCapacity {
+            need: StorageUnits::from_bytes(2),
+            available: StorageUnits::from_bytes(1),
+        }));
+        assert!(!is_transient(&TapedriveError::InvalidArgument("name too long".into())));
+        assert!(!is_transient(&TapedriveError::MissingPayer));
+        assert!(!is_transient(&transaction_error(
+            "Transfer: insufficient lamports 100, need 5000"
+        )));
+        assert!(!is_transient(&transaction_error(
+            "Error processing Instruction 0: invalid account data for instruction"
+        )));
+        assert!(!is_transient(&transaction_error("Allocate: account already in use")));
+    }
+
+    fn transaction_error(message: &str) -> TapedriveError {
+        TapedriveError::Rpc(RpcError::Transaction {
+            err: None,
+            message: message.to_string(),
+            simulated: false,
+        })
     }
 }

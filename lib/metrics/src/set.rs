@@ -37,6 +37,8 @@ pub struct Metrics {
 
     pub pending_writes_total: IntCounterVec,
     pub pending_writes_queued: IntGauge,
+    pub pending_writes_queued_bytes: IntGauge,
+    pub delegate_lamports: IntGauge,
 
     // Stats endpoint only — intentionally NOT registered, so the HTTP histogram
     // stays the single Prometheus source for request and byte rates.
@@ -152,6 +154,18 @@ impl Metrics {
                 registry
             )
             .expect("register tape_gw_pending_writes_queued"),
+            pending_writes_queued_bytes: register_int_gauge_with_registry!(
+                "tape_gw_pending_writes_queued_bytes",
+                "Object bytes queued and not yet applied on chain",
+                registry
+            )
+            .expect("register tape_gw_pending_writes_queued_bytes"),
+            delegate_lamports: register_int_gauge_with_registry!(
+                "tape_gw_delegate_lamports",
+                "SOL balance of the S3 delegate signer, in lamports",
+                registry
+            )
+            .expect("register tape_gw_delegate_lamports"),
 
             requests_total: IntCounter::new("tape_node_requests_total", "Requests handled")
                 .expect("tape_node_requests_total"),

@@ -25,6 +25,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::admission::{AdmitAll, Admission};
+use crate::drain::DrainStatus;
 use crate::cache::GatewaySliceCache;
 use crate::http::AppState;
 use crate::http::handlers::site::hosts::SiteHostBindings;
@@ -366,6 +367,8 @@ where
 pub struct GatewayS3AdminServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     accounting: Arc<Accounting>,
+    staging: Arc<StagingStore<Db>>,
+    drain_status: Arc<DrainStatus>,
     listen: SocketAddr,
     cancel: CancellationToken,
 }
@@ -379,12 +382,16 @@ where
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         accounting: Arc<Accounting>,
+        staging: Arc<StagingStore<Db>>,
+        drain_status: Arc<DrainStatus>,
         s3_config: &S3Config,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
             accounting,
+            staging,
+            drain_status,
             listen: s3_config.write.admin.listen,
             cancel,
         }
@@ -394,6 +401,8 @@ where
         let state = AdminState {
             context: self.context.clone(),
             accounting: self.accounting.clone(),
+            staging: self.staging.clone(),
+            drain_status: self.drain_status.clone(),
         };
         admin_router(state)
             .layer(

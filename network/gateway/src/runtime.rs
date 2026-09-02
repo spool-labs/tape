@@ -26,7 +26,7 @@ use tracing::Instrument;
 
 use crate::admission::{AdmitAll, Admission};
 use crate::cache::GatewaySliceCache;
-use crate::drain::WriteDrain;
+use crate::drain::{DrainStatus, WriteDrain};
 use crate::http::handlers::s3::accounting::Accounting;
 use crate::http::server::{load_delegate, GatewayHttpServer, GatewayS3AdminServer, GatewayS3Server};
 use crate::meter::GatewayMeter;
@@ -106,10 +106,18 @@ where
         // Queued writes reach the chain here, one in-flight write per bucket,
         // which is why a PutObject does not wait a block. Without a delegate key
         // nothing can be written, so nothing queues either.
+        let drain_status = Arc::new(DrainStatus::new());
         if let Some(write_ctx) = write_ctx {
             supervisor.spawn(
                 ServiceName::S3WriteDrain,
-                WriteDrain::new(context.clone(), write_ctx, staging.clone(), cancel.clone()).run(),
+                WriteDrain::new(
+                    context.clone(),
+                    write_ctx,
+                    staging.clone(),
+                    drain_status.clone(),
+                    cancel.clone(),
+                )
+                .run(),
             );
         }
 
@@ -120,6 +128,8 @@ where
             let admin_server = GatewayS3AdminServer::new(
                 context.clone(),
                 accounting.clone(),
+                staging.clone(),
+                drain_status,
                 &config.gateway.s3,
                 cancel.clone(),
             );

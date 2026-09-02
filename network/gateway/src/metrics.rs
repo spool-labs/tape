@@ -55,3 +55,17 @@ pub fn set_pending_writes_queued(count: u64) {
     #[cfg(feature = "metrics")]
     tape_metrics::metrics().pending_writes_queued.set(count as i64);
 }
+
+/// Report the object bytes queued and not yet applied on chain.
+#[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
+pub fn set_pending_writes_queued_bytes(bytes: u64) {
+    #[cfg(feature = "metrics")]
+    tape_metrics::metrics().pending_writes_queued_bytes.set(bytes as i64);
+}
+
+/// Report the delegate signer's SOL balance in lamports.
+#[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
+pub fn set_delegate_lamports(lamports: u64) {
+    #[cfg(feature = "metrics")]
+    tape_metrics::metrics().delegate_lamports.set(lamports as i64);
+}

@@ -26,6 +26,9 @@ use tape_store::types::{
 };
 use tape_store::TapeStore;
 
+use crate::drain::DrainStatus;
+use crate::staging::StagingStore;
+
 use super::accounting::{with_ledger_lock, Accounting};
 use super::authz::peppered_secret_hmac;
 use super::clock::now_unix;
@@ -39,6 +42,10 @@ pub struct AdminState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// control-plane mutations against live reserve/commit, and its sequence
     /// counter keeps audit keys unique.
     pub accounting: Arc<Accounting>,
+    /// The durable write queue, for the byte totals `/pending` reports.
+    pub staging: Arc<StagingStore<Db>>,
+    /// What the drain last published about its own health.
+    pub drain_status: Arc<DrainStatus>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AdminState<Db, Cluster, Blockchain> {
@@ -46,6 +53,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AdminState<Db, Cluster,
         Self {
             context: self.context.clone(),
             accounting: self.accounting.clone(),
+            staging: self.staging.clone(),
+            drain_status: self.drain_status.clone(),
         }
     }
 }
@@ -571,9 +580,19 @@ where
         let entries = store
             .scan_pending_writes(tape)
             .map_err(|error| AdminError::internal(format!("pending store: {error}")))?;
-        buckets.push(summarize_pending(tape, &entries, now, &mut failures));
+        let mut bucket = summarize_pending(tape, &entries, now, &mut failures);
+        bucket.queued_bytes = state.staging.tape_queued_bytes(tape);
+        buckets.push(bucket);
     }
-    Ok(Json(PendingView { buckets, failed: failures }))
+
+    let health = state.drain_status.health();
+    Ok(Json(PendingView {
+        buckets,
+        failed: failures,
+        queued_bytes: state.staging.queued_bytes(),
+        delegate_lamports: health.delegate_lamports,
+        paused_reason: health.paused_reason,
+    }))
 }
 
 /// Fold one bucket's queue into its counts, collecting its failures.
@@ -588,6 +607,7 @@ fn summarize_pending(
         queued: 0,
         landed: 0,
         failed: 0,
+        queued_bytes: 0,
         oldest_queued_age_secs: 0,
     };
 
@@ -891,11 +911,15 @@ impl From<BudgetLimits> for BudgetView {
 
 /// A principal's accounting ledger: outstanding reservations, windowed committed
 /// usage, lifetime meters, and any per-principal budget override
-/// What the durable write queue holds, per bucket and overall.
+/// What the durable write queue holds, per bucket and overall, plus what the
+/// drain reports about its own health.
 #[derive(Serialize)]
 struct PendingView {
     buckets: Vec<PendingBucketView>,
     failed: Vec<PendingFailure>,
+    queued_bytes: u64,
+    delegate_lamports: Option<u64>,
+    paused_reason: Option<String>,
 }
 
 /// One bucket's queue counts.
@@ -905,6 +929,7 @@ struct PendingBucketView {
     queued: u64,
     landed: u64,
     failed: u64,
+    queued_bytes: u64,
     oldest_queued_age_secs: u64,
 }
 
