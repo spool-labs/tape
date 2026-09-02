@@ -5884,7 +5884,6 @@ dependencies = [
 [[package]]
 name = "reel"
 version = "0.1.0"
-source = "git+https://github.com/spool-labs/reel.git?branch=main#1bbc470c74a4d8236f994da597cb8dccf640cf82"
 dependencies = [
  "crc-fast",
  "io-uring",
@@ -5900,7 +5899,6 @@ dependencies = [
 [[package]]
 name = "reel-core"
 version = "0.1.0"
-source = "git+https://github.com/spool-labs/reel.git?branch=main#1bbc470c74a4d8236f994da597cb8dccf640cf82"
 dependencies = [
  "thiserror 2.0.18",
  "wincode 0.1.2",

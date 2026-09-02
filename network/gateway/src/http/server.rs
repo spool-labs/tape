@@ -33,7 +33,7 @@ use crate::http::handlers::s3::{
     accounting::{Accounting, reservation_sweep_loop},
     admin::{AdminState, admin_router},
     routes::router,
-    sigv4::verifier_from_config,
+    sigv4::{verifier_from_config, shape_request},
     write::S3WriteContext,
 };
 use crate::http::handlers::{health, object, site, track};
@@ -309,7 +309,11 @@ where
 
         let body_limit = DefaultBodyLimit::max(self.s3_config.max_buffered_bytes);
 
-        router(state, verifier)
+        // The bucket may arrive in the Host header; the rewrite has to run before routing,
+        // so the S3 router sits behind a thin outer router the way the site rewrite does.
+        Router::new()
+            .fallback_service(router(state, verifier))
+            .layer(from_fn(shape_request))
             .layer(body_limit)
             .layer(
                 ServiceBuilder::new()
