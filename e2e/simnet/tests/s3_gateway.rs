@@ -402,6 +402,36 @@ async fn read_write_inner() {
     assert_s3_get_range(&s3_base, &bucket_label, PUT_KEY, &put_body, 0, 3).await;
     eprintln!("s3_gateway: HeadBucket 200 + ranged GET 206 verified");
 
+    // (2a2) Conditional writes: `If-None-Match: *` writes a key that holds nothing and
+    // is refused 412 once it does, and a matching `If-None-Match` read is answered 304.
+    let conditional_key = "uploads/conditional.txt";
+    let conditional_body = deterministic_bytes(4 * 1024);
+    let conditional_etag = assert_s3_conditional_put(
+        &s3_base,
+        &host,
+        &bucket_label,
+        conditional_key,
+        &conditional_body,
+        ("if-none-match", "*"),
+    )
+    .await;
+    eprintln!("s3_gateway: conditional PutObject on an empty key succeeded ({conditional_etag})");
+
+    let refused = conditional_put_response(
+        &s3_base,
+        &host,
+        &bucket_label,
+        conditional_key,
+        &conditional_body,
+        ("if-none-match", "*"),
+    )
+    .await;
+    assert_precondition_failed(refused).await;
+    eprintln!("s3_gateway: second conditional PutObject correctly refused (412)");
+
+    assert_s3_not_modified(&s3_base, &bucket_label, conditional_key, &conditional_etag).await;
+    eprintln!("s3_gateway: conditional GET answered 304 for the etag the client holds");
+
     // (2b) A streamed UNSIGNED-PAYLOAD PutObject takes the bounded-memory write
     // path (object_reader -> write_object_stream -> chunk track + manifest) instead
     // of buffering + hash-verifying, and must read back identically through GET.
@@ -839,6 +869,92 @@ async fn signed_put_response(
         .send()
         .await
         .expect("signed put send")
+}
+
+/// Send a SigV4-signed `PUT /{bucket}/{key}` carrying one conditional header. The
+/// condition is not a signed header, so the signature is the unconditional one.
+async fn conditional_put_response(
+    base: &str,
+    host: &str,
+    bucket: &str,
+    key: &str,
+    body: &[u8],
+    condition: (&str, &str),
+) -> reqwest::Response {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()
+        .expect("build s3 client");
+    let path = format!("/{bucket}/{key}");
+    let url = format!("{base}{path}");
+    let (authorization, amz_date, payload_hash) = sigv4_headers("PUT", host, &path, body);
+
+    client
+        .put(&url)
+        .header("authorization", authorization)
+        .header("x-amz-date", amz_date)
+        .header("x-amz-content-sha256", payload_hash)
+        .header(CONTENT_TYPE, PUT_CONTENT_TYPE)
+        .header(condition.0, condition.1)
+        .body(body.to_vec())
+        .send()
+        .await
+        .expect("conditional put send")
+}
+
+/// A conditional PutObject that must succeed; returns the quoted ETag it answered with.
+async fn assert_s3_conditional_put(
+    base: &str,
+    host: &str,
+    bucket: &str,
+    key: &str,
+    body: &[u8],
+    condition: (&str, &str),
+) -> String {
+    let response = conditional_put_response(base, host, bucket, key, body, condition).await;
+    let status = response.status();
+    let etag = response
+        .headers()
+        .get(ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let text = response.text().await.unwrap_or_default();
+    assert_eq!(status, StatusCode::OK, "conditional PutObject should succeed: {text}");
+    etag.expect("conditional PutObject should return an ETag")
+}
+
+/// Assert a request was refused with the S3 `412 PreconditionFailed` error body.
+async fn assert_precondition_failed(response: reqwest::Response) {
+    let status = response.status();
+    let body = response.text().await.expect("precondition failed body");
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED, "expected 412, got {status}: {body}");
+    assert!(
+        body.contains("<Code>PreconditionFailed</Code>"),
+        "expected the PreconditionFailed error body, got: {body}"
+    );
+}
+
+/// Assert an `If-None-Match` GET of a key the client already holds answers `304` with no body.
+async fn assert_s3_not_modified(base: &str, bucket: &str, key: &str, etag: &str) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .expect("build s3 client");
+    let response = client
+        .get(format!("{base}/{bucket}/{key}"))
+        .header("if-none-match", etag)
+        .send()
+        .await
+        .expect("conditional get send");
+
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        response.headers().get(ETAG).and_then(|value| value.to_str().ok()),
+        Some(etag),
+        "a 304 must carry the ETag the client already holds"
+    );
+    let body = response.bytes().await.expect("conditional get body");
+    assert!(body.is_empty(), "a 304 carries no body");
 }
 
 /// Signed `GET /` (ListBuckets); asserts `200` and that the credential's scoped

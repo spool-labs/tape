@@ -329,10 +329,46 @@ impl<Db: Store> StagingStore<Db> {
 mod tests {
     use store_memory::MemoryStore;
 
+    use crate::http::handlers::resolve::resolve_readable;
+    use crate::http::handlers::s3::conditional::{Preconditions, check_write};
+
     use super::*;
 
     fn staging() -> StagingStore<MemoryStore> {
         StagingStore::try_new(Arc::new(TapeStore::new(MemoryStore::new()))).expect("open queue")
+    }
+
+    fn parts() -> (Arc<TapeStore<MemoryStore>>, Arc<StagingStore<MemoryStore>>) {
+        let store = Arc::new(TapeStore::new(MemoryStore::new()));
+        let staging = Arc::new(StagingStore::try_new(store.clone()).expect("open queue"));
+        (store, staging)
+    }
+
+    /// The handler's critical section: hold the bucket lock, weigh the condition, enqueue if it holds.
+    async fn conditional_put(
+        store: Arc<TapeStore<MemoryStore>>,
+        staging: Arc<StagingStore<MemoryStore>>,
+        tape: Address,
+        key: Vec<u8>,
+        data: Vec<u8>,
+    ) -> bool {
+        let preconditions = Preconditions {
+            if_none_match: Some("*".to_string()),
+            ..Default::default()
+        };
+        let _guard = staging.lock_tape(tape).await;
+        let current = resolve_readable(store.as_ref(), staging.as_ref(), tape, &key)
+            .expect("resolve readable");
+        if check_write(&preconditions, current.map(|readable| readable.etag())).is_err() {
+            return false;
+        }
+        // Without the lock both racers would enqueue over this suspension point.
+        tokio::task::yield_now().await;
+        staging
+            .enqueue_put(tape, &key, data, ContentType::Unknown, Hash([1u8; 32]), 1_700_000_000)
+            .await
+            .expect("enqueue put");
+        true
     }
 
     async fn put(staging: &StagingStore<MemoryStore>, tape: Address, key: &[u8], data: &[u8]) {
@@ -599,6 +635,57 @@ mod tests {
 
         staging.enqueue_delete(tape, b"a.txt").await.expect("enqueue delete");
         assert_eq!(staging.queued_bytes(), 0, "a delete holds no bytes");
+    }
+
+    // two racing star-conditional puts on one key: exactly one wins
+    #[tokio::test]
+    async fn conditional_race() {
+        let (store, staging) = parts();
+        let tape = Address::new([0x41; 32]);
+
+        let first = tokio::spawn(conditional_put(
+            store.clone(),
+            staging.clone(),
+            tape,
+            b"once.txt".to_vec(),
+            b"first".to_vec(),
+        ));
+        let second = tokio::spawn(conditional_put(
+            store,
+            staging.clone(),
+            tape,
+            b"once.txt".to_vec(),
+            b"second".to_vec(),
+        ));
+        let won = [first.await.expect("first task"), second.await.expect("second task")];
+
+        assert_eq!(won.iter().filter(|is_won| **is_won).count(), 1);
+        assert_eq!(staging.bytes(tape, b"once.txt").expect("bytes"), Some(b"first".to_vec()));
+    }
+
+    // a conditional delete only fires against the etag the key currently holds
+    #[tokio::test]
+    async fn conditional_delete() {
+        let (store, staging) = parts();
+        let tape = Address::new([0x42; 32]);
+        put(&staging, tape, b"a.txt", b"one").await;
+
+        let current = resolve_readable(store.as_ref(), staging.as_ref(), tape, b"a.txt")
+            .expect("resolve readable")
+            .map(|readable| readable.etag());
+        let matching = Preconditions {
+            if_match: Some(format!("\"{}\"", Hash([1u8; 32]))),
+            ..Default::default()
+        };
+        let stale = Preconditions {
+            if_match: Some(format!("\"{}\"", Hash([2u8; 32]))),
+            ..Default::default()
+        };
+
+        assert!(check_write(&stale, current).is_err());
+        assert!(check_write(&matching, current).is_ok());
+        staging.enqueue_delete(tape, b"a.txt").await.expect("enqueue delete");
+        assert!(staging.is_deleted(tape, b"a.txt").expect("deleted"));
     }
 
     // the sequence resumes past the highest stored entry after a restart

@@ -296,6 +296,11 @@ mod tests {
         );
         assert_eq!(S3Error::InvalidRange(1024).code(), "InvalidRange");
         assert_eq!(
+            S3Error::PreconditionFailed.status(),
+            StatusCode::PRECONDITION_FAILED
+        );
+        assert_eq!(S3Error::PreconditionFailed.code(), "PreconditionFailed");
+        assert_eq!(
             S3Error::NotImplemented("x".into()).status(),
             StatusCode::NOT_IMPLEMENTED
         );

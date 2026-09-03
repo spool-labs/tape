@@ -46,8 +46,8 @@ use crate::meter::{GatewayMeterDecision, MeterCaller};
 use super::accounting;
 use super::authz::{Auth, WriteOp, WritePermit, authorize_multipart_read, authorize_write};
 use super::chunked::object_reader;
-use super::conditional::{Preconditions, ReadCondition, check_read, check_write};
 use super::clock::now_unix;
+use super::conditional::{Preconditions, ReadCondition, check_read, check_write};
 use super::error::S3Error;
 use super::multipart::{self, CompletedPartRef};
 use super::resolve::{parse_bucket, resolve_object, bucket_name};
@@ -1970,10 +1970,26 @@ where
 
 #[cfg(test)]
 mod tests {
+    use axum::http::HeaderValue;
     use tape_core::types::StorageUnits;
     use tape_store::types::PendingState;
 
     use super::*;
+
+    fn conditional(name: header::HeaderName, value: &str) -> Preconditions {
+        let mut headers = HeaderMap::new();
+        headers.insert(name, HeaderValue::from_str(value).expect("header value"));
+        Preconditions::from_headers(&headers)
+    }
+
+    fn readable(etag: Hash) -> Readable {
+        Readable::Queued(QueuedObject {
+            size: 3,
+            content_type: ContentType::Unknown,
+            etag,
+            block_time: 1_255_369_830,
+        })
+    }
 
     // query lookup returns the percent-decoded value
     #[test]
@@ -2180,6 +2196,43 @@ mod tests {
         assert_eq!(keys(&merged), vec!["a.txt", "b.txt", "c.txt"]);
         assert!(merged.is_truncated);
         assert_eq!(merged.next.as_deref(), Some(b"d.txt".as_slice()));
+    }
+
+    // a read the client already has is answered 304 with the etag and no ranged headers
+    #[test]
+    fn read_not_modified() {
+        let etag = Hash([9u8; 32]);
+        let preconditions = conditional(header::IF_NONE_MATCH, &format!("\"{etag}\""));
+
+        let answer = conditional_read_answer(&preconditions, &readable(etag))
+            .expect("answer")
+            .expect("304");
+
+        assert_eq!(answer.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(answer.headers().get(header::ETAG).expect("etag"), &format!("\"{etag}\""));
+        assert!(answer.headers().contains_key(header::LAST_MODIFIED));
+        assert!(!answer.headers().contains_key(header::CONTENT_RANGE));
+    }
+
+    // a read whose if-match differs is refused with 412
+    #[test]
+    fn read_precondition_failed() {
+        let preconditions =
+            conditional(header::IF_MATCH, &format!("\"{}\"", Hash([1u8; 32])));
+
+        let refused = conditional_read_answer(&preconditions, &readable(Hash([9u8; 32])));
+
+        assert!(matches!(refused, Err(S3Error::PreconditionFailed)));
+    }
+
+    // an unconditional read forces no answer of its own
+    #[test]
+    fn read_unconditional() {
+        let preconditions = Preconditions::from_headers(&HeaderMap::new());
+
+        let answer = conditional_read_answer(&preconditions, &readable(Hash([9u8; 32])));
+
+        assert!(answer.expect("answer").is_none());
     }
 
     // with nothing queued the page is passed through untouched

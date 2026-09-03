@@ -277,4 +277,111 @@ mod tests {
 
         assert!(matches!(refused, Err(S3Error::PreconditionFailed)));
     }
+
+    // an unconditional read is always served
+    #[test]
+    fn read_unconditional() {
+        let preconditions = Preconditions::from_headers(&HeaderMap::new());
+
+        assert_eq!(check_read(&preconditions, etag(), Some(1)), ReadCondition::Serve);
+    }
+
+    // a matching if-none-match read is 304, a differing one is served
+    #[test]
+    fn read_not_modified() {
+        assert_eq!(
+            check_read(&if_none_match(&quoted(etag())), etag(), Some(1)),
+            ReadCondition::NotModified
+        );
+        assert_eq!(
+            check_read(&if_none_match(&quoted(other())), etag(), Some(1)),
+            ReadCondition::Serve
+        );
+        assert_eq!(check_read(&if_none_match("*"), etag(), Some(1)), ReadCondition::NotModified);
+    }
+
+    // a read whose if-match differs is refused
+    #[test]
+    fn read_failed() {
+        assert_eq!(
+            check_read(&if_match(&quoted(other())), etag(), Some(1)),
+            ReadCondition::Failed
+        );
+        assert_eq!(
+            check_read(&if_match(&quoted(etag())), etag(), Some(1)),
+            ReadCondition::Serve
+        );
+    }
+
+    // the date headers answer against the object's last-modified second
+    #[test]
+    fn read_dates() {
+        let modified = 1_255_369_830;
+        let same = "Mon, 12 Oct 2009 17:50:30 GMT";
+        let older = "Sun, 11 Oct 2009 17:50:30 GMT";
+
+        let unchanged = Preconditions::from_headers(&headers(&[(header::IF_MODIFIED_SINCE, same)]));
+        assert_eq!(check_read(&unchanged, etag(), Some(modified)), ReadCondition::NotModified);
+
+        let changed = Preconditions::from_headers(&headers(&[(header::IF_MODIFIED_SINCE, older)]));
+        assert_eq!(check_read(&changed, etag(), Some(modified)), ReadCondition::Serve);
+
+        let stale = Preconditions::from_headers(&headers(&[(header::IF_UNMODIFIED_SINCE, older)]));
+        assert_eq!(check_read(&stale, etag(), Some(modified)), ReadCondition::Failed);
+
+        let fresh = Preconditions::from_headers(&headers(&[(header::IF_UNMODIFIED_SINCE, same)]));
+        assert_eq!(check_read(&fresh, etag(), Some(modified)), ReadCondition::Serve);
+    }
+
+    // a tag header decides even when the date header would say otherwise
+    #[test]
+    fn tag_precedence() {
+        let modified = 1_255_369_830;
+        let older = "Sun, 11 Oct 2009 17:50:30 GMT";
+
+        let served = Preconditions::from_headers(&headers(&[
+            (header::IF_MATCH, quoted(etag()).as_str()),
+            (header::IF_UNMODIFIED_SINCE, older),
+        ]));
+        assert_eq!(check_read(&served, etag(), Some(modified)), ReadCondition::Serve);
+
+        let not_modified = Preconditions::from_headers(&headers(&[
+            (header::IF_NONE_MATCH, quoted(etag()).as_str()),
+            (header::IF_MODIFIED_SINCE, older),
+        ]));
+        assert_eq!(
+            check_read(&not_modified, etag(), Some(modified)),
+            ReadCondition::NotModified
+        );
+    }
+
+    // an object with no known last-modified second ignores the date headers
+    #[test]
+    fn read_undated() {
+        let preconditions = Preconditions::from_headers(&headers(&[(
+            header::IF_UNMODIFIED_SINCE,
+            "Sun, 11 Oct 2009 17:50:30 GMT",
+        )]));
+
+        assert_eq!(check_read(&preconditions, etag(), None), ReadCondition::Serve);
+    }
+
+    // an http date parses to its unix second
+    #[test]
+    fn date_parse() {
+        assert_eq!(parse_http_date("Mon, 12 Oct 2009 17:50:30 GMT"), Some(1_255_369_830));
+        assert_eq!(parse_http_date("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
+        assert_eq!(parse_http_date("not a date"), None);
+        assert_eq!(parse_http_date("Mon, 12 Xxx 2009 17:50:30 GMT"), None);
+    }
+
+    // an unreadable date is ignored rather than refusing the read
+    #[test]
+    fn bad_date() {
+        let preconditions =
+            Preconditions::from_headers(&headers(&[(header::IF_UNMODIFIED_SINCE, "garbage")]));
+
+        assert_eq!(preconditions.if_unmodified_since, None);
+        assert_eq!(check_read(&preconditions, etag(), Some(9)), ReadCondition::Serve);
+    }
 }
