@@ -362,14 +362,18 @@ fn mint_upload_id(bucket: &Address, key: &str) -> String {
 }
 
 /// Map a multipart store error to the S3 surface. The backend detail is logged
-/// (never sent to the client) via S3Error::Internal's response rendering.
+/// here (never sent to the client) so the cause survives even when the caller
+/// swallows or rewrites the error before it renders a response.
 fn store_error(error: impl std::fmt::Display) -> S3Error {
-    S3Error::Internal(format!("multipart store: {error}"))
+    let detail = format!("multipart store: {error}");
+    tracing::warn!("{detail}");
+    S3Error::Internal(detail)
 }
 
 #[cfg(test)]
 mod tests {
     use store_memory::MemoryStore;
+    use tape_store::types::MULTIPART_CHUNK_BYTES;
     use tape_store::TapeStore;
 
     use super::*;
@@ -464,6 +468,60 @@ mod tests {
             list_parts(&store, &upload_id, bucket, "obj"),
             Err(S3Error::NoSuchUpload)
         ));
+    }
+
+    // a part longer than one store chunk round-trips through assembly
+    #[test]
+    fn chunked_part() {
+        let store = store();
+        let bucket = bucket();
+        let upload_id =
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
+        let mut part = Vec::with_capacity(MULTIPART_CHUNK_BYTES + 7);
+        for index in 0..MULTIPART_CHUNK_BYTES + 7 {
+            part.push((index % 251) as u8);
+        }
+
+        let etag = put_part(&store, &upload_id, bucket, "obj", 1, part.clone()).expect("p1");
+
+        let assembled = assemble(&store, &upload_id, bucket, "obj", &[completed(1, etag)])
+            .expect("assemble");
+        assert_eq!(assembled.data, part);
+    }
+
+    // abort drops every chunk of the upload's parts
+    #[test]
+    fn abort_clears_chunks() {
+        let store = store();
+        let bucket = bucket();
+        let owner = principal();
+        let upload_id =
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, owner).expect("create");
+        put_part(&store, &upload_id, bucket, "obj", 1, vec![7; MULTIPART_CHUNK_BYTES + 7])
+            .expect("p1");
+
+        super::abort(&store, &upload_id, bucket, "obj", owner).expect("abort");
+
+        assert!(store.get_multipart_part_data(&upload_id, 1).expect("data").is_none());
+        assert!(matches!(
+            list_parts(&store, &upload_id, bucket, "obj"),
+            Err(S3Error::NoSuchUpload)
+        ));
+    }
+
+    // a part past the object ceiling is EntityTooLarge, not an internal error
+    #[test]
+    fn part_too_large() {
+        let store = store();
+        let bucket = bucket();
+        let upload_id =
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
+
+        assert!(matches!(
+            super::put_part(&store, &upload_id, bucket, "obj", 1, vec![0; 9], 8),
+            Err(S3Error::EntityTooLarge(_))
+        ));
+        assert!(store.get_multipart_part_data(&upload_id, 1).expect("data").is_none());
     }
 
     // a non-final part below the 5 MiB minimum is rejected

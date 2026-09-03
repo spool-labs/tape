@@ -360,8 +360,9 @@ async fn read_write_inner() {
     eprintln!("s3_gateway: credential issued + policy allow rule created via admin API");
 
     // ListBuckets is credential-scoped: a signed request lists exactly the bucket
-    // the credential is scoped to; an anonymous request is denied (account op).
-    assert_s3_list_buckets(&s3_base, &host, &bucket_label).await;
+    // the credential is scoped to, named by its lowercase label; an anonymous
+    // request is denied (account op).
+    assert_s3_list_buckets(&s3_base, &host, &bucket.to_subdomain_label()).await;
     assert_s3_list_buckets_anonymous_denied(&s3_base).await;
     eprintln!("s3_gateway: ListBuckets listed the scoped bucket (signed) and denied anonymous");
 
@@ -400,6 +401,36 @@ async fn read_write_inner() {
     assert_s3_head_bucket(&s3_base, &bucket_label).await;
     assert_s3_get_range(&s3_base, &bucket_label, PUT_KEY, &put_body, 0, 3).await;
     eprintln!("s3_gateway: HeadBucket 200 + ranged GET 206 verified");
+
+    // (2a2) Conditional writes: `If-None-Match: *` writes a key that holds nothing and
+    // is refused 412 once it does, and a matching `If-None-Match` read is answered 304.
+    let conditional_key = "uploads/conditional.txt";
+    let conditional_body = deterministic_bytes(4 * 1024);
+    let conditional_etag = assert_s3_conditional_put(
+        &s3_base,
+        &host,
+        &bucket_label,
+        conditional_key,
+        &conditional_body,
+        ("if-none-match", "*"),
+    )
+    .await;
+    eprintln!("s3_gateway: conditional PutObject on an empty key succeeded ({conditional_etag})");
+
+    let refused = conditional_put_response(
+        &s3_base,
+        &host,
+        &bucket_label,
+        conditional_key,
+        &conditional_body,
+        ("if-none-match", "*"),
+    )
+    .await;
+    assert_precondition_failed(refused).await;
+    eprintln!("s3_gateway: second conditional PutObject correctly refused (412)");
+
+    assert_s3_not_modified(&s3_base, &bucket_label, conditional_key, &conditional_etag).await;
+    eprintln!("s3_gateway: conditional GET answered 304 for the etag the client holds");
 
     // (2b) A streamed UNSIGNED-PAYLOAD PutObject takes the bounded-memory write
     // path (object_reader -> write_object_stream -> chunk track + manifest) instead
@@ -448,16 +479,40 @@ async fn read_write_inner() {
     wait_sdk_object_listed(&harness, &bucket, "uploads/", overwrite_key, active_timeout).await;
     let v1_track = sdk_object_track_number(&harness, &bucket, "uploads/", overwrite_key).await;
 
-    // The gateway ingests independently of the committee nodes, and the overwrite's
-    // reclaim resolves the prior track from the gateway's own index. Wait until the
-    // gateway has v1 before overwriting, or its PutObject sees no prior to reclaim.
-    wait_s3_head_ok(&s3_base, &bucket_label, overwrite_key, Duration::from_secs(180)).await;
+    // HEAD answers from the queue, so wait for the drain before the overwrite needs v1 in the index.
+    wait_pending_drained(&admin_base, OPERATOR_TOKEN, Duration::from_secs(180)).await;
 
-    assert_s3_signed_put(&s3_base, &host, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE).await;
+    let v2_etag =
+        assert_s3_signed_put(&s3_base, &host, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE)
+            .await;
+
+    // HEAD right after an overwrite must report the new size and ETag.
+    let head_etag =
+        assert_s3_head_object(&s3_base, &bucket_label, overwrite_key, v2.len(), PUT_CONTENT_TYPE)
+            .await;
+    assert_eq!(
+        head_etag, v2_etag,
+        "HEAD straight after an overwrite must report the ETag the PUT returned"
+    );
+    eprintln!("s3_gateway: HEAD after the overwrite reported v2 before the drain landed it");
+
     wait_track_reclaimed(&harness, &bucket, v1_track, Duration::from_secs(180)).await;
     wait_s3_get_size(&s3_base, &bucket_label, overwrite_key, v2.len(), Duration::from_secs(180)).await;
     assert_s3_get_object(&s3_base, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE).await;
     eprintln!("s3_gateway: overwrite reclaimed prior {v1_track} and served v2 ({} bytes)", v2.len());
+    // (2e) DeleteObjects removes both objects in one request and reports a missing key as deleted too.
+    assert_s3_delete_objects(
+        &s3_base,
+        &host,
+        &bucket_label,
+        &[stream_key, mp_key, "missing/never-was.bin"],
+    )
+    .await;
+    eprintln!("s3_gateway: DeleteObjects returned Deleted for both objects + the idempotent miss");
+    let gone = StatusCode::NOT_FOUND;
+    wait_s3_head_status(&s3_base, &bucket_label, stream_key, gone, Duration::from_secs(180)).await;
+    wait_s3_head_status(&s3_base, &bucket_label, mp_key, gone, Duration::from_secs(180)).await;
+    eprintln!("s3_gateway: bulk-deleted objects gone from the S3 read surface");
 
     // (3) Revoke the credential; the same signed PutObject is now denied (the
     // credential resolves but is no longer usable — step 3 of the chokepoint).
@@ -534,6 +589,26 @@ async fn wait_admin_healthy(admin_base: &str, operator_token: &str, timeout: Dur
             panic!("admin control plane never became healthy within {timeout:?} (last {last:?})");
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Poll `GET /pending` until every queued write reached the chain and the index shows it.
+async fn wait_pending_drained(admin_base: &str, operator_token: &str, timeout: Duration) {
+    let url = format!("{admin_base}/pending");
+    let start = Instant::now();
+    loop {
+        let response = admin_request(Method::GET, &url, operator_token, None).await;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        assert_eq!(status, StatusCode::OK, "GET /pending returned {status}: {body}");
+        // Only buckets with entries are listed, so an empty list is a drained queue.
+        if body.contains(r#""buckets":[]"#) {
+            return;
+        }
+        if start.elapsed() >= timeout {
+            panic!("write queue never drained within {timeout:?}: {body}");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 
@@ -794,6 +869,92 @@ async fn signed_put_response(
         .send()
         .await
         .expect("signed put send")
+}
+
+/// Send a SigV4-signed `PUT /{bucket}/{key}` carrying one conditional header. The
+/// condition is not a signed header, so the signature is the unconditional one.
+async fn conditional_put_response(
+    base: &str,
+    host: &str,
+    bucket: &str,
+    key: &str,
+    body: &[u8],
+    condition: (&str, &str),
+) -> reqwest::Response {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()
+        .expect("build s3 client");
+    let path = format!("/{bucket}/{key}");
+    let url = format!("{base}{path}");
+    let (authorization, amz_date, payload_hash) = sigv4_headers("PUT", host, &path, body);
+
+    client
+        .put(&url)
+        .header("authorization", authorization)
+        .header("x-amz-date", amz_date)
+        .header("x-amz-content-sha256", payload_hash)
+        .header(CONTENT_TYPE, PUT_CONTENT_TYPE)
+        .header(condition.0, condition.1)
+        .body(body.to_vec())
+        .send()
+        .await
+        .expect("conditional put send")
+}
+
+/// A conditional PutObject that must succeed; returns the quoted ETag it answered with.
+async fn assert_s3_conditional_put(
+    base: &str,
+    host: &str,
+    bucket: &str,
+    key: &str,
+    body: &[u8],
+    condition: (&str, &str),
+) -> String {
+    let response = conditional_put_response(base, host, bucket, key, body, condition).await;
+    let status = response.status();
+    let etag = response
+        .headers()
+        .get(ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let text = response.text().await.unwrap_or_default();
+    assert_eq!(status, StatusCode::OK, "conditional PutObject should succeed: {text}");
+    etag.expect("conditional PutObject should return an ETag")
+}
+
+/// Assert a request was refused with the S3 `412 PreconditionFailed` error body.
+async fn assert_precondition_failed(response: reqwest::Response) {
+    let status = response.status();
+    let body = response.text().await.expect("precondition failed body");
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED, "expected 412, got {status}: {body}");
+    assert!(
+        body.contains("<Code>PreconditionFailed</Code>"),
+        "expected the PreconditionFailed error body, got: {body}"
+    );
+}
+
+/// Assert an `If-None-Match` GET of a key the client already holds answers `304` with no body.
+async fn assert_s3_not_modified(base: &str, bucket: &str, key: &str, etag: &str) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .expect("build s3 client");
+    let response = client
+        .get(format!("{base}/{bucket}/{key}"))
+        .header("if-none-match", etag)
+        .send()
+        .await
+        .expect("conditional get send");
+
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        response.headers().get(ETAG).and_then(|value| value.to_str().ok()),
+        Some(etag),
+        "a 304 must carry the ETag the client already holds"
+    );
+    let body = response.bytes().await.expect("conditional get body");
+    assert!(body.is_empty(), "a 304 carries no body");
 }
 
 /// Signed `GET /` (ListBuckets); asserts `200` and that the credential's scoped
@@ -1287,8 +1448,65 @@ async fn wait_sdk_object_listed(
     }
 }
 
-/// Poll `HEAD /{bucket}/{key}` until it returns `200 OK`.
-async fn wait_s3_head_ok(base: &str, bucket: &str, key: &str, timeout: Duration) {
+/// Send a signed DeleteObjects request and assert every key is reported deleted.
+async fn assert_s3_delete_objects(base: &str, host: &str, bucket: &str, keys: &[&str]) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .expect("build s3 client");
+    let mut delete_xml = String::from("<Delete>");
+    for key in keys {
+        delete_xml.push_str(&format!("<Object><Key>{key}</Key></Object>"));
+    }
+    delete_xml.push_str("</Delete>");
+
+    let path = format!("/{bucket}");
+    let raw_query = "delete";
+    let url = format!("{base}{path}?{raw_query}");
+    let (authorization, amz_date, payload_hash) = sigv4_headers_with_payload(
+        "POST",
+        host,
+        &path,
+        &canonical_query(raw_query),
+        &sha256_hex(delete_xml.as_bytes()),
+    );
+
+    let response = client
+        .post(&url)
+        .header("authorization", authorization)
+        .header("x-amz-date", amz_date)
+        .header("x-amz-content-sha256", payload_hash)
+        .body(delete_xml)
+        .send()
+        .await
+        .expect("delete objects send");
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "DeleteObjects should return 200, got {status}: {body}"
+    );
+    assert!(
+        !body.contains("<Error>"),
+        "DeleteObjects reported a per-key error: {body}"
+    );
+    for key in keys {
+        assert!(
+            body.contains(&format!("<Deleted><Key>{key}</Key></Deleted>")),
+            "DeleteObjects result missing <Deleted> for {key}: {body}"
+        );
+    }
+}
+
+/// Poll `HEAD /{bucket}/{key}` until it returns `expected`.
+async fn wait_s3_head_status(
+    base: &str,
+    bucket: &str,
+    key: &str,
+    expected: StatusCode,
+    timeout: Duration,
+) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -1299,7 +1517,7 @@ async fn wait_s3_head_ok(base: &str, bucket: &str, key: &str, timeout: Duration)
     loop {
         match client.head(&url).send().await {
             Ok(response) => {
-                if response.status() == StatusCode::OK {
+                if response.status() == expected {
                     return;
                 }
                 last = Some(response.status());
@@ -1308,11 +1526,16 @@ async fn wait_s3_head_ok(base: &str, bucket: &str, key: &str, timeout: Duration)
         }
         if start.elapsed() >= timeout {
             panic!(
-                "object never became readable via S3 HEAD within {timeout:?} (last status {last:?})"
+                "S3 HEAD never returned {expected} within {timeout:?} (last status {last:?})"
             );
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+/// Poll `HEAD /{bucket}/{key}` until it returns `200 OK`.
+async fn wait_s3_head_ok(base: &str, bucket: &str, key: &str, timeout: Duration) {
+    wait_s3_head_status(base, bucket, key, StatusCode::OK, timeout).await;
 }
 
 /// Assert `GET /{bucket}?list-type=2&prefix=photos/` returns a valid

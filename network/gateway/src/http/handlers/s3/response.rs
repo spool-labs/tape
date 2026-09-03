@@ -12,15 +12,9 @@ use super::xml::civil_from_unix;
 use crate::http::handlers::object::{
     CachePolicy, ObjectResponseMetadata, ranged_object_headers, resolve_range,
 };
+use crate::http::handlers::object::response::etag_header;
 
-use super::clock::SECONDS_PER_DAY;
-
-/// Weekday abbreviations, indexed `0 = Sunday`
-const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-/// Month abbreviations, indexed `0 = January`
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
+use super::clock::{MONTHS, SECONDS_PER_DAY, WEEKDAYS};
 
 /// Format a unix timestamp (seconds, UTC) as an RFC 1123 / IMF-fixdate HTTP
 /// date, e.g. `Mon, 12 Oct 2009 17:50:30 GMT`, for the `Last-Modified` header.
@@ -82,6 +76,15 @@ pub fn head_response_parts(
             .map_err(S3Error::from)?;
     set_last_modified(&mut headers, block_time);
     Ok((status, headers).into_response())
+}
+
+/// Build the `304 Not Modified` answer: the ETag and Last-Modified of the copy
+/// the client already holds, with no body. A `Range` on a 304 has nothing to slice.
+pub fn not_modified_response(etag: Hash, block_time: Option<i64>) -> Result<Response, S3Error> {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::ETAG, etag_header(etag).map_err(S3Error::from)?);
+    set_last_modified(&mut headers, block_time);
+    Ok((StatusCode::NOT_MODIFIED, headers).into_response())
 }
 
 /// Build an ETag-only `200 OK` response: a quoted `ETag` header and empty body,
