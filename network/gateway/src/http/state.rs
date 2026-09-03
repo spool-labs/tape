@@ -12,6 +12,7 @@ use crate::http::handlers::s3::accounting::Accounting;
 use crate::http::handlers::s3::write::S3WriteContext;
 use crate::http::handlers::site::hosts::SiteHostBindings;
 use crate::meter::GatewayMeter;
+use tape_crypto::address::Address;
 
 pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub context: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -21,6 +22,8 @@ pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// listener and whenever `gateway.s3.delegate_key` is unset (writes
     /// unavailable). Shared (Arc) so it is cheap to clone with the state.
     pub write_ctx: Option<Arc<S3WriteContext>>,
+    /// Address the S3 write path signs with, which tape owners delegate to; None without a delegate key
+    pub s3_delegate: Option<Address>,
     /// Write-authorization accounting state: the ledger RMW lock and the on-chain
     /// precondition cache (see [`Accounting`]). Shared (Arc) across listeners.
     pub accounting: Arc<Accounting>,
@@ -41,6 +44,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, B
             slice_cache: self.slice_cache.clone(),
             meter: self.meter.clone(),
             write_ctx: self.write_ctx.clone(),
+            s3_delegate: self.s3_delegate,
             accounting: self.accounting.clone(),
             admission: self.admission.clone(),
             site_hosts: self.site_hosts.clone(),

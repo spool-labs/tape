@@ -16,6 +16,7 @@ use tape_node::config::http::HttpConfig;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_protocol::Api;
+use tape_crypto::address::Address;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower::limit::ConcurrencyLimitLayer;
@@ -86,6 +87,7 @@ where
             // signing context and its accounting and admission state are never
             // exercised.
             write_ctx: None,
+            s3_delegate: s3_delegate_address(&self.context.config.gateway.s3),
             accounting: Arc::new(Accounting::new()),
             admission: Arc::new(AdmitAll),
             site_hosts: SiteHostBindings::from_config(self.context.config.gateway.site.txt_domains),
@@ -103,6 +105,10 @@ where
             .route(
                 tape_protocol::api::NODE_STATS_PATH,
                 get(health::stats::<Db, Cluster, Blockchain>),
+            )
+            .route(
+                health::S3_INFO_PATH,
+                get(health::s3_info::<Db, Cluster, Blockchain>),
             );
 
         #[cfg(feature = "metrics")]
@@ -298,6 +304,7 @@ where
             slice_cache: self.slice_cache.clone(),
             meter: self.meter.clone(),
             write_ctx: self.write_ctx.clone(),
+            s3_delegate: self.write_ctx.as_ref().map(|ctx| ctx.delegate_address()),
             accounting: self.accounting.clone(),
             admission: self.admission.clone(),
             // The S3 listener never serves site hosts.
@@ -505,4 +512,11 @@ async fn count_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     #[cfg(not(feature = "metrics"))]
     next.run(req).await
+}
+
+/// The S3 delegate address from the configured key, for a listener that does
+/// not sign writes itself.
+fn s3_delegate_address(s3_config: &S3Config) -> Option<Address> {
+    let path = s3_config.delegate_key.as_deref()?;
+    S3WriteContext::load(path).ok().map(|ctx| ctx.delegate_address())
 }
