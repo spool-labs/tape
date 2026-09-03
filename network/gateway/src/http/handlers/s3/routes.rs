@@ -46,14 +46,15 @@ use crate::meter::{GatewayMeterDecision, MeterCaller};
 use super::accounting;
 use super::authz::{Auth, WriteOp, WritePermit, authorize_multipart_read, authorize_write};
 use super::chunked::object_reader;
-use super::conditional::{Preconditions, check_write};
+use super::conditional::{Preconditions, ReadCondition, check_read, check_write};
 use super::clock::now_unix;
 use super::error::S3Error;
 use super::multipart::{self, CompletedPartRef};
 use super::resolve::{parse_bucket, resolve_object, bucket_name};
 use crate::http::handlers::resolve::{self, QueuedObject, Readable, ResolvedObject};
 use super::response::{
-    delete_response, head_response, put_response, set_last_modified, upload_part_response,
+    delete_response, head_response, not_modified_response, put_response, set_last_modified,
+    upload_part_response,
 };
 use super::sigv4::{query_param, sigv4_auth, verify_signed_body, SigV4Verifier, SignedPayloadHash};
 use super::write::S3WriteContext;
@@ -808,8 +809,9 @@ where
         return list_parts(&state, &auth, bucket, key, query.as_deref());
     }
     let range = range_header(&headers).map(str::to_string);
+    let preconditions = Preconditions::from_headers(&headers);
     let caller = meter_caller(&state, &headers, remote, &auth);
-    get_object_impl(state, caller, bucket, key, range).await
+    get_object_impl(state, caller, bucket, key, range, &preconditions).await
 }
 
 async fn get_object_impl<Db, Cluster, Blockchain>(
@@ -818,6 +820,7 @@ async fn get_object_impl<Db, Cluster, Blockchain>(
     bucket: String,
     key: String,
     range: Option<String>,
+    preconditions: &Preconditions,
 ) -> Result<Response, S3Error>
 where
     Db: Store + 'static,
@@ -827,7 +830,11 @@ where
     check_request_rate(&state, &caller)?;
 
     let tape = parse_bucket(&bucket)?;
-    let resolved = match resolve_readable(&state, &bucket, &key)? {
+    let readable = resolve_readable(&state, &bucket, &key)?;
+    if let Some(answer) = conditional_read_answer(preconditions, &readable)? {
+        return Ok(answer);
+    }
+    let resolved = match readable {
         Readable::Queued(object) => {
             let bytes = queued_bytes(&state, tape, &key)?.ok_or(S3Error::NoSuchKey)?;
             return queued_response(bytes, &object, range.as_deref());
@@ -885,7 +892,8 @@ where
     Blockchain: Rpc + 'static,
 {
     let caller = meter_caller(&state, &headers, remote, &auth);
-    head_object_impl(&state, &caller, &bucket, &key, range_header(&headers))
+    let preconditions = Preconditions::from_headers(&headers);
+    head_object_impl(&state, &caller, &bucket, &key, range_header(&headers), &preconditions)
 }
 
 fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -894,9 +902,14 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
     bucket: &str,
     key: &str,
     range: Option<&str>,
+    preconditions: &Preconditions,
 ) -> Result<Response, S3Error> {
     check_request_rate(state, caller)?;
-    match resolve_readable(state, bucket, key)? {
+    let readable = resolve_readable(state, bucket, key)?;
+    if let Some(answer) = conditional_read_answer(preconditions, &readable)? {
+        return Ok(answer);
+    }
+    match readable {
         Readable::Queued(object) => head_response_parts(
             object.size,
             object.etag,
@@ -905,6 +918,20 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
             range,
         ),
         Readable::Track(resolved) => head_response(&resolved, range),
+    }
+}
+
+/// The answer a read's conditional headers force, when they force one.
+fn conditional_read_answer(
+    preconditions: &Preconditions,
+    readable: &Readable,
+) -> Result<Option<Response>, S3Error> {
+    match check_read(preconditions, readable.etag(), readable.last_modified()) {
+        ReadCondition::Serve => Ok(None),
+        ReadCondition::NotModified => {
+            not_modified_response(readable.etag(), readable.last_modified()).map(Some)
+        }
+        ReadCondition::Failed => Err(S3Error::PreconditionFailed),
     }
 }
 

@@ -1,13 +1,31 @@
 //! Conditional-request evaluation for the S3 surface
 //!
-//! Reads the `If-Match` / `If-None-Match` headers off a request and weighs them
-//! against the ETag the key currently holds.
+//! Reads the `If-Match` / `If-None-Match` / `If-Modified-Since` /
+//! `If-Unmodified-Since` headers off a request and weighs them against the ETag
+//! and last-modified second the key currently holds.
 
 use axum::http::{HeaderMap, HeaderName, header};
 
 use tape_crypto::Hash;
 
+use super::clock::{
+    SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, days_from_civil, month_number,
+};
 use super::error::S3Error;
+
+/// Length of the date part of an IMF-fixdate, `06 Nov 1994 08:49:37`
+const FIXDATE_LEN: usize = 20;
+
+/// What a conditional read serves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadCondition {
+    /// The conditions hold; serve the object
+    Serve,
+    /// The client already has this copy; answer 304
+    NotModified,
+    /// A condition did not hold; answer 412
+    Failed,
+}
 
 /// The conditional headers one request carries.
 #[derive(Default)]
@@ -16,14 +34,25 @@ pub struct Preconditions {
     pub if_match: Option<String>,
     /// `If-None-Match` entity-tag list
     pub if_none_match: Option<String>,
+
+    /// `If-Modified-Since` as unix seconds
+    pub if_modified_since: Option<i64>,
+    /// `If-Unmodified-Since` as unix seconds
+    pub if_unmodified_since: Option<i64>,
 }
 
 impl Preconditions {
-    /// Read the conditional headers off a request
+    /// Read the conditional headers off a request; an unreadable date is ignored, as RFC 7232 requires
     pub fn from_headers(headers: &HeaderMap) -> Self {
         Self {
             if_match: header_text(headers, header::IF_MATCH),
             if_none_match: header_text(headers, header::IF_NONE_MATCH),
+            if_modified_since: header_text(headers, header::IF_MODIFIED_SINCE)
+                .as_deref()
+                .and_then(parse_http_date),
+            if_unmodified_since: header_text(headers, header::IF_UNMODIFIED_SINCE)
+                .as_deref()
+                .and_then(parse_http_date),
         }
     }
 
@@ -46,6 +75,39 @@ pub fn check_write(preconditions: &Preconditions, current: Option<Hash>) -> Resu
         }
     }
     Ok(())
+}
+
+/// Weigh a read's conditions in RFC 7232 order, where the tag headers win over the dates
+pub fn check_read(
+    preconditions: &Preconditions,
+    etag: Hash,
+    last_modified: Option<i64>,
+) -> ReadCondition {
+    if is_failed(preconditions, etag, last_modified) {
+        return ReadCondition::Failed;
+    }
+    if is_not_modified(preconditions, etag, last_modified) {
+        return ReadCondition::NotModified;
+    }
+    ReadCondition::Serve
+}
+
+/// Whether `If-Match` or, in its absence, `If-Unmodified-Since` refuses the read
+fn is_failed(preconditions: &Preconditions, etag: Hash, last_modified: Option<i64>) -> bool {
+    match (&preconditions.if_match, preconditions.if_unmodified_since) {
+        (Some(header), _) => !list_matches(header, Some(etag)),
+        (None, Some(since)) => last_modified.is_some_and(|modified| modified > since),
+        (None, None) => false,
+    }
+}
+
+/// Whether `If-None-Match` or, in its absence, `If-Modified-Since` says the client's copy is current
+fn is_not_modified(preconditions: &Preconditions, etag: Hash, last_modified: Option<i64>) -> bool {
+    match (&preconditions.if_none_match, preconditions.if_modified_since) {
+        (Some(header), _) => list_matches(header, Some(etag)),
+        (None, Some(since)) => last_modified.is_some_and(|modified| modified <= since),
+        (None, None) => false,
+    }
 }
 
 /// Whether an entity-tag list matches the object's ETag; `*` matches any object that exists
@@ -86,6 +148,36 @@ fn unquote(tag: &str) -> &str {
 fn header_text(headers: &HeaderMap, name: HeaderName) -> Option<String> {
     let value = headers.get(name)?;
     value.to_str().ok().map(str::to_string)
+}
+
+/// Parse an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`) as unix seconds
+fn parse_http_date(value: &str) -> Option<i64> {
+    let (_, rest) = value.trim().split_once(", ")?;
+    if rest.len() < FIXDATE_LEN {
+        return None;
+    }
+
+    let day = date_field(rest, 0, 2)?;
+    let month = month_number(rest.get(3..6)?)?;
+    let year = date_field(rest, 7, 11)?;
+    let hour = date_field(rest, 12, 14)?;
+    let minute = date_field(rest, 15, 17)?;
+    let second = date_field(rest, 18, FIXDATE_LEN)?;
+    if !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+
+    Some(
+        days_from_civil(year, month, day) * SECONDS_PER_DAY
+            + hour * SECONDS_PER_HOUR
+            + minute * SECONDS_PER_MINUTE
+            + second,
+    )
+}
+
+/// One fixed-width numeric field of an IMF-fixdate
+fn date_field(rest: &str, start: usize, end: usize) -> Option<i64> {
+    rest.get(start..end)?.parse().ok()
 }
 
 #[cfg(test)]

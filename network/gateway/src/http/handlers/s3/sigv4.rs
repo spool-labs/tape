@@ -41,7 +41,7 @@ const MAX_CLOCK_SKEW_SECS: i64 = 900;
 /// Maximum lifetime AWS permits on a presigned URL: 7 days.
 const MAX_PRESIGNED_EXPIRY_SECS: i64 = 604_800;
 
-use super::clock::{SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE};
+use super::clock::{SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, days_from_civil};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -716,19 +716,6 @@ fn parse_amz_timestamp(stamp: &str) -> Option<i64> {
             + second,
     )
 }
-
-/// Days since the Unix epoch (1970-01-01) for a proleptic-Gregorian date, via
-/// Howard Hinnant's branch-free `days_from_civil`. Valid for any in-range date.
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = (if year >= 0 { year } else { year - 399 }) / 400;
-    let year_of_era = year - era * 400; // [0, 399]
-    let day_of_year =
-        (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1; // [0, 365]
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year; // [0, 146096]
-    era * 146_097 + day_of_era - 719_468
-}
-
 
 /// Shorthand for an `InvalidRequest` S3 error with a static detail message
 fn invalid(detail: &str) -> S3Error {

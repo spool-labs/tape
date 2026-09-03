@@ -81,6 +81,14 @@ impl Readable {
         }
     }
 
+    /// The last-modified second to answer with, when the copy knows one.
+    pub fn last_modified(&self) -> Option<i64> {
+        match self {
+            Self::Queued(object) => Some(object.block_time),
+            Self::Track(resolved) => resolved.block_time,
+        }
+    }
+
     /// The content type to answer with, whichever copy serves.
     pub fn content_type(&self) -> ContentType {
         match self {
