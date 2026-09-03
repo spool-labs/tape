@@ -46,8 +46,8 @@ pub trait MultipartOps {
     /// Fetch the metadata for `upload_id`, if present
     fn get_multipart_upload(&self, upload_id: &str) -> Result<Option<MultipartUpload>>;
 
-    /// Insert or overwrite one part of `upload_id` (re-upload overwrites). The
-    /// metadata and the part's chunks are written together in one atomic batch.
+    /// Insert or overwrite one part of `upload_id` (re-upload overwrites). Chunks
+    /// land first and the metadata row last, so a part is readable only once whole.
     fn put_multipart_part(
         &self,
         upload_id: &str,
@@ -90,9 +90,27 @@ impl<Backend: Store> MultipartOps for TapeStore<Backend> {
         let key = encode(&part_key(upload_id, part.part_number), "multipart part key")?;
         let metadata = encode(part, "multipart part metadata")?;
         let count = chunk_count(data.len());
+        let raw = self.inner().inner();
 
-        let mut batch = WriteBatch::new();
-        batch.put(S3MultipartPartCol::CF_NAME, &key, &metadata);
+        // Retire the part before rewriting it: the metadata row is what makes a part
+        // readable, so dropping it first keeps a half-written part out of every read,
+        // and the chunks a shorter re-upload no longer fills go with it.
+        let prefix = MultipartPartChunkKey::part_prefix(digest, part.part_number);
+        let mut retire = WriteBatch::new();
+        retire.delete(S3MultipartPartCol::CF_NAME, &key);
+        for stale in raw.iter_keys_prefix(S3MultipartPartDataCol::CF_NAME, &prefix)? {
+            let chunk_key: MultipartPartChunkKey =
+                wincode::deserialize(&stale).map_err(|error| {
+                    TapeStoreError::Serialization(format!("multipart chunk key: {error}"))
+                })?;
+            if chunk_key.chunk_index >= count {
+                retire.delete(S3MultipartPartDataCol::CF_NAME, &stale);
+            }
+        }
+        raw.write_batch(retire)?;
+
+        // A reel batch has to fit one segment the same way a value does, so each
+        // chunk is written on its own.
         for index in 0..count {
             let offset = index as usize * MULTIPART_CHUNK_BYTES;
             let end = data.len().min(offset + MULTIPART_CHUNK_BYTES);
@@ -104,27 +122,14 @@ impl<Backend: Store> MultipartOps for TapeStore<Backend> {
                 data: data[offset..end].to_vec(),
             };
             let payload = encode(&chunk, "multipart chunk payload")?;
+            let mut batch = WriteBatch::new();
             batch.put(S3MultipartPartDataCol::CF_NAME, &chunk_key, &payload);
+            raw.write_batch(batch)?;
         }
 
-        // A re-upload may be shorter than the part it replaces, so drop the chunks
-        // past the new tail rather than leaving them to be read back.
-        let prefix = MultipartPartChunkKey::part_prefix(digest, part.part_number);
-        for stale in self
-            .inner()
-            .inner()
-            .iter_keys_prefix(S3MultipartPartDataCol::CF_NAME, &prefix)?
-        {
-            let chunk_key: MultipartPartChunkKey =
-                wincode::deserialize(&stale).map_err(|error| {
-                    TapeStoreError::Serialization(format!("multipart chunk key: {error}"))
-                })?;
-            if chunk_key.chunk_index >= count {
-                batch.delete(S3MultipartPartDataCol::CF_NAME, &stale);
-            }
-        }
-
-        self.inner().inner().write_batch(batch)?;
+        let mut publish = WriteBatch::new();
+        publish.put(S3MultipartPartCol::CF_NAME, &key, &metadata);
+        raw.write_batch(publish)?;
         Ok(())
     }
 

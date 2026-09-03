@@ -157,3 +157,23 @@ fn concurrent_parts_posix() {
     let bad = mismatches(&store);
     assert!(bad.is_empty(), "posix parts differ after concurrent writes (number, len, first bad, bad bytes): {bad:?}");
 }
+
+/// A part as wide as a whole small-volume segment, the size a ClickHouse merge sends
+const SEGMENT_PART_BYTES: usize = 32 * 1024 * 1024;
+
+/// A part that fills a segment writes and reads back
+#[test]
+fn segment_sized_part() {
+    let dir = TempDir::new().expect("temp dir");
+    let store = open_harness_store(dir.path()).expect("open");
+    let data = pattern(99, SEGMENT_PART_BYTES);
+    let mut meta = part(1);
+    meta.size = SEGMENT_PART_BYTES as u64;
+
+    store.put_multipart_part("big", &meta, data.clone()).expect("put part");
+
+    let parts = store.list_multipart_parts("big").expect("list parts");
+    assert_eq!(parts.len(), 1);
+    assert_eq!(parts[0].size, SEGMENT_PART_BYTES as u64);
+    assert_eq!(store.get_multipart_part_data("big", 1).expect("read"), Some(data));
+}
