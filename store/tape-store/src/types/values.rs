@@ -384,11 +384,13 @@ pub struct LedgerReservation {
     pub meters_capacity: bool,
 }
 
-/// Decode limit for a buffered multipart part: S3's 5 GiB maximum part size.
-const MULTIPART_PART_BYTES_LIMIT: usize = 5 * 1024 * 1024 * 1024;
+/// Fixed size of one stored multipart chunk. A part is written as chunks of this
+/// size so a stored value always fits inside one store segment, whatever the
+/// part size.
+pub const MULTIPART_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
-/// Buffered multipart part bytes with a widened decode limit
-type MultipartPartBytes = WincodeVec<Pod<u8>, BincodeLen<MULTIPART_PART_BYTES_LIMIT>>;
+/// Buffered multipart chunk bytes, decode-limited to one chunk
+type MultipartChunkBytes = WincodeVec<Pod<u8>, BincodeLen<MULTIPART_CHUNK_BYTES>>;
 
 /// An in-progress S3 multipart upload's target, keyed in `s3_multipart_upload`
 /// by its opaque upload id.
@@ -421,12 +423,12 @@ pub struct MultipartPart {
     pub size: u64,
 }
 
-/// The buffered bytes of one multipart part, stored in its own column so part
+/// One chunk of a buffered multipart part, stored in its own column so part
 /// metadata (ListParts, completion validation) loads without the payload.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
-pub struct MultipartPartData {
-    /// Raw part bytes
-    #[wincode(with = "MultipartPartBytes")]
+pub struct MultipartPartChunk {
+    /// Raw chunk bytes
+    #[wincode(with = "MultipartChunkBytes")]
     pub data: Vec<u8>,
 }
 

@@ -47,7 +47,7 @@
 //! - `ledger_reservation`: Outstanding budget reservations (LedgerReservationKey -> LedgerReservation)
 //! - `s3_multipart_upload`: In-flight multipart upload metadata (String -> MultipartUpload)
 //! - `s3_multipart_part`: Buffered multipart part metadata (MultipartPartKey -> MultipartPart)
-//! - `s3_multipart_part_data`: Buffered multipart part payloads (MultipartPartKey -> MultipartPartData)
+//! - `s3_multipart_part_data`: Buffered multipart part chunks (MultipartPartChunkKey -> MultipartPartChunk)
 //! - `s3_pending_write`: Queued S3 writes awaiting the chain (PendingWriteKey -> PendingWrite)
 //! - `s3_pending_write_data`: Queued object payloads (PendingWriteKey -> PendingWriteData)
 

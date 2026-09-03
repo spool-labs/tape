@@ -2,7 +2,9 @@
 
 use store::Column;
 
-use crate::types::{MultipartPart, MultipartPartData, MultipartPartKey, MultipartUpload};
+use crate::types::{
+    MultipartPart, MultipartPartChunk, MultipartPartChunkKey, MultipartPartKey, MultipartUpload,
+};
 
 /// In-flight multipart uploads, keyed by opaque upload id.
 pub struct S3MultipartUploadCol;
@@ -23,11 +25,12 @@ impl Column for S3MultipartPartCol {
     type Value = MultipartPart;
 }
 
-/// Buffered multipart part payloads, keyed identically to their metadata.
+/// Buffered multipart part payloads, split into fixed-size chunks keyed by
+/// `(upload, part_number, chunk_index)` so no stored value has to fit one segment.
 pub struct S3MultipartPartDataCol;
 
 impl Column for S3MultipartPartDataCol {
     const CF_NAME: &'static str = "s3_multipart_part_data";
-    type Key = MultipartPartKey;
-    type Value = MultipartPartData;
+    type Key = MultipartPartChunkKey;
+    type Value = MultipartPartChunk;
 }

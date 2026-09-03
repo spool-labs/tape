@@ -993,6 +993,87 @@ impl<'de> SchemaRead<'de> for MultipartPartKey {
     }
 }
 
+/// Key for one stored chunk of a buffered multipart part (40 bytes).
+///
+/// Format: `[upload 32 bytes][part_number BE 4 bytes][chunk_index BE 4 bytes]`.
+/// A part is split across chunks so no stored value has to fit one store
+/// segment; the leading upload digest still scopes a whole-upload scan, and the
+/// part and chunk suffixes walk a part's chunks in order.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct MultipartPartChunkKey {
+    /// Digest of the opaque upload id this chunk belongs to.
+    pub upload: Hash,
+    /// Part number (1..=10000) within the upload.
+    pub part_number: u32,
+    /// Zero-based position of this chunk within the part.
+    pub chunk_index: u32,
+}
+
+impl MultipartPartChunkKey {
+    /// Encoded size of the key in bytes.
+    pub const SIZE: usize = 40;
+
+    /// Prefix bytes for scanning every chunk of one part (36 bytes).
+    pub const PART_PREFIX_SIZE: usize = 36;
+
+    /// Create a chunk key for `upload`, `part_number` and `chunk_index`.
+    pub fn new(upload: Hash, part_number: u32, chunk_index: u32) -> Self {
+        Self {
+            upload,
+            part_number,
+            chunk_index,
+        }
+    }
+
+    /// Prefix bytes for scanning every chunk of one part
+    pub fn part_prefix(upload: Hash, part_number: u32) -> [u8; Self::PART_PREFIX_SIZE] {
+        let mut prefix = [0u8; Self::PART_PREFIX_SIZE];
+        prefix[..32].copy_from_slice(&upload.0);
+        prefix[32..].copy_from_slice(&part_number.to_be_bytes());
+        prefix
+    }
+}
+
+impl SchemaWrite for MultipartPartChunkKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(&src.upload.0)?;
+        writer.write_exact(&src.part_number.to_be_bytes())?;
+        writer.write_exact(&src.chunk_index.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for MultipartPartChunkKey {
+    type Dst = Self;
+
+    fn read(
+        reader: &mut Reader<'de>,
+        dst: &mut MaybeUninit<MultipartPartChunkKey>,
+    ) -> ReadResult<()> {
+        // SAFETY: get_t reads a fixed 32-byte array for the Pod upload digest; the key is a
+        // known fixed width, so the source buffer is guaranteed to hold these bytes.
+        let upload: [u8; 32] = unsafe { reader.get_t()? };
+        // SAFETY: get_t reads a fixed 4-byte array for the Pod part_number field; the remaining
+        // buffer is a known fixed width.
+        let part_number_bytes: [u8; 4] = unsafe { reader.get_t()? };
+        // SAFETY: get_t reads a fixed 4-byte array for the Pod chunk_index field; the remaining
+        // buffer is a known fixed width.
+        let chunk_index_bytes: [u8; 4] = unsafe { reader.get_t()? };
+        dst.write(MultipartPartChunkKey {
+            upload: Hash(upload),
+            part_number: u32::from_be_bytes(part_number_bytes),
+            chunk_index: u32::from_be_bytes(chunk_index_bytes),
+        });
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1245,5 +1326,34 @@ mod tests {
         assert_eq!(&p1[..32], &MultipartPartKey::upload_prefix(upload));
         assert!(p1 < p2, "parts sort by part number within an upload");
         assert!(p2 < foreign, "a different upload sorts past this one");
+    }
+
+    // a chunk key round-trips at its fixed size
+    #[test]
+    fn chunk_encoding() {
+        let key = MultipartPartChunkKey::new(Hash([0x33; 32]), 7, 3);
+        let bytes = wincode::serialize(&key).expect("serialize");
+        assert_eq!(bytes.len(), MultipartPartChunkKey::SIZE);
+        let decoded: MultipartPartChunkKey = wincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(key, decoded);
+    }
+
+    // chunk keys group by upload then part, and order by chunk index
+    #[test]
+    fn chunk_scoping() {
+        let upload = Hash([0x33; 32]);
+        let other = Hash([0x34; 32]);
+
+        let c0 = wincode::serialize(&MultipartPartChunkKey::new(upload, 1, 0)).expect("serialize");
+        let c1 = wincode::serialize(&MultipartPartChunkKey::new(upload, 1, 1)).expect("serialize");
+        let next_part =
+            wincode::serialize(&MultipartPartChunkKey::new(upload, 2, 0)).expect("serialize");
+        let foreign = wincode::serialize(&MultipartPartChunkKey::new(other, 1, 0)).expect("serialize");
+
+        assert_eq!(&c0[..32], &MultipartPartKey::upload_prefix(upload));
+        assert_eq!(&c0[..36], &MultipartPartChunkKey::part_prefix(upload, 1));
+        assert!(c0 < c1, "chunks sort by index within a part");
+        assert!(c1 < next_part, "a later part sorts past this one");
+        assert!(next_part < foreign, "a different upload sorts past this one");
     }
 }
