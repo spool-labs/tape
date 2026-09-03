@@ -43,6 +43,8 @@ pub enum S3Error {
     InvalidRequest(String),
     /// A Range request that cannot be satisfied; carries the object size. HTTP 416
     InvalidRange(u64),
+    /// A conditional header on the request did not hold. HTTP 412
+    PreconditionFailed,
     /// The caller is being rate limited; carries Retry-After seconds. HTTP 503
     SlowDown { retry_after_seconds: u64 },
     /// The operation is recognized but not implemented yet. HTTP 501
@@ -74,6 +76,7 @@ impl S3Error {
             Self::EntityTooSmall(_) => "EntityTooSmall",
             Self::InvalidRequest(_) => "InvalidRequest",
             Self::InvalidRange(_) => "InvalidRange",
+            Self::PreconditionFailed => "PreconditionFailed",
             Self::SlowDown { .. } => "SlowDown",
             Self::NotImplemented(_) => "NotImplemented",
             Self::Internal(_) => "InternalError",
@@ -92,6 +95,7 @@ impl S3Error {
             | Self::EntityTooSmall(_)
             | Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             Self::InvalidRange(_) => StatusCode::RANGE_NOT_SATISFIABLE,
+            Self::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             Self::SlowDown { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -117,6 +121,9 @@ impl S3Error {
                     .to_string()
             }
             Self::SlowDown { .. } => "Please reduce your request rate.".to_string(),
+            Self::PreconditionFailed => {
+                "At least one of the preconditions you specified did not hold.".to_string()
+            }
             Self::InvalidRange(total) => {
                 format!("The requested range is not satisfiable (object size {total}).")
             }
@@ -154,6 +161,7 @@ impl S3Error {
             | Self::InvalidRequest(_)
             | Self::SlowDown { .. }
             | Self::InvalidRange(_)
+            | Self::PreconditionFailed
             | Self::NotImplemented(_) => None,
         }
     }
@@ -192,6 +200,7 @@ impl IntoResponse for S3Error {
             | Self::EntityTooSmall(_)
             | Self::InvalidRequest(_)
             | Self::InvalidRange(_)
+            | Self::PreconditionFailed
             | Self::NotImplemented(_)
             | Self::Internal(_) => None,
         };

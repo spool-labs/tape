@@ -46,6 +46,7 @@ use crate::meter::{GatewayMeterDecision, MeterCaller};
 use super::accounting;
 use super::authz::{Auth, WriteOp, WritePermit, authorize_multipart_read, authorize_write};
 use super::chunked::object_reader;
+use super::conditional::{Preconditions, check_write};
 use super::clock::now_unix;
 use super::error::S3Error;
 use super::multipart::{self, CompletedPartRef};
@@ -1032,6 +1033,7 @@ where
     validate_object_key(&key)?;
 
     let content_type = content_type_from_headers(headers);
+    let preconditions = Preconditions::from_headers(headers);
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
 
@@ -1044,6 +1046,12 @@ where
                 )));
             }
             let permit = authorize_write(&state, auth, tape, &key, WriteOp::Put, size).await?;
+            // The bucket lock spans the chain write so the key cannot change under the condition.
+            let _guard = state.staging.lock_tape(tape).await;
+            if let Err(error) = check_conditional_write(&state, &preconditions, tape, &key) {
+                permit.refund(&state);
+                return Err(error);
+            }
             let (reader, producer) = object_reader(body, signed_payload.is_aws_chunked());
             let (write_result, producer_result) = join!(
                 write_ctx.write_object_stream(
@@ -1088,7 +1096,7 @@ where
             let size = data.len() as u64;
             check_queue_budget(&state, size)?;
             let permit = authorize_write(&state, auth, tape, &key, WriteOp::Put, size).await?;
-            enqueue_put(&state, permit, tape, &key, content_type, data).await?
+            enqueue_put(&state, permit, tape, &key, content_type, data, &preconditions).await?
         }
     };
 
@@ -1115,6 +1123,31 @@ where
     Ok(())
 }
 
+/// Weigh a write's conditional headers against the key's current ETag, the write queue first.
+fn check_conditional_write<Db, Cluster, Blockchain>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    preconditions: &Preconditions,
+    tape: Address,
+    key: &str,
+) -> Result<(), S3Error>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    if !preconditions.has_tag_condition() {
+        return Ok(());
+    }
+    let current = resolve::resolve_readable(
+        state.context.store.as_ref(),
+        state.staging.as_ref(),
+        tape,
+        key.as_bytes(),
+    )
+    .map_err(|error| S3Error::Internal(format!("object index lookup: {error}")))?;
+    check_write(preconditions, current.map(|readable| readable.etag()))
+}
+
 /// Queue a buffered object and acknowledge it with the ETag the index will record.
 async fn enqueue_put<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
@@ -1123,6 +1156,7 @@ async fn enqueue_put<Db, Cluster, Blockchain>(
     key: &str,
     content_type: ContentType,
     data: Bytes,
+    preconditions: &Preconditions,
 ) -> Result<Hash, S3Error>
 where
     Db: Store + 'static,
@@ -1137,6 +1171,13 @@ where
             return Err(s3_write_error(error));
         }
     };
+
+    // Two conditional writes on one key are decided one after the other, never together.
+    let _guard = state.staging.lock_tape(tape).await;
+    if let Err(error) = check_conditional_write(state, preconditions, tape, key) {
+        permit.refund(state);
+        return Err(error);
+    }
 
     let queued = state
         .staging
@@ -1378,7 +1419,8 @@ where
     if has_query_param(query.as_deref(), "uploadId", None) {
         // CompleteMultipartUpload assembles the buffered parts (XML body lists
         // them) and drives the write pipeline.
-        return complete_multipart_upload(&state, &auth, bucket, key, query.as_deref(), body).await;
+        return complete_multipart_upload(&state, &auth, bucket, key, query.as_deref(), &headers, body)
+            .await;
     }
     Err(not_implemented("object POST"))
 }
@@ -1390,6 +1432,7 @@ async fn delete_object<Db, Cluster, Blockchain>(
     Extension(auth): Extension<Auth>,
     Path((bucket, key)): Path<(String, String)>,
     RawQuery(query): RawQuery,
+    headers: HeaderMap,
 ) -> Result<Response, S3Error>
 where
     Db: Store + 'static,
@@ -1402,7 +1445,10 @@ where
         return abort_multipart_upload(&state, &auth, bucket, key, query.as_deref()).await;
     }
     let tape = parse_bucket(&bucket)?;
-    delete_object_impl(&state, &auth, tape, &key).await.map(|()| delete_response())
+    let preconditions = Preconditions::from_headers(&headers);
+    delete_object_impl(&state, &auth, tape, &key, &preconditions)
+        .await
+        .map(|()| delete_response())
 }
 
 async fn delete_object_impl<Db, Cluster, Blockchain>(
@@ -1410,6 +1456,7 @@ async fn delete_object_impl<Db, Cluster, Blockchain>(
     auth: &Auth,
     tape: Address,
     key: &str,
+    preconditions: &Preconditions,
 ) -> Result<(), S3Error>
 where
     Db: Store + 'static,
@@ -1425,6 +1472,13 @@ where
     // Authorization chokepoint runs before the existence check so an
     // unauthorized caller cannot probe which keys exist via the response code.
     let permit = authorize_write(state, auth, tape, key, WriteOp::Delete, 0).await?;
+
+    // The bucket lock holds from the condition to the enqueue it decides.
+    let _guard = state.staging.lock_tape(tape).await;
+    if let Err(error) = check_conditional_write(state, preconditions, tape, key) {
+        permit.refund(state);
+        return Err(error);
+    }
 
     // DeleteObject is idempotent: nothing queued and nothing indexed is already deleted.
     if !object_present(state, tape, key)? {
@@ -1524,7 +1578,7 @@ where
     let mut deleted = Vec::new();
     let mut errors = Vec::new();
     for key in keys {
-        match delete_object_impl(state, auth, tape, &key).await {
+        match delete_object_impl(state, auth, tape, &key, &Preconditions::default()).await {
             Ok(()) => {
                 if !quiet {
                     deleted.push(key);
@@ -1823,6 +1877,7 @@ async fn complete_multipart_upload<Db, Cluster, Blockchain>(
     bucket_label: String,
     key: String,
     query: Option<&str>,
+    headers: &HeaderMap,
     body: Bytes,
 ) -> Result<Response, S3Error>
 where
@@ -1863,6 +1918,7 @@ where
         &assembled.key,
         assembled.content_type,
         Bytes::from(assembled.data),
+        &Preconditions::from_headers(headers),
     )
     .await?;
 

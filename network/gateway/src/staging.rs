@@ -12,7 +12,7 @@ use tape_store::TapeStore;
 use tape_store::error::TapeStoreError;
 use tape_store::ops::PendingWriteOps;
 use tape_store::types::{PendingOp, PendingState, PendingWrite};
-use tokio::sync::Notify;
+use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard};
 
 use crate::metrics;
 
@@ -75,6 +75,8 @@ pub struct StagingStore<Db: Store> {
     /// Enqueue order, seeded past the highest stored seq at open.
     next_seq: AtomicU64,
     queued_bytes: Mutex<QueuedBytes>,
+    /// One write lock per bucket, minted on first use.
+    tape_locks: Mutex<HashMap<Address, Arc<AsyncMutex<()>>>>,
     wake: Notify,
 }
 
@@ -92,8 +94,21 @@ impl<Db: Store> StagingStore<Db> {
             store,
             next_seq: AtomicU64::new(highest.saturating_add(1)),
             queued_bytes: Mutex::new(queued),
+            tape_locks: Mutex::new(HashMap::new()),
             wake: Notify::new(),
         })
+    }
+
+    /// Take one bucket's write lock, so a conditional check and the enqueue it decides cannot interleave.
+    pub async fn lock_tape(&self, tape: Address) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = match self.tape_locks.lock() {
+                Ok(locks) => locks,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            locks.entry(tape).or_default().clone()
+        };
+        lock.lock_owned().await
     }
 
     /// Payload bytes the queue holds on disk, across every bucket.
