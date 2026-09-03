@@ -41,7 +41,7 @@ const MAX_CLOCK_SKEW_SECS: i64 = 900;
 /// Maximum lifetime AWS permits on a presigned URL: 7 days.
 const MAX_PRESIGNED_EXPIRY_SECS: i64 = 604_800;
 
-use super::clock::{SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE};
+use super::clock::{SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, days_from_civil};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -125,7 +125,7 @@ impl SigV4Verifier {
         let canonical_request = format!(
             "{method}\n{uri}\n{query}\n{headers}\n{signed}\n{payload}",
             method = request.method().as_str(),
-            uri = request.uri().path(),
+            uri = signed_path(request),
             query = canonical_query_string(request.uri().query(), presented.is_presigned),
             headers = canonical_headers,
             signed = signed_headers_list,
@@ -391,6 +391,62 @@ fn canonical_headers(request: &Request, signed_headers: &[String]) -> Result<Str
         out.push('\n');
     }
     Ok(out)
+}
+
+/// The path the client signed: the one it sent, before a virtual-host rewrite moved the bucket
+fn signed_path(request: &Request) -> &str {
+    request
+        .extensions()
+        .get::<SignedPath>()
+        .map_or(request.uri().path(), |signed| signed.0.as_str())
+}
+
+/// The request path as the client sent it, kept across the virtual-host rewrite
+#[derive(Clone, Debug)]
+pub struct SignedPath(pub String);
+
+/// Put the request in the one shape the router knows, bucket in the path and no trailing slash, keeping the signed path beside it
+pub async fn shape_request(mut request: Request, next: Next) -> Response {
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| request.uri().authority().map(|authority| authority.to_string()));
+    let Some((uri, signed)) =
+        shaped_uri(host.as_deref(), request.uri().path(), request.uri().query())
+    else {
+        return next.run(request).await;
+    };
+    let Ok(uri) = uri.parse::<axum::http::Uri>() else {
+        return next.run(request).await;
+    };
+    request.extensions_mut().insert(SignedPath(signed));
+    *request.uri_mut() = uri;
+    next.run(request).await
+}
+
+/// The path-style, slash-free URI and the signed path, or None when nothing has to move
+fn shaped_uri(host: Option<&str>, path: &str, query: Option<&str>) -> Option<(String, String)> {
+    let bucket_in_host = host
+        .and_then(|host| host.split(['.', ':']).next())
+        .filter(|label| tape_crypto::address::Address::try_from_subdomain_label(label).is_some());
+    let mut shaped = match bucket_in_host {
+        Some(label) if path == "/" => format!("/{label}"),
+        Some(label) => format!("/{label}{path}"),
+        None => path.to_string(),
+    };
+    if shaped.len() > 2 && shaped.ends_with('/') && shaped[1..shaped.len() - 1].find('/').is_none() {
+        shaped.pop();
+    }
+    if shaped == path {
+        return None;
+    }
+    if let Some(query) = query {
+        shaped.push('?');
+        shaped.push_str(query);
+    }
+    Some((shaped, path.to_string()))
 }
 
 /// Resolve a signed header's value, special-casing `host` so it works whether
@@ -661,19 +717,6 @@ fn parse_amz_timestamp(stamp: &str) -> Option<i64> {
     )
 }
 
-/// Days since the Unix epoch (1970-01-01) for a proleptic-Gregorian date, via
-/// Howard Hinnant's branch-free `days_from_civil`. Valid for any in-range date.
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = (if year >= 0 { year } else { year - 399 }) / 400;
-    let year_of_era = year - era * 400; // [0, 399]
-    let day_of_year =
-        (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1; // [0, 365]
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year; // [0, 146096]
-    era * 146_097 + day_of_era - 719_468
-}
-
-
 /// Shorthand for an `InvalidRequest` S3 error with a static detail message
 fn invalid(detail: &str) -> S3Error {
     S3Error::InvalidRequest(detail.to_string())
@@ -681,6 +724,27 @@ fn invalid(detail: &str) -> S3Error {
 
 #[cfg(test)]
 mod tests {
+    // a bucket in the host moves into the path, a trailing slash goes, the signed path stays as sent
+    #[test]
+    fn shaped() {
+        let label = "uuagon2apyod2r27upvf2bheqg655gooqhbld747pkdrjqf46meq";
+        let host = format!("{label}.s3.example.com:9000");
+        assert_eq!(
+            super::shaped_uri(Some(&host), "/", None),
+            Some((format!("/{label}"), "/".to_string()))
+        );
+        assert_eq!(
+            super::shaped_uri(Some(&host), "/photos/cat.jpg", Some("list-type=2")),
+            Some((format!("/{label}/photos/cat.jpg?list-type=2"), "/photos/cat.jpg".to_string()))
+        );
+        assert_eq!(
+            super::shaped_uri(Some("s3.example.com"), &format!("/{label}/"), Some("location=")),
+            Some((format!("/{label}?location="), format!("/{label}/")))
+        );
+        assert_eq!(super::shaped_uri(Some("s3.example.com"), "/bucket/key/", None), None);
+        assert_eq!(super::shaped_uri(Some("s3.example.com"), "/bucket/key", None), None);
+    }
+
     use super::*;
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
