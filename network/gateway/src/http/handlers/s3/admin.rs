@@ -16,18 +16,12 @@ use store::Store;
 use tape_crypto::address::Address;
 use tape_node::context::NodeContext;
 use tape_protocol::Api;
-use tape_store::ops::{
-    AuditOps, AuthStateOps, CredentialOps, LedgerOps, PendingWriteOps, PolicyOps,
-};
+use tape_store::ops::{AuditOps, AuthStateOps, CredentialOps, LedgerOps, PolicyOps};
 use tape_store::types::{
     AuditDecision, AuditEntry, AuditOp, BudgetLimits, Credential, CredentialCaps, CredentialScope,
-    CredentialStatus, LedgerEntry, PendingOp, PendingState, PendingWrite, PolicyAction,
-    PolicyEffect, PolicyRule, PolicyRuleKey,
+    CredentialStatus, LedgerEntry, PolicyAction, PolicyEffect, PolicyRule, PolicyRuleKey,
 };
 use tape_store::TapeStore;
-
-use crate::drain::DrainStatus;
-use crate::staging::StagingStore;
 
 use super::accounting::{with_ledger_lock, Accounting};
 use super::authz::peppered_secret_hmac;
@@ -42,10 +36,6 @@ pub struct AdminState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     /// control-plane mutations against live reserve/commit, and its sequence
     /// counter keeps audit keys unique.
     pub accounting: Arc<Accounting>,
-    /// The durable write queue, for the byte totals `/pending` reports.
-    pub staging: Arc<StagingStore<Db>>,
-    /// What the drain last published about its own health.
-    pub drain_status: Arc<DrainStatus>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AdminState<Db, Cluster, Blockchain> {
@@ -53,8 +43,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AdminState<Db, Cluster,
         Self {
             context: self.context.clone(),
             accounting: self.accounting.clone(),
-            staging: self.staging.clone(),
-            drain_status: self.drain_status.clone(),
         }
     }
 }
@@ -101,7 +89,6 @@ where
             get(get_budgets::<Db, Cluster, Blockchain>)
                 .put(set_budgets::<Db, Cluster, Blockchain>),
         )
-        .route("/pending", get(get_pending::<Db, Cluster, Blockchain>))
         .route(
             "/ledger/{principal}",
             get(get_ledger::<Db, Cluster, Blockchain>),
@@ -557,94 +544,6 @@ where
     Ok(Json(request))
 }
 
-// Queued S3 writes
-
-/// `GET /pending`: what the write queue holds per bucket, and why anything failed
-async fn get_pending<Db, Cluster, Blockchain>(
-    State(state): State<AdminState<Db, Cluster, Blockchain>>,
-) -> Result<Json<PendingView>, AdminError>
-where
-    Db: Store,
-    Cluster: Api,
-    Blockchain: Rpc,
-{
-    let store = state.context.store.as_ref();
-    let tapes = store
-        .pending_write_tapes()
-        .map_err(|error| AdminError::internal(format!("pending store: {error}")))?;
-
-    let now = now_unix();
-    let mut buckets = Vec::new();
-    let mut failures = Vec::new();
-    for tape in tapes {
-        let entries = store
-            .scan_pending_writes(tape)
-            .map_err(|error| AdminError::internal(format!("pending store: {error}")))?;
-        let mut bucket = summarize_pending(tape, &entries, now, &mut failures);
-        bucket.queued_bytes = state.staging.tape_queued_bytes(tape);
-        buckets.push(bucket);
-    }
-
-    let health = state.drain_status.health();
-    Ok(Json(PendingView {
-        buckets,
-        failed: failures,
-        queued_bytes: state.staging.queued_bytes(),
-        delegate_lamports: health.delegate_lamports,
-        paused_reason: health.paused_reason,
-    }))
-}
-
-/// Fold one bucket's queue into its counts, collecting its failures.
-fn summarize_pending(
-    tape: Address,
-    entries: &[(Vec<u8>, PendingWrite)],
-    now: i64,
-    failures: &mut Vec<PendingFailure>,
-) -> PendingBucketView {
-    let mut view = PendingBucketView {
-        bucket: tape.to_string(),
-        queued: 0,
-        landed: 0,
-        failed: 0,
-        queued_bytes: 0,
-        oldest_queued_age_secs: 0,
-    };
-
-    for (key, write) in entries {
-        let is_waiting = match &write.state {
-            PendingState::Queued => {
-                view.queued += 1;
-                true
-            }
-            PendingState::Landed { .. } => {
-                view.landed += 1;
-                false
-            }
-            PendingState::Failed { error, attempts } => {
-                view.failed += 1;
-                failures.push(PendingFailure {
-                    bucket: tape.to_string(),
-                    key: String::from_utf8_lossy(key).into_owned(),
-                    error: error.clone(),
-                    attempts: *attempts,
-                });
-                true
-            }
-        };
-
-        // A delete carries no accept time, so the age reads off the puts.
-        if let PendingOp::Put { block_time, .. } = write.op {
-            if is_waiting {
-                let age = now.saturating_sub(block_time).max(0) as u64;
-                view.oldest_queued_age_secs = view.oldest_queued_age_secs.max(age);
-            }
-        }
-    }
-
-    view
-}
-
 // Per-principal accounting ledger
 
 /// `GET /ledger/{principal}` — a principal's accounting usage and budget override
@@ -911,36 +810,6 @@ impl From<BudgetLimits> for BudgetView {
 
 /// A principal's accounting ledger: outstanding reservations, windowed committed
 /// usage, lifetime meters, and any per-principal budget override
-/// What the write queue holds, per bucket and overall, plus the drain's health.
-#[derive(Serialize)]
-struct PendingView {
-    buckets: Vec<PendingBucketView>,
-    failed: Vec<PendingFailure>,
-    queued_bytes: u64,
-    delegate_lamports: Option<u64>,
-    paused_reason: Option<String>,
-}
-
-/// One bucket's queue counts.
-#[derive(Serialize)]
-struct PendingBucketView {
-    bucket: String,
-    queued: u64,
-    landed: u64,
-    failed: u64,
-    queued_bytes: u64,
-    oldest_queued_age_secs: u64,
-}
-
-/// One entry the drain has parked, with the error it reports.
-#[derive(Serialize)]
-struct PendingFailure {
-    bucket: String,
-    key: String,
-    error: String,
-    attempts: u32,
-}
-
 #[derive(Serialize)]
 struct LedgerView {
     principal: String,

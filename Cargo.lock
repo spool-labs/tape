@@ -10437,7 +10437,6 @@ dependencies = [
  "tape-crypto",
  "tempfile",
  "thiserror 2.0.18",
- "tokio",
  "wincode 0.1.2",
  "wincode-derive 0.1.1",
 ]

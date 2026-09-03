@@ -277,13 +277,13 @@ macro_rules! state {
 
             /// Immutably unpack from a raw account data slice with discriminator
             pub fn unpack_with_discriminator(data: &[u8]) -> Result<&Self, solana_program::program_error::ProgramError> {
-                let data = data.get(..Self::get_size()).ok_or(solana_program::program_error::ProgramError::InvalidAccountData)?;
+                let data = &data[..Self::get_size()];
                 <Self as $crate::AccountDeserialize>::try_from_bytes(data)
             }
 
             /// Mutably unpack from a raw account data slice with discriminator
             pub fn unpack_with_discriminator_mut(data: &mut [u8]) -> Result<&mut Self, solana_program::program_error::ProgramError> {
-                let data = data.get_mut(..Self::get_size()).ok_or(solana_program::program_error::ProgramError::InvalidAccountData)?;
+                let data = &mut data[..Self::get_size()];
                 <Self as $crate::AccountDeserialize>::try_from_bytes_mut(data)
             }
         }

@@ -16,7 +16,6 @@ use tape_node::config::http::HttpConfig;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_protocol::Api;
-use tape_crypto::address::Address;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower::limit::ConcurrencyLimitLayer;
@@ -26,7 +25,6 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::admission::{AdmitAll, Admission};
-use crate::drain::DrainStatus;
 use crate::cache::GatewaySliceCache;
 use crate::http::AppState;
 use crate::http::handlers::site::hosts::SiteHostBindings;
@@ -35,7 +33,7 @@ use crate::http::handlers::s3::{
     accounting::{Accounting, reservation_sweep_loop},
     admin::{AdminState, admin_router},
     routes::router,
-    sigv4::{verifier_from_config, shape_request},
+    sigv4::verifier_from_config,
     write::S3WriteContext,
 };
 use crate::http::handlers::{health, object, site, track};
@@ -46,7 +44,7 @@ pub struct GatewayHttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
-    staging: Arc<StagingStore<Db>>,
+    staging: Arc<StagingStore>,
     http_config: HttpConfig,
     cancel: CancellationToken,
 }
@@ -64,7 +62,7 @@ where
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         slice_cache: Arc<GatewaySliceCache<Db>>,
         meter: Arc<GatewayMeter>,
-        staging: Arc<StagingStore<Db>>,
+        staging: Arc<StagingStore>,
         http_config: HttpConfig,
         cancel: CancellationToken,
     ) -> Self {
@@ -87,7 +85,6 @@ where
             // signing context and its accounting and admission state are never
             // exercised.
             write_ctx: None,
-            s3_delegate: s3_delegate_address(&self.context.config.gateway.s3),
             accounting: Arc::new(Accounting::new()),
             admission: Arc::new(AdmitAll),
             site_hosts: SiteHostBindings::from_config(self.context.config.gateway.site.txt_domains),
@@ -105,10 +102,6 @@ where
             .route(
                 tape_protocol::api::NODE_STATS_PATH,
                 get(health::stats::<Db, Cluster, Blockchain>),
-            )
-            .route(
-                health::S3_INFO_PATH,
-                get(health::s3_info::<Db, Cluster, Blockchain>),
             );
 
         #[cfg(feature = "metrics")]
@@ -234,30 +227,12 @@ where
     }
 }
 
-/// Load the delegate keypair that signs S3 writes; without one the listener serves reads only.
-pub fn load_delegate(s3_config: &S3Config) -> Option<Arc<S3WriteContext>> {
-    let path = s3_config.delegate_key.as_deref()?;
-    match S3WriteContext::load(path) {
-        Ok(write_ctx) => {
-            info!(delegate = %write_ctx.delegate_address(), "s3 delegate signer loaded");
-            Some(Arc::new(write_ctx))
-        }
-        Err(error) => {
-            tracing::error!(
-                %error,
-                "s3 delegate key failed to load; writes disabled, reads still served"
-            );
-            None
-        }
-    }
-}
-
 /// S3-compatible gateway listener
 pub struct GatewayS3Server<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
-    staging: Arc<StagingStore<Db>>,
+    staging: Arc<StagingStore>,
     write_ctx: Option<Arc<S3WriteContext>>,
     accounting: Arc<Accounting>,
     admission: Arc<dyn Admission>,
@@ -278,13 +253,32 @@ where
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         slice_cache: Arc<GatewaySliceCache<Db>>,
         meter: Arc<GatewayMeter>,
-        staging: Arc<StagingStore<Db>>,
-        write_ctx: Option<Arc<S3WriteContext>>,
+        staging: Arc<StagingStore>,
         accounting: Arc<Accounting>,
         admission: Arc<dyn Admission>,
         s3_config: S3Config,
         cancel: CancellationToken,
     ) -> Self {
+        // Load the delegate keypair that signs S3 writes, when configured. With
+        // no key — or a key that fails to load — the listener still serves reads
+        // and only writes are unavailable, rather than taking the node down.
+        let write_ctx = match s3_config.delegate_key.as_deref() {
+            Some(path) => match S3WriteContext::load(path) {
+                Ok(ctx) => {
+                    info!(delegate = %ctx.delegate_address(), "s3 delegate signer loaded");
+                    Some(Arc::new(ctx))
+                }
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        "s3 delegate key failed to load; writes disabled, reads still served"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+
         Self {
             context,
             slice_cache,
@@ -304,7 +298,6 @@ where
             slice_cache: self.slice_cache.clone(),
             meter: self.meter.clone(),
             write_ctx: self.write_ctx.clone(),
-            s3_delegate: self.write_ctx.as_ref().map(|ctx| ctx.delegate_address()),
             accounting: self.accounting.clone(),
             admission: self.admission.clone(),
             // The S3 listener never serves site hosts.
@@ -316,10 +309,7 @@ where
 
         let body_limit = DefaultBodyLimit::max(self.s3_config.max_buffered_bytes);
 
-        // The host-to-path rewrite has to run before routing, so the S3 router sits behind an outer one.
-        Router::new()
-            .fallback_service(router(state, verifier))
-            .layer(from_fn(shape_request))
+        router(state, verifier)
             .layer(body_limit)
             .layer(
                 ServiceBuilder::new()
@@ -370,8 +360,6 @@ where
 pub struct GatewayS3AdminServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     accounting: Arc<Accounting>,
-    staging: Arc<StagingStore<Db>>,
-    drain_status: Arc<DrainStatus>,
     listen: SocketAddr,
     cancel: CancellationToken,
 }
@@ -385,16 +373,12 @@ where
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         accounting: Arc<Accounting>,
-        staging: Arc<StagingStore<Db>>,
-        drain_status: Arc<DrainStatus>,
         s3_config: &S3Config,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             context,
             accounting,
-            staging,
-            drain_status,
             listen: s3_config.write.admin.listen,
             cancel,
         }
@@ -404,8 +388,6 @@ where
         let state = AdminState {
             context: self.context.clone(),
             accounting: self.accounting.clone(),
-            staging: self.staging.clone(),
-            drain_status: self.drain_status.clone(),
         };
         admin_router(state)
             .layer(
@@ -512,11 +494,4 @@ async fn count_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     #[cfg(not(feature = "metrics"))]
     next.run(req).await
-}
-
-/// The S3 delegate address from the configured key, for a listener that does
-/// not sign writes itself.
-fn s3_delegate_address(s3_config: &S3Config) -> Option<Address> {
-    let path = s3_config.delegate_key.as_deref()?;
-    S3WriteContext::load(path).ok().map(|ctx| ctx.delegate_address())
 }
