@@ -415,7 +415,7 @@ const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
     transaction_details: Some(TransactionDetails::Full),
     rewards: Some(false),
     commitment: None,
-    max_supported_transaction_version: Some(0),
+    max_supported_transaction_version: Some(1),
 };
 
 /// Fetch one block, deserialising the response body a single time.
@@ -618,7 +618,7 @@ impl Rpc for SolanaRpc {
             commitment: Some(CommitmentConfig {
                 commitment: self.config.commitment,
             }),
-            max_supported_transaction_version: Some(0),
+            max_supported_transaction_version: Some(1),
         };
 
         self.with_retry("getTransaction", move |client| async move {
@@ -942,7 +942,7 @@ mod tests {
         assert_eq!(params[1]["encoding"], "json");
         assert_eq!(params[1]["transactionDetails"], "full");
         assert_eq!(params[1]["rewards"], false);
-        assert_eq!(params[1]["maxSupportedTransactionVersion"], 0);
+        assert_eq!(params[1]["maxSupportedTransactionVersion"], 1);
         // Rendered by Display, so pin the wire spelling rather than trust it.
         assert_eq!(params[1]["commitment"], "confirmed");
     }

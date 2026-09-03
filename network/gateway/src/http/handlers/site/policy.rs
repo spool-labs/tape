@@ -14,11 +14,8 @@ use tape_protocol::Api;
 use tape_store::ops::TrackDataOps;
 use tracing::debug;
 
-use tape_store::TapeStore;
-
-use crate::http::handlers::resolve::{Readable, resolve_readable};
+use crate::http::handlers::resolve::resolve_object;
 use crate::http::state::AppState;
-use crate::staging::StagingStore;
 
 pub const SITE_POLICY_OBJECT: &str = "_site.json";
 
@@ -45,36 +42,25 @@ pub fn tape_site_policy<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     tape: Address,
 ) -> TapeSitePolicy {
-    site_policy(
-        state.context.store.as_ref(),
-        state.staging.as_ref(),
-        state.context.config.gateway.site.tenant_overrides,
-        tape,
-    )
-}
-
-/// The policy behind `tape_site_policy`, over the store and queue it reads.
-fn site_policy<Db: Store>(
-    store: &TapeStore<Db>,
-    staging: &StagingStore<Db>,
-    has_tenant_overrides: bool,
-    tape: Address,
-) -> TapeSitePolicy {
-    if !has_tenant_overrides {
+    if !state.context.config.gateway.site.tenant_overrides {
         return TapeSitePolicy::default();
     }
 
-    // Queue first, or a freshly deployed policy is ignored until the drain lands it.
-    let readable = match resolve_readable(store, staging, tape, SITE_POLICY_OBJECT.as_bytes()) {
-        Ok(Some(readable)) => readable,
+    let resolved = match resolve_object(state, tape, SITE_POLICY_OBJECT) {
+        Ok(Some(resolved)) => resolved,
         Ok(None) => return TapeSitePolicy::default(),
         Err(error) => {
             debug!(%tape, %error, "site policy lookup failed");
             return TapeSitePolicy::default();
         }
     };
+    if resolved.size > MAX_POLICY_BYTES as u64 {
+        debug!(%tape, size = resolved.size, "site policy too large, ignored");
+        return TapeSitePolicy::default();
+    }
 
-    let Some(bytes) = policy_bytes(store, staging, tape, readable) else {
+    let data = state.context.store.get_track_data(resolved.track_address);
+    let Ok(Some(BlobData::Inline(bytes))) = data else {
         return TapeSitePolicy::default();
     };
     match serde_json::from_slice(&bytes) {
@@ -84,42 +70,6 @@ fn site_policy<Db: Store>(
             TapeSitePolicy::default()
         }
     }
-}
-
-/// The policy object's bytes, from the write queue while it still holds them.
-fn policy_bytes<Db: Store>(
-    store: &TapeStore<Db>,
-    staging: &StagingStore<Db>,
-    tape: Address,
-    readable: Readable,
-) -> Option<Vec<u8>> {
-    match readable {
-        Readable::Queued(object) => {
-            if is_oversize(tape, object.size) {
-                return None;
-            }
-            staging.bytes(tape, SITE_POLICY_OBJECT.as_bytes()).ok().flatten()
-        }
-        Readable::Track(resolved) => {
-            if is_oversize(tape, resolved.size) {
-                return None;
-            }
-            let data = store.get_track_data(resolved.track_address);
-            let Ok(Some(BlobData::Inline(bytes))) = data else {
-                return None;
-            };
-            Some(bytes)
-        }
-    }
-}
-
-/// Whether the policy object is past the inline size it is allowed to take.
-fn is_oversize(tape: Address, size: u64) -> bool {
-    if size <= MAX_POLICY_BYTES as u64 {
-        return false;
-    }
-    debug!(%tape, size, "site policy too large, ignored");
-    true
 }
 
 /// Tame tenant-supplied values: drop origins that could break out of a
@@ -141,47 +91,7 @@ fn sanitized(mut policy: TapeSitePolicy) -> TapeSitePolicy {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use store_memory::MemoryStore;
-    use tape_core::types::ContentType;
-    use tape_crypto::Hash;
-
     use super::*;
-
-    // a policy still in the write queue applies before anything is indexed
-    #[tokio::test]
-    async fn queued_policy() {
-        let store = Arc::new(TapeStore::new(MemoryStore::new()));
-        let staging = StagingStore::try_new(store.clone()).expect("open queue");
-        let tape = Address::new([1u8; 32]);
-        staging
-            .enqueue_put(
-                tape,
-                SITE_POLICY_OBJECT.as_bytes(),
-                br#"{"spa_fallback": true}"#.to_vec(),
-                ContentType::Unknown,
-                Hash([9u8; 32]),
-                1_700_000_000,
-            )
-            .await
-            .expect("enqueue policy");
-
-        let policy = site_policy(&store, &staging, true, tape);
-
-        assert_eq!(policy.spa_fallback, Some(true));
-    }
-
-    // a tape with no policy anywhere serves the gateway defaults
-    #[tokio::test]
-    async fn absent_policy() {
-        let store = Arc::new(TapeStore::new(MemoryStore::new()));
-        let staging = StagingStore::try_new(store.clone()).expect("open queue");
-
-        let policy = site_policy(&store, &staging, true, Address::new([2u8; 32]));
-
-        assert!(policy.spa_fallback.is_none());
-    }
 
     // tenant origins keep valid entries and drop malformed or unsafe ones
     #[test]

@@ -5,7 +5,6 @@ pub mod admin;
 pub mod authz;
 pub mod chunked;
 pub mod clock;
-pub mod conditional;
 pub mod error;
 pub mod multipart;
 pub mod resolve;

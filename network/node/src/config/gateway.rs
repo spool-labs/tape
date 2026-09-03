@@ -148,15 +148,21 @@ pub struct S3Config {
     #[serde(default = "default_s3_max_buffered_bytes")]
     pub max_buffered_bytes: usize,
 
-    /// Payload bytes the write queue may hold before a write is refused with SlowDown.
-    #[serde(default = "default_s3_max_queued_bytes")]
-    pub max_queued_bytes: u64,
-
     /// Public base URL clients reach this gateway at (e.g. `https://s3.example.com`),
     /// used for the `Location` of a completed multipart upload. When unset, a
     /// path-style resource (`/{bucket}/{key}`) is returned.
     #[serde(default)]
     pub public_endpoint: Option<String>,
+
+    /// Bytes held across all staged objects before the oldest are evicted.
+    /// Sized by how many uploads run at once, not by object size.
+    #[serde(default = "default_s3_staging_max_bytes")]
+    pub staging_max_bytes: usize,
+
+    /// Seconds a written object stays servable from staging while the
+    /// ingestor catches up.
+    #[serde(default = "default_s3_staging_ttl_secs")]
+    pub staging_ttl_secs: u64,
 }
 
 impl Default for S3Config {
@@ -170,8 +176,9 @@ impl Default for S3Config {
             write: S3WriteConfig::default(),
             max_object_bytes: default_s3_max_object_bytes(),
             max_buffered_bytes: default_s3_max_buffered_bytes(),
-            max_queued_bytes: default_s3_max_queued_bytes(),
             public_endpoint: None,
+            staging_max_bytes: default_s3_staging_max_bytes(),
+            staging_ttl_secs: default_s3_staging_ttl_secs(),
         }
     }
 }
@@ -189,7 +196,6 @@ impl std::fmt::Debug for S3Config {
             .field("write", &self.write)
             .field("max_object_bytes", &self.max_object_bytes)
             .field("max_buffered_bytes", &self.max_buffered_bytes)
-            .field("max_queued_bytes", &self.max_queued_bytes)
             .field("public_endpoint", &self.public_endpoint)
             .finish()
     }
@@ -209,11 +215,15 @@ fn default_s3_max_buffered_bytes() -> usize {
     256 * 1024 * 1024
 }
 
-/// Default write-queue ceiling: 4 GiB.
-fn default_s3_max_queued_bytes() -> u64 {
-    4 * 1024 * 1024 * 1024
+/// Default staging byte budget: 256 MiB.
+fn default_s3_staging_max_bytes() -> usize {
+    256 * 1024 * 1024
 }
 
+/// Default staging freshness window: 60 seconds.
+fn default_s3_staging_ttl_secs() -> u64 {
+    60
+}
 
 /// S3 write-authorization defaults and control-plane wiring.
 #[derive(Clone, Deserialize, Eq, PartialEq)]
