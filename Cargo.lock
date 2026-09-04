@@ -9667,6 +9667,7 @@ dependencies = [
  "hex",
  "indicatif 0.17.11",
  "mime_guess",
+ "openssl",
  "peer-http",
  "rand 0.8.5",
  "rpc",
@@ -10437,7 +10438,6 @@ dependencies = [
  "tape-crypto",
  "tempfile",
  "thiserror 2.0.18",
- "tokio",
  "wincode 0.1.2",
  "wincode-derive 0.1.1",
 ]

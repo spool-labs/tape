@@ -54,7 +54,7 @@ const BLOCK_FETCH_CONFIG: RpcBlockConfig = RpcBlockConfig {
     commitment: Some(CommitmentConfig {
         commitment: CommitmentLevel::Confirmed,
     }),
-    max_supported_transaction_version: Some(0),
+    max_supported_transaction_version: Some(1),
 };
 
 /// Status of a single upstream `getBlock` call.

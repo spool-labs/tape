@@ -33,8 +33,6 @@ thiserror.workspace = true
 bytemuck.workspace = true
 reel-store.workspace = true
 tempfile = "3.10"
-# The durable enqueue op is awaited, so its tests need a runtime.
-tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
 # RocksDB constructors and comparison tests. Opt in explicitly with

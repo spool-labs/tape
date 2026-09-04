@@ -1,7 +1,6 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
-use serde::Serialize;
 use rpc::Rpc;
 use store::{DiskVolume, Store, StoreVolume};
 use tape_node::features::http::handlers::health::{HealthResponse, HealthStatus};
@@ -13,29 +12,6 @@ use tape_store::ops::{MetaOps, SliceOps, TrackOps};
 use crate::http::error::RouteError;
 use crate::http::handlers::store_error;
 use crate::http::state::AppState;
-
-/// Where the S3 listener is and which delegate it writes as.
-pub const S3_INFO_PATH: &str = "/v1/s3";
-
-#[derive(Serialize)]
-pub struct S3Info {
-    /// Public S3 endpoint, when the operator configured one.
-    pub endpoint: Option<String>,
-    /// Address tape owners delegate to so the gateway can write for them.
-    pub delegate: Option<String>,
-    /// Largest object a single upload may carry, in bytes.
-    pub max_object_bytes: u64,
-}
-
-pub async fn s3_info<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    State(state): State<AppState<Db, Cluster, Blockchain>>,
-) -> Json<S3Info> {
-    Json(S3Info {
-        endpoint: state.context.config.gateway.s3.public_endpoint.clone(),
-        delegate: state.s3_delegate.map(|address| address.to_string()),
-        max_object_bytes: state.context.config.gateway.s3.max_object_bytes as u64,
-    })
-}
 
 pub async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,

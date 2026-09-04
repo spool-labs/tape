@@ -113,11 +113,6 @@ pub struct BucketEntry {
     pub creation_date: i64,
 }
 
-/// Build a `LocationConstraint` (GetBucketLocation) body; empty is what S3 says for us-east-1
-pub fn location_constraint_body() -> String {
-    format!("{XML_DECL}<LocationConstraint xmlns=\"{S3_XMLNS}\"></LocationConstraint>")
-}
-
 /// Build a `ListAllMyBucketsResult` (ListBuckets) response body
 pub fn list_all_my_buckets_body(owner: &Owner, buckets: &[BucketEntry]) -> String {
     let mut out = String::with_capacity(256);
@@ -436,7 +431,14 @@ pub fn list_multipart_uploads_body(bucket: &str, uploads: &[UploadEntry]) -> Str
 /// etag)` pairs.
 pub fn parse_complete_multipart_upload(body: &str) -> Result<Vec<(u32, String)>, String> {
     let mut parts = Vec::new();
-    for_each_element(body, "Part", |block| {
+    let mut rest = body;
+    while let Some(open) = rest.find("<Part>") {
+        let after = &rest[open + "<Part>".len()..];
+        let close = after
+            .find("</Part>")
+            .ok_or_else(|| "unterminated <Part> element".to_string())?;
+        let block = &after[..close];
+
         let part_number = extract_element(block, "PartNumber")
             .ok_or_else(|| "missing <PartNumber> in <Part>".to_string())?
             .trim()
@@ -447,84 +449,13 @@ pub fn parse_complete_multipart_upload(body: &str) -> Result<Vec<(u32, String)>,
         );
 
         parts.push((part_number, etag));
-        Ok(())
-    })?;
+        rest = &after[close + "</Part>".len()..];
+    }
 
     if parts.is_empty() {
         return Err("CompleteMultipartUpload listed no <Part> elements".to_string());
     }
     Ok(parts)
-}
-
-/// Hand the inner block of every `<tag>...</tag>` element in `body` to `visit`
-fn for_each_element(
-    body: &str,
-    tag: &str,
-    mut visit: impl FnMut(&str) -> Result<(), String>,
-) -> Result<(), String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let mut rest = body;
-    while let Some(start) = rest.find(&open) {
-        let after = &rest[start + open.len()..];
-        let end = after
-            .find(&close)
-            .ok_or_else(|| format!("unterminated <{tag}> element"))?;
-        visit(&after[..end])?;
-        rest = &after[end + close.len()..];
-    }
-    Ok(())
-}
-
-/// One failed key in a `DeleteResult` body
-pub struct DeleteErrorEntry {
-    /// Object key that failed to delete
-    pub key: String,
-    /// S3 error code
-    pub code: &'static str,
-    /// Human-readable failure message
-    pub message: String,
-}
-
-/// Build a `DeleteResult` (DeleteObjects) response body
-pub fn delete_result_body(deleted: &[String], errors: &[DeleteErrorEntry]) -> String {
-    let mut out = String::with_capacity(256);
-    out.push_str(XML_DECL);
-    out.push_str("<DeleteResult xmlns=\"");
-    out.push_str(S3_XMLNS);
-    out.push_str("\">");
-    for key in deleted {
-        out.push_str("<Deleted>");
-        push_element(&mut out, "Key", key);
-        out.push_str("</Deleted>");
-    }
-    for error in errors {
-        out.push_str("<Error>");
-        push_element(&mut out, "Key", &error.key);
-        push_element(&mut out, "Code", error.code);
-        push_element(&mut out, "Message", &error.message);
-        out.push_str("</Error>");
-    }
-    out.push_str("</DeleteResult>");
-    out
-}
-
-/// Parse a `DeleteObjects` request body into its object keys and quiet flag; VersionId is ignored
-pub fn parse_delete_objects(body: &str) -> Result<(Vec<String>, bool), String> {
-    let mut keys = Vec::new();
-    for_each_element(body, "Object", |block| {
-        let key = extract_element(block, "Key")
-            .ok_or_else(|| "missing <Key> in <Object>".to_string())?;
-        keys.push(key);
-        Ok(())
-    })?;
-
-    if keys.is_empty() {
-        return Err("DeleteObjects listed no <Object> elements".to_string());
-    }
-
-    let quiet = extract_element(body, "Quiet").map(|value| value.trim() == "true").unwrap_or(false);
-    Ok((keys, quiet))
 }
 
 /// Read the text content of the first `<tag>...</tag>` in `block`, unescaping the
@@ -550,16 +481,6 @@ fn normalize_part_etag(raw: &str) -> String {
 }
 
 /// Reverse escape_into
-/// Decode `&#NN;` or `&#xHH;`, or `None` for anything else
-fn character_reference(entity: &str) -> Option<char> {
-    let digits = entity.strip_prefix("&#")?.strip_suffix(';')?;
-    let code = match digits.strip_prefix(['x', 'X']) {
-        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-        None => digits.parse::<u32>().ok()?,
-    };
-    char::from_u32(code)
-}
-
 fn unescape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
@@ -574,11 +495,8 @@ fn unescape(value: &str) -> String {
                 "&gt;" => out.push('>'),
                 "&quot;" => out.push('"'),
                 "&apos;" => out.push('\''),
-                // A numeric character reference, which is how Go's encoder writes a quote.
-                other => match character_reference(other) {
-                    Some(decoded) => out.push(decoded),
-                    None => out.push_str(other),
-                },
+                // Unknown entity: pass it through verbatim.
+                other => out.push_str(other),
             }
             rest = &tail[semi + 1..];
         } else {
@@ -593,15 +511,6 @@ fn unescape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    // a quoted part ETag written as numeric character references, the way Go's encoder writes it
-    #[test]
-    fn numeric_quotes() {
-        let body = "<CompleteMultipartUpload><Part><ETag>&#34;ABCDEF&#34;</ETag><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>";
-        let parts = super::parse_complete_multipart_upload(body).expect("parse");
-        assert_eq!(parts, vec![(1, "abcdef".to_string())]);
-        assert_eq!(super::unescape("&#x22;a&#x22; &amp; b"), "\"a\" & b");
-    }
-
     use super::*;
 
     // the unix epoch renders as the 1970 ISO 8601 instant
@@ -877,45 +786,6 @@ mod tests {
         assert!(body.contains("<Owner><ID>owner-id</ID><DisplayName>owner</DisplayName></Owner>"));
         assert!(body.contains(
             "<Bucket><Name>tapeaddr</Name><CreationDate>1970-01-01T00:00:00.000Z</CreationDate></Bucket>"
-        ));
-    }
-
-    // a delete request parses its keys (unescaped) and the quiet flag
-    #[test]
-    fn delete_parse() {
-        let body = "<Delete><Object><Key>a.txt</Key></Object>\
-                    <Object><Key>b &amp; c.txt</Key><VersionId>v1</VersionId></Object>\
-                    <Quiet>true</Quiet></Delete>";
-        let (keys, quiet) = parse_delete_objects(body).expect("parse");
-        assert_eq!(keys, vec!["a.txt".to_string(), "b & c.txt".to_string()]);
-        assert!(quiet);
-    }
-
-    // quiet defaults to false; empty or key-less requests are rejected
-    #[test]
-    fn delete_parse_invalid() {
-        let (keys, quiet) =
-            parse_delete_objects("<Delete><Object><Key>a</Key></Object></Delete>").expect("parse");
-        assert_eq!(keys, vec!["a".to_string()]);
-        assert!(!quiet);
-        assert!(parse_delete_objects("<Delete></Delete>").is_err());
-        assert!(parse_delete_objects("<Delete><Object></Object></Delete>").is_err());
-        assert!(parse_delete_objects("<Delete><Object><Key>a</Key>").is_err());
-    }
-
-    // the delete result renders deleted and error entries, escaped
-    #[test]
-    fn delete_result_render() {
-        let errors = vec![DeleteErrorEntry {
-            key: "locked/<file>".to_string(),
-            code: "AccessDenied",
-            message: "denied".to_string(),
-        }];
-        let body = delete_result_body(&["ok.txt".to_string()], &errors);
-        assert!(body.starts_with(XML_DECL));
-        assert!(body.contains("<Deleted><Key>ok.txt</Key></Deleted>"));
-        assert!(body.contains(
-            "<Error><Key>locked/&lt;file&gt;</Key><Code>AccessDenied</Code><Message>denied</Message></Error>"
         ));
     }
 }

@@ -6,7 +6,7 @@ use tape_api::program::tapedrive::tape_pda;
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::{Keypair, Pubkey};
 
-use crate::keys::helpers::{load_ed25519_keypair, HelperError};
+use crate::keys::helpers::{load_ed25519_keypair, load_ed25519_keypair_bytes, HelperError};
 
 /// A key that controls a tape on the Tapedrive network.
 ///
@@ -43,6 +43,12 @@ impl TapeKey {
     /// Load from a Solana-compatible JSON keypair file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, HelperError> {
         let keypair = load_ed25519_keypair(path.as_ref())?;
+        Ok(Self { keypair })
+    }
+
+    /// Load from Solana-compatible JSON keypair bytes without filesystem IO.
+    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, HelperError> {
+        let keypair = load_ed25519_keypair_bytes(bytes)?;
         Ok(Self { keypair })
     }
 
@@ -100,5 +106,14 @@ mod tests {
         assert_eq!(original.address(), loaded.address());
 
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn loads_from_json_bytes() {
+        let original = TapeKey::generate();
+        let json = serde_json::to_vec(&original.keypair.to_keypair_bytes().to_vec()).unwrap();
+        let loaded = TapeKey::from_json_bytes(&json).unwrap();
+        assert_eq!(original.pubkey(), loaded.pubkey());
+        assert_eq!(original.address(), loaded.address());
     }
 }

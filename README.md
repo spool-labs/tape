@@ -7,7 +7,7 @@ proving your data is still there.
 To you, it just looks like S3: same tools, new endpoint.
 
 > [!NOTE]
-> Tapedrive is in early access and invite-only. The links on this page are placeholders.
+> Tapedrive is in early access and invite-only. 
 > 
 > [Sign up](https://tape.network/#sign-up) for access, or join the [Discord](https://discord.gg/dVa9TWA45X) to follow development,
 > and read the [docs](https://docs.tape.network) for the full picture.
