@@ -765,7 +765,15 @@ where
 
         let mut pending_chunks = Vec::with_capacity(chunk_count.as_usize());
         while let Some((pending, collected)) = collected_receiver.recv().await {
-            certify_chunk(client, tape_key, mirror, &pending.written, &collected).await?;
+            certify_chunk(
+                client,
+                tape_key,
+                mirror,
+                &pending.written,
+                &collected,
+                Operation::WriteStream,
+            )
+            .await?;
             pending_chunks.push(pending);
         }
 
@@ -804,7 +812,7 @@ where
 /// Mirror a resolved register. A mirror reseeded from chain state mid-stream
 /// already holds recently confirmed tracks in its base, so appends for those
 /// are skipped rather than failed.
-async fn append_to_mirror(
+pub(crate) async fn append_to_mirror(
     mirror: &Mutex<ArchiveMirror>,
     written: &WrittenTrack,
 ) -> Result<(), TapedriveError> {
@@ -826,12 +834,13 @@ async fn append_to_mirror(
 /// retries against refetched chain state with the same signatures, then
 /// falls back to the confirmed path with re-collected signatures and a
 /// fresh peer proof, bringing the mirror back into lockstep.
-async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
+pub(crate) async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     mirror: &Mutex<ArchiveMirror>,
     written: &WrittenTrack,
     collected: &CollectedSignatures,
+    operation: Operation,
 ) -> Result<(), TapedriveError> {
     let track_number = written.track.track_number;
     let certified = certified_track(&written.track);
@@ -846,7 +855,7 @@ async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
             proof,
             collected,
             CommitmentLevel::Processed,
-            Operation::WriteStream,
+            operation,
         )
         .await;
         match submitted {
@@ -861,8 +870,15 @@ async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
             // change).
             Err(err) if should_retry_certification(&err) => {
                 let done =
-                    recertify_after_conflict(client, tape_key, mirror, &certified, collected)
-                        .await?;
+                    recertify_after_conflict(
+                        client,
+                        tape_key,
+                        mirror,
+                        &certified,
+                        collected,
+                        operation,
+                    )
+                    .await?;
                 if done {
                     return Ok(());
                 }
@@ -871,7 +887,7 @@ async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
         }
     }
 
-    certify_submit_with_retry(client, tape_key, written, Operation::WriteStream, None, &[]).await?;
+    certify_submit_with_retry(client, tape_key, written, operation, None, &[]).await?;
     apply_certified_to_mirror(client, tape_key, mirror, &certified, None).await
 }
 
@@ -887,6 +903,7 @@ async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
     mirror: &Mutex<ArchiveMirror>,
     certified: &CompressedTrack,
     collected: &CollectedSignatures,
+    operation: Operation,
 ) -> Result<bool, TapedriveError> {
     for _ in 0..CERTIFY_CONFLICT_ATTEMPTS {
         // The interfering transaction may only be processed, so give the
@@ -912,7 +929,7 @@ async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
             proof,
             collected,
             CommitmentLevel::Processed,
-            Operation::WriteStream,
+            operation,
         )
         .await;
         match submitted {
@@ -985,7 +1002,7 @@ fn root_poll_config() -> RetryConfig {
 /// Compare the mirrored root with the on-chain root, retrying the comparison
 /// before declaring divergence. A lasting mismatch means an external writer
 /// touched the tape mid-stream.
-async fn verify_mirror_root<Blockchain: Rpc, Cluster: Api>(
+pub(crate) async fn verify_mirror_root<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     mirror: &Mutex<ArchiveMirror>,

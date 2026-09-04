@@ -571,6 +571,96 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
     })
 }
 
+/// A submitted inline-track registration whose confirmed event has not yet
+/// been resolved. Batch writers submit these at processed commitment so later
+/// registrations can overlap the confirmation wait without losing track order.
+pub(crate) struct SentRaw {
+    signature: Txid,
+    key: Hash,
+    kind: u64,
+    state: u64,
+    size: StorageUnits,
+    value_hash: Hash,
+}
+
+pub(crate) async fn register_raw_processed<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    name: &[u8],
+    content_type: ContentType,
+    logical_size: StorageUnits,
+    raw: &[u8],
+    operation: Operation,
+) -> Result<SentRaw, TapedriveError> {
+    let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
+    let data = BlobDataSlice::Inline(raw);
+    let meta = data
+        .meta()
+        .ok_or_else(|| TapedriveError::InvalidArgument("invalid inline blob".into()))?;
+    let key = track_key(name, &data);
+    let object = track_object(name, content_type, logical_size);
+    let write_ix = build_track_write_ix(
+        payer.pubkey().into(),
+        tape_key.pubkey().into(),
+        tape_key.address(),
+        BlobInfo {
+            object,
+            data: BlobData::Inline(raw.to_vec()),
+        },
+    )
+    .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?;
+
+    let register = client
+        .timer(operation, Phase::Register)
+        .bytes(raw.len() as u64)
+        .chunks(1);
+    let sent = client
+        .rpc()
+        .send_instructions_with_signers_and_compute_unit_limit(
+            payer,
+            TRACK_WRITE_CU,
+            vec![write_ix],
+            &[tape_signer],
+            CommitmentLevel::Processed,
+            true,
+        )
+        .await;
+    register.finish_result(&sent);
+    let signature = sent?;
+
+    Ok(SentRaw {
+        signature,
+        key,
+        kind: meta.kind as u64,
+        state: meta.state as u64,
+        size: meta.size,
+        value_hash: meta.value_hash,
+    })
+}
+
+pub(crate) async fn resolve_sent_raw<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    sent: SentRaw,
+) -> Result<WrittenTrack, TapedriveError> {
+    let written = fetch_track_written_event(client, &sent.signature).await?;
+    let track = CompressedTrack {
+        tape: written.tape,
+        track_number: written.track_number,
+        key: sent.key,
+        kind: sent.kind,
+        state: sent.state,
+        size: sent.size,
+        group: written.group,
+        value_hash: sent.value_hash,
+    };
+    debug_assert_eq!(track.get_hash(), written.track_hash);
+    Ok(WrittenTrack {
+        address: written.track,
+        track,
+    })
+}
+
 pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
