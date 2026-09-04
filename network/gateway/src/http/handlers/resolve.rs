@@ -1,7 +1,7 @@
 //! Object-name to backing track resolution
 //!
-//! Maps a tape address and object name from the store's per-tape,
-//! name-ordered object index to the track the decode/read path consumes.
+//! Maps a tape address and object name from the finalized per-tape object index
+//! plus the confirmed pending overlay to the track the decode/read path consumes.
 //! Shared by the S3 listener and the site route.
 
 use rpc::Rpc;
@@ -13,6 +13,8 @@ use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_store::error::TapeStoreError;
 use tape_store::ops::ObjectListOps;
+use tape_store::types::ObjectListEntry;
+use tape_node::features::block::pending_tracks::PendingNamedObject;
 
 use crate::http::state::AppState;
 
@@ -37,11 +39,23 @@ pub fn resolve_object<Db: Store, Cluster: Api, Blockchain: Rpc>(
     tape: Address,
     name: &str,
 ) -> Result<Option<ResolvedObject>, TapeStoreError> {
-    let Some(entry) = state
+    let stored = state
         .context
         .store
-        .get_object_entry(tape, name.as_bytes())?
-    else {
+        .get_object_entry(tape, name.as_bytes())?;
+    let pending = state.context.pending.named_object(tape, name.as_bytes());
+
+    if let Some(entry) = pending.filter(|pending| pending_is_newer(stored.as_ref(), pending)) {
+        return Ok(Some(ResolvedObject {
+            track_address: entry.track_address,
+            size: entry.size,
+            etag: entry.etag,
+            block_time: entry.block_time,
+            content_type: entry.content_type,
+        }));
+    }
+
+    let Some(entry) = stored else {
         return Ok(None);
     };
 
@@ -54,4 +68,54 @@ pub fn resolve_object<Db: Store, Cluster: Api, Blockchain: Rpc>(
         block_time: entry.block_time,
         content_type: entry.content_type,
     }))
+}
+
+/// Pending state overrides finalized state only for a strictly newer tape
+/// track. Equal entries are the same registration during promotion, while an
+/// older pending event must never roll a finalized replacement backward.
+fn pending_is_newer(
+    stored: Option<&ObjectListEntry>,
+    pending: &PendingNamedObject,
+) -> bool {
+    stored.is_none_or(|stored| pending.track_number.0 > stored.track_number.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use tape_core::track::types::TrackKind;
+    use tape_core::types::{SlotNumber, StorageUnits, TrackNumber};
+
+    use super::*;
+
+    fn stored(track_number: u64) -> ObjectListEntry {
+        ObjectListEntry {
+            size: StorageUnits::from_bytes(1),
+            etag: Hash::default(),
+            block_time: None,
+            slot: SlotNumber(1),
+            data_tape: Address::default(),
+            track_number: TrackNumber(track_number),
+            kind: TrackKind::Inline as u64,
+            content_type: ContentType::TextHtml,
+        }
+    }
+
+    fn pending(track_number: u64) -> PendingNamedObject {
+        PendingNamedObject {
+            track_address: Address::new_unique(),
+            track_number: TrackNumber(track_number),
+            size: 1,
+            etag: Hash::default(),
+            block_time: None,
+            content_type: ContentType::TextHtml,
+        }
+    }
+
+    #[test]
+    fn pending_name_resolution_requires_a_newer_track() {
+        assert!(pending_is_newer(None, &pending(4)));
+        assert!(pending_is_newer(Some(&stored(3)), &pending(4)));
+        assert!(!pending_is_newer(Some(&stored(4)), &pending(4)));
+        assert!(!pending_is_newer(Some(&stored(5)), &pending(4)));
+    }
 }
