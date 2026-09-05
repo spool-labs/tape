@@ -391,6 +391,46 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         timer.finish_result(&result);
         result
     }
+
+    /// Certify a written track using receipts returned by [`Self::upload`].
+    ///
+    /// Returns after certification is confirmed and visible to storage peers.
+    /// Supplying the upload receipts avoids asking those peers to reproduce
+    /// information the caller has already collected.
+    pub async fn certify_with_receipts(
+        &self,
+        tape_key: &TapeKey,
+        written: &WrittenTrack,
+        receipts: &[CertifyRes],
+    ) -> Result<CompressedTrack, TapedriveError> {
+        self.certify_with_receipts_as(tape_key, written, receipts)
+            .await
+    }
+
+    /// Certify a written track as its owner or an authorized delegate.
+    pub async fn certify_with_receipts_as(
+        &self,
+        operator: &impl TapeOperator,
+        written: &WrittenTrack,
+        receipts: &[CertifyRes],
+    ) -> Result<CompressedTrack, TapedriveError> {
+        let timer = self.timer(Operation::Certify, Phase::Total).chunks(1);
+        let result = if written.track.is_certified() {
+            Ok(written.track)
+        } else {
+            certify_with_retry(
+                self,
+                operator,
+                written,
+                Operation::Certify,
+                receipts,
+            )
+            .await
+        };
+
+        timer.finish_result(&result);
+        result
+    }
 }
 
 /// An etag and, for coded sizes, the encode that produced it.
@@ -1906,7 +1946,7 @@ mod tests {
     }
 
     #[test]
-    fn inline_write_budget_accounts_for_object_trailer() {
+    fn inline_budget() {
         let name = b"object/name";
         let max_named_payload = (0..=SDK_INLINE_RAW_MAX_BYTES)
             .rev()
@@ -1921,7 +1961,7 @@ mod tests {
     }
 
     #[test]
-    fn expected_track_position_rejects_an_advanced_tape() {
+    fn advanced_tape() {
         let error = ensure_expected_track_position(TrackNumber(3), TrackNumber(4))
             .expect_err("advanced tape must conflict");
         assert!(matches!(
@@ -1934,28 +1974,28 @@ mod tests {
     }
 
     #[test]
-    fn expected_track_position_accepts_the_persisted_append_slot() {
+    fn append_slot() {
         ensure_expected_track_position(TrackNumber(3), TrackNumber(3))
             .expect("matching append slot");
     }
 
     // Certification should retry when proof visibility lags behind peer state.
     #[test]
-    fn certification_retries_stale_track_proof() {
+    fn stale_proof() {
         assert!(should_retry_certification(&TapedriveError::Peer(
             ApiError::StaleTrackProof,
         )));
     }
 
     #[test]
-    fn certification_retries_missing_track_proof() {
+    fn missing_proof() {
         assert!(should_retry_certification(&TapedriveError::NotFound));
     }
 
     // EpochChanged means signatures were collected against a now-stale epoch;
     // certify_with_retry must recollect from peers, not just resubmit.
     #[test]
-    fn certification_retries_epoch_changed() {
+    fn epoch_change() {
         let err = TapedriveError::Rpc(rpc::RpcError::Transaction {
             err: None,
             message: "custom program error: 0x34".to_string(),
