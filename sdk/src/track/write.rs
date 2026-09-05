@@ -176,6 +176,57 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         .await
     }
 
+    /// Write a named track at an expected append position, or resume the same
+    /// content there after an uncertain response.
+    ///
+    /// This is the reject-on-conflict counterpart to
+    /// [`Self::write_or_resume_track_as`]. It is intended for durable outboxes
+    /// that persist the next track number before submission. A retry returns
+    /// the matching track already at that position; different content or a
+    /// tape that has advanced elsewhere is a conflict and never allocates a
+    /// replacement track.
+    pub async fn write_or_resume_track_at_as(
+        &self,
+        operator: &impl TapeOperator,
+        expected: TrackNumber,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
+        data: &[u8],
+    ) -> Result<ObjectWrite, TapedriveError> {
+        let track_address = track_pda(operator.address(), expected).0;
+        match self.get_track(&track_address).await {
+            Ok(_) => {
+                resume_or_write_track(
+                    self,
+                    operator,
+                    name.as_ref(),
+                    content_type,
+                    data,
+                    Some(track_address),
+                    OnConflict::Reject,
+                )
+                .await
+            }
+            Err(TapedriveError::NotFound) => {
+                let tape = self.get_tape(&operator.address()).await?;
+                ensure_expected_track_position(expected, tape.tracks.next_number())?;
+                let written = resume_or_write_track(
+                    self,
+                    operator,
+                    name.as_ref(),
+                    content_type,
+                    data,
+                    None,
+                    OnConflict::Reject,
+                )
+                .await?;
+                ensure_expected_track_position(expected, written.track.track_number)?;
+                Ok(written)
+            }
+            Err(other) => Err(other),
+        }
+    }
+
     /// Reclaim the object a track backs, freeing its capacity.
     ///
     /// A stream (manifest) track is reclaimed whole: the manifest lists every
@@ -1432,6 +1483,20 @@ pub(crate) enum OnConflict {
     Overwrite,
 }
 
+fn ensure_expected_track_position(
+    expected: TrackNumber,
+    observed: TrackNumber,
+) -> Result<(), TapedriveError> {
+    if expected == observed {
+        Ok(())
+    } else {
+        Err(TapedriveError::TrackPositionConflict {
+            expected,
+            next: observed,
+        })
+    }
+}
+
 /// Resume, skip, overwrite, or write a single named track at a known position.
 ///
 /// `existing` is where the caller located this object's current track, if any:
@@ -1780,8 +1845,8 @@ mod tests {
     use crate::error::TapedriveError;
 
     use super::{
-        content_etag, content_etag_named, hash, inline_write_fits, prepare_plan,
-        should_retry_certification,
+        content_etag, content_etag_named, ensure_expected_track_position, hash,
+        inline_write_fits, prepare_plan, should_retry_certification, TrackNumber,
         SDK_INLINE_RAW_MAX_BYTES,
     };
     use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
@@ -1853,6 +1918,25 @@ mod tests {
         assert!(max_named_payload < SDK_INLINE_RAW_MAX_BYTES);
         assert!(inline_write_fits(name, max_named_payload));
         assert!(!inline_write_fits(name, max_named_payload + 1));
+    }
+
+    #[test]
+    fn expected_track_position_rejects_an_advanced_tape() {
+        let error = ensure_expected_track_position(TrackNumber(3), TrackNumber(4))
+            .expect_err("advanced tape must conflict");
+        assert!(matches!(
+            error,
+            TapedriveError::TrackPositionConflict {
+                expected: TrackNumber(3),
+                next: TrackNumber(4),
+            }
+        ));
+    }
+
+    #[test]
+    fn expected_track_position_accepts_the_persisted_append_slot() {
+        ensure_expected_track_position(TrackNumber(3), TrackNumber(3))
+            .expect("matching append slot");
     }
 
     // Certification should retry when proof visibility lags behind peer state.

@@ -132,6 +132,12 @@ pub enum TapedriveError {
         track_number: TrackNumber,
     },
 
+    #[error("track position conflict: expected {expected}, but the tape's next track is {next}")]
+    TrackPositionConflict {
+        expected: TrackNumber,
+        next: TrackNumber,
+    },
+
     #[error("not found")]
     NotFound,
 

@@ -13,7 +13,7 @@ use tape_core::bls::BlsPubkey;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, NodePreferences, Spool};
-use tape_core::track::data::BlobData;
+use tape_core::track::data::{track_key, BlobData, BlobDataSlice};
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{
     CompressedTrack, CompressedTrackProof, TrackKind, TrackState,
@@ -33,6 +33,7 @@ use tape_protocol::api::{
 use tape_protocol::ProtocolState;
 
 use tape_sdk::object::ListObjectsQuery;
+use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
 
 struct Fixture {
@@ -434,6 +435,67 @@ async fn track_queries_use_memory_peer_catalog() {
     assert_eq!(tracks[1].track_number, TrackNumber(1));
     assert_eq!(tracks[2].track_number, TrackNumber(2));
     assert_eq!(next_cursor, None);
+}
+
+#[tokio::test]
+async fn expected_track_write_resumes_matching_inline_content() {
+    let fixture = setup();
+    let tape_key = TapeKey::generate();
+    let name = b"demo/chat/000000-user.json";
+    let raw = br#"{"role":"user","markdown":"hello"}"#;
+    let key = track_key(name, &BlobDataSlice::Inline(raw));
+    let (track, data) = make_raw_track(tape_key.address(), key, 0, raw);
+    let address = fixture.insert_track(track, data);
+
+    let resumed = fixture
+        .client
+        .write_or_resume_track_at_as(
+            &tape_key,
+            TrackNumber(0),
+            name,
+            ContentType::ApplicationJson,
+            raw,
+        )
+        .await
+        .expect("matching outbox retry resumes");
+
+    assert_eq!(resumed.track.track_number, TrackNumber(0));
+    assert_eq!(track_pda(tape_key.address(), TrackNumber(0)).0, address);
+    assert_eq!(fixture.tracks.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn expected_track_write_rejects_different_inline_content() {
+    let fixture = setup();
+    let tape_key = TapeKey::generate();
+    let name = b"demo/chat/000000-user.json";
+    let original = br#"{"role":"user","markdown":"hello"}"#;
+    let key = track_key(name, &BlobDataSlice::Inline(original));
+    let (track, data) = make_raw_track(tape_key.address(), key, 0, original);
+    fixture.insert_track(track, data);
+
+    let result = fixture
+        .client
+        .write_or_resume_track_at_as(
+            &tape_key,
+            TrackNumber(0),
+            name,
+            ContentType::ApplicationJson,
+            br#"{"role":"user","markdown":"different"}"#,
+        )
+        .await;
+    let error = match result {
+        Ok(_) => panic!("different content at a persisted slot must conflict"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        tape_sdk::error::TapedriveError::WriteConflict {
+            track_number: TrackNumber(0)
+        }
+    ));
+    assert_eq!(fixture.tracks.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
