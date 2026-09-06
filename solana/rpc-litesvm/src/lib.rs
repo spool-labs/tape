@@ -64,6 +64,7 @@ struct Inner {
     /// lags confirmed slot by a small fixed amount so tests can exercise
     /// both commitment levels.
     finalized_tip_override: Option<u64>,
+    confirmed_tip_override: Option<u64>,
 }
 
 /// LiteSVM-backed Rpc implementation with simulated block production.
@@ -101,6 +102,7 @@ impl LiteSvmRpc {
                 confirmed_tip: 0,
                 pending_slot: 1,
                 finalized_tip_override: None,
+                confirmed_tip_override: None,
             })),
         }
     }
@@ -126,6 +128,17 @@ impl LiteSvmRpc {
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
         inner.finalized_tip_override = Some(slot);
+        Ok(())
+    }
+
+    /// Pin the slot returned by `get_confirmed_slot()`, which is what the block
+    /// ingestor promotes against.
+    pub fn set_confirmed_tip(&self, slot: u64) -> Result<(), RpcError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        inner.confirmed_tip_override = Some(slot);
         Ok(())
     }
 
@@ -400,6 +413,17 @@ impl Rpc for LiteSvmRpc {
         Ok(inner
             .finalized_tip_override
             .unwrap_or_else(|| inner.confirmed_tip.saturating_sub(DEFAULT_FINALIZED_LAG_SLOTS)))
+    }
+
+    async fn get_confirmed_slot(&self) -> Result<u64, RpcError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        // one slot behind the producer, as a cluster's confirmed commitment is
+        Ok(inner
+            .confirmed_tip_override
+            .unwrap_or_else(|| inner.confirmed_tip.saturating_sub(1)))
     }
 
     async fn get_first_available_block(&self) -> Result<u64, RpcError> {

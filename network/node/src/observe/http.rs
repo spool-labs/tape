@@ -12,6 +12,9 @@ struct RequestProbe {
     route: Option<MatchedPath>,
     method: Method,
     start: Instant,
+    /// Declared request body size, taken from the header rather than by
+    /// wrapping the body, so a chunked upload with no length is not counted
+    request_bytes: u64,
 }
 
 impl RequestProbe {
@@ -20,6 +23,12 @@ impl RequestProbe {
             route: req.extensions().get::<MatchedPath>().cloned(),
             method: req.method().clone(),
             start: Instant::now(),
+            request_bytes: req
+                .headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0),
         }
     }
 
@@ -29,6 +38,9 @@ impl RequestProbe {
         m.http_request_duration
             .with_label_values(&[route, self.method.as_str(), status_class(response.status())])
             .observe(self.start.elapsed().as_secs_f64());
+        if self.request_bytes > 0 {
+            m.http_request_bytes_total.with_label_values(&[route]).inc_by(self.request_bytes);
+        }
         // Fixed-size bodies report an exact size hint here; the content-length
         // header only exists this early for handlers that set it themselves.
         let bytes = response.body().size_hint().exact().or_else(|| {

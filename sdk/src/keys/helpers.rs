@@ -77,11 +77,6 @@ pub fn load_ed25519_keypair(path: &Path) -> Result<Keypair, HelperError> {
     Keypair::try_load_json_file(path).map_err(Into::into)
 }
 
-/// Load a Tapedrive ed25519 keypair from Solana-compatible JSON bytes.
-pub fn load_ed25519_keypair_bytes(bytes: &[u8]) -> Result<Keypair, HelperError> {
-    Keypair::try_from_json_bytes(bytes).map_err(Into::into)
-}
-
 /// Load a BLS private key from a JSON file.
 ///
 /// The file should contain a JSON array of 32 bytes.

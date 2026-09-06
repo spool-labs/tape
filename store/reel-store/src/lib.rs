@@ -29,6 +29,8 @@ use reel::{
 use reel_core::Store as EngineStoreTrait;
 use serde::Deserialize;
 use tape_store::TapeStore;
+#[cfg(feature = "metrics")]
+use store::get_metrics;
 use store::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
     StoreIter, StoreVolume, Value, WriteBatch,
@@ -40,7 +42,7 @@ pub use arm::{
 };
 pub use columns::{RAW_TRACK_DATA_COLUMNS, TAPE_COLUMNS};
 // So a tool opening a node's volume needs this crate and not the engine behind it.
-pub use reel::IndexResidency;
+pub use reel::{IndexCheckpoint, IndexResidency};
 #[cfg(feature = "rocks")]
 pub use rocks::{
     bench_bulk_configs, bench_cache, bench_db_options, bench_metadata_configs, bench_store_configs,
@@ -83,18 +85,8 @@ impl ReelStore {
     ///
     /// The one entry point that is not bench scoped. Everything else in this
     /// crate opens with `bench_config`, which turns durability off.
-    pub fn open_node(
-        root: impl AsRef<Path>,
-        compaction_mbps: u64,
-        sync_bytes: u64,
-        backend: IoBackend,
-        reserve: Reserve,
-    ) -> StoreResult<ReelStore> {
-        ReelStore::open(
-            root,
-            node_config(compaction_mbps, sync_bytes, backend, reserve),
-            TAPE_COLUMNS,
-        )
+    pub fn open_node(root: impl AsRef<Path>, options: NodeStoreOptions) -> StoreResult<ReelStore> {
+        ReelStore::open(root, node_config(options), TAPE_COLUMNS)
     }
 
     /// Open a reel under this directory serving the given column families
@@ -200,6 +192,19 @@ impl ReelStore {
     pub fn flush(&self) -> StoreResult<()> {
         self.inner.flush().map_err(engine)
     }
+
+    /// Write the resident index down at a cue, so the next open skips the sweep
+    ///
+    /// Takes its own cue and seals every open tail, which is why nothing but a
+    /// shutdown calls it. `None` where there is no resident index to write down,
+    /// which is a volume paging its keys out to the footers.
+    pub fn checkpoint_index(&self) -> StoreResult<Option<IndexCheckpoint>> {
+        let config = self.inner.config();
+        if config.index.pages() {
+            return Ok(None);
+        }
+        self.inner.checkpoint_index().map(Some).map_err(engine)
+    }
 }
 
 /// Bytes a node writes between durability syncs
@@ -236,6 +241,36 @@ pub enum Reserve {
     Small,
 }
 
+/// The knobs a node opens its volume with, straight off the node's store config
+#[derive(Debug, Clone, Copy)]
+pub struct NodeStoreOptions {
+    /// Compaction rate cap in MB/s. 0 lets the engine pace itself.
+    pub compaction_mbps: u64,
+    /// Bytes written between durability syncs. 0 syncs on every put.
+    pub sync_bytes: u64,
+    /// File backend the volume opens with.
+    pub backend: IoBackend,
+    /// The reservation preset the rest of the knobs start from.
+    pub reserve: Reserve,
+    /// Bytes one segment spans. 0 keeps the preset's size.
+    pub segment_bytes: u64,
+    /// How a segment claims its space. Unset keeps the preset's choice.
+    pub preallocate: Option<Preallocate>,
+}
+
+impl Default for NodeStoreOptions {
+    fn default() -> Self {
+        NodeStoreOptions {
+            compaction_mbps: 0,
+            sync_bytes: DEFAULT_SYNC_BYTES,
+            backend: default_backend(),
+            reserve: Reserve::default(),
+            segment_bytes: 0,
+            preallocate: None,
+        }
+    }
+}
+
 /// Bytes a small volume seals a segment at
 const SMALL_SEGMENT_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -247,18 +282,13 @@ const SMALL_ALLOC_CHUNK: u64 = 4 * 1024 * 1024;
 /// The bench config minus everything that only makes sense when a run is about
 /// to be thrown away: durability is a real policy rather than `Never`, and the
 /// segment is the shipped size.
-pub fn node_config(
-    compaction_mbps: u64,
-    sync_bytes: u64,
-    backend: IoBackend,
-    reserve: Reserve,
-) -> ReelConfig {
+pub fn node_config(options: NodeStoreOptions) -> ReelConfig {
     let config = ReelConfig {
-        sync: match sync_bytes {
+        sync: match options.sync_bytes {
             0 => SyncPolicy::EveryPut,
             bytes => SyncPolicy::Bytes(ByteCount::from_bytes(bytes)),
         },
-        compact_mbps: match compaction_mbps {
+        compact_mbps: match options.compaction_mbps {
             0 => CompactRate::Auto,
             capped => CompactRate::Mbps(capped),
         },
@@ -267,13 +297,13 @@ pub fn node_config(
         // and a dead process where the door returns an error the node can act
         // on. The mapped path stays a bench and tooling knob.
         map_above: None,
-        point_reads: probe_for(backend),
-        io_backend: backend,
+        point_reads: probe_for(options.backend),
+        io_backend: options.backend,
         shard_shapes: ShardShapes::Declared,
         ..ReelConfig::default()
     };
 
-    match reserve {
+    let mut config = match options.reserve {
         Reserve::Fleet => config,
         // Four knobs rather than one: dropping the tail count alone still
         // reserves a gibibyte, and shrinking the segment alone still pre-writes
@@ -285,7 +315,20 @@ pub fn node_config(
             active_tails: ThreadBudget::threads(1),
             ..config
         },
+    };
+
+    // The explicit knobs override whichever preset was picked. The chunk step
+    // rides down with a shrunken segment, since the engine refuses a step wider
+    // than the segment it feeds.
+    if options.segment_bytes != 0 {
+        config.segment_bytes = ByteCount::from_bytes(options.segment_bytes);
+        let chunk = config.alloc_chunk.to_bytes().min(options.segment_bytes);
+        config.alloc_chunk = ByteCount::from_bytes(chunk);
     }
+    if let Some(preallocate) = options.preallocate {
+        config.preallocate = preallocate;
+    }
+    config
 }
 
 /// Whether to ask the page cache before queueing a read, which only a ring wants
@@ -306,20 +349,18 @@ fn probe_for(backend: IoBackend) -> PointReads {
 /// crate sits above `tape-store` in the graph and needs the column declarations.
 pub fn open_node_store(
     root: impl AsRef<Path>,
-    compaction_mbps: u64,
-    sync_bytes: u64,
-    backend: IoBackend,
-    reserve: Reserve,
+    options: NodeStoreOptions,
 ) -> StoreResult<TapeStore<ReelStore>> {
     let root = root.as_ref();
     std::fs::create_dir_all(root)?;
-    let volume = ReelStore::open_node(root, compaction_mbps, sync_bytes, backend, reserve)?;
+    let requested = options.backend;
+    let volume = ReelStore::open_node(root, options)?;
 
     // The request beside the outcome, since a volume that asked for the ring can
     // be served by posix. The engine's own warning only fires on the downgrade,
     // so it cannot tell a ring from a log nobody configured.
     tracing::info!(
-        requested = ?backend,
+        requested = ?requested,
         serving = %volume.serving_backend(),
         root = %root.display(),
         "opened the node volume",
@@ -344,7 +385,7 @@ pub fn read_only_config(residency: IndexResidency) -> ReelConfig {
             IndexResidency::Resident => ShardShapes::Declared,
             _ => ShardShapes::Tree,
         },
-        ..node_config(0, DEFAULT_SYNC_BYTES, default_backend(), Reserve::Fleet)
+        ..node_config(NodeStoreOptions::default())
     }
 }
 
@@ -368,7 +409,10 @@ pub fn open_node_store_read_only(
 /// Every knob the fleet ships, at a reservation the size of the run. The same
 /// shape an operator asks for with `store.reserve: small`.
 pub fn harness_config() -> ReelConfig {
-    node_config(0, DEFAULT_SYNC_BYTES, default_backend(), Reserve::Small)
+    node_config(NodeStoreOptions {
+        reserve: Reserve::Small,
+        ..NodeStoreOptions::default()
+    })
 }
 
 /// A tape store on a harness volume, every family the node addresses
@@ -502,6 +546,35 @@ fn direction(direction: Direction) -> reel_core::Direction {
 ///
 /// Consuming rather than borrowing, so a staged payload moves into the reel's
 /// batch rather than being copied into it.
+/// Bytes the found values weigh, for the read counters
+fn values_len(result: &StoreResult<Vec<Option<Value>>>) -> usize {
+    match result {
+        Ok(values) => values
+            .iter()
+            .flatten()
+            .map(|value| value.len())
+            .sum(),
+        Err(_) => 0,
+    }
+}
+
+/// The batch's payload bytes and the cf that stands for it in the counters,
+/// the last one seen, the way the rocks backend reports a batch
+fn batch_weight(staged: &WriteBatch) -> (String, usize) {
+    let mut cf: Option<&str> = None;
+    let mut written = 0usize;
+    for op in staged.iter() {
+        match op {
+            store::BatchOp::Put { cf: name, key, value } => {
+                cf = Some(name);
+                written += key.len() + value.len();
+            }
+            store::BatchOp::Delete { cf: name, .. } => cf = Some(name),
+        }
+    }
+    (cf.unwrap_or("default").to_string(), written)
+}
+
 fn batch(batch: WriteBatch) -> reel_core::WriteBatch {
     let mut crossed = reel_core::WriteBatch::new();
     for op in batch {
@@ -518,25 +591,75 @@ fn rows(iter: reel_core::StoreIter<'_>) -> StoreIter<'_> {
     Box::new(iter.map(|(key, value)| (key, value.into_vec())))
 }
 
+
+/// Record one store operation against the shared counters, so the board's store
+/// panel reads the reel the same way it read rocks
+#[cfg(not(feature = "metrics"))]
+fn record(_: &str, _: &str, _: bool, _: f64, _: usize, _: usize) {}
+
+#[cfg(feature = "metrics")]
+fn record(cf: &str, op: &str, ok: bool, elapsed: f64, read: usize, written: usize) {
+    let Some(m) = get_metrics() else { return };
+    let status = if ok { "ok" } else { "error" };
+    m.operations_total.with_label_values(&[cf, op, status]).inc();
+    if read > 0 {
+        m.bytes_read_total.with_label_values(&[cf]).inc_by(read as u64);
+    }
+    if written > 0 {
+        m.bytes_written_total.with_label_values(&[cf]).inc_by(written as u64);
+    }
+    if !ok {
+        m.errors_total.with_label_values(&[cf, op, "engine"]).inc();
+    }
+    match op {
+        "get" => m.get_duration.with_label_values(&[cf, &ok.to_string()]).observe(elapsed),
+        "put" => m.put_duration.with_label_values(&[cf]).observe(elapsed),
+        "delete" => m.delete_duration.with_label_values(&[cf]).observe(elapsed),
+        _ => {}
+    }
+}
+
 impl Store for ReelStore {
     fn get(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Value>> {
-        EngineStoreTrait::get(&self.inner, cf, key).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::get(&self.inner, cf, key).map_err(crossed);
+        let read = match &result {
+            Ok(Some(v)) => v.len(),
+            _ => 0,
+        };
+        record(cf, "get", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     fn get_many(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Value>>> {
-        EngineStoreTrait::get_many(&self.inner, cf, keys).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::get_many(&self.inner, cf, keys).map_err(crossed);
+        let read = values_len(&result);
+        record(cf, "get_many", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     async fn get_wait(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Value>> {
-        EngineStoreTrait::get_wait(&self.inner, cf, key)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::get_wait(&self.inner, cf, key)
             .await
-            .map_err(crossed)
+            .map_err(crossed);
+        let read = match &result {
+            Ok(Some(value)) => value.len(),
+            _ => 0,
+        };
+        record(cf, "get", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     async fn get_many_wait(&self, cf: &str, keys: &[&[u8]]) -> StoreResult<Vec<Option<Value>>> {
-        EngineStoreTrait::get_many_wait(&self.inner, cf, keys)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::get_many_wait(&self.inner, cf, keys)
             .await
-            .map_err(crossed)
+            .map_err(crossed);
+        let read = values_len(&result);
+        record(cf, "get_many", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     fn get_range(
@@ -546,7 +669,15 @@ impl Store for ReelStore {
         offset: u64,
         len: usize,
     ) -> StoreResult<Option<Value>> {
-        EngineStoreTrait::get_range(&self.inner, cf, key, offset, len).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result =
+            EngineStoreTrait::get_range(&self.inner, cf, key, offset, len).map_err(crossed);
+        let read = match &result {
+            Ok(Some(value)) => value.len(),
+            _ => 0,
+        };
+        record(cf, "get_range", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     async fn get_range_wait(
@@ -556,23 +687,39 @@ impl Store for ReelStore {
         offset: u64,
         len: usize,
     ) -> StoreResult<Option<Value>> {
-        EngineStoreTrait::get_range_wait(&self.inner, cf, key, offset, len)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::get_range_wait(&self.inner, cf, key, offset, len)
             .await
-            .map_err(crossed)
+            .map_err(crossed);
+        let read = match &result {
+            Ok(Some(value)) => value.len(),
+            _ => 0,
+        };
+        record(cf, "get_range", result.is_ok(), timer.elapsed().as_secs_f64(), read, 0);
+        result
     }
 
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> StoreResult<()> {
-        EngineStoreTrait::put(&self.inner, cf, key, value).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::put(&self.inner, cf, key, value).map_err(crossed);
+        record(cf, "put", result.is_ok(), timer.elapsed().as_secs_f64(), 0, value.len());
+        result
     }
 
     async fn put_wait(&self, cf: &str, key: &[u8], value: &[u8]) -> StoreResult<()> {
-        EngineStoreTrait::put_wait(&self.inner, cf, key, value)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::put_wait(&self.inner, cf, key, value)
             .await
-            .map_err(crossed)
+            .map_err(crossed);
+        record(cf, "put", result.is_ok(), timer.elapsed().as_secs_f64(), 0, value.len());
+        result
     }
 
     fn delete(&self, cf: &str, key: &[u8]) -> StoreResult<()> {
-        EngineStoreTrait::delete(&self.inner, cf, key).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result = EngineStoreTrait::delete(&self.inner, cf, key).map_err(crossed);
+        record(cf, "delete", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
+        result
     }
 
     fn contains(&self, cf: &str, key: &[u8]) -> StoreResult<bool> {
@@ -580,17 +727,29 @@ impl Store for ReelStore {
     }
 
     fn write_batch(&self, staged: WriteBatch) -> StoreResult<()> {
-        EngineStoreTrait::write_batch(&self.inner, batch(staged)).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let (cf, written) = batch_weight(&staged);
+        let result = EngineStoreTrait::write_batch(&self.inner, batch(staged)).map_err(crossed);
+        record(&cf, "write_batch", result.is_ok(), timer.elapsed().as_secs_f64(), 0, written);
+        result
     }
 
     async fn write_batch_wait(&self, staged: WriteBatch) -> StoreResult<()> {
-        EngineStoreTrait::write_batch_wait(&self.inner, batch(staged))
+        let timer = std::time::Instant::now();
+        let (cf, written) = batch_weight(&staged);
+        let result = EngineStoreTrait::write_batch_wait(&self.inner, batch(staged))
             .await
-            .map_err(crossed)
+            .map_err(crossed);
+        record(&cf, "write_batch", result.is_ok(), timer.elapsed().as_secs_f64(), 0, written);
+        result
     }
 
     fn delete_range(&self, cf: &str, start: &[u8], end: &[u8]) -> StoreResult<()> {
-        EngineStoreTrait::delete_range(&self.inner, cf, start, end).map_err(crossed)
+        let timer = std::time::Instant::now();
+        let result =
+            EngineStoreTrait::delete_range(&self.inner, cf, start, end).map_err(crossed);
+        record(cf, "delete_range", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
+        result
     }
 
     fn iter(&self, cf: &str) -> StoreResult<StoreIter<'_>> {
@@ -695,9 +854,17 @@ impl Store for ReelStore {
         EngineStoreTrait::reclaim_space(&self.inner).map_err(crossed)
     }
 
+    fn maintain(&self) -> StoreResult<()> {
+        EngineStoreTrait::maintain(&self.inner).map_err(crossed)
+    }
+
     fn disk_volumes(&self) -> StoreResult<Vec<DiskVolume>> {
         EngineStoreTrait::disk_volumes(&self.inner)
             .map(|volumes| volumes.into_iter().map(disk_volume).collect())
             .map_err(crossed)
+    }
+
+    fn close(&self) -> StoreResult<()> {
+        self.inner.close().map_err(engine)
     }
 }

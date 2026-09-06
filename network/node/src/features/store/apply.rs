@@ -366,10 +366,13 @@ fn set_certified<Db: Store>(
     track: Address,
     epoch: EpochNumber,
 ) -> Result<(), NodeError> {
-    if let Some(mut track_info) = store.get_track(track).map_err(store_error)? {
-        track_info.state = TrackState::Certified as u64;
-        store.put_track(track, track_info).map_err(store_error)?;
-    }
+    // Both records or neither: object info stamped against a track never stored
+    // leaves the pair disagreeing with nothing to repair it
+    let Some(mut track_info) = store.get_track(track).map_err(store_error)? else {
+        return Ok(());
+    };
+    track_info.state = TrackState::Certified as u64;
+    store.put_track(track, track_info).map_err(store_error)?;
 
     let Some(info) = store.get_object_info(track).map_err(store_error)? else {
         return Ok(());

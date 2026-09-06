@@ -101,6 +101,20 @@ impl ProofOfAccess {
         signer: &BlsPubkey,
         in_time: bool,
     ) -> Result<(), ProofRejection> {
+        self.verify_shape(expected, registered, in_time)?;
+        self.signature
+            .verify_aggregate(self.message().to_bytes(), core::slice::from_ref(signer))
+            .map_err(|_| ProofRejection::BadSignature)
+    }
+
+    /// Everything an answer is judged on except its signature, so a caller
+    /// holding several can check their signatures together.
+    pub fn verify_shape(
+        &self,
+        expected: &Sample,
+        registered: Registered<'_>,
+        in_time: bool,
+    ) -> Result<(), ProofRejection> {
         if !in_time {
             return Err(ProofRejection::Late);
         }
@@ -138,9 +152,7 @@ impl ProofOfAccess {
             _ => return Err(ProofRejection::WrongSample),
         }
 
-        self.signature
-            .verify_aggregate(self.message().to_bytes(), core::slice::from_ref(signer))
-            .map_err(|_| ProofRejection::BadSignature)
+        Ok(())
     }
 }
 

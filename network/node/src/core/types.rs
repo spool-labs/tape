@@ -19,6 +19,7 @@ pub enum ServiceName {
     PeerAggregator,
     AtlasObserve,
     BalanceMonitor,
+    ObserveStream,
 }
 
 impl ServiceName {
@@ -43,6 +44,7 @@ impl ServiceName {
             Self::PeerAggregator => "PeerAggregator",
             Self::AtlasObserve => "AtlasObserve",
             Self::BalanceMonitor => "BalanceMonitor",
+            Self::ObserveStream => "ObserveStream",
         }
     }
 }

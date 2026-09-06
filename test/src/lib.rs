@@ -264,7 +264,7 @@ impl TestEnv {
 
         let result = self.mollusk.process_instruction(instruction, accounts);
 
-        println!("size:\t{:?}", bincode::serialize(instruction).unwrap().len());
+        println!("size:\t{:?}", wincode::serialize(instruction).unwrap().len());
         println!("cu:\t{:?}", result.compute_units_consumed);
 
         println!("logs:\n");

@@ -60,6 +60,9 @@ pub trait Rpc: Send + Sync {
     /// Get the most recently finalized slot.
     async fn get_finalized_slot(&self) -> Result<u64, RpcError>;
 
+    /// Get the most recent slot a supermajority has voted on.
+    async fn get_confirmed_slot(&self) -> Result<u64, RpcError>;
+
     /// Get the latest blockhash for transaction signing
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError>;
 

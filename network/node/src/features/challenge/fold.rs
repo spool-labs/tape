@@ -1,4 +1,5 @@
 use store::Store;
+use tape_core::challenge::record::RECENT_ROUNDS;
 use tape_core::challenge::{Fold, PeerRecord};
 use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
@@ -25,43 +26,47 @@ pub fn fold_outcome<Db: Store>(
     let prior = store
         .round_outcome(peer, spool, epoch, round)
         .unwrap_or_default();
-    let mut record = store.peer_record(peer, spool).unwrap_or_default();
     // A success is never downgraded and a recorded miss is upgraded by a late
     // certificate, so this is what the round is worth after the fold either way.
     let stands = prior == Some(true) || certified;
 
+    // A round already recorded as proved changes nothing, and every node folds
+    // every peer's spools, so the duplicate is the common case and should not
+    // cost a record read.
+    if prior == Some(true) || (prior == Some(false) && !certified) {
+        return Folded { record: None, certified: stands };
+    }
+
+    let mut record = store.peer_record(peer, spool).unwrap_or_default();
     let fold = record.record(epoch, round, certified, prior);
     if fold == Fold::Ignored {
         return Folded { record: None, certified: stands };
     }
 
-    // The counters say how often. This says which rounds, so a report can name
-    // the ones a node failed rather than only count them.
-    if let Err(error) = store.put_round_outcome(peer, spool, epoch, round, certified) {
-        debug!(%error, node = %peer, "challenge: round outcome not persisted");
-    }
-
     if fold == Fold::Rebuild {
-        match store.peer_rounds(peer, spool) {
-            Ok(rounds) => record.rebuild_recency(&rounds),
+        match store.peer_rounds_tail(peer, spool, RECENT_ROUNDS as usize) {
+            Ok(mut rounds) => {
+                // This round is written below rather than above, so it is placed
+                // into the tail here instead of being read back out of it.
+                let at = rounds.partition_point(|(held, at, _)| (*held, *at) < (epoch, round));
+                match rounds.get_mut(at) {
+                    Some((held, at, outcome)) if (*held, *at) == (epoch, round) => {
+                        *outcome = certified;
+                    }
+                    _ => rounds.insert(at, (epoch, round, certified)),
+                }
+                record.rebuild_recency(&rounds);
+            }
             Err(error) => debug!(%error, node = %peer, "challenge: rounds unavailable for rebuild"),
         }
     }
 
-    if let Err(error) = store.put_peer_record(peer, spool, record) {
-        debug!(%error, node = %peer, "challenge: record not persisted");
+    // The outcome says which rounds a node failed where the counters only say
+    // how many, and it is written with the record it produced so a crash cannot
+    // leave one without the other.
+    if let Err(error) = store.put_round_fold(peer, spool, epoch, round, certified, record) {
+        debug!(%error, node = %peer, "challenge: fold not persisted");
     }
-
-    debug!(
-        node = %peer,
-        spool = spool.0,
-        epoch = epoch.0,
-        round = round.0,
-        certified,
-        misses = record.consecutive_misses,
-        opportunities = record.opportunities,
-        "challenge: record advanced"
-    );
 
     Folded { record: Some(record), certified: stands }
 }
@@ -77,6 +82,7 @@ mod tests {
     use tape_store::TapeStore;
 
     use super::*;
+    use tape_core::challenge::record::MAX_CONSECUTIVE_MISSES;
 
     const SPOOL: SpoolIndex = SpoolIndex(41);
 
@@ -128,7 +134,7 @@ mod tests {
         let peer = Address::new_unique();
         let (kept, dropped) = (SpoolIndex(11), SpoolIndex(12));
 
-        for round in 0..3u64 {
+        for round in 0..MAX_CONSECUTIVE_MISSES {
             let at = RoundNumber(round);
             fold_outcome(&store, peer, kept, EpochNumber(5), at, true);
             fold_outcome(&store, peer, dropped, EpochNumber(5), at, false);

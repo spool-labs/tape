@@ -7,16 +7,16 @@
 
 pub mod cities;
 
-use serde::{Deserialize, Serialize};
+use wincode::{SchemaRead, SchemaWrite};
 
 /// The unified live stream: a WebSocket of binary frames, each one a
-/// bincode-encoded LiveMsg. One connection carries topology, stats, traffic,
+/// wincode-encoded LiveMsg. One connection carries topology, stats, traffic,
 /// and recent objects together; the browser never opens more than this.
 pub const LIVE_PATH: &str = "/live";
 
 /// A geographic point in WGS84 degrees. Client points are snapped to a city
 /// centroid before they become one of these; a raw address never does.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, SchemaRead, SchemaWrite)]
 pub struct GeoPoint {
     pub lat: f32,
     pub lon: f32,
@@ -29,7 +29,7 @@ impl GeoPoint {
 }
 
 /// A storage site: one or more nodes co-located in a city or datacenter.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, SchemaRead, SchemaWrite)]
 pub struct Site {
     /// Stable identifier, referenced by traffic sources.
     pub id: u32,
@@ -46,14 +46,14 @@ pub struct Site {
 
 /// Where the network sits: the fixed sites, plus recently active client
 /// locations (coarsened, deduped upstream).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, SchemaRead, SchemaWrite)]
 pub struct Topology {
     pub sites: Vec<Site>,
     pub clients: Vec<GeoPoint>,
 }
 
 /// High-level counters for the stat strip.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, SchemaRead, SchemaWrite)]
 pub struct LiveStats {
     pub bytes_per_sec: u64,
     pub nodes: u32,
@@ -66,8 +66,7 @@ pub struct LiveStats {
 /// What one traffic line means. The renderer maps each variant to a look:
 /// `NodeSync` is a braided brand-color bundle, the user variants are a single
 /// white line whose draw direction tells upload from fetch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub enum TrafficKind {
     /// Node-to-node backbone: sync, repair, or slice pull between sites.
     NodeSync,
@@ -86,7 +85,7 @@ impl TrafficKind {
 
 /// One transfer, geolocated to both ends. Each event becomes one arc (a braid
 /// for `NodeSync`, a single white line otherwise).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, SchemaRead, SchemaWrite)]
 pub struct TrafficEvent {
     pub kind: TrafficKind,
     pub from: GeoPoint,
@@ -95,7 +94,7 @@ pub struct TrafficEvent {
 }
 
 /// A recently stored object, for the live activity ticker.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, SchemaRead, SchemaWrite)]
 pub struct RecentObject {
     /// Coarsened display label, a short key or hash, never a raw filename.
     pub label: String,
@@ -107,11 +106,11 @@ pub struct RecentObject {
     pub ts: u64,
 }
 
-/// One framed message on the live stream, bincode-encoded. The collector sends
+/// One framed message on the live stream, wincode-encoded. The collector sends
 /// a `Topology` then a `Stats` on connect (replaying recent `Object`s), then
 /// streams `Traffic` per transfer, new `Object`s, periodic `Stats`, and a fresh
 /// `Topology` whenever placement changes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, SchemaRead, SchemaWrite)]
 pub enum LiveMsg {
     Topology(Topology),
     Stats(LiveStats),
@@ -123,7 +122,7 @@ pub enum LiveMsg {
 mod tests {
     use super::*;
 
-    // a live message survives the bincode round trip unchanged
+    // a live message survives the wincode round trip unchanged
     #[test]
     fn round_trip() {
         let msg = LiveMsg::Traffic(TrafficEvent {
@@ -133,8 +132,8 @@ mod tests {
             bytes: 4096,
         });
 
-        let bytes = bincode::serialize(&msg).expect("serialize");
-        let back: LiveMsg = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = wincode::serialize(&msg).expect("serialize");
+        let back: LiveMsg = wincode::deserialize(&bytes).expect("deserialize");
 
         assert_eq!(msg, back);
     }

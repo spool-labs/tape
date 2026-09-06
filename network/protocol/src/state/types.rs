@@ -252,6 +252,35 @@ impl ProtocolState {
     pub fn group_member_count_prev(&self, group: GroupIndex) -> usize {
         group_member_count_inner(self.group_prev(group))
     }
+
+    /// Each spool in a group with its owner as of `epoch`, current or previous
+    pub fn group_peers_at(&self, epoch: EpochNumber, group: GroupIndex) -> Option<Vec<(SpoolIndex, Address)>> {
+        let groups = self.groups_at(epoch)?;
+        Some(group_peers_inner(spools_in_group_inner(groups, group)))
+    }
+
+    /// Unique nodes in a group as of `epoch`, current or previous
+    pub fn group_member_count_at(&self, epoch: EpochNumber, group: GroupIndex) -> Option<usize> {
+        let groups = self.groups_at(epoch)?;
+        Some(group_member_count_inner(group_inner(groups, group)))
+    }
+
+    /// Whether a node held a spool in a group as of `epoch`
+    pub fn is_member_at(&self, epoch: EpochNumber, group: GroupIndex, node: Address) -> bool {
+        self.groups_at(epoch)
+            .is_some_and(|groups| spool_for_node_in_group_inner(groups, group, node).is_some())
+    }
+
+    /// The groups as of `epoch`, or nothing once the state no longer holds it
+    fn groups_at(&self, epoch: EpochNumber) -> Option<&[Group]> {
+        if epoch == self.epoch() {
+            return Some(&self.current.groups);
+        }
+        match &self.previous {
+            Some(previous) if previous.epoch.id == epoch => Some(&previous.groups),
+            Some(_) | None => None,
+        }
+    }
 }
 
 fn group_inner(groups: &[Group], group: GroupIndex) -> Option<&Group> {
