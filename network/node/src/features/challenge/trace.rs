@@ -89,8 +89,8 @@ pub enum TraceClose {
     Open,
     /// Settled against every spool in the group.
     Settled,
-    /// Charged to nobody: the entropy block never finalized.
-    Unfinalized,
+    /// Charged to nobody: the entropy block never confirmed.
+    Unconfirmed,
     /// Charged to nobody: the group had nothing to be asked about.
     Nothing,
 }
@@ -493,8 +493,8 @@ mod tests {
     fn closing_marks_the_round() {
         let ring = TraceRing::default();
         opened(&ring, 1, 0);
-        ring.close(EpochNumber(1), RoundNumber(1), GroupIndex(0), TraceClose::Unfinalized);
+        ring.close(EpochNumber(1), RoundNumber(1), GroupIndex(0), TraceClose::Unconfirmed);
 
-        assert_eq!(ring.snapshot()[0].close, TraceClose::Unfinalized);
+        assert_eq!(ring.snapshot()[0].close, TraceClose::Unconfirmed);
     }
 }

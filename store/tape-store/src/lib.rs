@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(store.get_node_address().unwrap(), Some(addr));
 
         // Sync cursor
-        store.set_sync_cursor(SlotNumber(999)).unwrap();
+        store.set_sync_cursor(SlotNumber(999), None).unwrap();
         assert_eq!(
             store.get_sync_cursor().unwrap(),
             Some(SlotNumber(999))

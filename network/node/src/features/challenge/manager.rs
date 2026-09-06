@@ -34,19 +34,19 @@ use crate::features::eviction::queue::Opened;
 const BROADCAST_CONCURRENCY: usize = 8;
 
 // Capture settlement inputs when the round opens because settlement may cross
-// an epoch boundary. Unfinalized or unaskable rounds are void rather than
+// an epoch boundary. Unconfirmed or unaskable rounds are void rather than
 // charging every spool in the group a miss.
 struct OpenRound {
     round: Round,
     /// The spools asked, with who owed the answer when they were asked.
     ///
     /// Captured here rather than read at settlement: a round settles once its
-    /// block roots, which is well after it opened and can be the far side of an
+    /// block confirms, which is after it opened and can be the far side of an
     /// epoch, and the spool may have changed hands by then. Judging against the
     /// owner of the moment charges a miss to a node that was never asked.
     spools: Vec<Asked>,
     opened_slot: SlotNumber,
-    finalized: bool,
+    confirmed: bool,
     askable: bool,
 }
 
@@ -61,15 +61,15 @@ struct Asked {
 }
 
 impl OpenRound {
-    /// Its block rooted and the round has had its full width to answer, or it
-    /// waited past the point where the block could still root.
+    /// Its block confirmed and the round has had its full width to answer, or it
+    /// waited past the point where the block could still confirm.
     ///
-    /// Rooting alone is not enough: a chain that roots inside a round would
+    /// Confirming alone is not enough: a block that confirms inside a round would
     /// settle it before its proofs are due and charge honest owners a miss for
     /// certificates still forming.
     fn settles_at(&self, now: SlotNumber) -> bool {
         let elapsed = now.as_u64().saturating_sub(self.opened_slot.as_u64());
-        (self.finalized && elapsed >= round_width_slots()) || elapsed >= SETTLE_DEADLINE_SLOTS
+        (self.confirmed && elapsed >= round_width_slots()) || elapsed >= SETTLE_DEADLINE_SLOTS
     }
 }
 
@@ -78,7 +78,7 @@ pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     chain_rx: mpsc::Receiver<ChainEvent>,
     cancel: CancellationToken,
     // Every round a group is waiting on, oldest first: judged on its block
-    // rooting, not on the next round opening.
+    // confirming, not on the next round opening.
     open_rounds: HashMap<GroupIndex, VecDeque<OpenRound>>,
     /// The first round this node opened in an epoch, which the handover grace
     /// counts from: the grid's early positions fall in phases that do not
@@ -125,7 +125,7 @@ where
                     match event {
                         ChainEvent::Produced(block) => self.on_produced(block).await?,
                         ChainEvent::Rolled(hashes) => self.on_rolled(&hashes),
-                        ChainEvent::Finalized(hash) => self.on_finalized(hash),
+                        ChainEvent::Confirmed(hash) => self.on_confirmed(hash),
                     }
                 }
             }
@@ -149,7 +149,7 @@ where
 
         // Before the phase gate: an epoch that left Active still owes a
         // verdict on every round it opened.
-        self.settle_finalized(block.slot);
+        self.settle_confirmed(block.slot);
 
         if state.phase() != EpochPhase::Active {
             return Ok(());
@@ -215,7 +215,7 @@ where
                     })
                     .collect(),
                 opened_slot: block.slot,
-                finalized: false,
+                confirmed: false,
                 askable: has_sample_set(&self.context, &round),
             });
             self.first_round.entry(epoch).or_insert(number);
@@ -261,9 +261,9 @@ where
         Ok(())
     }
 
-    /// Judges rounds whose block rooted, voids those that waited too long.
+    /// Judges rounds whose block confirmed, voids those that waited too long.
     /// Oldest first, so it stops at the first round still waiting.
-    fn settle_finalized(&mut self, now: SlotNumber) {
+    fn settle_confirmed(&mut self, now: SlotNumber) {
         let mut ready = Vec::new();
         for pending in self.open_rounds.values_mut() {
             while pending.front().is_some_and(|open| open.settles_at(now)) {
@@ -281,15 +281,15 @@ where
     /// Judges one round: what the group made of every spool it was asked about.
     fn settle_round(&mut self, open: &OpenRound) {
 
-        // A round whose entropy block never finalized is void. Nobody owed an
+        // A round whose entropy block never confirmed is void. Nobody owed an
         // answer on a branch that lost, so nobody is charged for one.
-        if !open.finalized {
+        if !open.confirmed {
             self.context
                 .challenge_counters
                 .voided
                 .fetch_add(1, Ordering::Relaxed);
-            self.close_trace(&open.round, TraceClose::Unfinalized);
-            debug!(group = open.round.group.0, "challenge: round voided, entropy block never finalized");
+            self.close_trace(&open.round, TraceClose::Unconfirmed);
+            debug!(group = open.round.group.0, "challenge: round voided, entropy block never confirmed");
             return;
         }
 
@@ -424,10 +424,10 @@ where
         }
     }
 
-    fn on_finalized(&mut self, hash: tape_crypto::hash::Hash) {
+    fn on_confirmed(&mut self, hash: tape_crypto::hash::Hash) {
         for open in self.open_rounds.values_mut().flatten() {
             if open.round.block == hash {
-                open.finalized = true;
+                open.confirmed = true;
             }
         }
     }

@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::types::SlotNumber;
 use tape_protocol::fetch::fetch_state;
 use tape_protocol::Api;
 use tape_retry::{retry_if, RetryConfig};
@@ -23,7 +22,7 @@ use crate::core::error::NodeError;
 use crate::core::types::{ChannelName, ServiceName};
 use crate::features::block::ingest_monitor;
 use crate::features::block::ingestor::BlockIngestor;
-use crate::features::bootstrap;
+use crate::features::bootstrap::{self, LiveStart};
 use crate::features::assignment::manager::AssignmentManager;
 use crate::features::challenge::ChallengeManager;
 use crate::features::eviction::manager::EvictionManager;
@@ -237,13 +236,13 @@ pub async fn bootstrap_with_status_listener<F>(
     bootstrap: F,
     mut http_server: JoinHandle<Result<(), NodeError>>,
     cancel: &CancellationToken,
-) -> Result<(SlotNumber, JoinHandle<Result<(), NodeError>>), NodeError>
+) -> Result<(LiveStart, JoinHandle<Result<(), NodeError>>), NodeError>
 where
-    F: Future<Output = Result<SlotNumber, NodeError>>,
+    F: Future<Output = Result<LiveStart, NodeError>>,
 {
     tokio::select! {
         result = bootstrap => match result {
-            Ok(start_slot) => Ok((start_slot, http_server)),
+            Ok(start) => Ok((start, http_server)),
             Err(error) => {
                 cancel.cancel();
                 let _ = http_server.await;
@@ -278,7 +277,7 @@ pub async fn join_http_server(handle: JoinHandle<Result<(), NodeError>>) -> Resu
 async fn supervise_with_context<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: NodeConfig,
-    start_slot: SlotNumber,
+    start: LiveStart,
     cancel: CancellationToken,
     http_server: JoinHandle<Result<(), NodeError>>,
 ) -> Result<(), NodeError>
@@ -324,12 +323,7 @@ where
 
     supervisor.spawn(
         ServiceName::BlockIngestor,
-        BlockIngestor::new(
-            context.clone(),
-            start_slot,
-            senders,
-            cancel.clone()
-        ).run(),
+        BlockIngestor::new(context.clone(), start, senders, cancel.clone()).run(),
     );
 
     supervisor.spawn(
@@ -489,7 +483,7 @@ where
 {
     let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
-    let (start_slot, http_server) = match bootstrap_with_status_listener(
+    let (start, http_server) = match bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),
         http_server,
         &cancel,
@@ -506,7 +500,7 @@ where
             return Err(error);
         }
     };
-    supervise_with_context(context, config, start_slot, cancel, http_server).await
+    supervise_with_context(context, config, start, cancel, http_server).await
 }
 
 pub async fn start_with_context<Db, Cluster, Blockchain>(
@@ -520,7 +514,7 @@ where
 {
     let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
-    let (start_slot, http_server) = match bootstrap_with_status_listener(
+    let (start, http_server) = match bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),
         http_server,
         &cancel,
@@ -546,7 +540,7 @@ where
             let result = supervise_with_context(
                 context,
                 config,
-                start_slot,
+                start,
                 task_cancel,
                 http_server,
             )

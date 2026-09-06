@@ -988,7 +988,7 @@ pub fn wire_trace_with(trace: &TracedRound, detailed: bool) -> RoundTrace {
         close: match trace.close {
             TraceClose::Open => WireClose::Open,
             TraceClose::Settled => WireClose::Settled,
-            TraceClose::Unfinalized => WireClose::Unfinalized,
+            TraceClose::Unconfirmed => WireClose::Unconfirmed,
             TraceClose::Nothing => WireClose::Nothing,
         },
         shapes: fold_shapes(trace),

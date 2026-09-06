@@ -715,7 +715,7 @@ pub struct ChallengeRounds {
     pub settled_missed: u64,
     /// Incoming answers refused at the door.
     pub answers_refused: u64,
-    /// Rounds whose entropy block never finalized, charged to nobody.
+    /// Rounds whose entropy block never confirmed, charged to nobody.
     #[serde(default)]
     pub voided: u64,
     /// Rounds dropped because their candidate block lost.
@@ -823,8 +823,8 @@ pub enum TraceClose {
     Open,
     /// Settled against every spool in the group.
     Settled,
-    /// Charged to nobody: the entropy block never finalized.
-    Unfinalized,
+    /// Charged to nobody: the entropy block never confirmed.
+    Unconfirmed,
     /// Charged to nobody: the group had nothing to be asked about.
     Nothing,
 }

@@ -195,7 +195,7 @@ pub fn persist_batch_with<Db: Store>(
     persist_raw_tracks(store, &batch.raw_tracks, policy)?;
 
     store
-        .set_sync_cursor(batch.slot)
+        .set_sync_cursor(batch.slot, Some(batch.blockhash))
         .map_err(|error| NodeError::Store(format!("set_sync_cursor: {error}")))
 }
 
@@ -262,6 +262,7 @@ mod tests {
         let store = test_store();
         let batch = ReplayBatch {
             slot: SlotNumber(99),
+            blockhash: Hash::new_unique(),
             block_time: None,
             records: Vec::new(),
             raw_tracks: Vec::new(),
@@ -277,6 +278,7 @@ mod tests {
         let store = test_store();
         let batch = ReplayBatch {
             slot: SlotNumber(77),
+            blockhash: Hash::new_unique(),
             block_time: None,
             records: vec![record(ReplayableEvent::Track(ReplayTrack {
                 state: CompressedTrack {
@@ -316,6 +318,7 @@ mod tests {
 
         let batch = ReplayBatch {
             slot: SlotNumber(78),
+            blockhash: Hash::new_unique(),
             block_time: None,
             records: Vec::new(),
             raw_tracks: vec![RawTrack {
@@ -338,6 +341,7 @@ mod tests {
 
         let batch = ReplayBatch {
             slot: SlotNumber(79),
+            blockhash: Hash::new_unique(),
             block_time: None,
             records: Vec::new(),
             raw_tracks: vec![RawTrack {

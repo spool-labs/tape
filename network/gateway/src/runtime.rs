@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
-use tape_core::types::SlotNumber;
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{AppContext, NodeContext};
 use tape_node::core::startup::build_context;
@@ -14,7 +13,7 @@ use tape_node::core::error::NodeError;
 use tape_node::core::types::{ChannelName, ServiceName};
 use tape_node::features::block::ingest_monitor;
 use tape_node::features::block::ingestor::BlockIngestor;
-use tape_node::features::bootstrap;
+use tape_node::features::bootstrap::{self, LiveStart};
 use tape_node::features::replay::manager::ReplayManager;
 use tape_node::features::state::manager::StateManager;
 use tape_node::runtime::{bootstrap_with_status_listener, join_http_server};
@@ -41,7 +40,7 @@ async fn supervise_with_context<Db, Cluster, Blockchain>(
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
     staging: Arc<StagingStore>,
-    start_slot: SlotNumber,
+    start: LiveStart,
     cancel: CancellationToken,
     http_server: JoinHandle<Result<(), NodeError>>,
 ) -> Result<(), NodeError>
@@ -127,7 +126,7 @@ where
 
     supervisor.spawn(
         ServiceName::BlockIngestor,
-        BlockIngestor::new(context.clone(), start_slot, senders, cancel.clone()).run(),
+        BlockIngestor::new(context.clone(), start, senders, cancel.clone()).run(),
     );
 
     supervisor.spawn(
@@ -216,7 +215,7 @@ where
         cancel.clone(),
     );
     let http_server = tokio::spawn(http_server.run().in_current_span());
-    let (start_slot, http_server) = bootstrap_with_status_listener(
+    let (start, http_server) = bootstrap_with_status_listener(
         bootstrap::run_with_persist(&context, &config, &cancel, crate::store::persist_batch::<Db>),
         http_server,
         &cancel,
@@ -229,7 +228,7 @@ where
         slice_cache,
         meter,
         staging,
-        start_slot,
+        start,
         cancel,
         http_server,
     )

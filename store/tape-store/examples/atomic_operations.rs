@@ -85,7 +85,7 @@ fn main() -> Result<()> {
     println!("Has pending recovery: {}", has_pending);
 
     // MetaOps - node state
-    store.set_sync_cursor(SlotNumber(12345))?;
+    store.set_sync_cursor(SlotNumber(12345), None)?;
     println!("Set sync cursor 12345");
 
     // Verify meta state

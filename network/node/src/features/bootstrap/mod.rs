@@ -5,4 +5,4 @@ pub mod manager;
 pub mod replay;
 mod validate;
 
-pub use manager::{run, run_with_persist};
+pub use manager::{LiveStart, run, run_with_persist};
