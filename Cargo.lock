@@ -5193,7 +5193,6 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-protocol",
- "tape-store",
  "tokio",
  "wincode 0.1.2",
 ]
