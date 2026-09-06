@@ -97,6 +97,11 @@ impl<R: Rpc> RpcClient<R> {
         self.rpc.get_block(slot).await
     }
 
+    /// Slots in start..=end that have a block, ascending
+    pub async fn get_blocks(&self, start: u64, end: u64) -> Result<Vec<u64>, RpcError> {
+        self.rpc.get_blocks(start, end).await
+    }
+
     /// Get the lowest slot the node still has a confirmed block for.
     pub async fn get_first_available_block(&self) -> Result<u64, RpcError> {
         self.rpc.get_first_available_block().await

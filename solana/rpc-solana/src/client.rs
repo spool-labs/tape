@@ -464,9 +464,13 @@ fn decode_block_response(body: &[u8]) -> Result<Block, RpcError> {
         .map_err(|error| RpcError::Deserialization(error.to_string()))?;
 
     if let Some(error) = envelope.error {
-        // Skipped slots arrive here, and callers key on the message text, so it
-        // is passed through rather than reworded.
-        return Err(RpcError::Request(error.message));
+        return Err(match error.code {
+            JSON_RPC_SERVER_ERROR_SLOT_SKIPPED => RpcError::SlotSkipped,
+            // The chain has the block; this backend cannot serve it yet
+            JSON_RPC_SERVER_ERROR_BLOCK_NOT_AVAILABLE
+            | JSON_RPC_SERVER_ERROR_LONG_TERM_STORAGE_SLOT_SKIPPED => RpcError::BlockNotAvailable,
+            _ => RpcError::Request(error.message),
+        });
     }
 
     // A null result is how a cluster reports a block it does not hold. The
@@ -485,8 +489,15 @@ struct BlockEnvelope {
 #[derive(serde::Deserialize)]
 struct JsonRpcError {
     #[serde(default)]
+    code: i64,
+    #[serde(default)]
     message: String,
 }
+
+/// agave's getBlock error codes
+const JSON_RPC_SERVER_ERROR_BLOCK_NOT_AVAILABLE: i64 = -32004;
+const JSON_RPC_SERVER_ERROR_SLOT_SKIPPED: i64 = -32007;
+const JSON_RPC_SERVER_ERROR_LONG_TERM_STORAGE_SLOT_SKIPPED: i64 = -32009;
 
 /// Send a transaction and poll its signature status at a short fixed cadence.
 /// The library confirm loop polls every 500ms, which adds up to half a slot of
@@ -646,6 +657,20 @@ impl Rpc for SolanaRpc {
                 slot,
                 self.config.commitment,
             )
+        })
+        .await
+    }
+
+    async fn get_blocks(&self, start: u64, end: u64) -> Result<Vec<u64>, RpcError> {
+        let commitment = CommitmentConfig {
+            commitment: self.config.commitment,
+        };
+
+        self.with_retry("getBlocks", move |client| async move {
+            client
+                .get_blocks_with_commitment(start, Some(end), commitment)
+                .await
+                .map_err(|error| Self::convert_error(error, None))
         })
         .await
     }

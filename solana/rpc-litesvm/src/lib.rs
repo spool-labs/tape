@@ -456,16 +456,12 @@ impl Rpc for LiteSvmRpc {
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
 
+        // Above the tip a cluster says "not available"; a missing slot below it is a skip
         if slot > inner.confirmed_tip {
-            return Err(RpcError::Request(format!(
-                "SlotSkipped: slot {slot} not yet confirmed (tip: {})",
-                inner.confirmed_tip
-            )));
+            return Err(RpcError::BlockNotAvailable);
         }
 
-        let data = inner.slots.get(&slot).ok_or_else(|| {
-            RpcError::Request(format!("SlotSkipped: slot {slot} was skipped or not produced"))
-        })?;
+        let data = inner.slots.get(&slot).ok_or(RpcError::SlotSkipped)?;
 
         data.to_ui_confirmed_block()
             .map(tape_blocks::wire::Block::from)
@@ -515,6 +511,22 @@ impl Rpc for LiteSvmRpc {
         }
         .encode(UiTransactionEncoding::Json, Some(0))
         .map_err(|e| RpcError::Internal(format!("failed to encode transaction: {e}")))
+    }
+
+    async fn get_blocks(&self, start: u64, end: u64) -> Result<Vec<u64>, RpcError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+        let end = end.min(inner.confirmed_tip);
+        let mut slots = Vec::new();
+        for slot in inner.slots.keys() {
+            if (start..=end).contains(slot) {
+                slots.push(*slot);
+            }
+        }
+        slots.sort_unstable();
+        Ok(slots)
     }
 
     async fn get_block_height(&self) -> Result<u64, RpcError> {
