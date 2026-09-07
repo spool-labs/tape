@@ -60,6 +60,9 @@ pub trait Rpc: Send + Sync {
     /// Get the most recently finalized slot.
     async fn get_finalized_slot(&self) -> Result<u64, RpcError>;
 
+    /// Get the most recent slot a supermajority has voted on.
+    async fn get_confirmed_slot(&self) -> Result<u64, RpcError>;
+
     /// Get the latest blockhash for transaction signing
     async fn get_latest_blockhash(&self) -> Result<Hash, RpcError>;
 
@@ -72,6 +75,9 @@ pub trait Rpc: Send + Sync {
 
     /// Get a confirmed block by slot number
     async fn get_block(&self, slot: u64) -> Result<Block, RpcError>;
+
+    /// Slots in start..=end with a block at the configured commitment, ascending
+    async fn get_blocks(&self, start: u64, end: u64) -> Result<Vec<u64>, RpcError>;
 
     /// Get the lowest slot the node still has a confirmed block for. Slots
     /// below this have been pruned from the ledger and can never be fetched.

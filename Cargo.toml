@@ -126,17 +126,16 @@ store-memory = { version = "0.4.0", path = "./store/store-memory" }
 store-rocks = { version = "0.4.0", path = "./store/store-rocks" }
 reel-store = { version = "0.4.0", path = "./store/reel-store" }
 
-# The reel engine, tracking its own main. Cargo.lock holds whichever commit that
-# was when it last resolved, and `cargo update -p reel` moves it on. To work
-# against a local checkout instead, patch it in .cargo/config.toml, which is
-# ignored:
+# The reel engine, pinned to one commit. Moving it is an edit to the rev here
+# followed by `cargo update -p reel -p reel-core`. To work against a local
+# checkout instead, patch it in .cargo/config.toml, which is ignored:
 #
 #   [patch."https://github.com/spool-labs/reel.git"]
 #   reel = { path = "/abs/path/to/reel/crates/reel" }
 #   reel-core = { path = "/abs/path/to/reel/crates/reel-core" }
 #
-reel = { git = "https://github.com/spool-labs/reel.git", branch = "main", features = ["serde"] }
-reel-core = { git = "https://github.com/spool-labs/reel.git", branch = "main" }
+reel = { git = "https://github.com/spool-labs/reel.git", rev = "5d6ae27", features = ["serde"] }
+reel-core = { git = "https://github.com/spool-labs/reel.git", rev = "5d6ae27" }
 tape-sdk = { version = "0.4.0", path = "./sdk" }
 tape-test = { version = "0.4.0", path = "./test" }
 tape-chain-harness = { version = "0.4.0", path = "./test/harness" }
@@ -163,32 +162,33 @@ array-const-fn-init = "0.1.1"
 const-crypto = "0.3.0"
 
 # solana-specific
-solana-client = "=4.0.0"
+solana-client = "=4.2.1"
+solana-leader-schedule = "=4.2.1"
 solana-program = "=4.0.0"
-solana-pubkey = { version = "=4.1.0", features = ["curve25519", "rand"] }
-solana-keypair = "=3.1.0"
-solana-signer = "=3.0.0"
-solana-signature = "=3.3.0"
-solana-hash = { version = "=4.2.0", features = ["atomic", "decode"] }
-solana-account = "=3.4.0"
-solana-clock = "=3.0.1"
+solana-pubkey = { version = "=4.2.1", features = ["curve25519", "rand"] }
+solana-keypair = "=3.1.2"
+solana-signer = "=3.0.1"
+solana-signature = "=3.4.1"
+solana-hash = { version = "=4.5.0", features = ["atomic", "decode"] }
+solana-account = "=4.3.2"
+solana-clock = "=3.1.1"
 solana-commitment-config = "=3.1.1"
-solana-instruction = "=3.2.0"
-solana-instruction-error = "=2.2.0"
+solana-instruction = "=3.4.1"
+solana-instruction-error = "=2.4.0"
 solana-compute-budget-interface = "=3.0.0"
-solana-system-interface = { version = "=3.0.0", features = ["bincode"] }
+solana-system-interface = { version = "=3.2.0", features = ["wincode"] }
 solana-program-option = "=3.1.0"
 solana-program-pack = "=3.1.0"
-solana-program-error = "=3.0.0"
-solana-rent = "=4.2.1"
-solana-sysvar-id = "=3.0.0"
-solana-message = { version = "=3.1.0", features = ["serde"] }
-solana-transaction = { version = "=3.1.0", features = ["bincode", "serde"] }
-solana-transaction-context = { version = "=4.0.0", features = ["serde"] }
-solana-transaction-error = { version = "=3.1.0", features = ["serde"] }
-solana-transaction-status = { version = "=4.0.0", features = ["agave-unstable-api"] }
-solana-account-decoder = "=4.0.0"
-solana-transaction-status-client-types = { version = "=4.0.0", features = ["agave-unstable-api"] }
+solana-program-error = "=3.0.1"
+solana-rent = "=4.3.0"
+solana-sysvar-id = "=3.1.0"
+solana-message = { version = "=4.4.1", features = ["serde", "wincode"] }
+solana-transaction = { version = "=4.1.6", features = ["serde", "wincode"] }
+solana-transaction-context = { version = "=4.2.1", features = ["serde"] }
+solana-transaction-error = { version = "=3.3.2", features = ["serde"] }
+solana-transaction-status = { version = "=4.2.1", features = ["agave-unstable-api"] }
+solana-account-decoder = "=4.2.1"
+solana-transaction-status-client-types = { version = "=4.2.1", features = ["agave-unstable-api"] }
 solana-curve25519 = "=2.3"
 solana-sha256-hasher = { version = "=3.1.0", features = ["sha2"] }
 
@@ -210,7 +210,6 @@ zeroize = "1"
 anyhow = "1.0"
 flate2 = "1.0"
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
-bincode = "1.3"
 base64 = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

@@ -158,21 +158,14 @@ fn active_track_footprint<Db: Store>(
         return Err(invalid_track(track, "object info points at a different track"));
     }
 
+    // A certificate landing between the two reads shows one record ahead of the
+    // other; the track counts on the next pass either way
     let Some(certified_epoch) = certified_epoch else {
-        if metadata.is_certified() {
-            return Err(invalid_track(
-                track,
-                "track metadata is certified but object info is not",
-            ));
-        }
         return Ok(None);
     };
 
     if !metadata.is_certified() {
-        return Err(invalid_track(
-            track,
-            "object info is certified but track metadata is not",
-        ));
+        return Ok(None);
     }
 
     if registered_epoch >= voting_epoch 

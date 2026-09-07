@@ -23,12 +23,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::RwLock;
 
 use tape_blocks::ParsedInstruction;
-use tape_core::object::object_etag;
-use tape_core::snapshot::replay::ReplayTrackObject;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::{CompressedTrack, TrackState};
-use tape_core::types::{ContentType, SlotNumber, TrackNumber};
-use tape_crypto::Hash;
+use tape_core::types::{SlotNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_store::types::TapeInfo;
 
@@ -42,12 +39,7 @@ enum EventKind {
         /// (matches what `store.get_track_data` returns) or
         /// `BlobData::Inline(bytes)` for inline raw tracks. Read paths consult
         /// this via [`PendingTracks::track_data`].
-        data: Box<BlobData>,
-        /// Name-addressed object metadata carried by this registration.
-        object: Option<ReplayTrackObject>,
-        /// Block time used for the same response metadata as the finalized
-        /// object index.
-        block_time: Option<i64>,
+        data: BlobData,
     },
     Certify,
 }
@@ -62,17 +54,6 @@ struct Event {
 struct TapeEvent {
     slot: SlotNumber,
     info: TapeInfo,
-}
-
-/// A certified name-addressed object visible in confirmed pending state.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingNamedObject {
-    pub track_address: Address,
-    pub track_number: TrackNumber,
-    pub size: u64,
-    pub etag: Hash,
-    pub block_time: Option<i64>,
-    pub content_type: ContentType,
 }
 
 #[derive(Debug, Default)]
@@ -90,13 +71,6 @@ struct Inner {
     /// Reverse index used to bulk-drop events when a slot is rolled back or
     /// promoted.
     addresses_by_slot: BTreeMap<SlotNumber, Vec<Address>>,
-
-    /// Name lookup index over pending registrations, ordered by tape track
-    /// number so replacement reads do not scan every pending track.
-    objects_by_tape: HashMap<Address, HashMap<Vec<u8>, BTreeMap<u64, Address>>>,
-
-    /// Reverse index for removing name registrations on promotion or rollback.
-    objects_by_slot: BTreeMap<SlotNumber, Vec<(Address, Vec<u8>, u64)>>,
 
     /// Per-tape reservation log, in append order.
     reservations: HashMap<Address, Vec<TapeEvent>>,
@@ -117,29 +91,11 @@ impl PendingTracks {
         state: CompressedTrack,
         data: BlobData,
     ) {
-        self.apply_register_with_object(slot, track, state, data, None, None);
-    }
-
-    /// Record a registration together with its optional named-object metadata.
-    pub fn apply_register_with_object(
-        &self,
-        slot: SlotNumber,
-        track: Address,
-        state: CompressedTrack,
-        data: BlobData,
-        object: Option<ReplayTrackObject>,
-        block_time: Option<i64>,
-    ) {
         self.append(
             track,
             Event {
                 slot,
-                kind: EventKind::Register {
-                    state,
-                    data: Box::new(data),
-                    object,
-                    block_time,
-                },
+                kind: EventKind::Register { state, data },
             },
         );
     }
@@ -176,7 +132,6 @@ impl PendingTracks {
                 ParsedInstruction::TrackWrite {
                     track,
                     key,
-                    object,
                     value,
                     event,
                     ..
@@ -194,14 +149,7 @@ impl PendingTracks {
                         group: event.group,
                         value_hash: meta.value_hash,
                     };
-                    self.apply_register_with_object(
-                        block.slot,
-                        *track,
-                        state,
-                        value.clone(),
-                        object.clone(),
-                        block.block_time,
-                    );
+                    self.apply_register(block.slot, *track, state, value.clone());
                 }
                 ParsedInstruction::CertifyTrack { track, .. } => {
                     self.apply_certify(block.slot, *track);
@@ -228,26 +176,6 @@ impl PendingTracks {
     /// its effects are now on disk.
     pub fn drop_slot(&self, slot: SlotNumber) {
         let mut inner = self.inner.write().expect("pending-tracks lock poisoned");
-
-        if let Some(objects) = inner.objects_by_slot.remove(&slot) {
-            for (tape, name, track_number) in objects {
-                let mut remove_tape = false;
-                if let Some(by_name) = inner.objects_by_tape.get_mut(&tape) {
-                    let mut remove_name = false;
-                    if let Some(versions) = by_name.get_mut(&name) {
-                        versions.remove(&track_number);
-                        remove_name = versions.is_empty();
-                    }
-                    if remove_name {
-                        by_name.remove(&name);
-                    }
-                    remove_tape = by_name.is_empty();
-                }
-                if remove_tape {
-                    inner.objects_by_tape.remove(&tape);
-                }
-            }
-        }
 
         if let Some(tapes) = inner.tapes_by_slot.remove(&slot) {
             for tape in tapes {
@@ -324,7 +252,7 @@ impl PendingTracks {
         let events = inner.events_by_track.get(&track)?;
         for event in events.iter().rev() {
             if let EventKind::Register { data, .. } = &event.kind {
-                return Some(data.as_ref().clone());
+                return Some(data.clone());
             }
         }
         None
@@ -348,54 +276,6 @@ impl PendingTracks {
         tracks
     }
 
-    /// Resolve the newest certified pending registration for one object name.
-    ///
-    /// Registered-but-uncertified coded objects remain hidden. If several
-    /// confirmed writes replace the same name, the highest tape track number
-    /// wins, matching finalized replay order. Dropping either its register or
-    /// certify slot automatically removes it from this derived view.
-    pub fn named_object(&self, tape: Address, name: &[u8]) -> Option<PendingNamedObject> {
-        let inner = self.inner.read().expect("pending-tracks lock poisoned");
-        let versions = inner.objects_by_tape.get(&tape)?.get(name)?;
-
-        for (_, track_address) in versions.iter().rev() {
-            let events = inner.events_by_track.get(track_address)?;
-            let Some(state) = Self::apply_events(events, None) else {
-                continue;
-            };
-            if state.tape != tape || !state.is_certified() {
-                continue;
-            }
-
-            let registration = events.iter().rev().find_map(|event| match &event.kind {
-                EventKind::Register {
-                    data,
-                    object: Some(object),
-                    block_time,
-                    ..
-                } if object.name == name => Some((data, object, *block_time)),
-                _ => None,
-            });
-            let Some((data, object, block_time)) = registration else {
-                continue;
-            };
-            let blob = match data.as_ref() {
-                BlobData::Coded(blob) => Some(blob),
-                BlobData::Inline(_) => None,
-            };
-            return Some(PendingNamedObject {
-                track_address: *track_address,
-                track_number: state.track_number,
-                size: object.logical_size.to_bytes(),
-                etag: object_etag(&state, blob),
-                block_time,
-                content_type: object.content_type,
-            });
-        }
-
-        None
-    }
-
     pub fn is_empty(&self) -> bool {
         self.inner
             .read()
@@ -407,25 +287,6 @@ impl PendingTracks {
     fn append(&self, track: Address, event: Event) {
         let mut inner = self.inner.write().expect("pending-tracks lock poisoned");
         let slot = event.slot;
-        if let EventKind::Register {
-            state,
-            object: Some(object),
-            ..
-        } = &event.kind
-        {
-            inner
-                .objects_by_tape
-                .entry(state.tape)
-                .or_default()
-                .entry(object.name.clone())
-                .or_default()
-                .insert(state.track_number.0, track);
-            inner.objects_by_slot.entry(slot).or_default().push((
-                state.tape,
-                object.name.clone(),
-                state.track_number.0,
-            ));
-        }
         inner.events_by_track.entry(track).or_default().push(event);
         let slotted = inner.addresses_by_slot.entry(slot).or_default();
         if !slotted.contains(&track) {
@@ -679,121 +540,5 @@ mod tests {
         assert_eq!(tracks.len(), 1);
         assert_eq!(tracks[0].0, track);
         assert_eq!(tracks[0].1.state, TrackState::Certified as u64);
-    }
-
-    fn named(name: &[u8], size: u64, content_type: ContentType) -> ReplayTrackObject {
-        ReplayTrackObject {
-            name: name.to_vec(),
-            content_type,
-            logical_size: StorageUnits::from_bytes(size),
-        }
-    }
-
-    #[test]
-    fn named_object_waits_for_certification_and_rolls_back_with_it() {
-        let pending = PendingTracks::new();
-        let tape = Address::new_unique();
-        let track = Address::new_unique();
-        let state = registered_blob(tape);
-        let blob = sample_blob();
-
-        pending.apply_register_with_object(
-            SlotNumber(10),
-            track,
-            state,
-            BlobData::Coded(blob),
-            Some(named(b"index.html", 321, ContentType::TextHtml)),
-            Some(1_700_000_000),
-        );
-        assert!(pending.named_object(tape, b"index.html").is_none());
-
-        pending.apply_certify(SlotNumber(11), track);
-        let object = pending
-            .named_object(tape, b"index.html")
-            .expect("certified pending object");
-        assert_eq!(object.track_address, track);
-        assert_eq!(object.track_number, TrackNumber(0));
-        assert_eq!(object.size, 321);
-        assert_eq!(object.content_type, ContentType::TextHtml);
-        assert_eq!(object.block_time, Some(1_700_000_000));
-
-        pending.drop_slot(SlotNumber(11));
-        assert!(pending.named_object(tape, b"index.html").is_none());
-    }
-
-    #[test]
-    fn named_object_uses_newest_certified_track_and_reverts_on_rollback() {
-        let pending = PendingTracks::new();
-        let tape = Address::new_unique();
-        let first_track = Address::new_unique();
-        let second_track = Address::new_unique();
-        let first = registered_blob(tape);
-        let mut second = registered_blob(tape);
-        second.track_number = TrackNumber(1);
-
-        pending.apply_register_with_object(
-            SlotNumber(10),
-            first_track,
-            first,
-            BlobData::Coded(sample_blob()),
-            Some(named(b"app.js", 10, ContentType::TextJavascript)),
-            None,
-        );
-        pending.apply_certify(SlotNumber(11), first_track);
-        pending.apply_register_with_object(
-            SlotNumber(12),
-            second_track,
-            second,
-            BlobData::Coded(sample_blob()),
-            Some(named(b"app.js", 20, ContentType::TextJavascript)),
-            None,
-        );
-        pending.apply_certify(SlotNumber(13), second_track);
-
-        let newest = pending
-            .named_object(tape, b"app.js")
-            .expect("replacement visible");
-        assert_eq!(newest.track_address, second_track);
-        assert_eq!(newest.size, 20);
-
-        pending.drop_slot(SlotNumber(13));
-        let reverted = pending
-            .named_object(tape, b"app.js")
-            .expect("older certified object visible");
-        assert_eq!(reverted.track_address, first_track);
-        assert_eq!(reverted.size, 10);
-    }
-
-    #[test]
-    fn certified_inline_named_object_is_immediately_visible() {
-        let pending = PendingTracks::new();
-        let tape = Address::new_unique();
-        let track = Address::new_unique();
-        let bytes = b"console.log('ready')".to_vec();
-        let mut state = registered_blob(tape);
-        state.kind = TrackKind::Inline as u64;
-        state.state = TrackState::Certified as u64;
-        state.size = StorageUnits::from_bytes(bytes.len() as u64);
-        state.value_hash = tape_crypto::hash::hash(&bytes);
-
-        pending.apply_register_with_object(
-            SlotNumber(20),
-            track,
-            state,
-            BlobData::Inline(bytes.clone()),
-            Some(named(
-                b"assets/app.js",
-                bytes.len() as u64,
-                ContentType::TextJavascript,
-            )),
-            None,
-        );
-
-        let object = pending
-            .named_object(tape, b"assets/app.js")
-            .expect("inline object visible at registration");
-        assert_eq!(object.track_address, track);
-        assert_eq!(object.size, bytes.len() as u64);
-        assert_eq!(object.etag, object_etag(&state, None));
     }
 }

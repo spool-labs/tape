@@ -23,12 +23,12 @@ airdrop = []
 tape-core = { workspace = true, features = ["solana"] }
 tape-api = { workspace = true, features = ["solana"] }
 
-mollusk-svm = "0.13.4"
-mollusk-svm-programs-token = "0.13.4"
+mollusk-svm = "0.15.0"
+mollusk-svm-programs-token = "0.15.0"
 pretty-hex = "0.4.1"
-solana-svm-log-collector = { version = "=4.0.0", features = ["agave-unstable-api"] }
+solana-svm-log-collector = { version = "=4.2.1", features = ["agave-unstable-api"] }
 
-bincode.workspace = true
+wincode = "0.5"
 solana-account.workspace = true
 solana-instruction.workspace = true
 solana-program-option.workspace = true

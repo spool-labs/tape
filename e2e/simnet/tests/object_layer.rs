@@ -2,10 +2,10 @@ use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::types::{BasisPoints, ContentType, StorageUnits};
+use tape_core::types::{BasisPoints, StorageUnits};
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
 use tape_sdk::keys::tape_key::TapeKey;
-use tape_sdk::object::{ListObjectsQuery, ObjectBatchItem};
+use tape_sdk::object::ListObjectsQuery;
 
 const TARGET_GROUPS: u64 = 1;
 
@@ -91,104 +91,6 @@ async fn object_layer_round_trip_inner() {
     let listed = wait_for_objects(&sdk, &bucket.address(), "photos/", &[], Duration::from_secs(10))
         .await;
     assert!(listed.is_empty(), "object list should be empty after delete");
-
-    // A mixed inline/coded batch retains caller order, certifies every coded
-    // track, and leaves all objects independently readable. The entry point
-    // is deliberately last, matching the site publication contract.
-    let script = b"console.log('batch');".to_vec();
-    let stylesheet = vec![b'x'; 4 * 1024];
-    let index = b"<html><script src=\"app.js\"></script></html>".to_vec();
-    let batch = vec![
-        ObjectBatchItem {
-            name: "app.js".into(),
-            data: script.clone(),
-            content_type: ContentType::TextJavascript,
-            plan: None,
-        },
-        ObjectBatchItem {
-            name: "style.css".into(),
-            data: stylesheet.clone(),
-            content_type: ContentType::TextCss,
-            plan: None,
-        },
-        ObjectBatchItem {
-            name: "index.html".into(),
-            data: index.clone(),
-            content_type: ContentType::TextHtml,
-            plan: None,
-        },
-    ];
-    let stored = sdk
-        .store_objects_batch(&bucket, batch)
-        .await
-        .expect("store ordered object batch");
-    let receipts = stored.receipts;
-    assert_eq!(
-        receipts
-            .iter()
-            .map(|receipt| receipt.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["app.js", "style.css", "index.html"],
-        "batch receipts must retain caller order"
-    );
-    let stylesheet_track = sdk
-        .get_track(&receipts[1].address)
-        .await
-        .expect("fetch stored coded stylesheet");
-    assert!(
-        !stylesheet_track.is_certified(),
-        "coded batch object should remain pending at the optimistic boundary"
-    );
-    sdk.certify_objects_batch(&bucket, stored.verification)
-        .await
-        .expect("certify stored object batch");
-    let stylesheet_track = sdk
-        .get_track(&receipts[1].address)
-        .await
-        .expect("fetch certified coded stylesheet");
-    assert!(
-        stylesheet_track.is_certified(),
-        "coded batch object should certify through its verification handle"
-    );
-    assert_eq!(
-        sdk.get_object(&bucket.address(), "app.js")
-            .await
-            .expect("read batch script"),
-        script
-    );
-    assert_eq!(
-        sdk.get_object(&bucket.address(), "style.css")
-            .await
-            .expect("read coded batch stylesheet"),
-        stylesheet
-    );
-    assert_eq!(
-        sdk.get_object(&bucket.address(), "index.html")
-            .await
-            .expect("read batch entry point"),
-        index
-    );
-
-    let fully_put = sdk
-        .put_objects_batch(
-            &bucket,
-            vec![ObjectBatchItem {
-                name: "complete.css".into(),
-                data: vec![b'y'; 4 * 1024],
-                content_type: ContentType::TextCss,
-                plan: None,
-            }],
-        )
-        .await
-        .expect("put fully verified object batch");
-    let complete_track = sdk
-        .get_track(&fully_put[0].address)
-        .await
-        .expect("fetch fully put coded object");
-    assert!(
-        complete_track.is_certified(),
-        "put_objects_batch should retain its fully verified contract"
-    );
 
     harness.stop_all().await.expect("stop runtimes");
 }

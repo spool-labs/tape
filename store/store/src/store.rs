@@ -330,6 +330,18 @@ pub trait Store: Send + Sync {
         Ok(())
     }
 
+    /// One bounded pass of the backend's whole maintenance plane.
+    ///
+    /// Wider than `reclaim_space`: compaction plus whatever else a backend only
+    /// does when driven, such as merging its runs and purging its graves. A
+    /// backend that runs its own housekeeping threads no-ops. One that does not
+    /// grows without bound until a caller ticks this, so the driver owes it a
+    /// timer. Each pass paces itself, so a caller sets a cadence and never a
+    /// budget.
+    fn maintain(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Best-effort disk usage per physical volume.
     ///
     /// Backends split across devices report one entry per volume. The default
@@ -340,6 +352,14 @@ pub trait Store: Send + Sync {
             used_bytes: self.actual_size_bytes()?,
             free_bytes: self.available_disk_bytes()?,
         }])
+    }
+
+    /// Settle everything the backend holds open, before a clean exit.
+    ///
+    /// The reel seals its tails here, which is what tells its next open from a
+    /// crash. Backends that settle on drop no-op.
+    fn close(&self) -> Result<()> {
+        Ok(())
     }
 }
 

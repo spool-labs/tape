@@ -76,6 +76,8 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
+    // Snapshot rows are stamped at slot zero, under every live round's cutoff.
+    context.sample_sets.backdated_write();
     persist_snapshot_metadata_to_store(context.store.as_ref(), epoch, decoded)
 }
 

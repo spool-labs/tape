@@ -142,18 +142,11 @@ fn merge_transactions_with_sources(
 }
 
 fn transaction_id(tx: &wire::Transaction) -> Result<Option<Txid>, ParseError> {
-    let Some(encoded) = tx.transaction.signatures.first() else {
+    // Already the signature's own bytes: base64 carries them as they are.
+    let Some(bytes) = tx.transaction.signatures.first() else {
         return Ok(None);
     };
-
-    let bytes = bs58::decode(encoded)
-        .into_vec()
-        .map_err(|_| ParseError::InvalidTxId)?;
-    let bytes: [u8; 64] = bytes
-        .try_into()
-        .map_err(|_| ParseError::InvalidTxId)?;
-
-    Ok(Some(Txid::from(bytes)))
+    Ok(Some(Txid::from(*bytes)))
 }
 
 /// Parse a single transaction for tapedrive instructions and events.
@@ -168,7 +161,7 @@ fn parse_transaction(
 
     // Solana resolves compiled-instruction indices against static keys, then
     // ALT-loaded writable, then ALT-loaded readonly. Order is load-bearing.
-    let mut resolved_keys: Vec<String> = raw_message.account_keys.clone();
+    let mut resolved_keys: Vec<Address> = raw_message.account_keys.clone();
     if let Some(loaded) = &meta.loaded_addresses {
         resolved_keys.extend(loaded.writable.iter().cloned());
         resolved_keys.extend(loaded.readonly.iter().cloned());
@@ -232,7 +225,7 @@ fn parse_log_messages(meta: &wire::Meta) -> Result<Vec<TapedriveEvent>, ParseErr
 
 /// Parse inner instructions from transaction metadata.
 fn parse_inner_instructions(
-    account_keys: &[String],
+    account_keys: &[Address],
     meta: &wire::Meta,
 ) -> Result<BTreeMap<u8, Vec<RawInstruction>>, ParseError> {
     let mut instructions = BTreeMap::new();
@@ -301,7 +294,8 @@ mod tests {
             num_reward_partitions: None,
         };
 
-        let result = parse(&block.into()).unwrap();
+        let block = wire::Block::try_from(block).unwrap();
+        let result = parse(&block).unwrap();
         assert!(result.raw_instructions.is_empty());
         assert!(result.events.is_empty());
         assert_eq!(result.tx_count, 0);
@@ -346,7 +340,8 @@ mod tests {
             num_reward_partitions: None,
         };
 
-        let parsed = parse(&block.into()).unwrap();
+        let block = wire::Block::try_from(block).unwrap();
+        let parsed = parse(&block).unwrap();
 
         assert_eq!(parsed.transactions.len(), 1);
         assert_eq!(parsed.transactions[0].tx_id, Some(Txid::from(signature)));
@@ -519,6 +514,7 @@ mod tests {
             recent_blockhash: SolanaHash::new_unique().to_string(),
             instructions,
             address_table_lookups: None,
+            transaction_config: None,
         }
     }
 
@@ -636,7 +632,8 @@ mod tests {
             version: None,
         };
 
-        let (instructions, events) = parse_transaction(&tx.into()).unwrap();
+        let tx = wire::Transaction::try_from(tx).unwrap();
+        let (instructions, events) = parse_transaction(&tx).unwrap();
 
         assert_eq!(instructions.len(), 2);
         match &instructions[0] {
@@ -773,7 +770,8 @@ mod tests {
             version: None,
         };
 
-        let (instructions, events) = parse_transaction(&tx.into()).unwrap();
+        let tx = wire::Transaction::try_from(tx).unwrap();
+        let (instructions, events) = parse_transaction(&tx).unwrap();
 
         assert_eq!(instructions.len(), 1);
         match &instructions[0] {
@@ -793,5 +791,177 @@ mod tests {
             }
             _ => panic!("expected merged inner TrackWrite"),
         }
+    }
+
+    #[test]
+    fn typed_conversion_rejects_malformed_account_keys() {
+        let valid_key = Pubkey::new_unique();
+        let mut message = raw_message(
+            &[valid_key],
+            vec![UiCompiledInstruction {
+                program_id_index: 1,
+                accounts: vec![],
+                data: String::new(),
+                stack_height: None,
+            }],
+        );
+        // If this entry were dropped, program_id_index 1 would silently point
+        // past the remaining key instead of preserving the original layout.
+        message.account_keys.insert(0, "not-a-public-key".to_owned());
+
+        let block = UiConfirmedBlock {
+            previous_blockhash: String::new(),
+            blockhash: String::new(),
+            parent_slot: 0,
+            transactions: Some(vec![EncodedTransactionWithStatusMeta {
+                transaction: EncodedTransaction::Json(UiTransaction {
+                    signatures: vec![],
+                    message: UiMessage::Raw(message),
+                }),
+                meta: None,
+                version: None,
+            }]),
+            signatures: None,
+            rewards: None,
+            block_time: None,
+            block_height: None,
+            num_reward_partitions: None,
+        };
+
+        assert!(wire::Block::try_from(block).is_err());
+    }
+
+    fn typed_block(
+        message: UiRawMessage,
+        signatures: Vec<String>,
+        meta: Option<UiTransactionStatusMeta>,
+    ) -> UiConfirmedBlock {
+        UiConfirmedBlock {
+            previous_blockhash: String::new(),
+            blockhash: String::new(),
+            parent_slot: 0,
+            transactions: Some(vec![EncodedTransactionWithStatusMeta {
+                transaction: EncodedTransaction::Json(UiTransaction {
+                    signatures,
+                    message: UiMessage::Raw(message),
+                }),
+                meta,
+                version: None,
+            }]),
+            signatures: None,
+            rewards: None,
+            block_time: None,
+            block_height: None,
+            num_reward_partitions: None,
+        }
+    }
+
+    fn typed_meta() -> UiTransactionStatusMeta {
+        UiTransactionStatusMeta {
+            err: None,
+            status: Ok(()),
+            fee: 0,
+            pre_balances: vec![],
+            post_balances: vec![],
+            inner_instructions: OptionSerializer::None,
+            log_messages: OptionSerializer::None,
+            pre_token_balances: OptionSerializer::None,
+            post_token_balances: OptionSerializer::None,
+            rewards: OptionSerializer::None,
+            loaded_addresses: OptionSerializer::None,
+            return_data: OptionSerializer::None,
+            compute_units_consumed: OptionSerializer::None,
+            cost_units: OptionSerializer::None,
+        }
+    }
+
+    #[test]
+    fn typed_conversion_rejects_malformed_loaded_addresses() {
+        let valid_key = Pubkey::new_unique();
+        let mut meta = typed_meta();
+        meta.loaded_addresses = OptionSerializer::Some(UiLoadedAddresses {
+            writable: vec!["not-a-public-key".to_owned()],
+            readonly: vec![],
+        });
+        let block = typed_block(raw_message(&[valid_key], vec![]), vec![], Some(meta));
+
+        assert!(wire::Block::try_from(block).is_err());
+    }
+
+    #[test]
+    fn typed_conversion_rejects_out_of_range_indices() {
+        let valid_key = Pubkey::new_unique();
+        let program_out_of_range = typed_block(
+            raw_message(
+                &[valid_key],
+                vec![UiCompiledInstruction {
+                    program_id_index: 1,
+                    accounts: vec![],
+                    data: String::new(),
+                    stack_height: None,
+                }],
+            ),
+            vec![],
+            None,
+        );
+        assert!(wire::Block::try_from(program_out_of_range).is_err());
+
+        let account_out_of_range = typed_block(
+            raw_message(
+                &[valid_key],
+                vec![UiCompiledInstruction {
+                    program_id_index: 0,
+                    accounts: vec![1],
+                    data: String::new(),
+                    stack_height: None,
+                }],
+            ),
+            vec![],
+            None,
+        );
+        assert!(wire::Block::try_from(account_out_of_range).is_err());
+    }
+
+    #[test]
+    fn typed_conversion_rejects_malformed_signature_and_instruction_data() {
+        let valid_key = Pubkey::new_unique();
+        let malformed_signature = typed_block(
+            raw_message(&[valid_key], vec![]),
+            vec!["not-a-signature".to_owned()],
+            None,
+        );
+        assert!(wire::Block::try_from(malformed_signature).is_err());
+
+        let malformed_outer = typed_block(
+            raw_message(
+                &[valid_key],
+                vec![UiCompiledInstruction {
+                    program_id_index: 0,
+                    accounts: vec![],
+                    data: "0".to_owned(),
+                    stack_height: None,
+                }],
+            ),
+            vec![],
+            None,
+        );
+        assert!(wire::Block::try_from(malformed_outer).is_err());
+
+        let mut meta = typed_meta();
+        meta.inner_instructions = OptionSerializer::Some(vec![UiInnerInstructions {
+            index: 0,
+            instructions: vec![UiInstruction::Compiled(UiCompiledInstruction {
+                program_id_index: 0,
+                accounts: vec![],
+                data: "0".to_owned(),
+                stack_height: None,
+            })],
+        }]);
+        let malformed_inner = typed_block(
+            raw_message(&[valid_key], vec![]),
+            vec![],
+            Some(meta),
+        );
+        assert!(wire::Block::try_from(malformed_inner).is_err());
     }
 }

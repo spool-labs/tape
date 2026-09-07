@@ -640,10 +640,9 @@ impl Api for HttpApi {
             epoch: req.epoch,
             group: req.group,
             round: req.round,
-            spool: req.spool,
             block: req.block,
             signer: req.signer,
-            signature: req.signature,
+            attests: req.attests.clone(),
         };
         let body =
             wincode::serialize(&wire).map_err(|e| ApiError::Serialization(e.to_string()))?;

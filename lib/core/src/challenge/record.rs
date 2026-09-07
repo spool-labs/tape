@@ -21,12 +21,33 @@ pub const MIN_OPPORTUNITIES: u64 = 4;
 /// Success rate below which a peer with enough opportunities has failed the rule.
 pub const RATE_FLOOR: BasisPoints = BasisPoints(5_000);
 
-/// Consecutive misses that fire the rule regardless of rate.
-///
-/// The fastest whole-node detection, at three rounds. Lower risks honest noise;
-/// the measured honest certificate rate at a two-slot deadline is 100%, so the
-/// noise this has to tolerate is zero.
-pub const MAX_CONSECUTIVE_MISSES: u64 = 3;
+/// Consecutive misses that fire the rule regardless of rate; devnet honest
+/// peers answer 87-99%, so a shorter run fires on a bad minute
+pub const MAX_CONSECUTIVE_MISSES: u64 = 20;
+
+/// The run threshold for sub-minute test epochs, where 20 rounds outruns the harness
+const TEST_RUN_MISSES: u64 = 3;
+
+/// Epochs at or under this many seconds judge on the test threshold
+const TEST_EPOCH_SECS: u64 = 30;
+
+/// The threshold in force, locked on the first real epoch duration seen
+static RUN_MISSES: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+/// Derives the run threshold from the chain's epoch duration, once
+pub fn set_run_threshold(epoch_secs: u64) {
+    if epoch_secs > 0 {
+        let _ = RUN_MISSES.set(if epoch_secs <= TEST_EPOCH_SECS {
+            TEST_RUN_MISSES
+        } else {
+            MAX_CONSECUTIVE_MISSES
+        });
+    }
+}
+
+fn run_threshold() -> u64 {
+    *RUN_MISSES.get().unwrap_or(&MAX_CONSECUTIVE_MISSES)
+}
 
 /// What folding one outcome did to the record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,7 +184,7 @@ impl PeerRecord {
     /// clearing it needs a success the peer has no chance to earn once the rounds
     /// have stopped.
     pub fn run_fires(&self) -> bool {
-        self.consecutive_misses >= MAX_CONSECUTIVE_MISSES
+        self.consecutive_misses >= run_threshold()
     }
 
     /// Whether the lifetime rate has fallen through the floor.
@@ -320,10 +341,10 @@ mod tests {
     }
 
     #[test]
-    fn a_short_run_is_unproven() {
-        let short = spool(MAX_CONSECUTIVE_MISSES, 0, MAX_CONSECUTIVE_MISSES);
-        assert!(short.run_fires());
+    fn too_few_rounds_is_unproven() {
+        let short = spool(MIN_OPPORTUNITIES - 1, 0, MIN_OPPORTUNITIES - 1);
         assert!(!short.rate_fires(), "too few rounds for the rate arm");
+        assert!(!short.run_fires(), "too few rounds to be a run");
         assert_eq!(node_verdict(&[short]), NodeVerdict::Unproven);
     }
 
@@ -374,7 +395,7 @@ mod tests {
         for round in 0..100 {
             record.record(EpochNumber(1), RoundNumber(round), true, None);
         }
-        for round in 100..103 {
+        for round in 100..100 + MAX_CONSECUTIVE_MISSES {
             record.record(EpochNumber(1), RoundNumber(round), false, None);
         }
 
@@ -467,12 +488,13 @@ mod tests {
         let mut record = run(&[true], 40);
         assert!(!record.eviction_fires());
 
-        for round in 40..42 {
+        let last = 40 + MAX_CONSECUTIVE_MISSES - 1;
+        for round in 40..last {
             record.record(EpochNumber(1), RoundNumber(round), false, None);
             assert!(!record.eviction_fires(), "fired after {} misses", round - 39);
         }
-        record.record(EpochNumber(1), RoundNumber(42), false, None);
-        assert!(record.eviction_fires(), "three misses in a row should fire");
+        record.record(EpochNumber(1), RoundNumber(last), false, None);
+        assert!(record.eviction_fires(), "a full run of misses should fire");
     }
 
     #[test]
@@ -487,14 +509,14 @@ mod tests {
     #[test]
     fn arms_apart() {
         let mut stopped = run(&[true], 40);
-        for round in 40..43 {
+        for round in 40..40 + MAX_CONSECUTIVE_MISSES {
             stopped.record(EpochNumber(1), RoundNumber(round), false, None);
         }
         assert!(stopped.run_fires());
         assert!(!stopped.rate_fires(), "a stopped peer's lifetime rate is still good");
 
         let erratic = run(&[true, false, false], 60);
-        assert!(!erratic.run_fires(), "one answer in three never reaches three in a row");
+        assert!(!erratic.run_fires(), "one answer in three never reaches a full run");
         assert!(erratic.rate_fires());
     }
 
@@ -602,10 +624,11 @@ mod tests {
     fn across_epochs() {
         let mut record = PeerRecord::default();
         record.record(EpochNumber(1), RoundNumber(9), false, None);
-        record.record(EpochNumber(2), RoundNumber(0), false, None);
-        record.record(EpochNumber(2), RoundNumber(1), false, None);
+        for round in 0..MAX_CONSECUTIVE_MISSES - 1 {
+            record.record(EpochNumber(2), RoundNumber(round), false, None);
+        }
 
-        assert_eq!(record.consecutive_misses, 3);
+        assert_eq!(record.consecutive_misses, MAX_CONSECUTIVE_MISSES);
         assert!(record.eviction_fires());
     }
 }
