@@ -207,6 +207,8 @@ pub struct AttestReq {
     pub round: RoundNumber,
     pub block: Hash,
     pub signer: Address,
+    pub digest: Hash,
+    pub digest_signature: BlsSignature,
     /// Every spool this signer has verified for the round so far.
     pub attests: Vec<SpoolAttestation>,
 }

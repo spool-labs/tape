@@ -840,11 +840,15 @@ fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
         opened: counters.opened.load(Ordering::Relaxed),
         settled_certified: counters.settled_certified.load(Ordering::Relaxed),
         settled_missed: counters.settled_missed.load(Ordering::Relaxed),
-        answers_refused: counters.answers_refused.load(Ordering::Relaxed),
+        answers_refused: counters.refusals.total(),
         voided: counters.voided.load(Ordering::Relaxed),
         discarded: counters.discarded.load(Ordering::Relaxed),
         own_certified: counters.own_certified.load(Ordering::Relaxed),
         own_missed: counters.own_missed.load(Ordering::Relaxed),
+        realigns: counters.realigns.load(Ordering::Relaxed),
+        realign_failures: counters.realign_failures.load(Ordering::Relaxed),
+        divergence_observed: counters.divergence_observed.load(Ordering::Relaxed),
+        divergence_signers: context.epoch_digest.disagreeing() as u64,
     }
 }
 

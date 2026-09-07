@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::sync::atomic::Ordering;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -186,6 +187,23 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         bootstrap_current_slot: bootstrap.current_slot,
         bootstrap_target_slot: bootstrap.target_slot,
         fee_payer_lamports: state.context.fee_payer_balance().map(|b| b.0),
+        challenge_refusals: state.context.challenge_counters.refusals.by_reason(),
+        challenge_realigns: state
+            .context
+            .challenge_counters
+            .realigns
+            .load(Ordering::Relaxed),
+        challenge_realign_failures: state
+            .context
+            .challenge_counters
+            .realign_failures
+            .load(Ordering::Relaxed),
+        challenge_divergence_observed: state
+            .context
+            .challenge_counters
+            .divergence_observed
+            .load(Ordering::Relaxed),
+        challenge_divergence_signers: state.context.epoch_digest.disagreeing() as u64,
         restarts: crate::core::restarts::count(),
     };
 

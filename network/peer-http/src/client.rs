@@ -642,6 +642,8 @@ impl Api for HttpApi {
             round: req.round,
             block: req.block,
             signer: req.signer,
+            digest: req.digest,
+            digest_signature: req.digest_signature,
             attests: req.attests.clone(),
         };
         let body =

@@ -3,8 +3,10 @@
 
 use std::time::Duration;
 
+use bytemuck::Zeroable;
 use rand::thread_rng;
 use reqwest::StatusCode;
+use tape_core::bls::BlsSignature;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, GroupIndex, RoundNumber};
 use tape_crypto::ed25519::Keypair as EdKeypair;
@@ -227,6 +229,8 @@ async fn peer_only_routes_reject_non_peers_inner() {
         round: RoundNumber(0),
         block: Hash([0; 32]),
         signer: target.context().node_address(),
+        digest: Hash::default(),
+        digest_signature: BlsSignature::zeroed(),
         attests: Vec::new(),
     };
     let peer_attest = peer

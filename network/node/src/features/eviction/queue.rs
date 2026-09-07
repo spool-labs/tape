@@ -33,6 +33,15 @@ impl EvictionQueue {
         self.lock().remove(node);
     }
 
+    /// Drop the targets this node opened itself.
+    ///
+    /// Only the targets it decided itself: one opened by a proposal already on chain
+    /// is somebody else's evidence and this node's pending vote on it, and
+    /// dropping that would abandon the vote rather than withdraw an accusation.
+    pub fn clear_records(&self) {
+        self.lock().retain(|_, (_, opened)| *opened != Opened::Record);
+    }
+
     /// Drop every target whose voting epoch has passed.
     pub fn retain_epoch(&self, epoch: EpochNumber) {
         self.lock().retain(|_, (opened, _)| *opened >= epoch);

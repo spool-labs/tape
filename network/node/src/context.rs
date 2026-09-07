@@ -1,9 +1,10 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch::Receiver;
+use tokio_util::sync::CancellationToken;
 
 use peer_manager::{PeerManager, PeerManagerError};
 use peer_http::HttpApi;
@@ -38,8 +39,10 @@ use crate::features::challenge::sample_cache::SampleSets;
 use crate::features::challenge::schedules::Schedules;
 use crate::features::challenge::{RoundBuffer, TraceRing};
 use crate::features::challenge::counters::ChallengeCounters;
+use crate::features::challenge::tripwire::Tripwire;
 use crate::features::eviction::EvictionQueue;
 use crate::features::http::admission::AdmissionLimiter;
+use crate::features::state::digest::DigestWatch;
 
 /// The store the node was built against, the reel unless `rocks` was asked for
 #[cfg(not(feature = "rocks"))]
@@ -71,6 +74,12 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     certify_stage: std::sync::OnceLock<std::sync::mpsc::Sender<CertifyJob>>,
     verify_stage: std::sync::OnceLock<std::sync::mpsc::Sender<VerifyRequest>>,
     pub challenge_counters: ChallengeCounters,
+    pub challenge_tripwire: Arc<Tripwire>,
+    pub epoch_digest: Arc<DigestWatch>,
+
+    // The token of the run currently under way. Work started off a request path
+    // takes a clone, so shutdown winds it up with everything else.
+    shutdown: Mutex<CancellationToken>,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
 
@@ -97,7 +106,9 @@ pub type CertifyJob = Box<dyn FnOnce() + Send>;
 pub struct VerifyRequest {
     pub answer: tape_core::challenge::ProofOfAccess,
     pub protocol: Arc<ProtocolState>,
-    pub reply: tokio::sync::oneshot::Sender<bool>,
+    pub reply: tokio::sync::oneshot::Sender<
+        Result<(), crate::features::challenge::refusal::RefusalReason>,
+    >,
 }
 
 /// Certify worker threads; two clear a round inside one cadence
@@ -174,11 +185,16 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
     fn verify_clump(&self, clump: Vec<VerifyRequest>) {
         use crate::features::challenge::audit::answer_signer;
 
-        let mut verdict = vec![false; clump.len()];
+        use crate::features::challenge::refusal::RefusalReason;
+
+        let mut verdict = vec![Err(RefusalReason::BadSignature); clump.len()];
         let mut batch = Vec::with_capacity(clump.len());
         for (index, request) in clump.iter().enumerate() {
-            if let Some(pubkey) = answer_signer(self, &request.protocol, &request.answer, true) {
-                batch.push((index, request.answer.message().to_bytes(), pubkey, request.answer.signature));
+            match answer_signer(self, &request.protocol, &request.answer, true) {
+                Ok(pubkey) => {
+                    batch.push((index, request.answer.message().to_bytes(), pubkey, request.answer.signature));
+                }
+                Err(reason) => verdict[index] = Err(reason),
             }
         }
 
@@ -189,20 +205,20 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
                 .collect();
             if BlsSignature::verify_batch(&items).is_ok() {
                 for (index, ..) in &batch {
-                    verdict[*index] = true;
+                    verdict[*index] = Ok(());
                 }
             } else {
                 // The batch names no member, so the culprit is found by hand.
                 for (index, message, pubkey, signature) in &batch {
                     verdict[*index] = signature
                         .verify_aggregate(message, core::slice::from_ref(pubkey))
-                        .is_ok();
+                        .map_err(|_| RefusalReason::BadSignature);
                 }
             }
         }
 
-        for (request, ok) in clump.into_iter().zip(verdict) {
-            let _ = request.reply.send(ok);
+        for (request, result) in clump.into_iter().zip(verdict) {
+            let _ = request.reply.send(result);
         }
     }
 
@@ -250,7 +266,30 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         self.state().phase()
     }
 
+    /// The current run's shutdown token.
+    pub fn shutdown(&self) -> CancellationToken {
+        self.lock_shutdown().clone()
+    }
+
+    /// Hands out a fresh token for a run that is starting.
+    ///
+    /// A cancelled token cannot be un-cancelled, so a context that is stopped
+    /// and started again needs a new one rather than the one its last run left
+    /// behind.
+    pub fn rearm_shutdown(&self) -> CancellationToken {
+        let token = CancellationToken::new();
+        *self.lock_shutdown() = token.clone();
+        token
+    }
+
+    fn lock_shutdown(&self) -> MutexGuard<'_, CancellationToken> {
+        self.shutdown.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub fn set_state(&self, state: ProtocolState) -> Result<(), NodeError> {
+        // The digest is cached under the epoch, and a join or an eviction
+        // rewrites what it covers without moving the epoch.
+        self.epoch_digest.invalidate();
         // sub-minute test epochs judge runs on the short threshold
         tape_core::challenge::record::set_run_threshold(
             state.current.epoch.preferences.epoch_duration.0,
@@ -424,6 +463,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         let node_id = Self::resolve_node_id(&self.rpc, &self.keypair).await?;
         let (node_address, _) = node_pda(self.keypair.address());
         let admission = Arc::new(AdmissionLimiter::new(self.config.http.admission.clone()));
+        let challenge_tripwire = Arc::new(Tripwire::new(
+            self.config.challenge.realign_after_blank_rounds,
+        ));
 
         self.store
             .set_node_id(node_id)
@@ -459,6 +501,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             certify_stage: std::sync::OnceLock::new(),
             verify_stage: std::sync::OnceLock::new(),
             challenge_counters: ChallengeCounters::default(),
+            challenge_tripwire,
+            epoch_digest: Arc::new(DigestWatch::default()),
+            shutdown: Mutex::new(CancellationToken::new()),
             metrics: NodeMetrics,
             atlas: self.atlas,
             reclaim_pending: AtomicBool::new(false),
@@ -499,6 +544,32 @@ mod tests {
         assert!(volume_below_threshold(&volumes, 1_000));
         assert!(!volume_below_threshold(&volumes, 400));
         assert!(!volume_below_threshold(&[volume(StoreVolume::Bulk, None)], 1_000));
+    }
+
+    // a cancelled token cannot be un-cancelled, so a context that is stopped and
+    // started again has to be handed a new one or the second run shuts itself
+    // down before it begins
+    #[tokio::test]
+    async fn shutdown_rearms_between_runs() {
+        let ctx = crate::harness::NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0);
+
+        let first = ctx.rearm_shutdown();
+        assert!(!first.is_cancelled());
+        first.cancel();
+        assert!(ctx.shutdown().is_cancelled(), "the run's token is the context's");
+
+        let second = ctx.rearm_shutdown();
+        assert!(!second.is_cancelled(), "the second run started already cancelled");
+        assert!(!ctx.shutdown().is_cancelled());
+
+        // And the old handle stays cancelled, so work from the first run winds up.
+        assert!(first.is_cancelled());
     }
 
     #[tokio::test]

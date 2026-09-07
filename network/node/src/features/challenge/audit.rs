@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
 use crate::features::challenge::attest_queue::BatchKey;
-
-
 use futures::future::join_all;
 use rpc::Rpc;
 use store::Store;
@@ -29,6 +27,7 @@ use tokio::time::timeout;
 use tracing::{debug, trace};
 
 use crate::context::NodeContext;
+use crate::features::challenge::refusal::RefusalReason;
 use crate::features::challenge::rounds::RoundKey;
 use crate::features::challenge::trace::MarkKind;
 
@@ -229,13 +228,10 @@ pub fn accept_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &ProtocolState,
     answer: &ProofOfAccess,
     in_time: bool,
-) -> bool {
-    // Every refusal below costs the answering owner a miss it may not have
-    // earned, so each one says which of them it was.
+) -> Result<(), RefusalReason> {
     let Some((expected, value_hash)) = expected_sample(context, &round_of(answer), answer.spool)
     else {
-        debug!(spool = %answer.spool, "challenge: no question of our own to check against");
-        return false;
+        return Err(RefusalReason::NoLocalQuestion);
     };
 
     // What the answer is checked against comes from the row the draw came from
@@ -246,28 +242,19 @@ pub fn accept_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let registered = match (expected.leaf, &coded) {
         (SampleLeaf::Coded { .. }, Some(BlobData::Coded(encoding))) => Registered::Coded(encoding),
         (SampleLeaf::Inline, _) => Registered::Inline(value_hash),
-        _ => {
-            debug!(spool = %answer.spool, track = %expected.track, "challenge: track encoding not held");
-            return false;
-        }
+        _ => return Err(RefusalReason::EncodingNotHeld),
     };
 
     let Some(owner) = state.spool_owner(answer.spool) else {
-        debug!(spool = %answer.spool, "challenge: spool has no owner in our view");
-        return false;
+        return Err(RefusalReason::UnknownOwner);
     };
     let Some(peer) = state.peer(owner) else {
-        debug!(node = %owner, spool = %answer.spool, "challenge: owner has no registered key");
-        return false;
+        return Err(RefusalReason::UnknownKey);
     };
 
-    match answer.verify(&expected, registered, &peer.bls_pubkey, in_time) {
-        Ok(()) => true,
-        Err(rejection) => {
-            debug!(node = %owner, spool = %answer.spool, ?rejection, "challenge: answer refused");
-            false
-        }
-    }
+    answer
+        .verify(&expected, registered, &peer.bls_pubkey, in_time)
+        .map_err(RefusalReason::from)
 }
 
 /// Everything `accept_answer` checks except the signature, plus the key that
@@ -280,24 +267,22 @@ pub fn answer_signer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &ProtocolState,
     answer: &ProofOfAccess,
     in_time: bool,
-) -> Option<BlsPubkey> {
-    let (expected, value_hash) = expected_sample(context, &round_of(answer), answer.spool)?;
+) -> Result<BlsPubkey, RefusalReason> {
+    let (expected, value_hash) = expected_sample(context, &round_of(answer), answer.spool)
+        .ok_or(RefusalReason::NoLocalQuestion)?;
     let coded = context.store.get_track_data(expected.track).ok().flatten();
     let registered = match (expected.leaf, &coded) {
         (SampleLeaf::Coded { .. }, Some(BlobData::Coded(encoding))) => Registered::Coded(encoding),
         (SampleLeaf::Inline, _) => Registered::Inline(value_hash),
-        _ => return None,
+        _ => return Err(RefusalReason::EncodingNotHeld),
     };
 
-    let owner = state.spool_owner(answer.spool)?;
-    let peer = state.peer(owner)?;
+    let owner = state.spool_owner(answer.spool).ok_or(RefusalReason::UnknownOwner)?;
+    let peer = state.peer(owner).ok_or(RefusalReason::UnknownKey)?;
     answer
         .verify_shape(&expected, registered, in_time)
-        .inspect_err(|rejection| {
-            debug!(node = %owner, spool = %answer.spool, ?rejection, "challenge: answer refused");
-        })
-        .ok()?;
-    Some(peer.bls_pubkey)
+        .map_err(RefusalReason::from)?;
+    Ok(peer.bls_pubkey)
 }
 
 pub fn spawn_relay_and_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
@@ -324,6 +309,9 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
     let Ok(signature) = context.bls_sign(&attest_message(&round, answer.spool).to_bytes()) else {
         return;
     };
+    let (digest, digest_signature) = context
+        .epoch_digest
+        .signed(state, me, |message| context.bls_sign(message).ok());
     context
         .round_buffer
         .accept_attestation(round.key(answer.spool), me, signature);
@@ -391,6 +379,8 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
                         round: batch.round,
                         block: batch.block,
                         signer: me,
+                        digest,
+                        digest_signature,
                         attests: fresh
                             .into_iter()
                             .map(|(spool, signature)| SpoolAttestation { spool, signature })

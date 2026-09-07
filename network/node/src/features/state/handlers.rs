@@ -18,8 +18,8 @@ use tape_core::types::coin::TAPE;
 use tape_core::types::{BitmapRead, BitmapWrite, EpochNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
-use tape_protocol::{fetch::fetch_state, Api};
-use tape_retry::{retry_if, RetryConfig};
+use tape_protocol::Api;
+use tape_retry::RetryConfig;
 #[cfg(feature = "metrics")]
 use tape_store::ops::MetaOps;
 use tokio_util::sync::CancellationToken;
@@ -28,6 +28,7 @@ use tracing::{debug, info, warn};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::state::events::{apply_eviction_event, apply_join_committee_event};
+use crate::features::state::realign::{EpochFloor, refetch_state};
 use crate::features::vote::all_vote_groups_signed;
 
 pub struct ProtocolStateHandlers<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -50,33 +51,15 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
 
     pub async fn handle_advance_epoch(&self, epoch: EpochNumber) -> Result<(), NodeError> {
         let previous_epoch = self.context.state().epoch();
-        let context = self.context.clone();
 
-        let state = retry_if(
-            RetryConfig::infinite(),
+        refetch_state(
+            &self.context,
             Some(&self.cancel),
-            move || {
-                let context = context.clone();
-                async move {
-                    let state = fetch_state(&context.rpc).await
-                        .map_err(NodeError::from)?;
-
-                    if state.epoch() < epoch {
-                        return Err(NodeError::StateUnavailable { expected_epoch: epoch });
-                    }
-
-                    Ok(state)
-                }
-            },
-            |error| match error {
-                NodeError::Rpc(error) => error.is_retriable() && !error.is_skipped_slot(),
-                NodeError::StateUnavailable { expected_epoch } => *expected_epoch == epoch,
-                _ => false,
-            },
+            EpochFloor::Fixed(epoch),
+            RetryConfig::infinite(),
         )
         .await?;
 
-        self.context.set_state(state)?;
         if epoch > previous_epoch {
             self.context.metrics.inc_epoch_transitions();
             #[cfg(feature = "metrics")]
@@ -91,10 +74,6 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
                     let _ = self.context.store.set_observe_lifetime(&bytes);
                 }
             }
-        }
-
-        if let Err(error) = self.context.refresh_peers().await {
-            warn!(error = %error, epoch = epoch.0, "peer refresh failed after epoch advance");
         }
 
         info!(epoch = epoch.0, "published protocol state");

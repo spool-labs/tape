@@ -12,11 +12,12 @@ use tape_core::erasure::group_for_spool;
 use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex};
 use tape_crypto::Address;
+use tape_crypto::hash::Hash;
 use tape_protocol::api::ProofOfAccessReq;
 use tape_protocol::{Api, ProtocolState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
@@ -29,6 +30,7 @@ use crate::features::challenge::audit::{
 use crate::features::challenge::fold::fold_outcome;
 use crate::features::challenge::trace::{MarkKind, TraceClose};
 use crate::features::eviction::queue::Opened;
+use crate::features::state::realign::{RealignCause, spawn_realign};
 
 /// Peers an answer goes to at once, bounded to stay under their rate limits.
 const BROADCAST_CONCURRENCY: usize = 8;
@@ -48,6 +50,9 @@ struct OpenRound {
     opened_slot: SlotNumber,
     confirmed: bool,
     askable: bool,
+    // Opened while the node was re-reading its view, so its evidence was
+    // gathered against a view the node had already stopped trusting.
+    is_suspect: bool,
 }
 
 /// One spool a round put a question to.
@@ -168,7 +173,7 @@ where
             return Ok(());
         }
 
-        // A spool this node no longer holds is one it can no longer judge, so
+        // A spool this node no longer holds is one it can no longer settle, so
         // its group's pending round is dropped rather than settled.
         let held: Vec<GroupIndex> = mine.iter().map(|spool| group_for_spool(*spool)).collect();
         self.open_rounds.retain(|group, _| held.contains(group));
@@ -201,7 +206,8 @@ where
                 .then(|| pending.pop_front())
                 .flatten();
             if let Some(stale) = stale {
-                self.settle_round(&stale);
+                let outcome = self.settle_round(&stale);
+                self.observe_outcome(group, outcome);
             }
 
             self.open_rounds.entry(group).or_default().push_back(OpenRound {
@@ -217,6 +223,7 @@ where
                 opened_slot: block.slot,
                 confirmed: false,
                 askable: has_sample_set(&self.context, &round),
+                is_suspect: self.context.challenge_tripwire.is_realigning(),
             });
             self.first_round.entry(epoch).or_insert(number);
             // Two epochs is everything a settling round can reach back to.
@@ -274,12 +281,14 @@ where
         }
         self.open_rounds.retain(|_, pending| !pending.is_empty());
         for open in &ready {
-            self.settle_round(open);
+            let group = open.round.group;
+            let outcome = self.settle_round(open);
+            self.observe_outcome(group, outcome);
         }
     }
 
     /// Judges one round: what the group made of every spool it was asked about.
-    fn settle_round(&mut self, open: &OpenRound) {
+    fn settle_round(&mut self, open: &OpenRound) -> Option<bool> {
 
         // A round whose entropy block never confirmed is void. Nobody owed an
         // answer on a branch that lost, so nobody is charged for one.
@@ -290,7 +299,19 @@ where
                 .fetch_add(1, Ordering::Relaxed);
             self.close_trace(&open.round, TraceClose::Unconfirmed);
             debug!(group = open.round.group.0, "challenge: round voided, entropy block never confirmed");
-            return;
+            return None;
+        }
+
+        // Evidence opened under a suspect view, or still pending when another
+        // group trips the view, cannot safely be used to judge an owner.
+        if open.is_suspect || self.context.challenge_tripwire.is_realigning() {
+            self.context
+                .challenge_counters
+                .voided
+                .fetch_add(1, Ordering::Relaxed);
+            self.close_trace(&open.round, TraceClose::Nothing);
+            debug!(group = open.round.group.0, "challenge: round voided while realigning");
+            return None;
         }
 
         // Nor did anyone owe an answer to a question the group had no data to
@@ -303,10 +324,12 @@ where
                 .fetch_add(1, Ordering::Relaxed);
             self.close_trace(&open.round, TraceClose::Nothing);
             debug!(group = open.round.group.0, "challenge: round voided, group had an empty sample set");
-            return;
+            return None;
         }
 
         let round = &open.round;
+        let mut weighed = 0u64;
+        let mut stood = 0u64;
 
         let first = self.first_round.get(&round.epoch).copied().unwrap_or(round.round);
         let grace = first.as_u64() + HANDOVER_GRACE_ROUNDS;
@@ -356,8 +379,10 @@ where
             // by the time its round settles, and counting the buffer's silence
             // reports a miss against a peer this node already accepted.
             let stands = self.record(owner, spool, round.epoch, round.round, certified);
+            weighed += 1;
             if stands {
                 counters.settled_certified.fetch_add(1, Ordering::Relaxed);
+                stood += 1;
             } else {
                 counters.settled_missed.fetch_add(1, Ordering::Relaxed);
             }
@@ -371,6 +396,7 @@ where
         }
 
         self.close_trace(round, TraceClose::Settled);
+        (weighed > 0).then_some(stood > 0)
     }
 
     /// Records one mark against the round's trace.
@@ -401,7 +427,41 @@ where
         self.context.round_traces.close(round.epoch, round.round, round.group, close);
     }
 
-    fn on_rolled(&mut self, hashes: &[tape_crypto::hash::Hash]) {
+    /// Feeds one settled group round into the view-drift tripwire.
+    fn observe_outcome(&mut self, group: GroupIndex, outcome: Option<bool>) {
+        match outcome {
+            None => {}
+            Some(true) => self.context.challenge_tripwire.record_clean_round(group),
+            Some(false) => self.on_blank_round(group),
+        }
+    }
+
+    /// Suspends and re-reads state once a group's run of blank rounds is long
+    /// enough to say the view is wrong rather than the group.
+    fn on_blank_round(&mut self, group: GroupIndex) {
+        let Some(delay) = self.context.challenge_tripwire.record_blank_round(group) else {
+            return;
+        };
+
+        warn!(group = group.0, "challenge: nothing stood for a run of rounds, realigning");
+
+        // Every target queued so far was weighed against the view now under
+        // suspicion, and the run arm fires at three misses while this fires
+        // later. Drop them rather than propose an eviction off a view the node
+        // has already stopped trusting.
+        self.context.eviction_queue.clear_records();
+        // Rounds already open were derived from the same suspect view. Mark
+        // them before the asynchronous refresh can complete so none are judged
+        // after the suspension lifts.
+        for pending in self.open_rounds.values_mut() {
+            for open in pending {
+                open.is_suspect = true;
+            }
+        }
+        spawn_realign(&self.context, delay, RealignCause::Tripwire);
+    }
+
+    fn on_rolled(&mut self, hashes: &[Hash]) {
         for hash in hashes {
             self.context.round_buffer.discard_block(*hash);
             self.context.attest_queue.discard_block(*hash);
@@ -424,7 +484,7 @@ where
         }
     }
 
-    fn on_confirmed(&mut self, hash: tape_crypto::hash::Hash) {
+    fn on_confirmed(&mut self, hash: Hash) {
         for open in self.open_rounds.values_mut().flatten() {
             if open.round.block == hash {
                 open.confirmed = true;
@@ -448,10 +508,12 @@ where
         self.context.round_buffer.accept_answer(round.key(mine), answer.clone());
         self.mark_trace(round, mine, MarkKind::AnswerOut, Some(self.context.node_address()));
 
-        // Attest to it as well. The threshold counts this node among the
-        // group's members, so leaving its own signature out costs a position
-        // the quorum cannot spare. No relaying: the broadcast below reaches
-        // everyone already.
+        // Attest to it as well, suspended or not. The threshold counts this node
+        // among the group's members, so leaving its own signature out costs a
+        // position the quorum cannot spare, and the position it costs is in its
+        // own round. The message names the round and nothing about the
+        // committee, so it stands whatever the view turns out to be. No
+        // relaying: the broadcast below reaches everyone already.
         spawn_attest(&self.context, state, &answer, false);
 
         let members = group_members(state, round.group);
@@ -541,6 +603,8 @@ mod tests {
     use tape_core::erasure::GROUP_SIZE;
 
     use super::*;
+    use crate::core::ingest::IngestState;
+    use crate::features::block::ingestor::ParsedBlock;
     use crate::harness::{NodeHarness, TestContext};
 
     async fn harness() -> NodeHarness {
@@ -554,6 +618,157 @@ mod tests {
 
     fn address_of(harness: &NodeHarness, index: usize) -> Address {
         Address::from(harness.node(index).node_address.to_bytes())
+    }
+
+    /// A context at the tip, in an active epoch, on a grid that holds rounds.
+    async fn ready_context() -> TestContext {
+        let harness = harness().await;
+        let ctx: TestContext = harness.ctx_for(0);
+
+        let mut state = (*ctx.state()).clone();
+        state.current.epoch.start_slot = SlotNumber(13_000);
+        let mut previous = state.current.clone();
+        previous.epoch.id = EpochNumber(state.epoch().as_u64().saturating_sub(1));
+        previous.epoch.start_slot = SlotNumber(4_000);
+        state.previous = Some(previous);
+        state.current.epoch.state.phase = EpochPhase::Active as u64;
+        ctx.set_state(state).expect("publish");
+        ctx.ingest.publish(IngestState::AtTip);
+
+        ctx
+    }
+
+    fn schedule(ctx: &TestContext) -> tape_core::challenge::schedule::Schedule {
+        let state = ctx.state();
+        ctx.schedules.observe(&state, state.current.epoch.start_slot);
+        ctx.schedules.get(state.epoch()).expect("a usable grid")
+    }
+
+    fn manager_for(ctx: &TestContext) -> ChallengeManager<
+        store_memory::MemoryStore,
+        peer_memory::MemoryApi,
+        rpc_litesvm::LiteSvmRpc,
+    > {
+        let (_tx, rx) = mpsc::channel(4);
+        ChallengeManager::new(ctx.clone(), rx, CancellationToken::new())
+    }
+
+    fn first_round_block(ctx: &TestContext) -> Arc<ParsedBlock> {
+        let schedule = schedule(ctx);
+        Arc::new(ParsedBlock {
+            slot: schedule.first_slot(),
+            blockhash: Hash([0x11; 32]),
+            ..ParsedBlock::default()
+        })
+    }
+
+    fn second_round_block(ctx: &TestContext) -> Arc<ParsedBlock> {
+        let schedule = schedule(ctx);
+        Arc::new(ParsedBlock {
+            slot: SlotNumber(schedule.first_slot().0 + schedule.interval_slots),
+            blockhash: Hash([0x22; 32]),
+            ..ParsedBlock::default()
+        })
+    }
+
+    // a suspended node stops weighing its peers, and goes on answering for its
+    // own spools. Going quiet would earn it the consecutive misses that evict
+    // it, which is the harm the suspension exists to prevent.
+    #[tokio::test]
+    async fn suspended_node_still_answers() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+
+        assert!(ctx.challenge_tripwire.trip().is_some());
+        assert!(ctx.challenge_tripwire.is_realigning());
+
+        manager
+            .on_produced(first_round_block(&ctx))
+            .await
+            .expect("produced");
+
+        assert!(!manager.open_rounds.is_empty(), "a suspended node stopped answering");
+        assert!(ctx.challenge_counters.opened.load(Ordering::Relaxed) > 0);
+        assert_eq!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
+        assert_eq!(ctx.challenge_counters.settled_certified.load(Ordering::Relaxed), 0);
+    }
+
+    // a round opened while suspended was weighed against the view under
+    // suspicion, so the first settle after the suspension lifts charges nobody
+    #[tokio::test]
+    async fn suspect_rounds_settle_void() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+
+        assert!(ctx.challenge_tripwire.trip().is_some());
+        manager
+            .on_produced(first_round_block(&ctx))
+            .await
+            .expect("produced");
+        for open in manager.open_rounds.values_mut().flatten() {
+            open.confirmed = true;
+            open.askable = true;
+        }
+
+        // Suspension lifts, and the round opened under it settles.
+        ctx.challenge_tripwire.settled();
+        let now = manager
+            .open_rounds
+            .values()
+            .flatten()
+            .map(|open| open.opened_slot.as_u64())
+            .max()
+            .expect("an open round")
+            + round_width_slots();
+        manager.settle_confirmed(SlotNumber(now));
+
+        assert_eq!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
+        assert!(ctx.challenge_counters.voided.load(Ordering::Relaxed) > 0);
+    }
+
+    // suspension is re-read per group: a trip in one group has already emptied
+    // the eviction queue, and a later group settling on would refill it
+    #[tokio::test]
+    async fn suspension_is_read_per_group() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+
+        manager
+            .on_produced(first_round_block(&ctx))
+            .await
+            .expect("produced");
+        let opened = ctx.challenge_counters.opened.load(Ordering::Relaxed);
+
+        // Tripped between blocks, as a trip in an earlier group would be.
+        assert!(ctx.challenge_tripwire.trip().is_some());
+        for open in manager.open_rounds.values_mut().flatten() {
+            open.confirmed = true;
+            open.askable = true;
+        }
+        manager
+            .on_produced(second_round_block(&ctx))
+            .await
+            .expect("produced");
+
+        assert!(ctx.challenge_counters.opened.load(Ordering::Relaxed) > opened);
+        assert_eq!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
+        assert_eq!(ctx.challenge_counters.settled_certified.load(Ordering::Relaxed), 0);
+    }
+
+    // and an unsuspended one opens them the same way, so the assertion above is
+    // about the suspension rather than about the grid
+    #[tokio::test]
+    async fn healthy_node_opens_rounds() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+
+        manager
+            .on_produced(first_round_block(&ctx))
+            .await
+            .expect("produced");
+
+        assert!(!manager.open_rounds.is_empty());
+        assert!(ctx.challenge_counters.opened.load(Ordering::Relaxed) > 0);
     }
 
     // a node challenges everyone else holding a position in its group, once

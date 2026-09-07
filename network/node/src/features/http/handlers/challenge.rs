@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::Ordering;
 
 use axum::extract::State;
 use axum::body::Bytes;
@@ -13,18 +14,21 @@ use tape_core::erasure::{GROUP_SIZE, group_for_spool};
 use tape_crypto::Address;
 use tape_protocol::{Api, ProtocolState};
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::features::challenge::audit::{
     Round, attest_message, round_of, spawn_relay_and_attest,
 };
+use crate::features::challenge::certify::agreement_threshold;
 use crate::features::challenge::fold::fold_outcome;
+use crate::features::challenge::refusal::RefusalReason;
 use crate::features::challenge::rounds::RoundKey;
 use crate::features::challenge::trace::MarkKind;
 use crate::features::http::auth::ActivePeer;
 use crate::features::http::error::RouteError;
 use crate::context::NodeContext;
 use crate::features::http::state::AppState;
+use crate::features::state::digest::Report;
 
 pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
@@ -33,6 +37,10 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
     // A node with the challenge off holds no round to audit against.
     if !state.context.config.challenge.enabled {
         return Err(RouteError::Forbidden("challenge disabled on this node".into()));
+    }
+    // A node re-reading its view judges nothing until it has one it trusts.
+    if state.context.challenge_tripwire.is_realigning() {
+        return Err(RouteError::Unavailable("realigning protocol state".into()));
     }
 
     let payload: ProofOfAccessPayload = wincode::deserialize(&body)
@@ -82,19 +90,16 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
         if state.context.verify_stage().send(request).is_err() {
             return Err(RouteError::Internal("verify stage closed".into()));
         }
-        let accepted = verdict.await.unwrap_or(false);
+        let accepted = verdict
+            .await
+            .map_err(|_| RouteError::Internal("verify worker dropped verdict".into()))?;
         let waited = queued_at.elapsed();
         if waited.as_millis() as u64 > state.context.config.challenge.ingress_wait_budget_ms {
             debug!(spool = %answer.spool, waited_ms = waited.as_millis(), "challenge: proof past its slot before verifying");
         }
         accepted
     };
-    if !accepted {
-        state
-            .context
-            .challenge_counters
-            .answers_refused
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Err(reason) = accepted {
         // No owner named: the payload was refused because it did not verify, so
         // this node has no evidence about who sent it. Attributing it to the
         // spool's on-chain owner would be a guess wearing an observation's face.
@@ -106,7 +111,7 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
             MarkKind::AnswerRefused,
             None,
         );
-        return Err(RouteError::BadRequest("proof of access refused".into()));
+        return Err(refuse(&state, &answer, reason));
     }
 
     if !state.context.round_buffer.accept_answer(key, answer.clone()) {
@@ -121,6 +126,23 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
     }
 
     Ok(StatusCode::OK)
+}
+
+/// Counts a refusal, names it in the log, and names it in the body.
+fn refuse<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    answer: &ProofOfAccess,
+    reason: RefusalReason,
+) -> RouteError {
+    state.context.challenge_counters.refusals.record(reason);
+    warn!(
+        spool = %answer.spool,
+        round = answer.round.0,
+        epoch = answer.epoch.0,
+        reason = reason.label(),
+        "challenge: proof of access refused"
+    );
+    RouteError::BadRequest(format!("proof of access refused: {}", reason.label()))
 }
 
 pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
@@ -155,6 +177,9 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
         return Err(RouteError::BadRequest("unknown signer".into()));
     }
 
+    // Compare the authenticated signer's state report once per batch. This is
+    // detection only; a disagreement never rejects its attestations.
+    watch_digest(&state, &protocol, &payload);
     // A signer outside the round's epoch roster would fill a position it never had
     if !protocol.is_member_at(payload.epoch, payload.group, payload.signer) {
         return Err(RouteError::Forbidden("attestation signer is not in the group".into()));
@@ -177,8 +202,8 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
 
     let mut claimed: Vec<Claimed> = Vec::new();
 
-    // Signatures are taken on arrival and settled by the quorum aggregate in
-    // `certify_if_ready`, which pairs once for a whole certificate. Checking
+    // Signatures are taken on arrival and settled by the quorum aggregate,
+    // which pairs once for a whole certificate. Checking
     // each on arrival paired every signature twice, once alone and again inside
     // the aggregate, which is a pairing per signature per peer per group every
     // round. A forged one still cannot certify: it fails the aggregate, and the
@@ -200,8 +225,12 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
                 MarkKind::AttestIn,
                 Some(payload.signer),
             );
-            if let Some(ready) = claim_certificate(&state, &protocol, key, threshold) {
-                claimed.push(ready);
+            // An attestation only adds to a quorum, so bank it while the view is
+            // being refreshed but do not fold an outcome against that view.
+            if !state.context.challenge_tripwire.is_realigning() {
+                if let Some(ready) = claim_certificate(&state, &protocol, key, threshold) {
+                    claimed.push(ready);
+                }
             }
         }
     }
@@ -223,6 +252,111 @@ struct Claimed {
     threshold: usize,
     attestations: Vec<(Address, BlsSignature)>,
     signers: BTreeMap<Address, BlsPubkey>,
+}
+
+/// Claims every quorum that filled while realignment suspended certification.
+///
+/// These attestations were accepted without individual pairing checks, so the
+/// sweep must use the same aggregate-and-drop-invalid path as a live arrival.
+/// The older single-attestation path assumed each signature had already been
+/// verified and could leave a resumed round permanently poisoned.
+pub(crate) async fn certify_banked<
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+>(context: &std::sync::Arc<NodeContext<Db, Cluster, Blockchain>>) {
+    let state = AppState {
+        context: context.clone(),
+    };
+    let protocol = context.state();
+    let mut batches: Vec<(Round, Vec<Claimed>)> = Vec::new();
+
+    for key in context.round_buffer.keys() {
+        let round = Round {
+            epoch: key.epoch,
+            group: group_for_spool(key.spool),
+            round: key.round,
+            block: key.block,
+        };
+        let Ok(threshold) = threshold_at(&protocol, &round) else {
+            continue;
+        };
+        let Some(claimed) = claim_certificate(&state, &protocol, key, threshold) else {
+            continue;
+        };
+
+        match batches.iter_mut().find(|(held, _)| held == &round) {
+            Some((_, claims)) => claims.push(claimed),
+            None => batches.push((round, vec![claimed])),
+        }
+    }
+
+    if batches.is_empty() {
+        return;
+    }
+
+    // Keep the suspension held until every aggregate has either stood or had
+    // its refused signatures removed. Otherwise settlement can observe the
+    // provisional claim between `claim_certificate` and verification.
+    let stage = context.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let (finished, wait) = tokio::sync::oneshot::channel();
+    let job = Box::new(move || {
+        for (round, claims) in batches {
+            certify_batch(state.clone(), round, claims, runtime.clone());
+        }
+        let _ = finished.send(());
+    });
+    if let Err(error) = stage.certify_stage().send(job) {
+        // The stage only closes during teardown. Finish inline so provisional
+        // claims are still released before the suspension guard is dropped.
+        (error.0)();
+    }
+    let _ = wait.await;
+}
+
+/// Counts a peer's view of the epoch against this node's, and says so.
+///
+/// Detection only: nothing here suspends or realigns. A truthful report is
+/// still not a verdict, and the arguments for acting on one do not hold yet.
+/// The counters are what an operator reads, and what a soak has to show before
+/// this arm is allowed to do anything.
+fn watch_digest<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    protocol: &ProtocolState,
+    payload: &AttestationPayload,
+) {
+    let report = state.context.epoch_digest.observe(
+        protocol,
+        payload.signer,
+        payload.epoch,
+        payload.digest,
+        payload.digest_signature,
+    );
+    match report {
+        // Nothing to say: not settled at one end, not this epoch, or unsigned.
+        Report::Ignored => {}
+        // Traced rather than counted. It is the ordinary case, and an operator
+        // reading zero disagreements needs to know the comparison ran at all.
+        Report::Agrees => trace!(
+            epoch = payload.epoch.0,
+            node = %payload.signer,
+            "challenge: peer view agrees"
+        ),
+        Report::Disagrees { signers } => {
+            state
+                .context
+                .challenge_counters
+                .divergence_observed
+                .fetch_add(1, Ordering::Relaxed);
+            warn!(
+                epoch = payload.epoch.0,
+                signers,
+                node = %payload.signer,
+                "challenge: a peer holds a different view of the epoch"
+            );
+        }
+    }
 }
 
 /// Signatures a certificate needs, sized by the roster of the round's epoch
@@ -274,42 +408,48 @@ fn spawn_certify_batch<Db: Store + 'static, Cluster: Api + 'static, Blockchain: 
     let round = *round;
     // folds still ride the blocking pool, and the worker is not a runtime thread
     let runtime = tokio::runtime::Handle::current();
-    let job = Box::new(move || {
-        let mut stood: Vec<(RoundKey, Address)> = Vec::new();
-        for claim in claimed {
-            if let Some(certified) = certify_claim(&state, &round, claim) {
-                stood.push(certified);
-            }
-        }
-
-        for (key, owner) in stood {
-            // The certificate exists once the quorum verifies, so the round is
-            // marked here rather than behind the write. Settlement judges a
-            // spool on the round buffer, which was claimed before any of this,
-            // so a write that fails cannot turn a certified round into a miss.
-            state.context.round_traces.mark(
-                round.epoch,
-                round.round,
-                round.group,
-                key.spool,
-                MarkKind::Certified,
-                Some(owner),
-            );
-
-            // Folded now rather than waiting for the block to finalize. A
-            // certificate under a candidate that loses records a success the
-            // owner may not have earned, which is the harmless direction.
-            // Waiting instead would lose the late certificate that replaces a
-            // recorded miss, and a miss is what evicts. `settle_previous`
-            // refuses to charge a miss for a round that never confirmed, which
-            // is the half that has teeth.
-            let context = state.context.clone();
-            runtime.spawn_blocking(move || {
-                fold_outcome(&context.store, owner, key.spool, round.epoch, round.round, true);
-            });
-        }
-    });
+    let job = Box::new(move || certify_batch(state, round, claimed, runtime));
     let _ = stage.certify_stage().send(job);
+}
+
+/// Verifies and records every quorum claimed from one incoming batch.
+fn certify_batch<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>(
+    state: AppState<Db, Cluster, Blockchain>,
+    round: Round,
+    claimed: Vec<Claimed>,
+    runtime: tokio::runtime::Handle,
+) {
+    let mut stood: Vec<(RoundKey, Address)> = Vec::new();
+    for claim in claimed {
+        if let Some(certified) = certify_claim(&state, &round, claim) {
+            stood.push(certified);
+        }
+    }
+
+    for (key, owner) in stood {
+        // The certificate exists once the quorum verifies, so the round is
+        // marked here rather than behind the write. Settlement judges a spool
+        // on the round buffer, which was claimed before any of this, so a write
+        // that fails cannot turn a certified round into a miss.
+        state.context.round_traces.mark(
+            round.epoch,
+            round.round,
+            round.group,
+            key.spool,
+            MarkKind::Certified,
+            Some(owner),
+        );
+
+        // Folded now rather than waiting for the block to confirm. A certificate
+        // under a candidate that loses records a success the owner may not have
+        // earned, which is the harmless direction. Waiting instead would lose
+        // the late certificate that replaces a recorded miss, and a miss is
+        // what evicts.
+        let context = state.context.clone();
+        runtime.spawn_blocking(move || {
+            fold_outcome(&context.store, owner, key.spool, round.epoch, round.round, true);
+        });
+    }
 }
 
 /// What one aggregate pass settled for a spool.
@@ -477,29 +617,152 @@ fn mark<Db: Store, Cluster: Api, Blockchain: Rpc>(
     );
 }
 
-/// Signatures a certificate needs, given how many positions the group holds.
-///
-/// The mechanism's `q` at a full group, scaled down so a partially filled group
-/// still certifies rather than stalling every round.
-pub fn agreement_threshold(members: usize) -> usize {
-    (members * 2 / 3 + 1).max(1)
-}
-
 #[cfg(test)]
 mod tests {
+    use tape_core::challenge::proof::SampleProof;
+    use tape_core::erasure::{GROUP_SIZE, group_for_spool};
+    use tape_core::spooler::GroupIndex;
+    use tape_core::types::RoundNumber;
+    use tape_core::types::tls::NetworkTlsPubkey;
+
     use super::*;
-    use tape_core::erasure::GROUP_SIZE;
+    use crate::harness::{NodeHarness, TestContext};
 
-    // at a full group the threshold is the mechanism's q, and it never drops to
-    // a simple majority where two Byzantine signers could carry a round
-    #[test]
-    fn supermajority() {
-        assert_eq!(agreement_threshold(GROUP_SIZE), 14);
-        assert!(agreement_threshold(GROUP_SIZE) > GROUP_SIZE / 2);
+    // a node re-reading its view answers no proof, because it would be weighed
+    // against the view under suspicion
+    #[tokio::test]
+    async fn realigning_node_takes_nothing() {
+        let ctx: TestContext = NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0);
 
-        // A partially filled group still certifies rather than stalling.
-        assert_eq!(agreement_threshold(3), 3);
-        assert_eq!(agreement_threshold(1), 1);
-        assert_eq!(agreement_threshold(0), 1);
+        let rounds = ctx.config.challenge.realign_after_blank_rounds;
+        for _ in 0..rounds {
+            ctx.challenge_tripwire.record_blank_round(GroupIndex(0));
+        }
+        assert!(ctx.challenge_tripwire.is_realigning());
+
+        let state = AppState { context: ctx.clone() };
+        let proof = proof_of_access(State(state.clone()), Bytes::new()).await;
+
+        assert!(matches!(proof.err(), Some(RouteError::Unavailable(_))));
+    }
+
+    // but it keeps taking attestations, because they only ever add to a quorum
+    // and its own round needs them to certify while it re-reads
+    #[tokio::test]
+    async fn realigning_node_still_banks_attestations() {
+        let ctx: TestContext = NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(0);
+
+        assert!(ctx.challenge_tripwire.trip().is_some());
+        assert!(ctx.challenge_tripwire.is_realigning());
+
+        let state = AppState { context: ctx.clone() };
+        let active_peer = ActivePeer {
+            node: ctx.node_address(),
+            tls_pubkey: NetworkTlsPubkey::new([0; 32]),
+        };
+        let attestation = attest(State(state), active_peer, Bytes::new()).await;
+
+        // Refused on the body it was handed, not on the suspension.
+        let message = match attestation.err() {
+            Some(RouteError::BadRequest(message)) => message,
+            other => panic!("unexpected refusal while realigning: {other:?}"),
+        };
+        assert!(message.contains("decode attestation"), "{message}");
+    }
+
+    // The resume sweep uses the post-#119 aggregate verifier: one forged
+    // signature is removed and the honest quorum behind it still certifies.
+    #[tokio::test]
+    async fn banked_quorum_drops_a_forged_signature() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let ctx: TestContext = harness.ctx_for(0);
+        let protocol = ctx.state();
+        let mine = protocol
+            .member_spools(ctx.node_address())
+            .first()
+            .copied()
+            .expect("this node holds a spool");
+        let group = group_for_spool(mine);
+        let target = protocol
+            .group_peers(group)
+            .into_iter()
+            .map(|(spool, _)| spool)
+            .find(|spool| *spool != mine)
+            .expect("another spool");
+        let round = Round {
+            epoch: protocol.epoch(),
+            group,
+            round: RoundNumber(7),
+            block: tape_crypto::hash::Hash([0x53; 32]),
+        };
+        let key = round.key(target);
+        let dummy = ProofOfAccess {
+            epoch: round.epoch,
+            group,
+            round: round.round,
+            spool: target,
+            block: round.block,
+            track: Address::new_unique(),
+            proof: SampleProof::Inline { payload: Vec::new() },
+            signature: harness.node(0).bls_keypair().sign(b"dummy").expect("sign"),
+        };
+        assert!(ctx.round_buffer.accept_answer(key, dummy));
+
+        let threshold = agreement_threshold(GROUP_SIZE);
+        let message = attest_message(&round, target).to_bytes();
+        let members: Vec<Address> = protocol
+            .group_peers(group)
+            .into_iter()
+            .map(|(_, owner)| owner)
+            .collect();
+        for signer in members.iter().take(threshold) {
+            let node = (0..25)
+                .find(|index| Address::from(harness.node(*index).node_address.to_bytes()) == *signer)
+                .expect("group member in harness");
+            let signature = harness
+                .node(node)
+                .bls_keypair()
+                .sign(message)
+                .expect("sign attestation");
+            assert!(ctx.round_buffer.accept_attestation(key, *signer, signature));
+        }
+
+        let forged = members[threshold];
+        let forged_node = (0..25)
+            .find(|index| Address::from(harness.node(*index).node_address.to_bytes()) == forged)
+            .expect("forged signer in harness");
+        let bad_signature = harness
+            .node(forged_node)
+            .bls_keypair()
+            .sign(b"another round")
+            .expect("sign wrong message");
+        assert!(ctx.round_buffer.accept_attestation(key, forged, bad_signature));
+
+        certify_banked(&ctx).await;
+
+        assert!(ctx.round_buffer.is_certified(key));
+        assert_eq!(ctx.round_buffer.attestations(key).len(), threshold);
+        assert!(!ctx
+            .round_buffer
+            .attestations(key)
+            .iter()
+            .any(|(signer, _)| *signer == forged));
     }
 }
