@@ -28,7 +28,7 @@ members = [
   "solana/rpc-cache",
   "lib/metrics",
   "lib/observe-api",
-  "monitoring/atlas",
+  "lib/atlas",
   "monitoring/dashboard",
   "monitoring/atlas-web",
   "monitoring/atlas-collector",
@@ -52,7 +52,6 @@ members = [
   "tools/tape-recover-assignment",
   "tools/tape-cue",
   "tools/tape-measure",
-  "lib/whirlwind",
 ]
 
 # Programs and test crates excluded from default cargo build/check:
@@ -75,6 +74,7 @@ default-members = [
   "store/tape-store",
   "lib/metrics",
   "lib/observe-api",
+  "lib/atlas",
   "network/gateway",
   "network/node",
   "network/peer-manager",
@@ -141,7 +141,7 @@ tape-test = { version = "0.4.0", path = "./test" }
 tape-chain-harness = { version = "0.4.0", path = "./test/harness" }
 tape-metrics = { version = "0.4.0", path = "./lib/metrics" }
 tape-observe-api = { version = "0.4.0", path = "./lib/observe-api" }
-tape-atlas = { version = "0.4.0", path = "./monitoring/atlas" }
+tape-atlas = { version = "0.4.0", path = "./lib/atlas" }
 tape-gateway = { version = "0.4.0", path = "./network/gateway" }
 tape-node = { version = "0.4.0", path = "./network/node" }
 peer-manager = { version = "0.4.0", path = "./network/peer-manager" }
