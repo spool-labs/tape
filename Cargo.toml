@@ -27,11 +27,11 @@ members = [
   "solana/rpc-litesvm",
   "solana/rpc-cache",
   "lib/metrics",
+  "lib/observe-api",
   "lib/atlas",
   "monitoring/dashboard",
   "monitoring/atlas-web",
   "monitoring/atlas-collector",
-  "network/observe-api",
   "network/gateway",
   "network/node",
   "network/peer-manager",
@@ -74,8 +74,8 @@ default-members = [
   "store/reel-store",
   "store/tape-store",
   "lib/metrics",
+  "lib/observe-api",
   "lib/atlas",
-  "network/observe-api",
   "network/gateway",
   "network/node",
   "network/peer-manager",
@@ -141,7 +141,7 @@ tape-sdk = { version = "0.4.0", path = "./sdk" }
 tape-test = { version = "0.4.0", path = "./test" }
 tape-chain-harness = { version = "0.4.0", path = "./test/harness" }
 tape-metrics = { version = "0.4.0", path = "./lib/metrics" }
-tape-observe-api = { version = "0.4.0", path = "./network/observe-api" }
+tape-observe-api = { version = "0.4.0", path = "./lib/observe-api" }
 tape-atlas = { version = "0.4.0", path = "./lib/atlas" }
 tape-gateway = { version = "0.4.0", path = "./network/gateway" }
 tape-node = { version = "0.4.0", path = "./network/node" }

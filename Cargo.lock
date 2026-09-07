@@ -5193,7 +5193,6 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-protocol",
- "tape-store",
  "tokio",
  "wincode 0.1.2",
 ]
@@ -9667,6 +9666,7 @@ dependencies = [
  "hex",
  "indicatif 0.17.11",
  "mime_guess",
+ "openssl",
  "peer-http",
  "rand 0.8.5",
  "rpc",

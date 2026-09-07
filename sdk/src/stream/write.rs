@@ -24,6 +24,7 @@ use tape_retry::{retry_if, RetryConfig};
 
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
+use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
 use crate::track::write::{
@@ -71,6 +72,81 @@ const CERTIFY_CONFLICT_ATTEMPTS: usize = 3;
 /// processed but not yet confirmed, so an immediate refetch can miss it.
 const CERTIFY_CONFLICT_DELAY: Duration = Duration::from_millis(400);
 
+impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
+    /// Store a named byte stream and return before final manifest certification.
+    ///
+    /// The returned manifest and receipts can be passed to
+    /// [`Self::certify_with_receipts`]. Data chunks have already been certified;
+    /// only the stream's final manifest may remain to certify.
+    pub async fn store_named_stream<Reader: AsyncRead + Unpin>(
+        &self,
+        tape_key: &TapeKey,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
+        size: StorageUnits,
+        reader: Reader,
+    ) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
+        self.store_named_stream_as(tape_key, name, content_type, size, reader)
+            .await
+    }
+
+    /// Store a named byte stream as its owner or an authorized delegate.
+    ///
+    /// Data chunks are certified before this returns. The final manifest has
+    /// landed on storage peers but may still require certification through
+    /// [`Self::certify_with_receipts_as`].
+    pub async fn store_named_stream_as<Reader: AsyncRead + Unpin>(
+        &self,
+        operator: &impl TapeOperator,
+        name: impl AsRef<[u8]>,
+        content_type: ContentType,
+        size: StorageUnits,
+        reader: Reader,
+    ) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
+        let timer = self
+            .timer(Operation::WriteStream, Phase::Total)
+            .bytes(size.to_bytes());
+        let result = store_stream(
+            self,
+            operator,
+            name.as_ref(),
+            content_type,
+            size,
+            reader,
+        )
+        .await;
+        timer.finish_result(&result);
+        result
+    }
+}
+
+/// Write in-memory bytes as a multi-track stream.
+pub async fn write_bytes<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    name: &[u8],
+    content_type: ContentType,
+    data: &[u8],
+) -> Result<StreamReceipt, TapedriveError> {
+    let (manifest, receipts) =
+        store_bytes(client, tape_key, name, content_type, data).await?;
+    complete_stream(client, tape_key, &manifest, &receipts).await
+}
+
+/// Write bytes from an async reader as a multi-track stream.
+pub async fn write_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    name: &[u8],
+    content_type: ContentType,
+    size: StorageUnits,
+    reader: Reader,
+) -> Result<StreamReceipt, TapedriveError> {
+    let (manifest, receipts) =
+        store_stream(client, tape_key, name, content_type, size, reader).await?;
+    complete_stream(client, tape_key, &manifest, &receipts).await
+}
+
 // Chunks are internal fragments addressed by track number, never by name.
 struct PendingChunk {
     pub entry: ChunkEntry,
@@ -83,6 +159,12 @@ struct RegisteredChunk {
     entry: ChunkEntry,
     written: WrittenTrack,
     plan: UploadPlan,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ManifestWriteMode {
+    Inline,
+    Coded,
 }
 
 /// Validate stream-level input before any track writes begin.
@@ -204,14 +286,13 @@ fn preflight(
     Ok(())
 }
 
-/// Write in-memory bytes as a multi-track stream.
-pub async fn write_bytes<Blockchain: Rpc, Cluster: Api>(
+async fn store_bytes<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     data: &[u8],
-) -> Result<StreamReceipt, TapedriveError> {
+) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
     let size = StorageUnits::from_bytes(data.len() as u64);
 
     // A prior interrupted write of this stream leaves a matching prefix of tracks
@@ -232,18 +313,17 @@ pub async fn write_bytes<Blockchain: Rpc, Cluster: Api>(
     let pending_chunks =
         pipeline_chunks(client, tape_key, &tape, size, chunk_count, chunk_sources).await?;
 
-    finalize_write(client, tape_key, name, content_type, size, pending_chunks).await
+    store_manifest_for_chunks(client, tape_key, name, content_type, size, pending_chunks).await
 }
 
-/// Write bytes from an async reader as a multi-track stream.
-pub async fn write_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
+async fn store_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     size: StorageUnits,
     mut reader: Reader,
-) -> Result<StreamReceipt, TapedriveError> {
+) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
     validate_stream_size(size).map_err(stream_error)?;
     let chunk_count = chunk_count_for_size(size).map_err(stream_error)?;
 
@@ -272,7 +352,7 @@ pub async fn write_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unp
         pipeline_chunks(client, tape_key, &tape, size, chunk_count, chunk_sources).await?;
 
     verify_stream_drained(&mut reader).await?;
-    finalize_write(client, tape_key, name, content_type, size, pending_chunks).await
+    store_manifest_for_chunks(client, tape_key, name, content_type, size, pending_chunks).await
 }
 
 /// Resume an interrupted reader stream: finish the already-read first chunk,
@@ -286,7 +366,7 @@ async fn resume_stream_reader<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead +
     chunk_count: TrackNumber,
     first: Vec<u8>,
     mut reader: Reader,
-) -> Result<StreamReceipt, TapedriveError> {
+) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
     let timer = client
         .timer(Operation::WriteStream, Phase::Total)
         .bytes(size.to_bytes());
@@ -297,7 +377,7 @@ async fn resume_stream_reader<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead +
             resume_stream_chunk(client, operator, &chunk, TrackNumber(chunk_index as u64)).await?;
         }
         verify_stream_drained(&mut reader).await?;
-        finalize_resumed_stream(client, operator, name, content_type, size, chunk_count).await
+        store_resumed_manifest(client, operator, name, content_type, size, chunk_count).await
     }
     .await;
     timer.finish_result(&result);
@@ -411,7 +491,7 @@ async fn resume_stream<Blockchain: Rpc, Cluster: Api>(
     data: &[u8],
     size: StorageUnits,
     chunk_count: TrackNumber,
-) -> Result<StreamReceipt, TapedriveError> {
+) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
     let timer = client
         .timer(Operation::WriteStream, Phase::Total)
         .bytes(size.to_bytes());
@@ -420,31 +500,37 @@ async fn resume_stream<Blockchain: Rpc, Cluster: Api>(
             let chunk = stream_chunk(data, chunk_index, chunk_count, size)?;
             resume_stream_chunk(client, tape_key, chunk, TrackNumber(chunk_index as u64)).await?;
         }
-        finalize_resumed_stream(client, tape_key, name, content_type, size, chunk_count).await
+        store_resumed_manifest(client, tape_key, name, content_type, size, chunk_count).await
     }
     .await;
     timer.finish_result(&result);
     result
 }
 
-/// Write (or verify) the manifest for a resumed stream and return its receipt.
+/// Store (or verify) the manifest for a resumed stream.
 /// Both resume paths build the same manifest from the fixed chunk layout after
 /// finishing every data chunk.
-async fn finalize_resumed_stream<Blockchain: Rpc, Cluster: Api>(
+async fn store_resumed_manifest<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     operator: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     size: StorageUnits,
     chunk_count: TrackNumber,
-) -> Result<StreamReceipt, TapedriveError> {
+) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
     let entries = build_entries(TrackNumber(0), chunk_count, size).map_err(stream_error)?;
     let manifest = build_manifest(hash(name), size, entries).map_err(stream_error)?;
     let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
-    let manifest_track =
-        ensure_stream_manifest(client, operator, name, content_type, size, &manifest_bytes, chunk_count)
-            .await?;
-    Ok(StreamReceipt::from_manifest_track(&manifest_track.track))
+    ensure_stream_manifest(
+        client,
+        operator,
+        name,
+        content_type,
+        size,
+        &manifest_bytes,
+        chunk_count,
+    )
+    .await
 }
 
 /// Finish or write one coded data chunk at its track number. Chunks are always
@@ -495,15 +581,15 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
     size: StorageUnits,
     manifest_bytes: &[u8],
     track_number: TrackNumber,
-) -> Result<WrittenTrack, TapedriveError> {
+) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
     let tape = tape_key.address();
     let existing = match client.get_track_by_number(&tape, track_number).await {
         Ok(track) => track,
         Err(TapedriveError::NotFound) => {
-            let written =
-                write_manifest(client, tape_key, name, content_type, size, manifest_bytes).await?;
+            let (written, receipts) =
+                store_manifest(client, tape_key, name, content_type, size, manifest_bytes).await?;
             verify_track_number(&written, track_number)?;
-            return Ok(written);
+            return Ok((written, receipts));
         }
         Err(other) => return Err(other),
     };
@@ -516,21 +602,28 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
             })?;
             ensure_track_matches(&existing, track_key(name, &slice), meta.value_hash)?;
             // Inline tracks certify at register, so a matching one is complete.
-            Ok(WrittenTrack {
-                address: track_pda(tape, track_number).0,
-                track: existing,
-            })
+            Ok((
+                WrittenTrack {
+                    address: track_pda(tape, track_number).0,
+                    track: existing,
+                },
+                Vec::new(),
+            ))
         }
         ManifestWriteMode::Coded => {
             let (plan, key, value_hash) =
                 coded_identity(client, name, manifest_bytes, Operation::WriteStream).await?;
             ensure_track_matches(&existing, key, value_hash)?;
-            let track =
-                finish_coded_track(client, tape_key, existing, &plan, Operation::WriteStream).await?;
-            Ok(WrittenTrack {
+            let written = WrittenTrack {
                 address: track_pda(tape, track_number).0,
-                track,
-            })
+                track: existing,
+            };
+            if written.track.is_certified() {
+                return Ok((written, Vec::new()));
+            }
+            let receipts =
+                upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
+            Ok((written, receipts))
         }
     }
 }
@@ -765,7 +858,15 @@ where
 
         let mut pending_chunks = Vec::with_capacity(chunk_count.as_usize());
         while let Some((pending, collected)) = collected_receiver.recv().await {
-            certify_chunk(client, tape_key, mirror, &pending.written, &collected).await?;
+            certify_chunk(
+                client,
+                tape_key,
+                mirror,
+                &pending.written,
+                &collected,
+                Operation::WriteStream,
+            )
+            .await?;
             pending_chunks.push(pending);
         }
 
@@ -804,7 +905,7 @@ where
 /// Mirror a resolved register. A mirror reseeded from chain state mid-stream
 /// already holds recently confirmed tracks in its base, so appends for those
 /// are skipped rather than failed.
-async fn append_to_mirror(
+pub(crate) async fn append_to_mirror(
     mirror: &Mutex<ArchiveMirror>,
     written: &WrittenTrack,
 ) -> Result<(), TapedriveError> {
@@ -826,12 +927,13 @@ async fn append_to_mirror(
 /// retries against refetched chain state with the same signatures, then
 /// falls back to the confirmed path with re-collected signatures and a
 /// fresh peer proof, bringing the mirror back into lockstep.
-async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
+pub(crate) async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     mirror: &Mutex<ArchiveMirror>,
     written: &WrittenTrack,
     collected: &CollectedSignatures,
+    operation: Operation,
 ) -> Result<(), TapedriveError> {
     let track_number = written.track.track_number;
     let certified = certified_track(&written.track);
@@ -846,7 +948,7 @@ async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
             proof,
             collected,
             CommitmentLevel::Processed,
-            Operation::WriteStream,
+            operation,
         )
         .await;
         match submitted {
@@ -861,8 +963,15 @@ async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
             // change).
             Err(err) if should_retry_certification(&err) => {
                 let done =
-                    recertify_after_conflict(client, tape_key, mirror, &certified, collected)
-                        .await?;
+                    recertify_after_conflict(
+                        client,
+                        tape_key,
+                        mirror,
+                        &certified,
+                        collected,
+                        operation,
+                    )
+                    .await?;
                 if done {
                     return Ok(());
                 }
@@ -871,7 +980,7 @@ async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
         }
     }
 
-    certify_submit_with_retry(client, tape_key, written, Operation::WriteStream, None, &[]).await?;
+    certify_submit_with_retry(client, tape_key, written, operation, None, &[]).await?;
     apply_certified_to_mirror(client, tape_key, mirror, &certified, None).await
 }
 
@@ -887,6 +996,7 @@ async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
     mirror: &Mutex<ArchiveMirror>,
     certified: &CompressedTrack,
     collected: &CollectedSignatures,
+    operation: Operation,
 ) -> Result<bool, TapedriveError> {
     for _ in 0..CERTIFY_CONFLICT_ATTEMPTS {
         // The interfering transaction may only be processed, so give the
@@ -912,7 +1022,7 @@ async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
             proof,
             collected,
             CommitmentLevel::Processed,
-            Operation::WriteStream,
+            operation,
         )
         .await;
         match submitted {
@@ -985,7 +1095,7 @@ fn root_poll_config() -> RetryConfig {
 /// Compare the mirrored root with the on-chain root, retrying the comparison
 /// before declaring divergence. A lasting mismatch means an external writer
 /// touched the tape mid-stream.
-async fn verify_mirror_root<Blockchain: Rpc, Cluster: Api>(
+pub(crate) async fn verify_mirror_root<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     mirror: &Mutex<ArchiveMirror>,
@@ -1075,12 +1185,6 @@ async fn store_chunk<Blockchain: Rpc, Cluster: Api>(
     })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ManifestWriteMode {
-    Inline,
-    Coded,
-}
-
 fn manifest_write_mode(name: &[u8], manifest_bytes: &[u8]) -> ManifestWriteMode {
     if inline_write_fits(name, manifest_bytes.len()) {
         ManifestWriteMode::Inline
@@ -1089,17 +1193,17 @@ fn manifest_write_mode(name: &[u8], manifest_bytes: &[u8]) -> ManifestWriteMode 
     }
 }
 
-/// Write the manifest inline when the transaction stays small; otherwise write it as a blob.
-async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
+/// Store the manifest inline when the transaction stays small; otherwise upload it as a blob.
+async fn store_manifest<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
     manifest_bytes: &[u8],
-) -> Result<WrittenTrack, TapedriveError> {
+) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
     if manifest_write_mode(name, manifest_bytes) == ManifestWriteMode::Inline {
-        return submit_raw_with_logical_size(
+        let written = submit_raw_with_logical_size(
             client,
             tape_key,
             name,
@@ -1108,7 +1212,8 @@ async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
             manifest_bytes,
             Operation::WriteStream,
         )
-        .await;
+        .await?;
+        return Ok((written, Vec::new()));
     }
 
     let (written, plan) = submit_blob_with_logical_size(
@@ -1122,23 +1227,18 @@ async fn write_manifest<Blockchain: Rpc, Cluster: Api>(
     )
     .await?;
     let receipts = upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
-    let track =
-        certify_with_retry(client, tape_key, &written, Operation::WriteStream, &receipts).await?;
-    Ok(WrittenTrack {
-        address: written.address,
-        track,
-    })
+    Ok((written, receipts))
 }
 
-/// Finalize the stream after every chunk is stored and certified.
-async fn finalize_write<Blockchain: Rpc, Cluster: Api>(
+/// Store the final manifest after every chunk is stored and certified.
+async fn store_manifest_for_chunks<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     size: StorageUnits,
     pending_chunks: Vec<PendingChunk>,
-) -> Result<StreamReceipt, TapedriveError> {
+) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
     let entries = pending_chunks
         .into_iter()
         .map(|pending_chunk| pending_chunk.entry)
@@ -1146,9 +1246,28 @@ async fn finalize_write<Blockchain: Rpc, Cluster: Api>(
     let manifest = build_manifest(hash(name), size, entries).map_err(stream_error)?;
     let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
 
-    let manifest_track = write_manifest(client, tape_key, name, content_type, size, &manifest_bytes).await?;
+    store_manifest(client, tape_key, name, content_type, size, &manifest_bytes).await
+}
 
-    Ok(StreamReceipt::from_manifest_track(&manifest_track.track))
+async fn complete_stream<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    manifest: &WrittenTrack,
+    receipts: &[CertifyRes],
+) -> Result<StreamReceipt, TapedriveError> {
+    let track = if manifest.track.is_certified() {
+        manifest.track
+    } else {
+        certify_with_retry(
+            client,
+            tape_key,
+            manifest,
+            Operation::WriteStream,
+            receipts,
+        )
+        .await?
+    };
+    Ok(StreamReceipt::from_manifest_track(&track))
 }
 
 fn stream_error(error: StreamError) -> TapedriveError {
@@ -1188,7 +1307,7 @@ mod tests {
     }
 
     #[test]
-    fn small_manifest_uses_inline_write() {
+    fn small_manifest() {
         let manifest_bytes = sample_manifest_bytes(1);
 
         assert_eq!(
@@ -1198,7 +1317,7 @@ mod tests {
     }
 
     #[test]
-    fn large_manifest_uses_coded_write() {
+    fn large_manifest() {
         let manifest_bytes = sample_manifest_bytes(64);
 
         assert_eq!(
