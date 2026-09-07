@@ -1,6 +1,5 @@
 /target
 */**/target
-/libs/
 .claude
 
 # tape-network operator state
