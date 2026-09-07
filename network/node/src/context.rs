@@ -33,10 +33,7 @@ use crate::core::ingest::{IngestBus, IngestState};
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
 use crate::features::block::pending_tracks::PendingTracks;
-use crate::features::challenge::attest_queue::AttestQueue;
-use crate::features::challenge::sample_cache::SampleSets;
-use crate::features::challenge::schedules::Schedules;
-use crate::features::challenge::{RoundBuffer, TraceRing};
+use crate::features::challenge::RoundBuffer;
 use crate::features::challenge::counters::ChallengeCounters;
 use crate::features::eviction::EvictionQueue;
 use crate::features::http::admission::AdmissionLimiter;
@@ -63,13 +60,6 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub admission: Arc<AdmissionLimiter>,
     pub eviction_queue: Arc<EvictionQueue>,
     pub round_buffer: Arc<RoundBuffer>,
-    pub round_traces: Arc<TraceRing>,
-    pub sample_sets: Arc<SampleSets<crate::features::challenge::audit::SampleSet>>,
-    pub schedules: Schedules,
-    pub attest_queue: Arc<AttestQueue>,
-    pub certify_slots: Arc<tokio::sync::Semaphore>,
-    certify_stage: std::sync::OnceLock<std::sync::mpsc::Sender<CertifyJob>>,
-    verify_stage: std::sync::OnceLock<std::sync::mpsc::Sender<VerifyRequest>>,
     pub challenge_counters: ChallengeCounters,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
@@ -86,126 +76,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
 /// Sentinel for a balance the monitor has not sampled yet
 const UNSAMPLED_BALANCE: u64 = u64::MAX;
 
-/// Certificates aggregated at once; unbounded pairings starve the proof
-/// verifies (last vote 286ms -> 553ms without this)
-const CERTIFY_SLOTS: usize = 4;
-
-/// A self-contained certify task, its context captured at the call site.
-pub type CertifyJob = Box<dyn FnOnce() + Send>;
-
-/// One proof waiting to be checked, and where its verdict goes.
-pub struct VerifyRequest {
-    pub answer: tape_core::challenge::ProofOfAccess,
-    pub protocol: Arc<ProtocolState>,
-    pub reply: tokio::sync::oneshot::Sender<bool>,
-}
-
-/// Certify worker threads; two clear a round inside one cadence
-const CERTIFY_WORKERS: usize = 2;
-
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockchain> {
-    /// The certify stage's intake, its workers spawned on first use
-    pub fn certify_stage(&self) -> &std::sync::mpsc::Sender<CertifyJob> {
-        self.certify_stage.get_or_init(|| {
-            let (tx, rx) = std::sync::mpsc::channel::<CertifyJob>();
-            let rx = Arc::new(std::sync::Mutex::new(rx));
-            for n in 0..CERTIFY_WORKERS {
-                let rx = rx.clone();
-                let _ = std::thread::Builder::new()
-                    .name(format!("certify-{n}"))
-                    .spawn(move || loop {
-                        // recv under the lock hands each job to whichever worker is free
-                        let job = match rx.lock() {
-                            Ok(guard) => guard.recv(),
-                            Err(_) => return,
-                        };
-                        match job {
-                            Ok(job) => job(),
-                            Err(_) => return,
-                        }
-                    });
-            }
-            tx
-        })
-    }
-
-    /// The proof verify stage's intake, its workers spawned on first use
-    ///
-    /// A worker takes everything queued behind the proof that woke it, so a
-    /// round's answers check their signatures in one pairing product.
-    pub fn verify_stage(self: &Arc<Self>) -> &std::sync::mpsc::Sender<VerifyRequest>
-    where
-        Db: 'static,
-        Cluster: 'static,
-        Blockchain: 'static,
-    {
-        self.verify_stage.get_or_init(|| {
-            let (tx, rx) = std::sync::mpsc::channel::<VerifyRequest>();
-            let rx = Arc::new(std::sync::Mutex::new(rx));
-            for n in 0..self.config.challenge.verify_workers.max(1) {
-                let rx = rx.clone();
-                let context = self.clone();
-                let _ = std::thread::Builder::new()
-                    .name(format!("verify-{n}"))
-                    .spawn(move || {
-                        loop {
-                            let clump = {
-                                let Ok(guard) = rx.lock() else { return };
-                                let Ok(first) = guard.recv() else { return };
-                                let mut clump = vec![first];
-                                clump.extend(guard.try_iter());
-                                clump
-                            };
-                            // A panic here would otherwise end the only worker
-                            // and leave every later proof refused in silence,
-                            // which reads as dishonesty rather than a fault.
-                            let guarded = std::panic::AssertUnwindSafe(|| context.verify_clump(clump));
-                            if std::panic::catch_unwind(guarded).is_err() {
-                                tracing::error!("challenge: verify worker panicked, clump refused");
-                            }
-                        }
-                    });
-            }
-            tx
-        })
-    }
-
-    /// Checks one clump: the per answer work each, then the signatures together.
-    fn verify_clump(&self, clump: Vec<VerifyRequest>) {
-        use crate::features::challenge::audit::answer_signer;
-
-        let mut verdict = vec![false; clump.len()];
-        let mut batch = Vec::with_capacity(clump.len());
-        for (index, request) in clump.iter().enumerate() {
-            if let Some(pubkey) = answer_signer(self, &request.protocol, &request.answer, true) {
-                batch.push((index, request.answer.message().to_bytes(), pubkey, request.answer.signature));
-            }
-        }
-
-        if !batch.is_empty() {
-            let items: Vec<(&[u8], BlsPubkey, BlsSignature)> = batch
-                .iter()
-                .map(|(_, message, pubkey, signature)| (&message[..], *pubkey, *signature))
-                .collect();
-            if BlsSignature::verify_batch(&items).is_ok() {
-                for (index, ..) in &batch {
-                    verdict[*index] = true;
-                }
-            } else {
-                // The batch names no member, so the culprit is found by hand.
-                for (index, message, pubkey, signature) in &batch {
-                    verdict[*index] = signature
-                        .verify_aggregate(message, core::slice::from_ref(pubkey))
-                        .is_ok();
-                }
-            }
-        }
-
-        for (request, ok) in clump.into_iter().zip(verdict) {
-            let _ = request.reply.send(ok);
-        }
-    }
-
     pub fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -251,10 +122,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
     }
 
     pub fn set_state(&self, state: ProtocolState) -> Result<(), NodeError> {
-        // sub-minute test epochs judge runs on the short threshold
-        tape_core::challenge::record::set_run_threshold(
-            state.current.epoch.preferences.epoch_duration.0,
-        );
         self.state.publish(state)
     }
 
@@ -451,13 +318,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             admission,
             eviction_queue: Arc::new(EvictionQueue::default()),
             round_buffer: Arc::new(RoundBuffer::default()),
-            round_traces: Arc::new(TraceRing::default()),
-            sample_sets: Arc::new(SampleSets::default()),
-            schedules: Schedules::default(),
-            attest_queue: Arc::new(AttestQueue::default()),
-            certify_slots: Arc::new(tokio::sync::Semaphore::new(CERTIFY_SLOTS)),
-            certify_stage: std::sync::OnceLock::new(),
-            verify_stage: std::sync::OnceLock::new(),
             challenge_counters: ChallengeCounters::default(),
             metrics: NodeMetrics,
             atlas: self.atlas,

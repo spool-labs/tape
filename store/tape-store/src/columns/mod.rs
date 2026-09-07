@@ -94,7 +94,7 @@ pub use slice::SliceCol;
 pub use spool::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
-pub use sync_cursor::{SyncCursor, SyncCursorCol};
+pub use sync_cursor::SyncCursorCol;
 pub use tape::TapeCol;
 pub use track::TrackCol;
 pub use track_data::TrackDataCol;

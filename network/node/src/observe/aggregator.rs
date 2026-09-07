@@ -28,11 +28,8 @@ use crate::core::error::NodeError;
 const PUBLIC_PORT_OFFSET: u16 = 10;
 /// Don't refetch a node's public stats more often than this.
 const PUBLIC_TTL: Duration = Duration::from_secs(60);
-/// Re-attempt the mTLS path this often once a peer has refused it.
+/// Re-attempt the mTLS path this often once it's known to be failing.
 const MTLS_RECHECK: Duration = Duration::from_secs(3600);
-
-/// Re-attempt this soon when the probe never got an answer.
-const MTLS_RETRY: Duration = Duration::from_secs(30);
 
 pub struct PeerAggregator<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -123,15 +120,9 @@ where
             let http = self.http.clone();
             set.spawn(async move {
                 let mut observe = None;
-                let mut timed_out = false;
-                let mut refused = false;
                 if job.try_mtls {
-                    match context.api.get_stats(job.node, &GetStatsReq).await {
-                        Ok(res) => observe = Some(NodeStats::from(&res.stats)),
-                        Err(error) => {
-                            timed_out = busy(&error);
-                            refused = refused_mtls(&error);
-                        }
+                    if let Ok(res) = context.api.get_stats(job.node, &GetStatsReq).await {
+                        observe = Some(NodeStats::from(&res.stats));
                     }
                 }
                 let mut public = None;
@@ -144,8 +135,6 @@ where
                     node: job.node,
                     tried_mtls: job.try_mtls,
                     tried_public: job.try_public,
-                    timed_out,
-                    refused,
                     observe,
                     public,
                 }
@@ -174,8 +163,7 @@ where
                 } else {
                     if probe.tried_mtls {
                         st.mtls_ok = false;
-                        st.next_mtls =
-                            Some(now + if probe.refused { MTLS_RECHECK } else { MTLS_RETRY });
+                        st.next_mtls = Some(now + MTLS_RECHECK);
                     }
                     if let Some(stats) = probe.public {
                         st.next_public = Some(now + PUBLIC_TTL);
@@ -184,14 +172,9 @@ where
                         st.stats = Some(stats);
                     } else if probe.tried_public {
                         st.next_public = Some(now + PUBLIC_TTL);
-                        // A timeout is not a refusal, so it reads unknown rather
-                        // than down. Keep the last stats so the row still shows
-                        // its final figures.
-                        st.status = if probe.timed_out {
-                            LinkStatus::Unknown
-                        } else {
-                            LinkStatus::Down
-                        };
+                        // Neither path answered: down. Keep the last stats so the row
+                        // still shows its final figures.
+                        st.status = LinkStatus::Down;
                         if st.stats.is_none() {
                             st.source = StatsSource::None;
                         }
@@ -215,25 +198,8 @@ struct Probe {
     node: tape_crypto::Address,
     tried_mtls: bool,
     tried_public: bool,
-    timed_out: bool,
-    refused: bool,
     observe: Option<NodeStats>,
     public: Option<NodeStats>,
-}
-
-/// Whether the probe failed because we were busy rather than the peer unreachable.
-fn busy(error: &tape_protocol::api::ApiError) -> bool {
-    use tape_protocol::api::ApiError;
-    matches!(error, ApiError::Timeout | ApiError::RateLimited { .. })
-}
-
-/// Whether the peer answered and would not serve the mTLS path.
-fn refused_mtls(error: &tape_protocol::api::ApiError) -> bool {
-    use tape_protocol::api::ApiError;
-    matches!(
-        error,
-        ApiError::ServerError { .. } | ApiError::NotFound | ApiError::NodeUnresolved(_)
-    )
 }
 
 /// True when a deadline is unset (never fetched) or has passed.

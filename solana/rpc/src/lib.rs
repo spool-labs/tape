@@ -48,6 +48,3 @@ pub mod prelude {
     pub use crate::rpc::Rpc;
     pub use crate::CommitmentLevel;
 }
-
-/// Slots a leader holds in a row, which bounds how long a real skip run is.
-pub use solana_leader_schedule::NUM_CONSECUTIVE_LEADER_SLOTS;

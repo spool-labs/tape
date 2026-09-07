@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_core::types::SlotNumber;
 use tape_protocol::fetch::fetch_state;
 use tape_protocol::Api;
 use tape_retry::{retry_if, RetryConfig};
@@ -16,13 +17,13 @@ use tracing_subscriber::EnvFilter;
 use crate::config::node::NodeConfig;
 use crate::config::logs::{LoggingConfig, LoggingFormat};
 use crate::context::NodeContext;
-use crate::core::startup::{build_context, checkpoint_primary_store};
+use crate::core::startup::build_context;
 use crate::core::channels::{downstream_channels, drain_block_channel, store_channel};
 use crate::core::error::NodeError;
 use crate::core::types::{ChannelName, ServiceName};
 use crate::features::block::ingest_monitor;
 use crate::features::block::ingestor::BlockIngestor;
-use crate::features::bootstrap::{self, LiveStart};
+use crate::features::bootstrap;
 use crate::features::assignment::manager::AssignmentManager;
 use crate::features::challenge::ChallengeManager;
 use crate::features::eviction::manager::EvictionManager;
@@ -236,13 +237,13 @@ pub async fn bootstrap_with_status_listener<F>(
     bootstrap: F,
     mut http_server: JoinHandle<Result<(), NodeError>>,
     cancel: &CancellationToken,
-) -> Result<(LiveStart, JoinHandle<Result<(), NodeError>>), NodeError>
+) -> Result<(SlotNumber, JoinHandle<Result<(), NodeError>>), NodeError>
 where
-    F: Future<Output = Result<LiveStart, NodeError>>,
+    F: Future<Output = Result<SlotNumber, NodeError>>,
 {
     tokio::select! {
         result = bootstrap => match result {
-            Ok(start) => Ok((start, http_server)),
+            Ok(start_slot) => Ok((start_slot, http_server)),
             Err(error) => {
                 cancel.cancel();
                 let _ = http_server.await;
@@ -277,7 +278,7 @@ pub async fn join_http_server(handle: JoinHandle<Result<(), NodeError>>) -> Resu
 async fn supervise_with_context<Db, Cluster, Blockchain>(
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: NodeConfig,
-    start: LiveStart,
+    start_slot: SlotNumber,
     cancel: CancellationToken,
     http_server: JoinHandle<Result<(), NodeError>>,
 ) -> Result<(), NodeError>
@@ -299,11 +300,6 @@ where
             ServiceName::BalanceMonitor,
             BalanceMonitor::new(context.clone(), cancel.clone()).run(),
         );
-
-        supervisor.spawn(
-            ServiceName::ObserveStream,
-            crate::observe::StreamPublisher::new(context.clone(), cancel.clone()).run(),
-        );
     }
 
     #[cfg(feature = "metrics")]
@@ -323,7 +319,12 @@ where
 
     supervisor.spawn(
         ServiceName::BlockIngestor,
-        BlockIngestor::new(context.clone(), start, senders, cancel.clone()).run(),
+        BlockIngestor::new(
+            context.clone(),
+            start_slot,
+            senders,
+            cancel.clone()
+        ).run(),
     );
 
     supervisor.spawn(
@@ -442,7 +443,6 @@ where
         ).run(),
     );
 
-    let store = Arc::clone(&context.store);
     supervisor.spawn(
         ServiceName::GcManager,
         GcManager::new(
@@ -452,24 +452,7 @@ where
         ).run(),
     );
 
-    let outcome = supervisor.supervise().await;
-    // The store seals its tails only when something closes it. A process exit
-    // never runs the drop, and an unsealed tail reads as a crash to the next
-    // open, so the close happens here, after every writer has stopped.
-    info!("closing store");
-    match (outcome, store.inner().inner().close()) {
-        // A supervision failure is the root cause and stays the reported one.
-        (Err(outcome), Err(error)) => {
-            warn!(error = %error, "store close failed on shutdown");
-            Err(outcome)
-        }
-        // Nothing else went wrong, so an unsealed store is what this run means.
-        (Ok(()), Err(error)) => {
-            warn!(error = %error, "store close failed on shutdown");
-            Err(NodeError::Store(format!("close on shutdown: {error}")))
-        }
-        (outcome, Ok(())) => outcome,
-    }
+    supervisor.supervise().await
 }
 
 pub async fn run_with_context<Db, Cluster, Blockchain>(
@@ -483,24 +466,13 @@ where
 {
     let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
-    let (start, http_server) = match bootstrap_with_status_listener(
+    let (start_slot, http_server) = bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),
         http_server,
         &cancel,
     )
-    .await
-    {
-        Ok(ready) => ready,
-        Err(error) => {
-            // Bootstrap already replayed blocks into the store; the close is
-            // what settles them before the process reports the failure.
-            if let Err(close_error) = context.store.inner().inner().close() {
-                warn!(error = %close_error, "store close failed after bootstrap error");
-            }
-            return Err(error);
-        }
-    };
-    supervise_with_context(context, config, start, cancel, http_server).await
+    .await?;
+    supervise_with_context(context, config, start_slot, cancel, http_server).await
 }
 
 pub async fn start_with_context<Db, Cluster, Blockchain>(
@@ -514,23 +486,12 @@ where
 {
     let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
-    let (start, http_server) = match bootstrap_with_status_listener(
+    let (start_slot, http_server) = bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),
         http_server,
         &cancel,
     )
-    .await
-    {
-        Ok(ready) => ready,
-        Err(error) => {
-            // Bootstrap already replayed blocks into the store; the close is
-            // what settles them before the process reports the failure.
-            if let Err(close_error) = context.store.inner().inner().close() {
-                warn!(error = %close_error, "store close failed after bootstrap error");
-            }
-            return Err(error);
-        }
-    };
+    .await?;
     let status = NodeRuntimeStatus::new_running();
     let task_status = status.clone();
     let task_cancel = cancel.clone();
@@ -540,7 +501,7 @@ where
             let result = supervise_with_context(
                 context,
                 config,
-                start,
+                start_slot,
                 task_cancel,
                 http_server,
             )
@@ -555,18 +516,6 @@ where
 }
 
 pub async fn run_application(config: NodeConfig) -> Result<(), NodeError> {
-    // Before anything else, so "how long until this node is back" counts from
-    // process start rather than from whenever the first metrics scrape lands.
-    #[cfg(feature = "metrics")]
-    crate::observe::collectors::mark_process_start();
     let context = build_context(&config).await?;
-    let store = context.store.clone();
-    let result = run_with_context(context, config).await;
-
-    // Every service has joined here, so the volume is idle and this is the last
-    // thing asked of it. Run it however the supervisor ended: a node that exits
-    // on a failed service still restarts, and still pays for the sweep.
-    checkpoint_primary_store(&store);
-
-    result
+    run_with_context(context, config).await
 }

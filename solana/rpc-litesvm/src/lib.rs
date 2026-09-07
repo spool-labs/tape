@@ -64,7 +64,6 @@ struct Inner {
     /// lags confirmed slot by a small fixed amount so tests can exercise
     /// both commitment levels.
     finalized_tip_override: Option<u64>,
-    confirmed_tip_override: Option<u64>,
 }
 
 /// LiteSVM-backed Rpc implementation with simulated block production.
@@ -102,7 +101,6 @@ impl LiteSvmRpc {
                 confirmed_tip: 0,
                 pending_slot: 1,
                 finalized_tip_override: None,
-                confirmed_tip_override: None,
             })),
         }
     }
@@ -128,17 +126,6 @@ impl LiteSvmRpc {
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
         inner.finalized_tip_override = Some(slot);
-        Ok(())
-    }
-
-    /// Pin the slot returned by `get_confirmed_slot()`, which is what the block
-    /// ingestor promotes against.
-    pub fn set_confirmed_tip(&self, slot: u64) -> Result<(), RpcError> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        inner.confirmed_tip_override = Some(slot);
         Ok(())
     }
 
@@ -415,17 +402,6 @@ impl Rpc for LiteSvmRpc {
             .unwrap_or_else(|| inner.confirmed_tip.saturating_sub(DEFAULT_FINALIZED_LAG_SLOTS)))
     }
 
-    async fn get_confirmed_slot(&self) -> Result<u64, RpcError> {
-        let inner = self
-            .inner
-            .lock()
-            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        // one slot behind the producer, as a cluster's confirmed commitment is
-        Ok(inner
-            .confirmed_tip_override
-            .unwrap_or_else(|| inner.confirmed_tip.saturating_sub(1)))
-    }
-
     async fn get_first_available_block(&self) -> Result<u64, RpcError> {
         let inner = self
             .inner
@@ -456,12 +432,16 @@ impl Rpc for LiteSvmRpc {
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
 
-        // Above the tip a cluster says "not available"; a missing slot below it is a skip
         if slot > inner.confirmed_tip {
-            return Err(RpcError::BlockNotAvailable);
+            return Err(RpcError::Request(format!(
+                "SlotSkipped: slot {slot} not yet confirmed (tip: {})",
+                inner.confirmed_tip
+            )));
         }
 
-        let data = inner.slots.get(&slot).ok_or(RpcError::SlotSkipped)?;
+        let data = inner.slots.get(&slot).ok_or_else(|| {
+            RpcError::Request(format!("SlotSkipped: slot {slot} was skipped or not produced"))
+        })?;
 
         data.to_ui_confirmed_block()
             .map(tape_blocks::wire::Block::from)
@@ -511,22 +491,6 @@ impl Rpc for LiteSvmRpc {
         }
         .encode(UiTransactionEncoding::Json, Some(0))
         .map_err(|e| RpcError::Internal(format!("failed to encode transaction: {e}")))
-    }
-
-    async fn get_blocks(&self, start: u64, end: u64) -> Result<Vec<u64>, RpcError> {
-        let inner = self
-            .inner
-            .lock()
-            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
-        let end = end.min(inner.confirmed_tip);
-        let mut slots = Vec::new();
-        for slot in inner.slots.keys() {
-            if (start..=end).contains(slot) {
-                slots.push(*slot);
-            }
-        }
-        slots.sort_unstable();
-        Ok(slots)
     }
 
     async fn get_block_height(&self) -> Result<u64, RpcError> {

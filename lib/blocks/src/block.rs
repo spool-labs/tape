@@ -142,11 +142,18 @@ fn merge_transactions_with_sources(
 }
 
 fn transaction_id(tx: &wire::Transaction) -> Result<Option<Txid>, ParseError> {
-    // Already the signature's own bytes: base64 carries them as they are.
-    let Some(bytes) = tx.transaction.signatures.first() else {
+    let Some(encoded) = tx.transaction.signatures.first() else {
         return Ok(None);
     };
-    Ok(Some(Txid::from(*bytes)))
+
+    let bytes = bs58::decode(encoded)
+        .into_vec()
+        .map_err(|_| ParseError::InvalidTxId)?;
+    let bytes: [u8; 64] = bytes
+        .try_into()
+        .map_err(|_| ParseError::InvalidTxId)?;
+
+    Ok(Some(Txid::from(bytes)))
 }
 
 /// Parse a single transaction for tapedrive instructions and events.
@@ -161,7 +168,7 @@ fn parse_transaction(
 
     // Solana resolves compiled-instruction indices against static keys, then
     // ALT-loaded writable, then ALT-loaded readonly. Order is load-bearing.
-    let mut resolved_keys: Vec<Address> = raw_message.account_keys.clone();
+    let mut resolved_keys: Vec<String> = raw_message.account_keys.clone();
     if let Some(loaded) = &meta.loaded_addresses {
         resolved_keys.extend(loaded.writable.iter().cloned());
         resolved_keys.extend(loaded.readonly.iter().cloned());
@@ -225,7 +232,7 @@ fn parse_log_messages(meta: &wire::Meta) -> Result<Vec<TapedriveEvent>, ParseErr
 
 /// Parse inner instructions from transaction metadata.
 fn parse_inner_instructions(
-    account_keys: &[Address],
+    account_keys: &[String],
     meta: &wire::Meta,
 ) -> Result<BTreeMap<u8, Vec<RawInstruction>>, ParseError> {
     let mut instructions = BTreeMap::new();
@@ -512,7 +519,6 @@ mod tests {
             recent_blockhash: SolanaHash::new_unique().to_string(),
             instructions,
             address_table_lookups: None,
-            transaction_config: None,
         }
     }
 

@@ -12,7 +12,6 @@ use tracing::{debug, info, warn};
 use rpc::{CommitmentLevel, Rpc};
 use store::Store;
 use tape_core::types::{EpochNumber, SlotNumber};
-use tape_crypto::Hash;
 use tape_protocol::{fetch::fetch_state_with_commitment, Api, ProtocolState};
 use tape_retry::{retry_if, RetryConfig};
 use tape_store::ops::MetaOps;
@@ -26,20 +25,6 @@ use crate::features::store::manager::persist_batch;
 
 const BOOTSTRAP_EPOCH: EpochNumber = EpochNumber(0);
 const FIRST_LIVE_EPOCH: EpochNumber = EpochNumber(1);
-
-/// Where live ingest picks up: the first slot to fetch and the block it chains from
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LiveStart {
-    pub slot: SlotNumber,
-    pub parent: Option<Hash>,
-}
-
-impl LiveStart {
-    /// A start with no block to chain from
-    pub fn at(slot: SlotNumber) -> Self {
-        Self { slot, parent: None }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootstrapReplayPhase {
@@ -72,7 +57,7 @@ pub async fn run<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &NodeConfig,
     cancel: &CancellationToken,
-) -> Result<LiveStart, NodeError>
+) -> Result<SlotNumber, NodeError>
 where
     Db: Store + 'static,
     Cluster: Api + 'static,
@@ -86,40 +71,27 @@ pub async fn run_with_persist<Db, Cluster, Blockchain>(
     config: &NodeConfig,
     cancel: &CancellationToken,
     persist: ReplayPersistFn<Db>,
-) -> Result<LiveStart, NodeError>
+) -> Result<SlotNumber, NodeError>
 where
     Db: Store + 'static,
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let began = std::time::Instant::now();
     let checkpoint = fetch_protocol_checkpoint(context, cancel).await?;
     publish_protocol_checkpoint(context, &checkpoint).await?;
-    let checkpoint_ms = began.elapsed().as_millis();
-    debug!(node_id = context.node_id().0, checkpoint_ms, "bootstrap: checkpoint fetched");
 
-    let replay_began = std::time::Instant::now();
-    let start = run_replay_phases(context, config, &checkpoint, cancel, persist).await?;
-    let replay_ms = replay_began.elapsed().as_millis();
-    debug!(node_id = context.node_id().0, replay_ms, "bootstrap: replay done");
-
-    let validate_began = std::time::Instant::now();
+    let start_slot = run_replay_phases(context, config, &checkpoint, cancel, persist).await?;
     validate::validate_bootstrap_store(context.store.as_ref())?;
-    let validate_ms = validate_began.elapsed().as_millis();
     context.bootstrap.mark_ready();
 
     info!(
         node_id = context.node_id().0,
         checkpoint_slot = checkpoint.slot.0,
-        start_slot = start.slot.0,
-        checkpoint_ms,
-        replay_ms,
-        validate_ms,
-        total_ms = began.elapsed().as_millis(),
+        start_slot = start_slot.0,
         "bootstrap: complete, handing start slot to ingestor"
     );
 
-    Ok(start)
+    Ok(start_slot)
 }
 
 async fn run_replay_phases<Db, Cluster, Blockchain>(
@@ -128,14 +100,15 @@ async fn run_replay_phases<Db, Cluster, Blockchain>(
     checkpoint: &ProtocolCheckpoint,
     cancel: &CancellationToken,
     persist: ReplayPersistFn<Db>,
-) -> Result<LiveStart, NodeError>
+) -> Result<SlotNumber, NodeError>
 where
     Db: Store + 'static,
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
     if let Some(start_slot) = config.solana.start_slot {
-        return Ok(LiveStart::at(start_slot));
+        debug!(start_slot = start_slot.0, "bootstrap: live replay boundary");
+        return Ok(start_slot);
     }
 
     let cursor = context
@@ -149,16 +122,11 @@ where
     );
 
     if let Some(cursor) = cursor {
-        let parent = context
-            .store
-            .get_sync_parent()
-            .map_err(|error| NodeError::Store(format!("get_sync_parent: {error}")))?;
-
-        let start = if cursor < checkpoint.slot {
+        let start_slot = if cursor < checkpoint.slot {
             let start_slot = cursor.next();
             let start_epoch = epoch_for_slot(context, checkpoint.state.epoch(), start_slot).await?;
 
-            let parent = execute_block_phase(
+            execute_block_phase(
                 context,
                 &mut replay,
                 BootstrapReplayPhase::BlockReplay {
@@ -166,18 +134,18 @@ where
                     end_slot: checkpoint.slot,
                     start_epoch,
                 },
-                parent,
                 cancel,
                 persist,
             )
             .await?;
 
-            LiveStart { slot: checkpoint.slot.next(), parent }
+            checkpoint.slot.next()
         } else {
-            LiveStart { slot: cursor.next(), parent }
+            cursor.next()
         };
 
-        return Ok(start);
+        debug!(start_slot = start_slot.0, "bootstrap: live replay boundary");
+        return Ok(start_slot);
     }
 
     let current_epoch = checkpoint.state.epoch();
@@ -191,7 +159,10 @@ where
             persist,
         ).await?;
 
-        return Ok(LiveStart::at(checkpoint.slot.next()));
+        let start_slot = checkpoint.slot.next();
+        debug!(start_slot = start_slot.0, "bootstrap: live replay boundary");
+
+        return Ok(start_slot);
     }
 
     let snapshot_epochs =
@@ -227,7 +198,6 @@ where
                     end_slot: checkpoint.slot,
                     start_epoch: epoch,
                 },
-                None,
                 cancel,
                 persist,
             )
@@ -247,14 +217,15 @@ where
                     end_slot: checkpoint.slot,
                     start_epoch: FIRST_LIVE_EPOCH,
                 },
-                None,
                 cancel,
                 persist,
             ).await?;
         }
     }
 
-    Ok(LiveStart::at(checkpoint.slot.next()))
+    let start_slot = checkpoint.slot.next();
+    debug!(start_slot = start_slot.0, "bootstrap: live replay boundary");
+    Ok(start_slot)
 }
 
 async fn replay_base_epochs_to_checkpoint<Db, Cluster, Blockchain>(
@@ -284,7 +255,6 @@ where
                 end_slot: checkpoint_slot,
                 start_epoch: BOOTSTRAP_EPOCH,
             },
-            None,
             cancel,
             persist,
         ).await?;
@@ -307,12 +277,9 @@ where
             end_slot: checkpoint_slot,
             start_epoch: FIRST_LIVE_EPOCH,
         },
-        None,
         cancel,
         persist,
-    )
-    .await
-    .map(|_| ())
+    ).await
 }
 
 async fn replay_epoch_zero_base<Db, Cluster, Blockchain>(
@@ -348,23 +315,18 @@ where
             end_slot,
             start_epoch: BOOTSTRAP_EPOCH,
         },
-        None,
         cancel,
         persist,
-    )
-    .await
-    .map(|_| ())
+    ).await
 }
 
-/// Replays one block phase from `parent`, returning the last block applied or `parent` itself
 async fn execute_block_phase<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     replay: &mut ReplayEngine<'_, Db>,
     phase: BootstrapReplayPhase,
-    parent: Option<Hash>,
     cancel: &CancellationToken,
     persist: ReplayPersistFn<Db>,
-) -> Result<Option<Hash>, NodeError>
+) -> Result<(), NodeError>
 where
     Db: Store,
     Cluster: Api,
@@ -375,21 +337,20 @@ where
         end_slot,
         start_epoch,
     } = phase else {
-        return Ok(parent);
+        return Ok(());
     };
 
     if start_slot > end_slot {
-        return Ok(parent);
+        return Ok(());
     }
 
     context.bootstrap.begin_block_replay(start_slot.0, end_slot.0);
     replay.set_current_epoch(start_epoch);
-    let (events, last) = block::replay_finalized_range_with_persist(
+    let events = block::replay_finalized_range_with_persist(
         context,
         replay,
         start_slot,
         end_slot,
-        parent,
         cancel,
         persist,
     )
@@ -403,7 +364,7 @@ where
         "bootstrap: base block replayed"
     );
 
-    Ok(last)
+    Ok(())
 }
 
 async fn execute_snapshot_phase<Db, Cluster, Blockchain>(
@@ -533,7 +494,7 @@ where
 
     context
         .store
-        .set_sync_cursor(end_slot, None)
+        .set_sync_cursor(end_slot)
         .map_err(|error| NodeError::Store(format!("set_sync_cursor: {error}")))
 
 }
@@ -550,10 +511,7 @@ mod tests {
     use crate::config::node::NodeConfig;
     use crate::harness::{NodeHarness, TestContext};
 
-    use super::{advance_cursors, run, FIRST_LIVE_EPOCH, LiveStart};
-    use crate::chain::submit_set_network_tls;
-    use crate::core::error::NodeError;
-    use tape_crypto::Hash;
+    use super::{advance_cursors, run, FIRST_LIVE_EPOCH};
 
     async fn test_context_at(epoch: EpochNumber) -> TestContext {
         NodeHarness::builder()
@@ -577,12 +535,12 @@ mod tests {
         config.solana.start_slot = Some(SlotNumber(42));
         let cancel = CancellationToken::new();
 
-        let start = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
+        let slot = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
             .await
             .expect("bootstrap completed in time")
             .expect("bootstrap returned ok");
 
-        assert_eq!(start, LiveStart::at(SlotNumber(42)));
+        assert_eq!(slot, SlotNumber(42));
     }
 
     #[tokio::test]
@@ -591,14 +549,14 @@ mod tests {
         let config = NodeConfig::default();
         let cancel = CancellationToken::new();
 
-        context.store.set_sync_cursor(SlotNumber(999), None).unwrap();
+        context.store.set_sync_cursor(SlotNumber(999)).unwrap();
 
-        let start = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
+        let slot = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
             .await
             .expect("bootstrap completed in time")
             .expect("bootstrap returned ok");
 
-        assert_eq!(start, LiveStart::at(SlotNumber(1000)));
+        assert_eq!(slot, SlotNumber(1000));
     }
 
     #[tokio::test]
@@ -608,72 +566,14 @@ mod tests {
         let cancel = CancellationToken::new();
         let checkpoint = SlotNumber(context.rpc.get_finalized_slot().await.expect("finalized"));
 
-        let start = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
+        let slot = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
             .await
             .expect("bootstrap completed in time")
             .expect("bootstrap returned ok");
 
-        assert_eq!(start.slot, checkpoint.next());
+        assert_eq!(slot, checkpoint.next());
         assert_eq!(context.store.get_sync_cursor().unwrap(), Some(checkpoint));
-        // Live ingest chains from whatever the replay applied last, if anything.
-        assert_eq!(start.parent, context.store.get_sync_parent().unwrap());
     }
-
-    // a cursor whose parent is not the chain's block refuses to boot
-    #[tokio::test]
-    async fn diverged_boot() {
-        let harness = NodeHarness::builder()
-            .nodes(25)
-            .epoch(FIRST_LIVE_EPOCH)
-            .no_prev_snapshot_tape()
-            .build()
-            .await
-            .expect("build harness");
-        let context = harness.ctx_for(0);
-        let config = NodeConfig::default();
-        let cancel = CancellationToken::new();
-
-        // Two recorded blocks in a row; the instruction may fail, a block is recorded either way
-        let tip = context.rpc.get_slot().await.expect("tip");
-        let _ = submit_set_network_tls(
-            &context.rpc,
-            context.signer(),
-            context.node_address(),
-            context.tls_pubkey(),
-        )
-        .await;
-        harness.rpc().warp_to_slot(tip + 1).expect("close the first block");
-        let first = harness.produced_slot(&[tip, tip + 1]).await.expect("first block");
-        let _ = submit_set_network_tls(
-            &context.rpc,
-            context.signer(),
-            context.node_address(),
-            context.tls_pubkey(),
-        )
-        .await;
-        harness.rpc().warp_to_slot(first.0 + 2).expect("close the second block");
-        let second = harness
-            .produced_slot(&[first.0 + 1, first.0 + 2])
-            .await
-            .expect("second block");
-        harness.rpc().set_finalized_tip(second.0).expect("finalize");
-
-        // The cursor's parent is a block the chain never had
-        context.store.set_sync_cursor(first, Some(Hash::new_unique())).unwrap();
-        let refused = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
-            .await
-            .expect("bootstrap completed in time");
-        assert!(matches!(refused, Err(NodeError::ChainDiverged { .. })), "{refused:?}");
-
-        context.store.set_sync_cursor(first, Some(harness.block_hash(first).await)).unwrap();
-        let start = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
-            .await
-            .expect("bootstrap completed in time")
-            .expect("the chain's own head is accepted");
-        assert_eq!(start.slot, second.next());
-        assert_eq!(start.parent, Some(harness.block_hash(second).await));
-    }
-
 
     #[tokio::test]
     async fn no_op_path_leaves_cursor_untouched() {

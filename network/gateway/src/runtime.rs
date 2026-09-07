@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
+use tape_core::types::SlotNumber;
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{AppContext, NodeContext};
 use tape_node::core::startup::build_context;
@@ -13,7 +14,7 @@ use tape_node::core::error::NodeError;
 use tape_node::core::types::{ChannelName, ServiceName};
 use tape_node::features::block::ingest_monitor;
 use tape_node::features::block::ingestor::BlockIngestor;
-use tape_node::features::bootstrap::{self, LiveStart};
+use tape_node::features::bootstrap;
 use tape_node::features::replay::manager::ReplayManager;
 use tape_node::features::state::manager::StateManager;
 use tape_node::runtime::{bootstrap_with_status_listener, join_http_server};
@@ -22,7 +23,7 @@ use tape_protocol::Api;
 use tape_store::ops::AuditOps;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn, Instrument};
+use tracing::Instrument;
 
 use crate::admission::{AdmitAll, Admission};
 use crate::cache::GatewaySliceCache;
@@ -40,7 +41,7 @@ async fn supervise_with_context<Db, Cluster, Blockchain>(
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
     staging: Arc<StagingStore>,
-    start: LiveStart,
+    start_slot: SlotNumber,
     cancel: CancellationToken,
     http_server: JoinHandle<Result<(), NodeError>>,
 ) -> Result<(), NodeError>
@@ -60,11 +61,6 @@ where
     if context.config.metrics.enabled {
         tape_node::observe::mark_gateway_boards();
         tape_node::observe::register_block_channels(&senders, &store_tx);
-
-        supervisor.spawn(
-            ServiceName::ObserveStream,
-            tape_node::observe::StreamPublisher::new(context.clone(), cancel.clone()).run(),
-        );
     }
 
     supervisor.spawn(ServiceName::HttpServer, join_http_server(http_server));
@@ -126,7 +122,7 @@ where
 
     supervisor.spawn(
         ServiceName::BlockIngestor,
-        BlockIngestor::new(context.clone(), start, senders, cancel.clone()).run(),
+        BlockIngestor::new(context.clone(), start_slot, senders, cancel.clone()).run(),
     );
 
     supervisor.spawn(
@@ -169,14 +165,7 @@ where
         drain_block_channel(snapshot, cancel.clone(), ChannelName::SnapshotManager),
     );
 
-    let outcome = supervisor.supervise().await;
-    // The gateway writes the same store a node does, and the store settles its
-    // tails only when something closes it after every writer has stopped.
-    info!("closing store");
-    if let Err(error) = context.store.inner().inner().close() {
-        warn!(error = %error, "store close failed on shutdown");
-    }
-    outcome
+    supervisor.supervise().await
 }
 
 pub async fn run_with_context<Db, Cluster, Blockchain>(
@@ -215,7 +204,7 @@ where
         cancel.clone(),
     );
     let http_server = tokio::spawn(http_server.run().in_current_span());
-    let (start, http_server) = bootstrap_with_status_listener(
+    let (start_slot, http_server) = bootstrap_with_status_listener(
         bootstrap::run_with_persist(&context, &config, &cancel, crate::store::persist_batch::<Db>),
         http_server,
         &cancel,
@@ -228,7 +217,7 @@ where
         slice_cache,
         meter,
         staging,
-        start,
+        start_slot,
         cancel,
         http_server,
     )

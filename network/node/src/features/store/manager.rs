@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
@@ -11,10 +10,7 @@ use tape_protocol::Api;
 use tape_store::ops::{MetaOps, TrackDataOps};
 use tape_store::TapeStore;
 use tokio::sync::mpsc;
-use tokio::task::{spawn_blocking, JoinError, JoinHandle};
-use tokio::time::{interval, Interval, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
 
 use crate::context::NodeContext;
 use crate::core::atlas::short_label;
@@ -24,77 +20,13 @@ use crate::features::replay::types::{RawTrack, ReplayBatch};
 use crate::features::store::apply::apply_slot;
 use crate::features::store::util::is_responsible_for_group;
 
-/// How often the store is asked for one maintenance pass
-///
-/// A pass rewrites at most one segment, so the cadence is what decides whether
-/// owed work drains; the engine's operating guide calls for a one-second loop,
-/// and each pass paces itself against the volume's own rates, so this is a
-/// cadence and not a budget.
-const MAINTAIN_INTERVAL: Duration = Duration::from_secs(1);
-
-/// A maintenance pass running on the blocking pool
-pub type MaintenancePass = JoinHandle<store::Result<()>>;
-
-/// The timer a store manager drives its maintenance from
-///
-/// The engine starts no threads of its own, so a volume nobody ticks never
-/// compacts, merges or prunes its graves, and grows without bound.
-pub fn maintenance_ticker() -> Interval {
-    let mut ticker = interval(MAINTAIN_INTERVAL);
-    // A pass that outran its slot owes one pass, not every slot it sat through.
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    ticker
-}
-
-/// Start a pass unless one is still running, and report whatever the last returned
-///
-/// A backend that keeps its own housekeeping threads, and a volume opened
-/// read-only, both answer this without work, so the tick costs them one call.
-pub async fn tick_maintenance<Db: Store + 'static>(
-    store: &Arc<TapeStore<Db>>,
-    pass: &mut Option<MaintenancePass>,
-) {
-    // Ingest must never queue behind maintenance, so a pass that outlasts its
-    // slot keeps running and the tick is dropped rather than waited on.
-    if pass.as_ref().is_some_and(|running| !running.is_finished()) {
-        debug!("store maintenance still running, tick skipped");
-        return;
-    }
-
-    // Finished if it is here at all, so this resolves without yielding.
-    if let Some(done) = pass.take() {
-        settle(done.await);
-    }
-
-    let store = store.clone();
-    // Off the runtime: a pass is bounded in bytes rather than wall clock, so on
-    // a paced volume it blocks for as long as the bytes it moves owe.
-    *pass = Some(spawn_blocking(move || store.inner().inner().maintain()));
-}
-
-/// Wait out a pass still running, leaving the volume idle for whatever comes next
-pub async fn settle_maintenance(pass: Option<MaintenancePass>) {
-    if let Some(running) = pass {
-        settle(running.await);
-    }
-}
-
-/// Space is best effort: a failed pass is retried on the next tick and kills nothing
-fn settle(joined: Result<store::Result<()>, JoinError>) {
-    match joined {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => warn!(%error, "store maintenance pass failed"),
-        Err(source) => warn!(%source, "store maintenance pass panicked"),
-    }
-}
-
 pub struct StoreManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     rx: mpsc::Receiver<ReplayBatch>,
     cancel: CancellationToken,
 }
 
-impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluster, Blockchain> {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluster, Blockchain> {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         rx: mpsc::Receiver<ReplayBatch>,
@@ -108,20 +40,6 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluste
     }
 
     pub async fn run(mut self) -> Result<(), NodeError> {
-        let mut pass = None;
-        let result = self.drive(&mut pass).await;
-
-        // However the loop ended, the volume is left idle. The shutdown
-        // checkpoint takes its own cue and claims the compaction plane, which a
-        // pass still running would be holding.
-        settle_maintenance(pass).await;
-
-        result
-    }
-
-    async fn drive(&mut self, pass: &mut Option<MaintenancePass>) -> Result<(), NodeError> {
-        let mut ticker = maintenance_ticker();
-
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => return Ok(()),
@@ -141,8 +59,6 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluste
                     self.context.pending
                         .drop_slot(batch.slot);
                 }
-
-                _ = ticker.tick() => tick_maintenance(&self.context.store, pass).await,
             }
         }
     }
@@ -195,7 +111,7 @@ pub fn persist_batch_with<Db: Store>(
     persist_raw_tracks(store, &batch.raw_tracks, policy)?;
 
     store
-        .set_sync_cursor(batch.slot, Some(batch.blockhash))
+        .set_sync_cursor(batch.slot)
         .map_err(|error| NodeError::Store(format!("set_sync_cursor: {error}")))
 }
 
@@ -262,7 +178,6 @@ mod tests {
         let store = test_store();
         let batch = ReplayBatch {
             slot: SlotNumber(99),
-            blockhash: Hash::new_unique(),
             block_time: None,
             records: Vec::new(),
             raw_tracks: Vec::new(),
@@ -278,7 +193,6 @@ mod tests {
         let store = test_store();
         let batch = ReplayBatch {
             slot: SlotNumber(77),
-            blockhash: Hash::new_unique(),
             block_time: None,
             records: vec![record(ReplayableEvent::Track(ReplayTrack {
                 state: CompressedTrack {
@@ -318,7 +232,6 @@ mod tests {
 
         let batch = ReplayBatch {
             slot: SlotNumber(78),
-            blockhash: Hash::new_unique(),
             block_time: None,
             records: Vec::new(),
             raw_tracks: vec![RawTrack {
@@ -341,7 +254,6 @@ mod tests {
 
         let batch = ReplayBatch {
             slot: SlotNumber(79),
-            blockhash: Hash::new_unique(),
             block_time: None,
             records: Vec::new(),
             raw_tracks: vec![RawTrack {
