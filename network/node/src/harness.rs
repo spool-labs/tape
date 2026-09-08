@@ -5,9 +5,7 @@ use anyhow::{anyhow, Result};
 use peer_manager::PeerManager;
 use peer_memory::MemoryApi;
 use rpc_client::RpcClient;
-use rpc::Rpc;
 use rpc_litesvm::LiteSvmRpc;
-use tape_crypto::Hash;
 use store_memory::MemoryStore;
 use tape_chain_harness::{
     ChainHarness, ChainHarnessBuilder, HarnessNode, HarnessNodeSpec, IntoEpochNumber,
@@ -97,22 +95,6 @@ impl NodeHarness {
 
     pub fn rpc(&self) -> &LiteSvmRpc {
         self.chain.rpc()
-    }
-
-    /// The first of `candidates` the chain recorded a block at.
-    pub async fn produced_slot(&self, candidates: &[u64]) -> Option<SlotNumber> {
-        for &slot in candidates {
-            if self.rpc().get_block(slot).await.is_ok() {
-                return Some(SlotNumber(slot));
-            }
-        }
-        None
-    }
-
-    /// The hash of the block recorded at `slot`.
-    pub async fn block_hash(&self, slot: SlotNumber) -> Hash {
-        let block = self.rpc().get_block(slot.0).await.expect("recorded block");
-        block.blockhash.parse::<Hash>().expect("blockhash")
     }
 
     pub fn owned_spools(&self, index: usize) -> Vec<SpoolIndex> {

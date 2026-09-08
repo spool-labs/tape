@@ -394,12 +394,11 @@ fn render_node_table(
             .unwrap_or_else(|| "-".into());
         let strip = judged
             .map(|row| {
-                let mut cells: Vec<char> = (0..u64::BITS)
-                    .filter(|&at| row.judged >> at & 1 == 1)
-                    .map(|at| if row.recent >> at & 1 == 1 { '▮' } else { '·' })
-                    .collect();
-                cells.drain(..cells.len().saturating_sub(16));
-                cells.into_iter().collect::<String>()
+                let tail = row.recent.len().saturating_sub(16);
+                row.recent[tail..]
+                    .iter()
+                    .map(|proved| if *proved { '▮' } else { '·' })
+                    .collect::<String>()
             })
             .unwrap_or_else(|| "-".into());
 

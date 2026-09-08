@@ -44,7 +44,7 @@ use super::g2::G2Point;
 use super::hash::hash_to_curve;
 
 use solana_bn254::prelude::{
-    alt_bn128_g1_addition_be, alt_bn128_pairing_be,
+    alt_bn128_addition, alt_bn128_pairing,
 };
 
 pub fn aggregate_partials(partials: &[G1Point]) -> Result<G1Point, BLSError> {
@@ -57,7 +57,7 @@ pub fn aggregate_partials(partials: &[G1Point]) -> Result<G1Point, BLSError> {
         let mut inbuf = [0u8; 128];
         inbuf[..64].copy_from_slice(&acc);
         inbuf[64..].copy_from_slice(&s.0);
-        let out = alt_bn128_g1_addition_be(&inbuf).map_err(|_| BLSError::AltBN128AddError)?;
+        let out = alt_bn128_addition(&inbuf).map_err(|_| BLSError::AltBN128AddError)?;
         acc.copy_from_slice(&out[..64]);
     }
     Ok(G1Point(acc))
@@ -79,14 +79,6 @@ pub fn verify_aggregate<M: AsRef<[u8]>>(
     // Hash message to G1 once
     let h_g1 = hash_to_curve(message.as_ref())?.0;
 
-    // Every signer pairs H(m) against its own key because the on-chain syscall
-    // set has no G2 addition, so a quorum costs k+1 Miller loops. Off chain
-    // there is addition, and one summed key needs two.
-    #[cfg(not(target_os = "solana"))]
-    let signer_pubkeys = &[sum_pubkeys(signer_pubkeys)?];
-    #[cfg(not(target_os = "solana"))]
-    let k = 1;
-
     // Build input for pairing:
     // For each signer: pair (H(m), PK_i)
     // Final pair: (S_sum, -G2).
@@ -102,48 +94,13 @@ pub fn verify_aggregate<M: AsRef<[u8]>>(
     input[off..off + 64].copy_from_slice(&s_sum.0);
     input[off + 64..off + 192].copy_from_slice(&G2_MINUS_ONE);
 
-    let r = alt_bn128_pairing_be(&input).map_err(|_| BLSError::AltBN128PairingError)?;
+    let r = alt_bn128_pairing(&input).map_err(|_| BLSError::AltBN128PairingError)?;
     let ok = r.iter().take(31).all(|&b| b == 0) && r[31] == 1;
     if ok {
         Ok(())
     } else {
         Err(BLSError::BLSVerificationError)
     }
-}
-
-/// Verifies against a key already summed over the quorum, for callers that
-/// certify many spools under one signer set.
-#[cfg(not(target_os = "solana"))]
-pub fn verify_aggregate_summed<M: AsRef<[u8]>>(
-    message: M,
-    summed: &G2Point,
-    s_sum: &G1Point,
-) -> Result<(), BLSError> {
-    if s_sum.0 == [0u8; 64] || summed.0 == [0u8; 128] {
-        return Err(BLSError::SerializationError);
-    }
-    let h_g1 = hash_to_curve(message.as_ref())?.0;
-
-    let mut input = [0u8; 384];
-    input[..64].copy_from_slice(&h_g1);
-    input[64..192].copy_from_slice(&summed.0);
-    input[192..256].copy_from_slice(&s_sum.0);
-    input[256..384].copy_from_slice(&G2_MINUS_ONE);
-
-    let r = alt_bn128_pairing_be(&input).map_err(|_| BLSError::AltBN128PairingError)?;
-    let ok = r.iter().take(31).all(|&b| b == 0) && r[31] == 1;
-    if ok { Ok(()) } else { Err(BLSError::BLSVerificationError) }
-}
-
-/// Sums the signers' keys so a quorum verifies in one pairing product.
-#[cfg(not(target_os = "solana"))]
-pub fn sum_pubkeys(pubkeys: &[G2Point]) -> Result<G2Point, BLSError> {
-    use num::CheckedAdd;
-    let mut acc = pubkeys[0];
-    for pubkey in &pubkeys[1..] {
-        acc = acc.checked_add(pubkey).ok_or(BLSError::AltBN128AddError)?;
-    }
-    Ok(acc)
 }
 
 fn check_pubkeys(pubkeys: &[G2Point]) -> bool {

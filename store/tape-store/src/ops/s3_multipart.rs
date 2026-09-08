@@ -5,10 +5,7 @@ use tape_crypto::hash::{hash, Hash};
 
 use crate::columns::{S3MultipartPartCol, S3MultipartPartDataCol, S3MultipartUploadCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{
-    MultipartPart, MultipartPartChunk, MultipartPartChunkKey, MultipartPartKey, MultipartUpload,
-    MULTIPART_CHUNK_BYTES,
-};
+use crate::types::{MultipartPart, MultipartPartData, MultipartPartKey, MultipartUpload};
 use crate::TapeStore;
 
 /// Digest of an opaque upload id, used as the fixed-width key prefix shared by
@@ -20,13 +17,6 @@ fn upload_digest(upload_id: &str) -> Hash {
 /// The `(upload, part_number)` key for one part of an upload.
 fn part_key(upload_id: &str, part_number: u32) -> MultipartPartKey {
     MultipartPartKey::new(upload_digest(upload_id), part_number)
-}
-
-/// Chunks a part of `size` bytes occupies. An empty part still takes one chunk,
-/// so a stored zero-byte part reads back as present rather than missing.
-fn chunk_count(size: usize) -> u32 {
-    let count = size.div_ceil(MULTIPART_CHUNK_BYTES).max(1);
-    count as u32
 }
 
 /// Serialize a value to raw bytes for a write batch.
@@ -46,8 +36,8 @@ pub trait MultipartOps {
     /// Fetch the metadata for `upload_id`, if present
     fn get_multipart_upload(&self, upload_id: &str) -> Result<Option<MultipartUpload>>;
 
-    /// Insert or overwrite one part of `upload_id` (re-upload overwrites). Chunks
-    /// land first and the metadata row last, so a part is readable only once whole.
+    /// Insert or overwrite one part of `upload_id` (re-upload overwrites). The
+    /// metadata and payload are written together in one atomic batch.
     fn put_multipart_part(
         &self,
         upload_id: &str,
@@ -59,8 +49,7 @@ pub trait MultipartOps {
     /// order, without reading any payload bytes
     fn list_multipart_parts(&self, upload_id: &str) -> Result<Vec<MultipartPart>>;
 
-    /// The buffered payload of one part of `upload_id`, rejoined from its chunks,
-    /// if present
+    /// The buffered payload of one part of `upload_id`, if present
     fn get_multipart_part_data(&self, upload_id: &str, part_number: u32) -> Result<Option<Vec<u8>>>;
 
     /// Every in-flight upload as `(upload_id, metadata)`, for ListMultipartUploads
@@ -86,50 +75,14 @@ impl<Backend: Store> MultipartOps for TapeStore<Backend> {
         part: &MultipartPart,
         data: Vec<u8>,
     ) -> Result<()> {
-        let digest = upload_digest(upload_id);
         let key = encode(&part_key(upload_id, part.part_number), "multipart part key")?;
         let metadata = encode(part, "multipart part metadata")?;
-        let count = chunk_count(data.len());
-        let raw = self.inner().inner();
+        let payload = encode(&MultipartPartData { data }, "multipart part payload")?;
 
-        // Retire the part before rewriting it: the metadata row is what makes a part
-        // readable, so dropping it first keeps a half-written part out of every read,
-        // and the chunks a shorter re-upload no longer fills go with it.
-        let prefix = MultipartPartChunkKey::part_prefix(digest, part.part_number);
-        let mut retire = WriteBatch::new();
-        retire.delete(S3MultipartPartCol::CF_NAME, &key);
-        for stale in raw.iter_keys_prefix(S3MultipartPartDataCol::CF_NAME, &prefix)? {
-            let chunk_key: MultipartPartChunkKey =
-                wincode::deserialize(&stale).map_err(|error| {
-                    TapeStoreError::Serialization(format!("multipart chunk key: {error}"))
-                })?;
-            if chunk_key.chunk_index >= count {
-                retire.delete(S3MultipartPartDataCol::CF_NAME, &stale);
-            }
-        }
-        raw.write_batch(retire)?;
-
-        // A reel batch has to fit one segment the same way a value does, so each
-        // chunk is written on its own.
-        for index in 0..count {
-            let offset = index as usize * MULTIPART_CHUNK_BYTES;
-            let end = data.len().min(offset + MULTIPART_CHUNK_BYTES);
-            let chunk_key = encode(
-                &MultipartPartChunkKey::new(digest, part.part_number, index),
-                "multipart chunk key",
-            )?;
-            let chunk = MultipartPartChunk {
-                data: data[offset..end].to_vec(),
-            };
-            let payload = encode(&chunk, "multipart chunk payload")?;
-            let mut batch = WriteBatch::new();
-            batch.put(S3MultipartPartDataCol::CF_NAME, &chunk_key, &payload);
-            raw.write_batch(batch)?;
-        }
-
-        let mut publish = WriteBatch::new();
-        publish.put(S3MultipartPartCol::CF_NAME, &key, &metadata);
-        raw.write_batch(publish)?;
+        let mut batch = WriteBatch::new();
+        batch.put(S3MultipartPartCol::CF_NAME, &key, &metadata);
+        batch.put(S3MultipartPartDataCol::CF_NAME, &key, &payload);
+        self.inner().inner().write_batch(batch)?;
         Ok(())
     }
 
@@ -153,27 +106,9 @@ impl<Backend: Store> MultipartOps for TapeStore<Backend> {
     }
 
     fn get_multipart_part_data(&self, upload_id: &str, part_number: u32) -> Result<Option<Vec<u8>>> {
-        let prefix = MultipartPartChunkKey::part_prefix(upload_digest(upload_id), part_number);
-
-        // The 36-byte prefix scopes the scan to this part, and the chunk-index
-        // suffix orders it, so concatenating the values rebuilds the part.
-        let mut data = Vec::new();
-        let mut is_present = false;
-        for (_key, value) in self
-            .inner()
-            .inner()
-            .iter_prefix(S3MultipartPartDataCol::CF_NAME, &prefix)?
-        {
-            let chunk: MultipartPartChunk = wincode::deserialize(&value).map_err(|error| {
-                TapeStoreError::Serialization(format!("multipart chunk payload: {error}"))
-            })?;
-            data.extend_from_slice(&chunk.data);
-            is_present = true;
-        }
-        match is_present {
-            true => Ok(Some(data)),
-            false => Ok(None),
-        }
+        Ok(self
+            .get::<S3MultipartPartDataCol>(&part_key(upload_id, part_number))?
+            .map(|payload| payload.data))
     }
 
     fn list_multipart_uploads(&self) -> Result<Vec<(String, MultipartUpload)>> {
@@ -222,26 +157,6 @@ mod tests {
             initiated: 1_000,
             principal: Address::new_unique(),
         }
-    }
-
-    // Bytes that vary with position, so a dropped or reordered chunk shows up.
-    fn pattern(size: usize) -> Vec<u8> {
-        let mut data = Vec::with_capacity(size);
-        for index in 0..size {
-            data.push((index % 251) as u8);
-        }
-        data
-    }
-
-    // Number of chunk records held for an upload, across all of its parts.
-    fn stored_chunks(store: &TapeStore<MemoryStore>, upload_id: &str) -> usize {
-        let prefix = MultipartPartKey::upload_prefix(upload_digest(upload_id));
-        store
-            .inner()
-            .inner()
-            .iter_keys_prefix(S3MultipartPartDataCol::CF_NAME, &prefix)
-            .expect("scan chunks")
-            .len()
     }
 
     fn put_part(store: &TapeStore<MemoryStore>, upload_id: &str, part_number: u32, data: &[u8]) {
@@ -310,49 +225,19 @@ mod tests {
         assert!(store.get_multipart_part_data("u1", 2).expect("data").is_none());
     }
 
-    // re-uploading a part number overwrites it, dropping the chunks it no longer fills
+    // re-uploading a part number overwrites it
     #[test]
     fn part_overwrite() {
         let store = store();
-        put_part(&store, "u1", 1, &pattern(MULTIPART_CHUNK_BYTES + 7));
+        put_part(&store, "u1", 1, b"old");
         put_part(&store, "u1", 1, b"new");
 
         let parts = store.list_multipart_parts("u1").expect("list parts");
         assert_eq!(parts.len(), 1);
-        assert_eq!(stored_chunks(&store, "u1"), 1);
         assert_eq!(
             store.get_multipart_part_data("u1", 1).expect("data"),
             Some(b"new".to_vec())
         );
-    }
-
-    // a part longer than one chunk reads back whole
-    #[test]
-    fn multi_chunk_part() {
-        let store = store();
-        let data = pattern(MULTIPART_CHUNK_BYTES * 2 + 7);
-
-        put_part(&store, "u1", 1, &data);
-
-        assert_eq!(stored_chunks(&store, "u1"), 3);
-        assert_eq!(store.list_multipart_parts("u1").expect("list")[0].size, data.len() as u64);
-        assert_eq!(store.get_multipart_part_data("u1", 1).expect("data"), Some(data));
-    }
-
-    // deleting an upload removes every chunk of every part
-    #[test]
-    fn delete_clears_chunks() {
-        let store = store();
-        store.put_multipart_upload("u1", &upload()).expect("put upload");
-        put_part(&store, "u1", 1, &pattern(MULTIPART_CHUNK_BYTES + 7));
-        put_part(&store, "u1", 2, &pattern(MULTIPART_CHUNK_BYTES * 2));
-        assert_eq!(stored_chunks(&store, "u1"), 4);
-
-        store.delete_multipart_upload("u1").expect("delete");
-
-        assert_eq!(stored_chunks(&store, "u1"), 0);
-        assert!(store.get_multipart_part_data("u1", 1).expect("data").is_none());
-        assert!(store.get_multipart_part_data("u1", 2).expect("data").is_none());
     }
 
     // delete removes the upload and all of its parts, leaving others intact

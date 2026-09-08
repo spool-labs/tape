@@ -176,14 +176,3 @@ impl Tape {
 }
 
 tape_solana::state!(AccountType, Tape);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // an account shorter than a tape unpacks as an error, not a panic
-    #[test]
-    fn short_account() {
-        assert!(Tape::unpack_with_discriminator(&[0u8; 14]).is_err());
-    }
-}

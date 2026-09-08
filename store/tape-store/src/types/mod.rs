@@ -17,8 +17,8 @@ pub use enums::{
 
 // Re-export key types
 pub use keys::{
-    AuditKey, ChallengeRoundKey, EpochKey, EventLogKey, LedgerReservationKey,
-    MultipartPartChunkKey, MultipartPartKey, PeerRecordKey, PendingWriteChunkKey, PendingWriteKey,
+    AuditKey, ChallengeRoundKey, EpochKey, EventLogKey, LedgerReservationKey, MultipartPartKey,
+    PeerRecordKey,
     ObjectListKey, PolicyRuleKey, SliceKey, SnapshotArtifactKey, SpoolIndexKey, TrackLookupKey,
     TrackSampleKey, UnitKey, VoteSigKey,
 };
@@ -26,8 +26,7 @@ pub use keys::{
 // Re-export value types
 pub use values::{
     AuditEntry, AuthState, BudgetLimits, Credential, CredentialCaps, InvalidationProof,
-    LedgerEntry, LedgerReservation, MultipartPart, MultipartPartChunk, MultipartUpload,
-    MULTIPART_CHUNK_BYTES, ObjectListEntry, ObjectMetadata, PendingOp, PendingState, PendingWrite,
-    PendingWriteChunk, PENDING_WRITE_CHUNK_BYTES, PolicyRule, SliceWrite,
+    LedgerEntry, LedgerReservation, MultipartPart, MultipartPartData, MultipartUpload,
+    ObjectListEntry, ObjectMetadata, PolicyRule, SliceWrite,
     SnapshotArtifact, TapeInfo, TrackSample,
 };

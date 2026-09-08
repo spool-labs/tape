@@ -73,29 +73,6 @@ impl SuccessCertificate {
         ChallengeAttestMessage::new(self.epoch, self.group, self.round, self.spool, self.block)
     }
 
-    /// Whether this certificate stands, against a quorum key summed once for
-    /// the whole signer set.
-    #[cfg(not(target_os = "solana"))]
-    pub fn verify_summed(
-        &self,
-        threshold: usize,
-        owner: Address,
-        quorum: &crate::bls::BlsQuorumKey,
-    ) -> Result<(), CertificateRejection> {
-        if self.signers.len() < threshold {
-            return Err(CertificateRejection::BelowQuorum);
-        }
-        if self.signers.iter().all(|signer| *signer == owner) {
-            return Err(CertificateRejection::OwnerOnly);
-        }
-        if self.signers.windows(2).any(|pair| pair[0] >= pair[1]) {
-            return Err(CertificateRejection::DuplicateSigner);
-        }
-        self.signature
-            .verify_quorum(self.message().to_bytes(), quorum)
-            .map_err(|_| CertificateRejection::BadAggregate)
-    }
-
     /// Whether this certificate stands.
     pub fn verify(
         &self,

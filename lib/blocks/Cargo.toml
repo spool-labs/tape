@@ -17,8 +17,6 @@ tape-crypto = { workspace = true }
 
 # Solana RPC block types
 solana-transaction-status = { workspace = true }
-solana-transaction = { workspace = true }
-wincode = "0.5"
 
 # Serialization/parsing
 base64 = { workspace = true }

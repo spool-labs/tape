@@ -188,12 +188,6 @@ impl TestGateway {
         Ok((s3_addr, admin_addr))
     }
 
-    /// Move the S3 listener to `addr` before start, for a run reachable from outside the process
-    pub fn set_s3_listen(&mut self, addr: SocketAddr) {
-        self.app_config.gateway.s3.listen = addr;
-        self.s3_listen = Some(addr);
-    }
-
     /// Persist this gateway's keypair as a Solana-format JSON keypair file (a JSON
     /// array of the 64 keypair bytes) so the S3 write context can load it as the
     /// delegate signer. The derived pubkey equals [`authority`](Self::authority),

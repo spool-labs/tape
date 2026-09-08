@@ -55,7 +55,6 @@ tower-http = { version = "0.6", features = ["trace"] }
 bytemuck = { workspace = true }
 tape-slicer = { workspace = true }
 tape-snapshot = { workspace = true }
-base64 = { workspace = true }
 wincode = { workspace = true }
 lz4_flex = { workspace = true }
 rlimit = "0.10"
@@ -92,5 +91,4 @@ metrics = [
     "dep:memory-stats",
     "rpc-client/metrics",
     "store/metrics",
-    "reel-store/metrics",
 ]

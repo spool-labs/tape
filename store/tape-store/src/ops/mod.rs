@@ -18,7 +18,6 @@
 //! - `AuditOps`: Append-only write-authorization audit log (append/scan)
 //! - `LedgerOps`: Per-principal accounting ledger (atomic reserve/commit/refund + TTL sweep)
 //! - `MultipartOps`: Durable S3 multipart upload state (upload + part CRUD)
-//! - `PendingWriteOps`: Durable queue of S3 writes waiting to reach the chain
 
 mod audit_log;
 mod auth_state;
@@ -32,7 +31,6 @@ mod object_list;
 mod object_metadata;
 mod policy;
 mod s3_multipart;
-mod s3_pending;
 mod sample;
 mod snapshot;
 mod slice;
@@ -55,7 +53,6 @@ pub use object_list::{ObjectListOps, ObjectListPage};
 pub use object_metadata::ObjectMetadataOps;
 pub use policy::{PolicyDecision, PolicyOps};
 pub use s3_multipart::MultipartOps;
-pub use s3_pending::PendingWriteOps;
 pub use sample::SampleOps;
 pub use snapshot::SnapshotOps;
 pub use slice::SliceOps;

@@ -14,7 +14,6 @@ pub const OBSERVE_BOARD_PATH: &str = tape_observe_api::BOARD_PATH;
 pub const OBSERVE_NETWORK_PATH: &str = tape_observe_api::NETWORK_PATH;
 pub const OBSERVE_PEER_PATH: &str = tape_observe_api::PEER_BOARD_PATH;
 pub const OBSERVE_ATLAS_PATH: &str = tape_observe_api::ATLAS_PATH;
-pub const OBSERVE_STREAM_PATH: &str = tape_observe_api::STREAM_PATH;
 
 pub const VOTE_PATH: &str = "/v1/votes";
 

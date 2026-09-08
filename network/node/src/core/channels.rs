@@ -10,15 +10,18 @@ use crate::features::block::ingestor::ParsedBlock;
 use crate::features::replay::types::ReplayBatch;
 use tape_crypto::hash::Hash;
 
-/// Chain events that open and settle challenge rounds
+/// Chain events used to open and settle challenge rounds.
+///
+/// A round opens from a produced block, becomes valid at finality, and is
+/// discarded if its candidate is rolled back.
 #[derive(Debug)]
 pub enum ChainEvent {
     /// A confirmed block, which may seed a round.
     Produced(Arc<ParsedBlock>),
     /// Blocks that lost, newest first. Any round they seeded is void.
     Rolled(Vec<Hash>),
-    /// A block that promoted at confirmed commitment
-    Confirmed(Hash),
+    /// A block that survived to finality.
+    Finalized(Hash),
 }
 
 const PARSED_BLOCK_CHANNEL_CAPACITY: usize = 256;

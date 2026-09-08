@@ -10,7 +10,6 @@ peer-manager = { workspace = true }
 tape-api = { workspace = true }
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
-tape-store = { workspace = true }
 peer-tls = { workspace = true }
 async-trait.workspace = true
 reqwest = { workspace = true }

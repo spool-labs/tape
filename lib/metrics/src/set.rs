@@ -4,8 +4,7 @@ use std::sync::OnceLock;
 
 use prometheus::{
     register_histogram_vec_with_registry, register_int_counter_vec_with_registry,
-    register_int_counter_with_registry, register_int_gauge_with_registry, HistogramVec, IntCounter,
-    IntCounterVec, IntGauge, Registry,
+    register_int_counter_with_registry, HistogramVec, IntCounter, IntCounterVec, Registry,
 };
 
 use crate::MetricsRegistry;
@@ -19,7 +18,6 @@ const DECODE_BUCKETS: &[f64] = &[0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0
 /// reflect live external state are emitted by pull collectors instead.
 pub struct Metrics {
     pub http_request_duration: HistogramVec,
-    pub http_request_bytes_total: IntCounterVec,
     pub http_response_bytes_total: IntCounterVec,
 
     pub blocks_processed_total: IntCounter,
@@ -35,11 +33,6 @@ pub struct Metrics {
 
     pub cache_requests_total: IntCounterVec,
     pub cache_evicted_total: IntCounter,
-
-    pub pending_writes_total: IntCounterVec,
-    pub pending_writes_queued: IntGauge,
-    pub pending_writes_queued_bytes: IntGauge,
-    pub delegate_lamports: IntGauge,
 
     // Stats endpoint only — intentionally NOT registered, so the HTTP histogram
     // stays the single Prometheus source for request and byte rates.
@@ -59,13 +52,6 @@ impl Metrics {
                 registry
             )
             .expect("register tape_http_request_duration_seconds"),
-            http_request_bytes_total: register_int_counter_vec_with_registry!(
-                "tape_http_request_bytes_total",
-                "HTTP request body bytes received",
-                &["route"],
-                registry
-            )
-            .expect("register tape_http_request_bytes_total"),
             http_response_bytes_total: register_int_counter_vec_with_registry!(
                 "tape_http_response_bytes_total",
                 "HTTP response body bytes served",
@@ -148,32 +134,6 @@ impl Metrics {
                 registry
             )
             .expect("register tape_gw_cache_evicted_total"),
-
-            pending_writes_total: register_int_counter_vec_with_registry!(
-                "tape_gw_pending_writes_total",
-                "Queued S3 writes by outcome",
-                &["outcome"],
-                registry
-            )
-            .expect("register tape_gw_pending_writes_total"),
-            pending_writes_queued: register_int_gauge_with_registry!(
-                "tape_gw_pending_writes_queued",
-                "S3 writes queued and not yet applied on chain",
-                registry
-            )
-            .expect("register tape_gw_pending_writes_queued"),
-            pending_writes_queued_bytes: register_int_gauge_with_registry!(
-                "tape_gw_pending_writes_queued_bytes",
-                "Object bytes queued and not yet applied on chain",
-                registry
-            )
-            .expect("register tape_gw_pending_writes_queued_bytes"),
-            delegate_lamports: register_int_gauge_with_registry!(
-                "tape_gw_delegate_lamports",
-                "SOL balance of the S3 delegate signer, in lamports",
-                registry
-            )
-            .expect("register tape_gw_delegate_lamports"),
 
             requests_total: IntCounter::new("tape_node_requests_total", "Requests handled")
                 .expect("tape_node_requests_total"),

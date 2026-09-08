@@ -8,7 +8,7 @@ use nix::sys::signal::Signal;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use reel_store::Reserve;
+use reel_store::{default_backend, Reserve, DEFAULT_SYNC_BYTES};
 use store::{Column, Store};
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::EpochNumber;
@@ -436,10 +436,10 @@ fn lose_slices(store_path: &std::path::Path, one_in: usize) -> Result<usize> {
     // the reservation the generated config gives it.
     let store = reel_store::open_node_store(
         store_path,
-        reel_store::NodeStoreOptions {
-            reserve: Reserve::Small,
-            ..reel_store::NodeStoreOptions::default()
-        },
+        0,
+        DEFAULT_SYNC_BYTES,
+        default_backend(),
+        Reserve::Small,
     )
     .context("open stopped node store")?;
     let raw = store.inner().inner();

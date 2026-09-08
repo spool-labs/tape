@@ -64,10 +64,10 @@ fn ring_holds() {
     let store = with_default(tracing_subscriber::registry().with(warnings.clone()), || {
         reel_store::open_node_store(
             dir.path().join("volume"),
-            reel_store::NodeStoreOptions {
-                backend: reel::IoBackend::Uring,
-                ..reel_store::NodeStoreOptions::default()
-            },
+            0,
+            reel_store::DEFAULT_SYNC_BYTES,
+            reel::IoBackend::Uring,
+            reel_store::Reserve::Fleet,
         )
         .expect("open the node store")
     });

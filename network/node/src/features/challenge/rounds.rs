@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use tape_core::bls::BlsSignature;
 use tape_core::challenge::ProofOfAccess;
@@ -19,30 +19,12 @@ pub struct RoundKey {
 #[derive(Default)]
 pub struct RoundBuffer {
     entries: Mutex<HashMap<RoundKey, RoundEntry>>,
-    verifying: Mutex<HashSet<RoundKey>>,
-}
-
-/// Holds a key's verify slot until dropped
-pub struct VerifyGuard {
-    buffer: Arc<RoundBuffer>,
-    key: RoundKey,
-}
-
-impl Drop for VerifyGuard {
-    fn drop(&mut self) {
-        if let Ok(mut verifying) = self.buffer.verifying.lock() {
-            verifying.remove(&self.key);
-        }
-    }
 }
 
 #[derive(Default)]
 struct RoundEntry {
     answer: Option<ProofOfAccess>,
-    /// Ordered, so what comes back out is in a fixed order whatever order it
-    /// arrived in, which is what the aggregate's bytes depend on.
-    attestations: BTreeMap<Address, BlsSignature>,
-    refused: BTreeSet<Address>,
+    attestations: HashMap<Address, BlsSignature>,
     certified: bool,
 }
 
@@ -59,14 +41,6 @@ impl RoundBuffer {
         true
     }
 
-    /// Claims the verify slot for a key, or nothing if another task holds it
-    pub fn begin_verify(self: &Arc<Self>, key: RoundKey) -> Option<VerifyGuard> {
-        let mut verifying = self.verifying.lock().expect("round buffer");
-        verifying
-            .insert(key)
-            .then(|| VerifyGuard { buffer: self.clone(), key })
-    }
-
     pub fn answer(&self, key: RoundKey) -> Option<ProofOfAccess> {
         let entries = self.entries.lock().expect("round buffer");
         entries.get(&key)?.answer.clone()
@@ -81,24 +55,7 @@ impl RoundBuffer {
     ) -> bool {
         let mut entries = self.entries.lock().expect("round buffer");
         let entry = entries.entry(key).or_default();
-        // Removing the rejected signature would otherwise let the same sender
-        // post another, and each one costs the aggregate a fresh pairing.
-        if entry.refused.contains(&signer) {
-            return false;
-        }
-
         entry.attestations.insert(signer, signature).is_none()
-    }
-
-    /// Drops one signer's attestation, for a signature the aggregate rejected.
-    pub fn drop_attestation(&self, key: RoundKey, signer: Address) -> bool {
-        let mut entries = self.entries.lock().expect("round buffer");
-        let Some(entry) = entries.get_mut(&key) else {
-            return false;
-        };
-
-        entry.refused.insert(signer);
-        entry.attestations.remove(&signer).is_some()
     }
 
     pub fn signers(&self, key: RoundKey) -> Vec<Address> {
@@ -160,12 +117,6 @@ impl RoundBuffer {
         entries.retain(|key, _| (key.epoch, key.round) >= (epoch, round));
     }
 
-    /// Every round still held, for a sweep that no arrival drives.
-    pub fn keys(&self) -> Vec<RoundKey> {
-        let entries = self.entries.lock().expect("round buffer");
-        entries.keys().copied().collect()
-    }
-
     pub fn len(&self) -> usize {
         self.entries.lock().expect("round buffer").len()
     }
@@ -217,24 +168,6 @@ mod tests {
         BlsPrivateKey::from_random().sign(b"round buffer").expect("sign")
     }
 
-    // one verifier at a time per key, so relayed copies skip the pairing
-    #[test]
-    fn one_verifier() {
-        let buffer = Arc::new(RoundBuffer::default());
-        let key = key(1, 4);
-
-        let held = buffer.begin_verify(key).expect("free");
-        assert!(buffer.begin_verify(key).is_none());
-        assert!(buffer.begin_verify(key_other()).is_some(), "a different key is unaffected");
-
-        drop(held);
-        assert!(buffer.begin_verify(key).is_some(), "the slot frees when the guard drops");
-    }
-
-    fn key_other() -> RoundKey {
-        RoundKey { spool: SpoolIndex(9), ..key(1, 4) }
-    }
-
     // a second answer is a relay duplicate or an owner answering twice, and
     // neither displaces what the group is already attesting to
     #[test]
@@ -258,21 +191,6 @@ mod tests {
         assert!(buffer.accept_attestation(key, peer, signature()));
         assert!(!buffer.accept_attestation(key, peer, signature()));
         assert_eq!(buffer.signers(key), vec![peer]);
-    }
-
-    // a signer whose signature the aggregate rejected gets no second try at the
-    // same spool
-    #[test]
-    fn dropped_stays_out() {
-        let buffer = RoundBuffer::default();
-        let key = key(1, 4);
-        let peer = Address::new_unique();
-        buffer.accept_attestation(key, peer, signature());
-
-        assert!(buffer.drop_attestation(key, peer));
-
-        assert!(!buffer.accept_attestation(key, peer, signature()));
-        assert!(buffer.signers(key).is_empty());
     }
 
     // a round is recorded once however many attestations arrive after the
@@ -400,7 +318,6 @@ mod protocol_tests {
     use tape_core::cert::challenge::ChallengeRespondMessage;
     use tape_core::challenge::{ProofOfAccess, Sample, SuccessCertificate};
     use tape_core::challenge::certificate::CertificateRejection;
-    use tape_core::challenge::schedule::Schedule;
     use tape_core::erasure::{
         GROUP_SIZE, SUB_LEAF_BYTES, group_for_spool, leaf_position, prove_sub_leaf_windowed,
         sample_window, slice_sidecar, sub_leaf_count,
@@ -423,8 +340,8 @@ mod protocol_tests {
     use crate::features::challenge::audit::{
         Round, accept_answer, attest_message, expected_sample,
     };
-    use crate::features::challenge::refusal::RefusalReason;
-    use crate::features::challenge::certify::agreement_threshold;
+    use crate::features::challenge::manager::challenge_schedule;
+    use crate::features::http::handlers::challenge::agreement_threshold;
     use crate::harness::{NodeHarness, TestContext, coded_track};
 
     const PAYLOAD_BYTES: usize = 300_000;
@@ -452,9 +369,6 @@ mod protocol_tests {
         // The harness epoch carries no duration, and the schedule the sample cut
         // derives from refuses an epoch too short to hold a round.
         state.current.epoch.preferences.epoch_duration = EpochDuration(100);
-        // Where a live epoch sits: the sample cut is a lookback, and one near
-        // slot zero saturates to zero and holds nothing.
-        state.current.epoch.start_slot = SlotNumber(10_000);
         let mine = state
             .member_spools(ctx.node_address())
             .first()
@@ -473,10 +387,6 @@ mod protocol_tests {
             }
             keys.insert(spool, key);
         }
-
-        // Lay the epoch's grid, as the challenge manager does on the first
-        // block it sees at tip. Nothing answers or judges without one.
-        ctx.schedules.observe(&state, state.current.epoch.start_slot);
 
         // One coded track, with this node holding its own slice of it.
         let (slices, encoding) = coded_track(PAYLOAD_BYTES, 0x1234_5678_9ABC_DEF0);
@@ -497,11 +407,6 @@ mod protocol_tests {
             slices,
             keys,
         }
-    }
-
-    /// Writing a row under a live round's cutoff is what makes a held set stale.
-    fn bump_cursor(ctx: &TestContext) {
-        ctx.sample_sets.backdated_write();
     }
 
     fn put_sample(
@@ -589,7 +494,7 @@ mod protocol_tests {
         let round = fixture.round();
         let spool = fixture.mine;
 
-        let asked = expected_sample(&fixture.ctx, &round, spool)
+        let asked = expected_sample(&fixture.ctx, &fixture.state, &round, spool)
             .expect("a sample while the epoch is current");
 
         // The epoch turns, carrying the one that just closed into `previous`, which
@@ -598,18 +503,13 @@ mod protocol_tests {
         fixture.state.previous = Some(closing);
         fixture.state.current.epoch.id = EpochNumber(fixture.state.epoch().as_u64() + 1);
 
-        let after = expected_sample(&fixture.ctx, &round, spool)
+        let after = expected_sample(&fixture.ctx, &fixture.state, &round, spool)
             .expect("the same sample once the epoch has turned");
         assert_eq!(asked.0, after.0, "the question changed under the boundary");
         assert_eq!(asked.1, after.1);
     }
 
     impl Fixture {
-        /// The grid the node laid for the fixture's epoch.
-        fn schedule(&self) -> Schedule {
-            self.ctx.schedules.get(self.state.epoch()).expect("a grid")
-        }
-
         fn round(&self) -> Round {
             Round {
                 epoch: self.state.epoch(),
@@ -628,7 +528,7 @@ mod protocol_tests {
         fn answer_from_leaf(&self, spool: SpoolIndex, leaf: Option<usize>) -> ProofOfAccess {
             let round = self.round();
             let (asked, _) =
-                expected_sample(&self.ctx, &round, spool).expect("a sample");
+                expected_sample(&self.ctx, &self.state, &round, spool).expect("a sample");
             let SampleLeaf::Coded { sub_leaf: drawn } = asked.leaf else {
                 panic!("the fixture holds coded tracks only");
             };
@@ -725,10 +625,12 @@ mod protocol_tests {
         let target = fixture.other();
         let answer = fixture.answer_from(target);
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, true),
-            Ok(())
-        );
+        assert!(accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &answer,
+            true
+        ));
 
         let signed = fixture.attestations(target, agreement_threshold(GROUP_SIZE));
         let certificate = fixture.certify(target, signed);
@@ -745,7 +647,7 @@ mod protocol_tests {
         let leaves: Vec<usize> = group_spools(&fixture.state, fixture.group)
             .into_iter()
             .filter_map(|spool| {
-                expected_sample(&fixture.ctx, &round, spool)
+                expected_sample(&fixture.ctx, &fixture.state, &round, spool)
             })
             .map(|(sample, _)| asked_leaf(&sample))
             .collect();
@@ -761,7 +663,7 @@ mod protocol_tests {
     async fn easier_leaf() {
         let fixture = fixture().await;
         let target = fixture.other();
-        let (asked, _) = expected_sample(&fixture.ctx, &fixture.round(), target)
+        let (asked, _) = expected_sample(&fixture.ctx, &fixture.state, &fixture.round(), target)
             .expect("sample");
 
         // Wrap, so a draw that lands on the last leaf still names a real neighbour.
@@ -771,68 +673,37 @@ mod protocol_tests {
 
         // The same fixture accepts the leaf it did ask for, so this is refusing the
         // substitution rather than failing for some unrelated reason.
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &fixture.answer_from(target), true),
-            Ok(())
-        );
-        assert_eq!(
-            accept_answer(
-                &fixture.ctx,
-                &fixture.state,
-                &fixture.answer_from_leaf(target, Some(elsewhere)),
-                true
-            ),
-            Err(RefusalReason::SampleMismatch)
-        );
+        assert!(accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &fixture.answer_from(target),
+            true
+        ));
+        assert!(!accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &fixture.answer_from_leaf(target, Some(elsewhere)),
+            true
+        ));
     }
 
     // the set is cut at the round window's base slot, so a write finalizing inside
     // the round leaves the draw where it was, and observers that ingested it at
     // different moments still derive the same question
-    // Every member has to be reachable by someone, or an owner withholding from
-    // the uncovered ones is never healed.
-    #[test]
-    fn relay_targets_cover_the_group() {
-        use crate::features::challenge::audit::relay_targets;
-
-        let peers: Vec<Address> = (0..19).map(|_| Address::new_unique()).collect();
-        let mut covered = std::collections::BTreeSet::new();
-        let mut counts = std::collections::BTreeMap::new();
-        for at in 0..peers.len() {
-            let picked = relay_targets(&peers, at, 3);
-            assert_eq!(picked.len(), 3, "every relayer forwards its full fanout");
-            assert_eq!(
-                picked.iter().collect::<std::collections::BTreeSet<_>>().len(),
-                3,
-                "a relayer must not send the same peer two copies"
-            );
-            for peer in picked {
-                covered.insert(peer);
-                *counts.entry(peer).or_insert(0usize) += 1;
-            }
-        }
-
-        assert_eq!(covered.len(), peers.len(), "every member is somebody's target");
-        let worst = counts.values().copied().max().unwrap_or_default();
-        assert_eq!(worst, 3, "every member carries the same share of the relays");
-    }
-
     #[tokio::test]
     async fn mid_round_write() {
         let fixture = fixture().await;
         let round = fixture.round();
-        let (before, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
+        let (before, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
             .expect("a sample");
 
-        let cutoff = fixture.schedule().sample_cutoff(round.round);
+        let cutoff = challenge_schedule(&fixture.state)
+            .expect("schedule")
+            .sample_cutoff(round.round);
         let late = Address::new_unique();
         put_sample(&fixture.ctx, fixture.group, late, 4 * SUB_LEAF_BYTES, cutoff);
-        // A row landing in production comes with the cursor that applied it, and
-        // the held sample sets are versioned by that cursor. Writing straight to
-        // the store skips it, so the cursor is moved by hand here.
-        bump_cursor(&fixture.ctx);
 
-        let (after, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
+        let (after, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
             .expect("a sample");
         assert_eq!(after.track, before.track, "a mid-round write shifted the draw");
         assert_eq!(asked_leaf(&after), asked_leaf(&before));
@@ -846,8 +717,7 @@ mod protocol_tests {
             4 * SUB_LEAF_BYTES,
             SlotNumber(cutoff.as_u64() - 1),
         );
-        bump_cursor(&fixture.ctx);
-        let (inside, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
+        let (inside, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
             .expect("a sample");
         assert_ne!(
             (inside.track, asked_leaf(&inside)),
@@ -863,11 +733,13 @@ mod protocol_tests {
     async fn mid_round_delete() {
         let fixture = fixture().await;
         let round = fixture.round();
-        let cutoff = fixture.schedule().sample_cutoff(round.round);
+        let cutoff = challenge_schedule(&fixture.state)
+            .expect("schedule")
+            .sample_cutoff(round.round);
 
         let extra = Address::new_unique();
         put_sample(&fixture.ctx, fixture.group, extra, 4 * SUB_LEAF_BYTES, SlotNumber(0));
-        let (before, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
+        let (before, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
             .expect("a sample");
 
         fixture
@@ -876,7 +748,7 @@ mod protocol_tests {
             .mark_track_sample_deleted(fixture.group, extra, cutoff)
             .expect("delete at the cut");
 
-        let (after, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
+        let (after, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
             .expect("a sample");
         assert_eq!(after.track, before.track, "a mid-round deletion shifted the draw");
         assert_eq!(asked_leaf(&after), asked_leaf(&before));
@@ -888,7 +760,7 @@ mod protocol_tests {
             .store
             .mark_track_sample_deleted(fixture.group, extra, SlotNumber(cutoff.as_u64() - 1))
             .expect("delete before the cut");
-        let (out, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
+        let (out, _) = expected_sample(&fixture.ctx, &fixture.state, &round, fixture.mine)
             .expect("a sample");
         assert_ne!(out.track, extra, "a pre-window deletion stayed in the set");
     }
@@ -936,7 +808,7 @@ mod protocol_tests {
             )
             .expect("inline row");
 
-        let (asked, _) = expected_sample(&fixture.ctx, &round, target)
+        let (asked, _) = expected_sample(&fixture.ctx, &fixture.state, &round, target)
             .expect("a sample");
         assert_eq!(asked.track, track);
         assert_eq!(asked.leaf, SampleLeaf::Inline);
@@ -963,20 +835,14 @@ mod protocol_tests {
             signature: fixture.keys[&target].sign(message.to_bytes()).expect("sign"),
         };
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, true),
-            Ok(())
-        );
+        assert!(accept_answer(&fixture.ctx, &fixture.state, &answer, true));
 
         // A payload that does not hash to the registered value is refused.
         let mut rotten = answer.clone();
         rotten.proof = SampleProof::Inline {
             payload: b"not what was written".to_vec(),
         };
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &rotten, true),
-            Err(RefusalReason::BadProof)
-        );
+        assert!(!accept_answer(&fixture.ctx, &fixture.state, &rotten, true));
     }
 
     // a leaf that does not hash into the track's commitment is refused
@@ -989,10 +855,12 @@ mod protocol_tests {
             proof.sub_leaf[0] ^= 0xFF;
         }
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, true),
-            Err(RefusalReason::BadProof)
-        );
+        assert!(!accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &answer,
+            true
+        ));
     }
 
     // the signature is checked against the key registered for the spool being
@@ -1006,10 +874,12 @@ mod protocol_tests {
             .sign(answer.message().to_bytes())
             .expect("sign");
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, true),
-            Err(RefusalReason::BadSignature)
-        );
+        assert!(!accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &answer,
+            true
+        ));
     }
 
     // an answer that arrives after the round's deadline is refused
@@ -1019,10 +889,12 @@ mod protocol_tests {
         let target = fixture.other();
         let answer = fixture.answer_from(target);
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, false),
-            Err(RefusalReason::Late)
-        );
+        assert!(!accept_answer(
+            &fixture.ctx,
+            &fixture.state,
+            &answer,
+            false
+        ));
     }
 
     // nothing to attest to means nothing aggregates, which is the one thing the
@@ -1111,10 +983,7 @@ mod protocol_tests {
         let mut answer = fixture.answer_from(target);
         answer.group = GroupIndex(fixture.group.as_u64() + 1);
 
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &answer, true),
-            Err(RefusalReason::NoLocalQuestion)
-        );
+        assert!(!accept_answer(&fixture.ctx, &fixture.state, &answer, true));
     }
 
     // acceptance is a function of the answer and this node's own derivation, with
@@ -1129,10 +998,7 @@ mod protocol_tests {
         // Byte-identical copies, as a relay would forward them.
         let forwarded = answer.clone();
         assert_eq!(forwarded, answer);
-        assert_eq!(
-            accept_answer(&fixture.ctx, &fixture.state, &forwarded, true),
-            Ok(())
-        );
+        assert!(accept_answer(&fixture.ctx, &fixture.state, &forwarded, true));
 
         let signed = fixture.attestations(target, agreement_threshold(GROUP_SIZE));
         let certificate = fixture.certify(target, signed);

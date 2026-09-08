@@ -4,7 +4,6 @@ pub enum ServiceName {
     HttpServer,
     S3Server,
     S3AdminServer,
-    S3WriteDrain,
     BlockIngestor,
     IngestMonitor,
     AssignmentManager,
@@ -20,7 +19,6 @@ pub enum ServiceName {
     PeerAggregator,
     AtlasObserve,
     BalanceMonitor,
-    ObserveStream,
 }
 
 impl ServiceName {
@@ -30,7 +28,6 @@ impl ServiceName {
             Self::HttpServer => "HttpServer",
             Self::S3Server => "S3Server",
             Self::S3AdminServer => "S3AdminServer",
-            Self::S3WriteDrain => "S3WriteDrain",
             Self::BlockIngestor => "BlockIngestor",
             Self::IngestMonitor => "IngestMonitor",
             Self::AssignmentManager => "AssignmentManager",
@@ -46,7 +43,6 @@ impl ServiceName {
             Self::PeerAggregator => "PeerAggregator",
             Self::AtlasObserve => "AtlasObserve",
             Self::BalanceMonitor => "BalanceMonitor",
-            Self::ObserveStream => "ObserveStream",
         }
     }
 }

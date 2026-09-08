@@ -13,7 +13,7 @@ use tape_core::bls::BlsPubkey;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, NodePreferences, Spool};
-use tape_core::track::data::BlobData;
+use tape_core::track::data::{track_key, BlobData, BlobDataSlice};
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{
     CompressedTrack, CompressedTrackProof, TrackKind, TrackState,
@@ -33,7 +33,9 @@ use tape_protocol::api::{
 use tape_protocol::ProtocolState;
 
 use tape_sdk::object::ListObjectsQuery;
+use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
+use tape_sdk::track::write::WrittenTrack;
 
 struct Fixture {
     rpc: LiteSvmRpc,
@@ -339,7 +341,7 @@ fn make_raw_track(
 ) -> (CompressedTrack, BlobData) {
     let bytes = raw.to_vec();
     let track = CompressedTrack {
-        tape: tape,
+        tape,
         key,
         track_number: TrackNumber(track_number),
         kind: TrackKind::Inline as u64,
@@ -366,7 +368,7 @@ fn object_item(name: &[u8], track_number: TrackNumber) -> ObjectListItem {
 }
 
 #[tokio::test]
-async fn get_tape_uses_rpc_account() {
+async fn get_tape() {
     let fixture = setup();
     let mut rng = rand::thread_rng();
     let authority = Keypair::new(&mut rng);
@@ -383,7 +385,7 @@ async fn get_tape_uses_rpc_account() {
 }
 
 #[tokio::test]
-async fn track_queries_use_memory_peer_catalog() {
+async fn track_queries() {
     let fixture = setup();
     let mut rng = rand::thread_rng();
     let tape_authority = Keypair::new(&mut rng);
@@ -437,7 +439,68 @@ async fn track_queries_use_memory_peer_catalog() {
 }
 
 #[tokio::test]
-async fn object_list_uses_peer_index() {
+async fn matching_retry() {
+    let fixture = setup();
+    let tape_key = TapeKey::generate();
+    let name = b"demo/chat/000000-user.json";
+    let raw = br#"{"role":"user","markdown":"hello"}"#;
+    let key = track_key(name, &BlobDataSlice::Inline(raw));
+    let (track, data) = make_raw_track(tape_key.address(), key, 0, raw);
+    let address = fixture.insert_track(track, data);
+
+    let resumed = fixture
+        .client
+        .write_or_resume_track_at_as(
+            &tape_key,
+            TrackNumber(0),
+            name,
+            ContentType::ApplicationJson,
+            raw,
+        )
+        .await
+        .expect("matching outbox retry resumes");
+
+    assert_eq!(resumed.track.track_number, TrackNumber(0));
+    assert_eq!(track_pda(tape_key.address(), TrackNumber(0)).0, address);
+    assert_eq!(fixture.tracks.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn write_conflict() {
+    let fixture = setup();
+    let tape_key = TapeKey::generate();
+    let name = b"demo/chat/000000-user.json";
+    let original = br#"{"role":"user","markdown":"hello"}"#;
+    let key = track_key(name, &BlobDataSlice::Inline(original));
+    let (track, data) = make_raw_track(tape_key.address(), key, 0, original);
+    fixture.insert_track(track, data);
+
+    let result = fixture
+        .client
+        .write_or_resume_track_at_as(
+            &tape_key,
+            TrackNumber(0),
+            name,
+            ContentType::ApplicationJson,
+            br#"{"role":"user","markdown":"different"}"#,
+        )
+        .await;
+    let error = match result {
+        Ok(_) => panic!("different content at a persisted slot must conflict"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        tape_sdk::error::TapedriveError::WriteConflict {
+            track_number: TrackNumber(0)
+        }
+    ));
+    assert_eq!(fixture.tracks.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn object_list() {
     let fixture = setup();
     let bucket = Address::new_unique();
 
@@ -478,7 +541,7 @@ async fn object_list_uses_peer_index() {
 }
 
 #[tokio::test]
-async fn read_raw_track_uses_memory_peer_data() {
+async fn read_raw_track() {
     let fixture = setup();
     let mut rng = rand::thread_rng();
     let tape_authority = Keypair::new(&mut rng);
@@ -494,7 +557,7 @@ async fn read_raw_track_uses_memory_peer_data() {
 }
 
 #[tokio::test]
-async fn verify_raw_track_uses_value_hash() {
+async fn verify_raw_track() {
     let fixture = setup();
     let mut rng = rand::thread_rng();
     let tape_authority = Keypair::new(&mut rng);
@@ -507,4 +570,25 @@ async fn verify_raw_track_uses_value_hash() {
 
     assert!(fixture.client.verify(&address, raw).await.unwrap());
     assert!(!fixture.client.verify(&address, b"wrong").await.unwrap());
+}
+
+#[tokio::test]
+async fn certified_receipt() {
+    let fixture = setup();
+    let tape_key = TapeKey::generate();
+    let key = hash::hash(b"certified");
+    let (track, _) = make_raw_track(tape_key.address(), key, 0, b"done");
+    let written = WrittenTrack {
+        address: track_pda(track.tape, track.track_number).0,
+        track,
+    };
+
+    let certified = fixture
+        .client
+        .certify_with_receipts(&tape_key, &written, &[])
+        .await
+        .expect("certified tracks are complete");
+
+    assert_eq!(certified.track_number, written.track.track_number);
+    assert!(certified.is_certified());
 }

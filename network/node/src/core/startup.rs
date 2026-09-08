@@ -24,7 +24,6 @@ use crate::config::node::NodeConfig;
 use crate::context::{AppContext, NodeContextBuilder, NodeStore};
 use crate::core::atlas::{self, AtlasBuffer};
 use crate::core::error::NodeError;
-use crate::core::restarts;
 
 #[cfg(not(feature = "rocks"))]
 pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, NodeError> {
@@ -43,14 +42,10 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, N
 
     let store = reel_store::open_node_store(
         root,
-        reel_store::NodeStoreOptions {
-            compaction_mbps: config.store.compaction_mb_per_sec,
-            sync_bytes: config.store.sync_bytes,
-            backend: config.store.io_backend,
-            reserve: config.store.reserve,
-            segment_bytes: config.store.segment_bytes,
-            preallocate: config.store.preallocate,
-        },
+        config.store.compaction_mb_per_sec,
+        config.store.sync_bytes,
+        config.store.io_backend,
+        config.store.reserve,
     )
     .map_err(|error| {
         NodeError::Store(format!(
@@ -109,34 +104,6 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, N
 
     Ok(store)
 }
-
-/// Write the volume's index down so the next open reads it instead of sweeping
-///
-/// This is what keeps the gap the open logs above from running minutes. The reel
-/// takes its own cue and seals every open tail, so it belongs at shutdown and
-/// nowhere else. A failure costs the next open its fast path and nothing more.
-#[cfg(not(feature = "rocks"))]
-pub fn checkpoint_primary_store(store: &TapeStore<NodeStore>) {
-    let started = Instant::now();
-    match store.inner().inner().checkpoint_index() {
-        Ok(Some(written)) => info!(
-            at = written.at.0,
-            segments = written.segments,
-            keys = written.keys,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "index checkpoint written",
-        ),
-        Ok(None) => tracing::debug!("no index checkpoint for this volume, skipping"),
-        Err(error) => warn!(
-            error = %error,
-            "index checkpoint failed, the next open sweeps the footers",
-        ),
-    }
-}
-
-/// RocksDB carries its own index across an open, so there is nothing to write
-#[cfg(feature = "rocks")]
-pub fn checkpoint_primary_store(_store: &TapeStore<NodeStore>) {}
 
 fn build_rpc_client(config: &NodeConfig) -> Result<RpcClient<SolanaRpc>, NodeError> {
     let rpc_config = RpcConfig {
@@ -207,9 +174,6 @@ pub async fn build_context(config: &NodeConfig) -> Result<AppContext, NodeError>
     init_metrics(config);
 
     let store = open_primary_store(config)?;
-    // After the open, which is what creates the root the tally sits in.
-    restarts::record(&config.store.path);
-
     let rpc = build_rpc_client(config)?;
 
     ensure_registered(config, &rpc, &keypair, &bls_keypair, &tls_keypair).await?;

@@ -57,7 +57,6 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
 
         let batch = ReplayBatch {
             slot: block.slot,
-            blockhash: block.blockhash,
             block_time: block.block_time,
             records: captured.events.into_iter().map(|entry| entry.record).collect(),
             raw_tracks: captured.raw_tracks,
@@ -100,7 +99,7 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
 
         self.current_epoch = log.epoch;
         self.store
-            .set_sync_cursor(log.end_slot, None)
+            .set_sync_cursor(log.end_slot)
             .map_err(|error| NodeError::Store(format!("set_sync_cursor: {error}")))?;
 
         Ok(())

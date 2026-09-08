@@ -18,7 +18,6 @@ solana-transaction.workspace = true
 solana-transaction-error.workspace = true
 solana-transaction-status.workspace = true
 solana-client.workspace = true
-solana-leader-schedule.workspace = true
 
 # Async trait support
 async-trait.workspace = true

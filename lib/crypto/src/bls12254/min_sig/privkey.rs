@@ -1,7 +1,7 @@
 #[cfg(not(target_os = "solana"))]
 use rand::RngCore;
 
-use solana_bn254::prelude::alt_bn128_g1_multiplication_be;
+use solana_bn254::prelude::alt_bn128_multiplication;
 
 #[cfg(not(target_os = "solana"))]
 use crate::bls12254::SCALAR_MODULUS;
@@ -61,7 +61,7 @@ impl PrivKey {
 
         let mut g1_sol_uncompressed = [0x00u8; 64];
         g1_sol_uncompressed.clone_from_slice(
-            &alt_bn128_g1_multiplication_be(&input).map_err(|_| BLSError::BLSSigningError)?,
+            &alt_bn128_multiplication(&input).map_err(|_| BLSError::BLSSigningError)?,
         );
 
         Ok(G1Point(g1_sol_uncompressed))

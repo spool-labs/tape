@@ -5,21 +5,13 @@
 //! `UiMessage` and `UiInstruction` are `#[serde(untagged)]`, so each one buffers
 //! into a second intermediate tree just to pick a variant.
 //!
-//! We pin the request to `encoding: base64` and `transactionDetails: full`, so
-//! the response shape is fixed and none of that is needed. Only the fields the
+//! We pin the request to `encoding: json` and `transactionDetails: full`, so the
+//! response shape is fixed and none of that is needed. Only the fields the
 //! parser reads are declared here, and serde drops the rest without building
 //! them. Balances alone are 40% of a mainnet block and are never read.
-//!
-//! The transaction arrives as one base64 blob, not a tree of strings to parse
-//! and base58-decode. Meta keeps its json shape, so the event path is unchanged.
 
 use serde::Deserialize;
 use serde::de::IgnoredAny;
-use tape_crypto::address::Address;
-
-/// Ceiling on one decoded transaction, above what solana accepts today so a
-/// larger limit upstream does not silently start failing here.
-const MAX_TRANSACTION_BYTES: usize = 5 * 1024;
 
 /// A confirmed block, carrying only what the parser consumes.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -39,16 +31,17 @@ pub struct Transaction {
     pub meta: Option<Meta>,
 }
 
-/// The transaction itself, decoded from the `[base64, "base64"]` pair.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct TransactionBody {
-    pub signatures: Vec<Signature>,
+    pub signatures: Vec<String>,
     pub message: Message,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Message {
-    pub account_keys: Vec<Address>,
+    pub account_keys: Vec<String>,
     pub instructions: Vec<CompiledInstruction>,
 }
 
@@ -57,9 +50,7 @@ pub struct Message {
 pub struct CompiledInstruction {
     pub program_id_index: u8,
     pub accounts: Vec<u8>,
-    /// Raw payload. Base58 on the meta side, already bytes on the wire side.
-    #[serde(deserialize_with = "base58_bytes")]
-    pub data: Vec<u8>,
+    pub data: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -83,73 +74,8 @@ pub struct InnerInstructions {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct LoadedAddresses {
-    #[serde(deserialize_with = "base58_addresses")]
-    pub writable: Vec<Address>,
-    #[serde(deserialize_with = "base58_addresses")]
-    pub readonly: Vec<Address>,
-}
-
-/// A transaction signature, kept as bytes so a txid needs no decode.
-pub type Signature = [u8; 64];
-
-impl<'de> Deserialize<'de> for TransactionBody {
-    /// Reads the `[payload, "base64"]` pair. The encoding name is checked, so an
-    /// rpc still answering json fails loudly instead of dropping every event.
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        use serde::de::Error;
-
-        let (payload, encoding) = <(String, String)>::deserialize(de)?;
-        if encoding != "base64" {
-            return Err(D::Error::custom(format!("transaction encoding {encoding}, want base64")));
-        }
-        let raw = base64::decode(payload)
-            .map_err(|_| D::Error::custom("transaction is not base64"))?;
-        // The limit is what keeps a length prefix from asking for an allocation;
-        // wincode's own default ceiling is 4 MiB.
-        let tx: solana_transaction::versioned::VersionedTransaction = wincode::config::deserialize(
-            &raw,
-            wincode::config::Configuration::default()
-                .with_preallocation_size_limit::<MAX_TRANSACTION_BYTES>(),
-        )
-        .map_err(|_| D::Error::custom("transaction did not decode"))?;
-
-        Ok(Self {
-            signatures: tx.signatures.iter().filter_map(|sig| sig.as_ref().try_into().ok()).collect(),
-            message: Message {
-                account_keys: tx
-                    .message
-                    .static_account_keys()
-                    .iter()
-                    .map(|key| Address::from(key.to_bytes()))
-                    .collect(),
-                instructions: tx
-                    .message
-                    .instructions()
-                    .iter()
-                    .map(|ix| CompiledInstruction {
-                        program_id_index: ix.program_id_index,
-                        accounts: ix.accounts.clone(),
-                        data: ix.data.clone(),
-                    })
-                    .collect(),
-            },
-        })
-    }
-}
-
-fn base58_bytes<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<u8>, D::Error> {
-    let encoded = String::deserialize(de)?;
-    bs58::decode(&encoded)
-        .into_vec()
-        .map_err(|_| serde::de::Error::custom("instruction data is not base58"))
-}
-
-fn base58_addresses<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<Address>, D::Error> {
-    let encoded = Vec::<String>::deserialize(de)?;
-    encoded
-        .iter()
-        .map(|key| key.parse().map_err(|_| serde::de::Error::custom("address is not base58")))
-        .collect()
+    pub writable: Vec<String>,
+    pub readonly: Vec<String>,
 }
 
 impl Transaction {
@@ -165,191 +91,90 @@ impl Transaction {
 /// all, it builds `UiConfirmedBlock` structurally, so it converts rather than
 /// growing a second construction path. The parser tests do the same.
 mod from_typed {
-    use solana_transaction_status::{
+        use solana_transaction_status::{
         EncodedTransaction, EncodedTransactionWithStatusMeta, UiCompiledInstruction,
         UiConfirmedBlock, UiInstruction, UiMessage,
     };
 
     use super::{
-        Address, Block, CompiledInstruction, IgnoredAny, InnerInstructions, LoadedAddresses,
-        Message, Meta, Signature, Transaction, TransactionBody,
+        Block, CompiledInstruction, IgnoredAny, InnerInstructions, LoadedAddresses, Message, Meta,
+        Transaction, TransactionBody,
     };
 
-    fn validate_instruction_indices(tx: &Transaction) -> Result<(), String> {
-        let loaded_count = tx
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.loaded_addresses.as_ref())
-            .map_or(0, |loaded| loaded.writable.len() + loaded.readonly.len());
-        let key_count = tx.transaction.message.account_keys.len() + loaded_count;
-
-        let validate = |ix: &CompiledInstruction| {
-            if usize::from(ix.program_id_index) >= key_count {
-                return Err("instruction program index is out of range".to_owned());
-            }
-            if ix.accounts.iter().any(|index| usize::from(*index) >= key_count) {
-                return Err("instruction account index is out of range".to_owned());
-            }
-            Ok(())
-        };
-
-        tx.transaction.message.instructions.iter().try_for_each(&validate)?;
-        if let Some(meta) = &tx.meta {
-            if let Some(inner) = &meta.inner_instructions {
-                inner.iter().flat_map(|set| &set.instructions).try_for_each(validate)?;
-            }
-        }
-        Ok(())
-    }
-
-    impl TryFrom<UiConfirmedBlock> for Block {
-        type Error = String;
-
-        fn try_from(block: UiConfirmedBlock) -> Result<Self, Self::Error> {
-            let transactions = block
-                .transactions
-                .map(|txs| {
-                    txs.into_iter()
-                        .map(Transaction::try_from)
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?;
-
-            Ok(Self {
+    impl From<UiConfirmedBlock> for Block {
+        fn from(block: UiConfirmedBlock) -> Self {
+            Self {
                 previous_blockhash: block.previous_blockhash,
                 blockhash: block.blockhash,
                 parent_slot: block.parent_slot,
                 block_time: block.block_time,
-                transactions,
-            })
+                transactions: block
+                    .transactions
+                    .map(|txs| txs.into_iter().map(Transaction::from).collect()),
+            }
         }
     }
 
-    impl TryFrom<UiCompiledInstruction> for CompiledInstruction {
-        type Error = String;
-
-        fn try_from(ix: UiCompiledInstruction) -> Result<Self, Self::Error> {
-            Ok(Self {
+    impl From<UiCompiledInstruction> for CompiledInstruction {
+        fn from(ix: UiCompiledInstruction) -> Self {
+            Self {
                 program_id_index: ix.program_id_index,
                 accounts: ix.accounts,
-                data: bs58::decode(&ix.data)
-                    .into_vec()
-                    .map_err(|_| "instruction data is not base58".to_owned())?,
-            })
+                data: ix.data,
+            }
         }
     }
 
-    impl TryFrom<EncodedTransactionWithStatusMeta> for Transaction {
-        type Error = String;
-
-        fn try_from(tx: EncodedTransactionWithStatusMeta) -> Result<Self, Self::Error> {
+    impl From<EncodedTransactionWithStatusMeta> for Transaction {
+        fn from(tx: EncodedTransactionWithStatusMeta) -> Self {
             let body = match tx.transaction {
                 EncodedTransaction::Json(ui_tx) => TransactionBody {
-                    signatures: ui_tx
-                        .signatures
-                        .iter()
-                        .map(|sig| {
-                            let decoded = bs58::decode(sig)
-                                .into_vec()
-                                .map_err(|_| "transaction signature is not base58".to_owned())?;
-                            let signature: Signature =
-                                decoded.as_slice().try_into().map_err(|_| {
-                                    "transaction signature has invalid length".to_owned()
-                                })?;
-                            Ok(signature)
-                        })
-                        .collect::<Result<Vec<_>, String>>()?,
+                    signatures: ui_tx.signatures,
                     message: match ui_tx.message {
                         UiMessage::Raw(raw) => Message {
-                            account_keys: raw
-                                .account_keys
-                                .iter()
-                                .map(|key| {
-                                    key.parse::<Address>()
-                                        .map_err(|_| "account key is not base58".to_owned())
-                                })
-                                .collect::<Result<Vec<_>, _>>()?,
+                            account_keys: raw.account_keys,
                             instructions: raw
                                 .instructions
                                 .into_iter()
-                                .map(CompiledInstruction::try_from)
-                                .collect::<Result<Vec<_>, _>>()?,
+                                .map(CompiledInstruction::from)
+                                .collect(),
                         },
-                        UiMessage::Parsed(_) => {
-                            return Err("parsed transaction message is unsupported".to_owned());
-                        }
+                        // The parser skips parsed messages, so an empty one is
+                        // the same outcome without carrying the variant across.
+                        UiMessage::Parsed(_) => Message::default(),
                     },
                 },
-                _ => return Err("non-JSON transaction encoding is unsupported".to_owned()),
+                _ => TransactionBody::default(),
             };
 
-            let meta = tx
-                .meta
-                .map(|meta| {
-                    let inner_instructions = meta
-                        .inner_instructions
-                        .map(|sets| {
-                            sets.into_iter()
-                                .map(|set| {
-                                    let instructions = set
-                                        .instructions
-                                        .into_iter()
-                                        .map(|ix| match ix {
-                                            UiInstruction::Compiled(ix) => {
-                                                CompiledInstruction::try_from(ix)
-                                            }
-                                            UiInstruction::Parsed(_) => {
-                                                Err("parsed inner instruction is unsupported"
-                                                    .to_owned())
-                                            }
-                                        })
-                                        .collect::<Result<Vec<_>, _>>()?;
-                                    Ok(InnerInstructions {
-                                        index: set.index,
-                                        instructions,
-                                    })
+            let meta = tx.meta.map(|meta| Meta {
+                err: meta.status.is_err().then_some(IgnoredAny),
+                log_messages: meta.log_messages.into(),
+                inner_instructions: meta.inner_instructions.map(|sets| {
+                    sets.into_iter()
+                        .map(|set| InnerInstructions {
+                            index: set.index,
+                            instructions: set
+                                .instructions
+                                .into_iter()
+                                .filter_map(|ix| match ix {
+                                    UiInstruction::Compiled(ix) => Some(ix.into()),
+                                    UiInstruction::Parsed(_) => None,
                                 })
-                                .collect::<Result<Vec<_>, String>>()
+                                .collect(),
                         })
-                        .transpose()?;
-                    let loaded_addresses = meta
-                        .loaded_addresses
-                        .map(|loaded| {
-                            let writable = loaded
-                                .writable
-                                .iter()
-                                .map(|key| {
-                                    key.parse::<Address>()
-                                        .map_err(|_| "loaded address is not base58".to_owned())
-                                })
-                                .collect::<Result<Vec<_>, _>>()?;
-                            let readonly = loaded
-                                .readonly
-                                .iter()
-                                .map(|key| {
-                                    key.parse::<Address>()
-                                        .map_err(|_| "loaded address is not base58".to_owned())
-                                })
-                                .collect::<Result<Vec<_>, _>>()?;
-                            Ok::<LoadedAddresses, String>(LoadedAddresses { writable, readonly })
-                        })
-                        .transpose()?;
+                        .collect()
+                }),
+                loaded_addresses: meta.loaded_addresses.map(|loaded| LoadedAddresses {
+                    writable: loaded.writable,
+                    readonly: loaded.readonly,
+                }),
+            });
 
-                    Ok::<Meta, String>(Meta {
-                        err: meta.status.is_err().then_some(IgnoredAny),
-                        log_messages: meta.log_messages.into(),
-                        inner_instructions,
-                        loaded_addresses,
-                    })
-                })
-                .transpose()?;
-
-            let transaction = Self {
+            Self {
                 transaction: body,
                 meta,
-            };
-            validate_instruction_indices(&transaction)?;
-            Ok(transaction)
+            }
         }
     }
 }
@@ -371,7 +196,22 @@ mod tests {
       "numRewardPartitions": null,
       "transactions": [
         {
-          "transaction": ["__TX_B64__", "base64"],
+          "transaction": {
+            "signatures": ["5sig"],
+            "message": {
+              "header": {
+                "numRequiredSignatures": 1,
+                "numReadonlySignedAccounts": 0,
+                "numReadonlyUnsignedAccounts": 1
+              },
+              "accountKeys": ["AccountOne", "ProgramOne"],
+              "recentBlockhash": "7xa9ghi",
+              "instructions": [
+                {"programIdIndex": 1, "accounts": [0], "data": "3Bxs", "stackHeight": null}
+              ],
+              "addressTableLookups": []
+            }
+          },
           "meta": {
             "err": null,
             "status": {"Ok": null},
@@ -384,54 +224,19 @@ mod tests {
             "computeUnitsConsumed": 11965,
             "innerInstructions": [
               {"index": 0, "instructions": [
-                {"programIdIndex": 1, "accounts": [0, 1], "data": "3Bxs", "stackHeight": 2}
+                {"programIdIndex": 1, "accounts": [0, 1], "data": "inner", "stackHeight": 2}
               ]}
             ],
             "logMessages": ["Program ProgramOne invoke [1]", "Program ProgramOne success"],
-            "loadedAddresses": {"writable": ["__WRITABLE__"], "readonly": ["__READONLY__"]}
+            "loadedAddresses": {"writable": ["WritableOne"], "readonly": ["ReadonlyOne"]}
           }
         }
       ]
     }"#;
 
-    /// The fixture with its placeholders filled in.
-    fn response() -> String {
-        let (encoded, _, _) = encoded_transaction();
-        RESPONSE
-            .replace("__TX_B64__", &encoded)
-            .replace("__WRITABLE__", &bs58::encode([3u8; 32]).into_string())
-            .replace("__READONLY__", &bs58::encode([4u8; 32]).into_string())
-    }
-
-    /// A one-instruction transaction in the shape the rpc returns under base64.
-    fn encoded_transaction() -> (String, [u8; 32], [u8; 32]) {
-        use solana_transaction::versioned::VersionedTransaction;
-
-        let account = [7u8; 32];
-        let program = [9u8; 32];
-        let message = solana_message::Message::new_with_blockhash(
-            &[solana_instruction::Instruction::new_with_bytes(
-                program.into(),
-                &[1, 2, 3],
-                vec![solana_instruction::AccountMeta::new(account.into(), true)],
-            )],
-            Some(&account.into()),
-            &Default::default(),
-        );
-        let tx = VersionedTransaction {
-            signatures: vec![solana_transaction::Signature::from([5u8; 64])],
-            message: solana_message::VersionedMessage::Legacy(message),
-        };
-        let raw = wincode::serialize(&tx).expect("encode");
-        (base64::encode(raw), account, program)
-    }
-
     #[test]
     fn deserialises_every_field_the_parser_reads() {
-        let (_, account, program) = encoded_transaction();
-        let writable = Address::from([3u8; 32]);
-        let readonly = Address::from([4u8; 32]);
-        let block: Block = serde_json::from_str(&response()).expect("valid block");
+        let block: Block = serde_json::from_str(RESPONSE).expect("valid block");
 
         assert_eq!(block.blockhash, "9zc1abc");
         assert_eq!(block.previous_blockhash, "8yb0def");
@@ -442,13 +247,13 @@ mod tests {
         assert_eq!(txs.len(), 1);
         let tx = &txs[0];
         assert!(!tx.is_failed());
-        assert_eq!(tx.transaction.signatures, [[5u8; 64]]);
-        // The payer signs, so it leads the keys and the program follows.
-        assert!(tx.transaction.message.account_keys.contains(&Address::from(account)));
-        assert!(tx.transaction.message.account_keys.contains(&Address::from(program)));
+        assert_eq!(tx.transaction.signatures, ["5sig"]);
+        assert_eq!(tx.transaction.message.account_keys, ["AccountOne", "ProgramOne"]);
 
         let ix = &tx.transaction.message.instructions[0];
-        assert_eq!(ix.data, vec![1, 2, 3], "instruction payload survives as bytes");
+        assert_eq!(ix.program_id_index, 1);
+        assert_eq!(ix.accounts, [0]);
+        assert_eq!(ix.data, "3Bxs");
 
         let meta = tx.meta.as_ref().expect("meta present");
         assert_eq!(
@@ -460,20 +265,16 @@ mod tests {
         assert_eq!(inner[0].index, 0);
         assert_eq!(inner[0].instructions[0].program_id_index, 1);
         assert_eq!(inner[0].instructions[0].accounts, [0, 1]);
-        assert_eq!(
-            inner[0].instructions[0].data,
-            bs58::decode("3Bxs").into_vec().expect("base58"),
-            "meta instructions stay base58 in every encoding"
-        );
+        assert_eq!(inner[0].instructions[0].data, "inner");
 
         let loaded = meta.loaded_addresses.as_ref().expect("loaded present");
-        assert_eq!(loaded.writable, [writable]);
-        assert_eq!(loaded.readonly, [readonly]);
+        assert_eq!(loaded.writable, ["WritableOne"]);
+        assert_eq!(loaded.readonly, ["ReadonlyOne"]);
     }
 
     #[test]
     fn err_marks_the_transaction_failed() {
-        let failed = response().replace(
+        let failed = RESPONSE.replace(
             r#""err": null"#,
             r#""err": {"InstructionError": [1, {"Custom": 98}]}"#,
         );
@@ -488,11 +289,9 @@ mod tests {
         assert!(block.transactions.is_none());
         assert_eq!(block.blockhash, "h");
 
-        let (encoded, _, _) = encoded_transaction();
-        let without_meta =
-            format!(r#"{{"transactions":[{{"transaction":["{encoded}","base64"]}}]}}"#);
         let no_meta: Block =
-            serde_json::from_str(&without_meta).expect("block without meta");
+            serde_json::from_str(r#"{"transactions":[{"transaction":{"signatures":[]}}]}"#)
+                .expect("block without meta");
         // No meta reads as failed, which is what the typed path does.
         assert!(no_meta.transactions.expect("transactions")[0].is_failed());
     }

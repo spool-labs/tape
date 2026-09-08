@@ -273,12 +273,6 @@ impl Store for MetaBulkStore {
         self.bulk.reclaim_space()
     }
 
-    // The rocks half no-ops; without this the reel half is never driven.
-    fn maintain(&self) -> Result<()> {
-        self.meta.maintain()?;
-        self.bulk.maintain()
-    }
-
     fn cf_disk_usage(&self) -> Result<Vec<CfDiskUsage>> {
         let mut usage = Vec::new();
         for mut entry in self.meta.cf_disk_usage()? {

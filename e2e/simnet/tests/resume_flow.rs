@@ -159,6 +159,40 @@ async fn resume_flow_inner() {
         wait_track_count(&sdk, &key.address(), 1, active_timeout).await;
     }
 
+    // The object store boundary returns after coded data lands but before the
+    // track is certified. The returned receipts complete that same track.
+    {
+        let key = TapeKey::generate();
+        sdk.reserve(&key, capacity, EPOCHS)
+            .await
+            .expect("store reserve");
+        let size = StorageUnits::from_bytes(data.len() as u64);
+        let (written, receipts) = sdk
+            .store_named_object(
+                &key,
+                OBJECT_NAME,
+                ContentType::Unknown,
+                size,
+                data.as_slice(),
+            )
+            .await
+            .expect("store object");
+        assert!(written.track.is_coded(), "store: coded");
+        assert!(!written.track.is_certified(), "store: certification pending");
+
+        let track = sdk
+            .certify_with_receipts(&key, &written, &receipts)
+            .await
+            .expect("certify stored object");
+        assert!(track.is_certified(), "store: certified");
+        assert_eq!(
+            read_track(&sdk, &track, active_timeout).await,
+            data,
+            "store: data roundtrips"
+        );
+        wait_track_count(&sdk, &key.address(), 1, active_timeout).await;
+    }
+
     // Case D: nothing was interrupted. A repeat of a completed write is a no-op
     // skip that spends no new capacity and adds no track.
     {

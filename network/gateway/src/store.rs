@@ -2,15 +2,16 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent};
+use tape_core::track::data::BlobData;
+use tape_core::types::SlotNumber;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_node::core::types::ChannelName;
-use tape_node::features::replay::types::ReplayBatch;
-use tape_node::features::store::manager::{
-    maintenance_ticker, persist_batch_with, settle_maintenance, tick_maintenance,
-    MaintenancePass, RawTrackPolicy,
-};
+use tape_node::features::replay::types::{RawTrack, ReplayBatch};
+use tape_node::features::store::apply::apply_slot;
 use tape_protocol::Api;
+use tape_store::ops::{MetaOps, TrackDataOps};
 use tape_store::TapeStore;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -21,7 +22,7 @@ pub struct GatewayStoreManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     cancel: CancellationToken,
 }
 
-impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db, Cluster, Blockchain> {
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db, Cluster, Blockchain> {
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         rx: mpsc::Receiver<ReplayBatch>,
@@ -35,18 +36,6 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
     }
 
     pub async fn run(mut self) -> Result<(), NodeError> {
-        let mut pass = None;
-        let result = self.drive(&mut pass).await;
-        settle_maintenance(pass).await;
-        result
-    }
-
-    async fn drive(&mut self, pass: &mut Option<MaintenancePass>) -> Result<(), NodeError> {
-        // The same read-write volume a node opens, through the same
-        // `build_context` and ingesting the same blocks. The gateway runs no GC
-        // manager, so without this nothing here drives maintenance at all.
-        let mut ticker = maintenance_ticker();
-
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => return Ok(()),
@@ -64,19 +53,44 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
 
                     self.context.pending.drop_slot(batch.slot);
                 }
-
-                _ = ticker.tick() => tick_maintenance(&self.context.store, pass).await,
             }
         }
     }
 }
 
-/// Every raw track is kept: a gateway serves reads for all of them
 pub fn persist_batch<Db: Store>(
     store: &TapeStore<Db>,
     batch: &ReplayBatch,
 ) -> Result<(), NodeError> {
-    persist_batch_with(store, batch, RawTrackPolicy::All)
+    apply_records(store, batch.slot, batch.block_time, &batch.records)?;
+    persist_raw_tracks(store, &batch.raw_tracks)?;
+
+    store
+        .set_sync_cursor(batch.slot)
+        .map_err(|error| NodeError::Store(format!("set_sync_cursor: {error}")))
+}
+
+fn apply_records<Db: Store>(
+    store: &TapeStore<Db>,
+    slot: SlotNumber,
+    block_time: Option<i64>,
+    records: &[ReplayRecord],
+) -> Result<(), NodeError> {
+    let events: Vec<ReplayableEvent> = records.iter().map(|record| record.event.clone()).collect();
+    apply_slot(store, slot, block_time, &events)
+}
+
+fn persist_raw_tracks<Db: Store>(
+    store: &TapeStore<Db>,
+    raw_tracks: &[RawTrack],
+) -> Result<(), NodeError> {
+    for raw_track in raw_tracks {
+        store
+            .put_track_data(raw_track.track, BlobData::Inline(raw_track.data.clone()))
+            .map_err(|error| NodeError::Store(format!("put_track_data: {error}")))?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -86,7 +100,6 @@ mod tests {
     use tape_core::track::data::BlobData;
     use tape_core::types::SlotNumber;
     use tape_crypto::address::Address;
-    use tape_crypto::Hash;
     use tape_node::features::replay::types::{RawTrack, ReplayBatch};
     use tape_store::ops::{MetaOps, TrackDataOps};
     use tape_store::TapeStore;
@@ -105,7 +118,6 @@ mod tests {
 
         let batch = ReplayBatch {
             slot: SlotNumber(42),
-            blockhash: Hash::new_unique(),
             block_time: None,
             records: Vec::new(),
             raw_tracks: vec![
