@@ -10,6 +10,7 @@ use futures::StreamExt;
 use rpc::Rpc;
 use store::Store;
 use tape_core::types::SlotNumber;
+use tape_crypto::Hash;
 use tape_protocol::Api;
 use tape_store::ops::MetaOps;
 use tokio_util::sync::CancellationToken;
@@ -19,48 +20,26 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::block::fetch::fetch_blocks_ordered;
 use crate::features::replay::engine::{ReplayEngine, ReplayPersistFn};
-use crate::features::store::manager::persist_batch;
 
 const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
-pub async fn replay_finalized_range<Db, Cluster, Blockchain>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    replay: &mut ReplayEngine<'_, Db>,
-    start_slot: SlotNumber,
-    end_slot: SlotNumber,
-    cancel: &CancellationToken,
-) -> Result<usize, NodeError>
-where
-    Db: Store,
-    Cluster: Api,
-    Blockchain: Rpc,
-{
-    replay_finalized_range_with_persist(
-        context,
-        replay,
-        start_slot,
-        end_slot,
-        cancel,
-        persist_batch::<Db>,
-    )
-    .await
-}
-
+/// Replays the range from `parent`, returning the events applied and the last block's hash
 pub async fn replay_finalized_range_with_persist<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     replay: &mut ReplayEngine<'_, Db>,
     start_slot: SlotNumber,
     end_slot: SlotNumber,
+    mut parent: Option<Hash>,
     cancel: &CancellationToken,
     persist: ReplayPersistFn<Db>,
-) -> Result<usize, NodeError>
+) -> Result<(usize, Option<Hash>), NodeError>
 where
     Db: Store,
     Cluster: Api,
     Blockchain: Rpc,
 {
     if start_slot > end_slot {
-        return Ok(0);
+        return Ok((0, parent));
     }
 
     let mut event_count = 0usize;
@@ -79,7 +58,11 @@ where
 
         match fetched? {
             Some(block) => {
+                if parent.is_some_and(|parent| parent != block.previous_blockhash) {
+                    return Err(NodeError::ChainDiverged { slot: block.slot });
+                }
                 event_count = event_count.saturating_add(replay.apply_block_with(&block, persist)?);
+                parent = Some(block.blockhash);
             }
             None => context.bootstrap.record_skipped(),
         }
@@ -103,8 +86,8 @@ where
 
     context
         .store
-        .set_sync_cursor(end_slot)
+        .set_sync_cursor(end_slot, parent)
         .map_err(|error| NodeError::Store(format!("set_sync_cursor: {error}")))?;
 
-    Ok(event_count)
+    Ok((event_count, parent))
 }

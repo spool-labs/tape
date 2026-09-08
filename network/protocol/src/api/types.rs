@@ -1,6 +1,7 @@
 //! Protocol request/response types for the node API.
 
 use core::mem::size_of;
+use std::collections::BTreeMap;
 
 use tape_core::{
     bls::BlsSignature,
@@ -125,6 +126,8 @@ pub struct NodeStats {
     #[serde(default)]
     pub store_disk_bytes: u64,
     #[serde(default)]
+    pub store_data_bytes: u64,
+    #[serde(default)]
     pub free_disk_bytes: Option<u64>,
     #[serde(default)]
     pub disk_volumes: Vec<VolumeStats>,
@@ -164,6 +167,19 @@ pub struct NodeStats {
     pub bootstrap_target_slot: u64,
     #[serde(default)]
     pub fee_payer_lamports: Option<u64>,
+    #[serde(default)]
+    pub challenge_refusals: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub challenge_realigns: u64,
+    #[serde(default)]
+    pub challenge_realign_failures: u64,
+    #[serde(default)]
+    pub challenge_divergence_observed: u64,
+    #[serde(default)]
+    pub challenge_divergence_signers: u64,
+    /// Zero from a peer too old to keep the tally, the same as never restarted.
+    #[serde(default)]
+    pub restarts: u64,
 }
 
 /// Project the wire stats onto the dashboard's per-node stats.
@@ -176,6 +192,7 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
             slices_stored: s.slices_stored,
             slice_payload_bytes: s.slice_payload_bytes,
             store_disk_bytes: s.store_disk_bytes,
+            store_data_bytes: s.store_data_bytes,
             free_disk_bytes: s.free_disk_bytes.unwrap_or(0),
             current_epoch: s.current_epoch,
             ingest_state: s.ingest_state.clone(),
@@ -193,6 +210,7 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
             repair_bytes: s.repair_bytes_fetched,
             recover_bytes: s.recover_bytes_fetched,
             upload_bytes: s.bytes_uploaded,
+            restarts: s.restarts,
         }
     }
 }
@@ -290,15 +308,32 @@ impl From<ProofOfAccessPayload> for ProofOfAccess {
     }
 }
 
-/// Wire representation of an observer's attestation for a round.
+/// One signer's attestations for a round, as one message.
+///
+/// `digest` rides along as the signer's view of the settled epoch, zero while
+/// its epoch is still in transition. It carries its own signature rather than
+/// joining the attestation's: attestations aggregate across a group and only do
+/// so while every signer signs identical bytes.
+///
+/// Batched per round rather than sent per spool: a signer verifies every answer
+/// in its group and the round's fields repeat across all of them, so twenty
+/// separate posts to each of twenty peers is four hundred where twenty will do.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct AttestationPayload {
     pub epoch: EpochNumber,
     pub group: GroupIndex,
     pub round: RoundNumber,
-    pub spool: SpoolIndex,
     pub block: Hash,
     pub signer: Address,
+    pub digest: Hash,
+    pub digest_signature: BlsSignature,
+    pub attests: Vec<SpoolAttestation>,
+}
+
+/// One spool's signature inside a round's attestation.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SpoolAttestation {
+    pub spool: SpoolIndex,
     pub signature: BlsSignature,
 }
 
@@ -409,6 +444,7 @@ pub struct TrackProofResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::bls::BlsPrivateKey;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{GROUP_SIZE, SUB_TREE_HEIGHT};
     use tape_core::system::VoteKind;
@@ -496,6 +532,38 @@ mod tests {
         let mut bytes = [0u8; 32];
         bytes[0] = byte;
         Address::new(bytes)
+    }
+
+    // The #119 batch and #123 view report share one wire message: the digest is
+    // carried once for the signer while each spool keeps its own attestation.
+    #[test]
+    fn attestation_batch_with_digest_roundtrips() {
+        let key = BlsPrivateKey::from_random();
+        let payload = AttestationPayload {
+            epoch: EpochNumber(4),
+            group: GroupIndex(2),
+            round: RoundNumber(9),
+            block: Hash([0x31; 32]),
+            signer: address(7),
+            digest: Hash([0x42; 32]),
+            digest_signature: key.sign(b"view").expect("sign digest"),
+            attests: vec![
+                SpoolAttestation {
+                    spool: SpoolIndex(40),
+                    signature: key.sign(b"spool 40").expect("sign attestation"),
+                },
+                SpoolAttestation {
+                    spool: SpoolIndex(41),
+                    signature: key.sign(b"spool 41").expect("sign attestation"),
+                },
+            ],
+        };
+
+        let bytes = wincode::serialize(&payload).expect("serialize attestation batch");
+        let decoded: AttestationPayload =
+            wincode::deserialize(&bytes).expect("deserialize attestation batch");
+
+        assert_eq!(decoded, payload);
     }
 
     #[test]

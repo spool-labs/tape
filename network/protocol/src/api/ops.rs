@@ -5,6 +5,7 @@ use tape_core::prelude::{BlobData, CompressedTrack, EpochNumber, SpoolIndex, Tra
 use tape_core::types::RoundNumber;
 use tape_core::spooler::GroupIndex;
 use tape_core::challenge::ProofOfAccess;
+use crate::api::types::SpoolAttestation;
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 
@@ -204,10 +205,12 @@ pub struct AttestReq {
     pub epoch: EpochNumber,
     pub group: GroupIndex,
     pub round: RoundNumber,
-    pub spool: SpoolIndex,
     pub block: Hash,
     pub signer: Address,
-    pub signature: BlsSignature,
+    pub digest: Hash,
+    pub digest_signature: BlsSignature,
+    /// Every spool this signer has verified for the round so far.
+    pub attests: Vec<SpoolAttestation>,
 }
 
 #[derive(Clone, Debug)]

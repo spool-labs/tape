@@ -23,8 +23,8 @@ pub const SLOT_MS: u64 = 400;
 /// Slots a round searches for its entropy block before it voids.
 ///
 /// Wider means fewer void rounds and a longer round. At a 5% miss rate a span of
-/// four voids about six rounds per million, where one slot voids one in twenty.
-pub const SPAN_SLOTS: u64 = 4;
+/// two voids about one round in four hundred, where one slot voids one in twenty.
+pub const SPAN_SLOTS: u64 = 2;
 
 /// Slots before a round's window that the sample set is cut at.
 ///
@@ -49,42 +49,76 @@ pub const PROOF_DEADLINE_SLOTS: u64 = 2;
 pub const CONFIRMATION_SLOTS: u64 = 1;
 
 /// Slots the signature window stays open once confirmation has passed.
-pub const ATTESTATION_WINDOW_SLOTS: u64 = 4;
+pub const ATTESTATION_WINDOW_SLOTS: u64 = 2;
 
 /// Slots allowed for an aggregated certificate to reach the group.
-pub const CERTIFICATE_GOSSIP_SLOTS: u64 = 2;
+pub const CERTIFICATE_GOSSIP_SLOTS: u64 = 1;
 
-/// Cadence on an epoch long enough not to constrain it: 60 s at the real slot time.
-pub const MAINNET_CADENCE_SLOTS: u64 = 150;
+/// Cadence on an epoch long enough not to constrain it: the round width.
+///
+/// Finality does not bound this; settlement lags by `SETTLE_DEADLINE_SLOTS`.
+pub const MAINNET_CADENCE_SLOTS: u64 = 7;
+
+/// Epoch length below which the cap gives way to the round width.
+///
+/// The cap is there to hold the cost of rounds down across an epoch that runs
+/// for hours, where a tighter cadence buys detection latency nobody is waiting
+/// on. An epoch measured in minutes is a harness: it ends before the saving is
+/// worth anything, and the rounds are the thing being watched. Set well clear
+/// of the shortest deployed epoch, which is an hour.
+pub const SHORT_EPOCH_SLOTS: u64 = 1_800;
+
+/// Slots a round waits before calling its block lost.
+///
+/// Sized off TowerBFT rooting, measured at 31 here. It is a timeout for the
+/// void case, not a claim about how fast any given chain roots.
+pub const FINALITY_SLOTS: u64 = 32;
+
+/// Slots a round waits on its entropy block before it is void.
+pub const SETTLE_DEADLINE_SLOTS: u64 = FINALITY_SLOTS + 8;
+
+/// Rounds a group may hold at once: the deadline at the tightest cadence, which
+/// is the round width. A cap below that sheds rounds before they can root.
+pub const MAX_PENDING_ROUNDS: usize = (SETTLE_DEADLINE_SLOTS / round_width_slots() + 3) as usize;
+
+/// Rounds a spool that changed hands is not charged for.
+///
+/// A new owner holds none of what it was just handed and has to fetch it, so
+/// the rounds straight after a boundary would charge it for data it never had a
+/// chance to hold. Counted from the epoch's first round rather than from round
+/// zero, since the grid's early positions fall in phases that do not challenge.
+/// Bounded so an owner that never fetches is still caught.
+pub const HANDOVER_GRACE_ROUNDS: u64 = 8;
 
 /// Rounds an epoch needs before the eviction rule can engage inside it.
 pub const TARGET_ROUNDS_PER_EPOCH: u64 = 4;
 
-/// Slots from a round opening to its certificate having gossiped.
-///
-/// A round is not instantaneous: it searches for an entropy block, waits out the
-/// response deadline, holds a signing window that cannot open before confirmation,
-/// and lets the certificate travel. The interval has to clear this or a round's
-/// certificate is still moving when its successor opens.
+/// Slots from a round opening to its certificate having gossiped; no slot for
+/// confirmation since nothing in the signing leg waits on it
 pub const fn round_width_slots() -> u64 {
-    let signing = CONFIRMATION_SLOTS + ATTESTATION_WINDOW_SLOTS;
-    let tail = if PROOF_DEADLINE_SLOTS > signing {
+    let tail = if PROOF_DEADLINE_SLOTS > ATTESTATION_WINDOW_SLOTS {
         PROOF_DEADLINE_SLOTS
     } else {
-        signing
+        ATTESTATION_WINDOW_SLOTS
     };
     SPAN_SLOTS + tail + CERTIFICATE_GOSSIP_SLOTS
 }
 
 /// Slots between rounds for an epoch of the given length.
 ///
-/// The cap holds detection latency steady on long epochs, the divide fits enough
-/// rounds into short ones, and the floor keeps rounds from overlapping. Derived
-/// rather than tabulated, so an operator voting the epoch duration gets a correct
-/// cadence without anyone editing a table.
+/// The cap holds detection latency steady on long epochs and gives way on the
+/// short ones, the divide fits enough rounds into an epoch shorter still, and
+/// the floor keeps rounds from overlapping. Derived rather than tabulated, so an
+/// operator voting the epoch duration gets a correct cadence without anyone
+/// editing a table.
 pub fn cadence_for_epoch(epoch_slots: u64) -> u64 {
     let fitted = epoch_slots / TARGET_ROUNDS_PER_EPOCH;
-    MAINNET_CADENCE_SLOTS.min(fitted).max(round_width_slots())
+    let cap = if epoch_slots < SHORT_EPOCH_SLOTS {
+        round_width_slots()
+    } else {
+        MAINNET_CADENCE_SLOTS
+    };
+    cap.min(fitted).max(round_width_slots())
 }
 
 /// Rounds an epoch of this length holds at this cadence, before any shift.
@@ -217,7 +251,7 @@ impl Schedule {
     /// Slot by which a proof must have arrived, counted from the entropy block.
     ///
     /// Sizes the round rather than gating a response: no observer rejects a late
-    /// answer today, because a round settles when the next one opens and that is
+    /// answer today, because a round settles on its block rooting and that is
     /// the bound a response actually runs against.
     pub fn deadline_slot(&self, entropy_slot: SlotNumber) -> SlotNumber {
         SlotNumber(entropy_slot.as_u64() + PROOF_DEADLINE_SLOTS)
@@ -225,8 +259,8 @@ impl Schedule {
 
     /// The round whose entropy window covers this slot, if any.
     ///
-    /// None between rounds, which is most of the grid: the window is four slots
-    /// out of an interval that is usually a hundred and fifty.
+    /// None between rounds, which is most of the grid: the window is two slots
+    /// out of an interval of seven.
     ///
     /// Not bounded by `rounds()`. That count is what an epoch of the nominal
     /// duration holds, but an epoch ends when the committee advances it, not when
@@ -261,16 +295,18 @@ mod tests {
 
     #[test]
     fn round_width() {
-        assert_eq!(round_width_slots(), 11);
+        assert_eq!(round_width_slots(), 5);
     }
 
+    /// The deployed presets keep the cap; the harnesses run at the round width,
+    /// which is as tight as a grid can be laid without rounds overlapping.
     #[test]
     fn preset_cadence() {
         let expected = [
-            (MAINNET, 150u64, 10_080u64),
-            (DEVNET, 150, 60),
-            (LOCALNET, 62, 4),
-            (SIMNET, 12, 4),
+            (MAINNET, 7u64, 216_000u64),
+            (DEVNET, 7, 1_286),
+            (LOCALNET, 5, 50),
+            (SIMNET, 5, 10),
         ];
 
         for (seconds, interval, rounds) in expected {
@@ -285,7 +321,7 @@ mod tests {
 
     #[test]
     fn shortest_epoch() {
-        let schedule = Schedule::for_epoch(SlotNumber(0), epoch_slots(10), &nonce(0));
+        let schedule = Schedule::for_epoch(SlotNumber(0), epoch_slots(5), &nonce(0));
         assert_eq!(schedule.interval_slots, round_width_slots());
         assert_eq!(schedule.rounds(), 2);
         assert!(schedule.validate().is_ok());
@@ -293,12 +329,12 @@ mod tests {
 
     #[test]
     fn epoch_too_short() {
-        let schedule = Schedule::for_epoch(SlotNumber(0), 10, &nonce(0));
+        let schedule = Schedule::for_epoch(SlotNumber(0), 4, &nonce(0));
         assert_eq!(schedule.rounds(), 0);
         assert_eq!(
             schedule.validate(),
             Err(ScheduleError::EpochTooShort {
-                epoch_slots: 10,
+                epoch_slots: 4,
                 width: round_width_slots(),
             })
         );
@@ -352,12 +388,14 @@ mod tests {
 
     #[test]
     fn nonce_moves_grid() {
-        let slots = epoch_slots(DEVNET);
+        // An epoch whose rounds do not divide it exactly. One that does leaves
+        // no slack, and the grid then sits in the same place whatever the nonce.
+        let slots = epoch_slots(MAINNET);
         let offsets: Vec<u64> = (0..8u8)
             .map(|byte| Schedule::for_epoch(SlotNumber(0), slots, &nonce(byte)).grid_offset)
             .collect();
 
-        assert!(offsets.iter().all(|offset| *offset <= grid_slack(slots, 150)));
+        assert!(offsets.iter().all(|offset| *offset <= grid_slack(slots, MAINNET_CADENCE_SLOTS)));
         assert!(
             offsets.iter().collect::<std::collections::HashSet<_>>().len() > 1,
             "the grid sat in the same place for every nonce: {offsets:?}"

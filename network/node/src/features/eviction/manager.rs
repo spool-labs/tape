@@ -122,6 +122,13 @@ where
             return Ok(());
         }
 
+        // Nor off a view the node has stopped trusting. Every record behind the
+        // queue was folded from that view, so proposing on it would evict a
+        // group for this node's own drift.
+        if self.context.challenge_tripwire.is_realigning() {
+            return Ok(());
+        }
+
         let state = self.context.state();
         if state.find_member(self.context.node_address()).is_none() {
             return Ok(());

@@ -1,5 +1,5 @@
 use dashu::integer::UBig;
-use solana_bn254::compression::prelude::alt_bn128_g1_decompress;
+use solana_bn254::compression::prelude::alt_bn128_g1_decompress_be;
 
 use crate::bls12254::{MODULUS, NORMALIZE_MODULUS};
 use crate::bls12254::errors::BLSError;
@@ -42,7 +42,7 @@ pub fn hash_to_curve<T: AsRef<[u8]>>(message: T) -> Result<G1Point, BLSError> {
                 return None;
             }
 
-            match alt_bn128_g1_decompress(&compressed) {
+            match alt_bn128_g1_decompress_be(&compressed) {
                 Ok(p) if p != [0u8; 64] => Some(G1Point(p)),
                 Err(_) => None,
                 _ => None,

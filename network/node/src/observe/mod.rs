@@ -1,10 +1,12 @@
 pub mod http;
 pub mod board;
+pub mod stream;
 
 mod aggregator;
 mod balance;
+mod bandwidth;
 mod cache;
-mod collectors;
+pub mod collectors;
 mod epoch;
 mod peers;
 
@@ -26,6 +28,7 @@ use collectors::{CapacityFn, ChannelCollector, NodeStatusCollector, StoreStatsCo
 pub use aggregator::PeerAggregator;
 pub use balance::BalanceMonitor;
 pub use cache::{cached_network, cached_board};
+pub use stream::StreamPublisher;
 pub use peers::lookup as peer_liveness;
 pub use epoch::{current_epoch_progress, last_epoch, lifetime, roll_epoch};
 

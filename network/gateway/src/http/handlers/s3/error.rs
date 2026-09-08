@@ -20,6 +20,10 @@ const AMZ_REQUEST_ID: &str = "x-amz-request-id";
 pub enum S3Error {
     /// The specified bucket does not exist. HTTP 404
     NoSuchBucket,
+    /// The bucket a client asked to create is already its own. HTTP 409
+    BucketAlreadyOwnedByYou,
+    /// The bucket label cannot name a tape. HTTP 400
+    InvalidBucketName(String),
     /// The specified key does not exist. HTTP 404
     NoSuchKey,
     /// The specified multipart upload id does not exist (unknown, already
@@ -39,6 +43,8 @@ pub enum S3Error {
     InvalidRequest(String),
     /// A Range request that cannot be satisfied; carries the object size. HTTP 416
     InvalidRange(u64),
+    /// A conditional header on the request did not hold. HTTP 412
+    PreconditionFailed,
     /// The caller is being rate limited; carries Retry-After seconds. HTTP 503
     SlowDown { retry_after_seconds: u64 },
     /// The operation is recognized but not implemented yet. HTTP 501
@@ -59,6 +65,8 @@ impl S3Error {
     pub fn code(&self) -> &'static str {
         match self {
             Self::NoSuchBucket => "NoSuchBucket",
+            Self::BucketAlreadyOwnedByYou => "BucketAlreadyOwnedByYou",
+            Self::InvalidBucketName(_) => "InvalidBucketName",
             Self::NoSuchKey => "NoSuchKey",
             Self::NoSuchUpload => "NoSuchUpload",
             Self::AccessDenied(_) => "AccessDenied",
@@ -68,6 +76,7 @@ impl S3Error {
             Self::EntityTooSmall(_) => "EntityTooSmall",
             Self::InvalidRequest(_) => "InvalidRequest",
             Self::InvalidRange(_) => "InvalidRange",
+            Self::PreconditionFailed => "PreconditionFailed",
             Self::SlowDown { .. } => "SlowDown",
             Self::NotImplemented(_) => "NotImplemented",
             Self::Internal(_) => "InternalError",
@@ -79,11 +88,14 @@ impl S3Error {
         match self {
             Self::NoSuchBucket | Self::NoSuchKey | Self::NoSuchUpload => StatusCode::NOT_FOUND,
             Self::AccessDenied(_) | Self::SignatureDoesNotMatch => StatusCode::FORBIDDEN,
-            Self::ContentSha256Mismatch
+            Self::BucketAlreadyOwnedByYou => StatusCode::CONFLICT,
+            Self::InvalidBucketName(_)
+            | Self::ContentSha256Mismatch
             | Self::EntityTooLarge(_)
             | Self::EntityTooSmall(_)
             | Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
             Self::InvalidRange(_) => StatusCode::RANGE_NOT_SATISFIABLE,
+            Self::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             Self::SlowDown { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -91,9 +103,13 @@ impl S3Error {
     }
 
     /// A human-readable `<Message>` for this error
-    fn message(&self) -> String {
+    pub fn message(&self) -> String {
         match self {
             Self::NoSuchBucket => "The specified bucket does not exist.".to_string(),
+            Self::BucketAlreadyOwnedByYou => {
+                "Your previous request to create the named bucket succeeded and you already own it."
+                    .to_string()
+            }
             Self::NoSuchKey => "The specified key does not exist.".to_string(),
             Self::NoSuchUpload => {
                 "The specified multipart upload does not exist. The upload id may be invalid, \
@@ -105,6 +121,9 @@ impl S3Error {
                     .to_string()
             }
             Self::SlowDown { .. } => "Please reduce your request rate.".to_string(),
+            Self::PreconditionFailed => {
+                "At least one of the preconditions you specified did not hold.".to_string()
+            }
             Self::InvalidRange(total) => {
                 format!("The requested range is not satisfiable (object size {total}).")
             }
@@ -116,6 +135,7 @@ impl S3Error {
             // server-side (see `internal_detail`) and never sent to the client.
             Self::Internal(_) => "We encountered an internal error. Please try again.".to_string(),
             Self::AccessDenied(detail)
+            | Self::InvalidBucketName(detail)
             | Self::EntityTooLarge(detail)
             | Self::EntityTooSmall(detail)
             | Self::InvalidRequest(detail)
@@ -129,6 +149,8 @@ impl S3Error {
         match self {
             Self::Internal(detail) => Some(detail),
             Self::NoSuchBucket
+            | Self::BucketAlreadyOwnedByYou
+            | Self::InvalidBucketName(_)
             | Self::NoSuchKey
             | Self::NoSuchUpload
             | Self::AccessDenied(_)
@@ -139,6 +161,7 @@ impl S3Error {
             | Self::InvalidRequest(_)
             | Self::SlowDown { .. }
             | Self::InvalidRange(_)
+            | Self::PreconditionFailed
             | Self::NotImplemented(_) => None,
         }
     }
@@ -166,6 +189,8 @@ impl IntoResponse for S3Error {
         let retry_after = match &self {
             Self::SlowDown { retry_after_seconds } => Some(*retry_after_seconds),
             Self::NoSuchBucket
+            | Self::BucketAlreadyOwnedByYou
+            | Self::InvalidBucketName(_)
             | Self::NoSuchKey
             | Self::NoSuchUpload
             | Self::AccessDenied(_)
@@ -175,6 +200,7 @@ impl IntoResponse for S3Error {
             | Self::EntityTooSmall(_)
             | Self::InvalidRequest(_)
             | Self::InvalidRange(_)
+            | Self::PreconditionFailed
             | Self::NotImplemented(_)
             | Self::Internal(_) => None,
         };
@@ -269,6 +295,11 @@ mod tests {
             StatusCode::RANGE_NOT_SATISFIABLE
         );
         assert_eq!(S3Error::InvalidRange(1024).code(), "InvalidRange");
+        assert_eq!(
+            S3Error::PreconditionFailed.status(),
+            StatusCode::PRECONDITION_FAILED
+        );
+        assert_eq!(S3Error::PreconditionFailed.code(), "PreconditionFailed");
         assert_eq!(
             S3Error::NotImplemented("x".into()).status(),
             StatusCode::NOT_IMPLEMENTED

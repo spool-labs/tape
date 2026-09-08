@@ -5,10 +5,10 @@
 //! - Cluster genesis hash
 //! - Chain epoch number
 //! - Node address
-//! - Sync cursor (last processed slot)
+//! - Sync cursor (last processed slot and the block it stands on)
 //! - GC progress (started/completed epochs)
 
-use crate::columns::{GcCol, MetaCol, SyncCursorCol};
+use crate::columns::{GcCol, MetaCol, SyncCursor, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
 use crate::TapeStore;
 use store::Store;
@@ -44,9 +44,10 @@ pub trait MetaOps {
     fn get_node_id(&self) -> Result<Option<NodeId>>;
     fn set_node_id(&self, id: NodeId) -> Result<()>;
 
-    // Sync cursor
+    // Sync cursor: the last slot processed and the block it chains from
     fn get_sync_cursor(&self) -> Result<Option<SlotNumber>>;
-    fn set_sync_cursor(&self, slot: SlotNumber) -> Result<()>;
+    fn get_sync_parent(&self) -> Result<Option<Hash>>;
+    fn set_sync_cursor(&self, slot: SlotNumber, parent: Option<Hash>) -> Result<()>;
 
     // Snapshot bootstrap marker
     fn get_bootstrap_target_epoch(&self) -> Result<Option<EpochNumber>>;
@@ -152,11 +153,15 @@ impl<S: Store> MetaOps for TapeStore<S> {
     }
 
     fn get_sync_cursor(&self) -> Result<Option<SlotNumber>> {
-        Ok(self.get::<SyncCursorCol>(&UnitKey)?)
+        Ok(self.get::<SyncCursorCol>(&UnitKey)?.map(|cursor| cursor.slot))
     }
 
-    fn set_sync_cursor(&self, slot: SlotNumber) -> Result<()> {
-        self.put::<SyncCursorCol>(&UnitKey, &slot)?;
+    fn get_sync_parent(&self) -> Result<Option<Hash>> {
+        Ok(self.get::<SyncCursorCol>(&UnitKey)?.and_then(|cursor| cursor.parent))
+    }
+
+    fn set_sync_cursor(&self, slot: SlotNumber, parent: Option<Hash>) -> Result<()> {
+        self.put::<SyncCursorCol>(&UnitKey, &SyncCursor { slot, parent })?;
         Ok(())
     }
 
@@ -348,11 +353,18 @@ mod tests {
     fn test_sync_cursor_roundtrip() {
         let store = test_store();
         let slot = SlotNumber(999999);
+        let parent = Hash::new_unique();
 
         assert!(store.get_sync_cursor().unwrap().is_none());
+        assert!(store.get_sync_parent().unwrap().is_none());
 
-        store.set_sync_cursor(slot).unwrap();
+        store.set_sync_cursor(slot, Some(parent)).unwrap();
         assert_eq!(store.get_sync_cursor().unwrap(), Some(slot));
+        assert_eq!(store.get_sync_parent().unwrap(), Some(parent));
+
+        // A snapshot moves the cursor with no block to stand on.
+        store.set_sync_cursor(slot.next(), None).unwrap();
+        assert_eq!(store.get_sync_parent().unwrap(), None);
     }
 
     #[test]

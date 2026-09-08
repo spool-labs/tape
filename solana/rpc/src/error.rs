@@ -63,6 +63,10 @@ pub enum RpcError {
     #[error("Blockhash expired")]
     BlockhashExpired,
 
+    /// The rooted chain has no block at the slot asked for
+    #[error("slot skipped")]
+    SlotSkipped,
+
     /// Internal error (configuration, setup, etc.)
     #[error("Internal error: {0}")]
     Internal(String),
@@ -77,6 +81,7 @@ impl RpcError {
             RpcError::BlockNotAvailable => true,
             RpcError::BlockhashExpired => true,
             RpcError::Request(msg) => is_retriable_message(msg),
+            RpcError::SlotSkipped => false,
 
             // Non-retriable errors
             RpcError::AccountNotFound(_) => false,
@@ -93,6 +98,7 @@ impl RpcError {
         match self {
             RpcError::Timeout(_) => true,
             RpcError::BlockNotAvailable => false,
+            RpcError::SlotSkipped => false,
             RpcError::Request(msg) => is_endpoint_error_message(msg),
             RpcError::AccountNotFound(_) => false,
             RpcError::TransactionNotFound(_) => false,
@@ -109,6 +115,7 @@ impl RpcError {
         match self {
             RpcError::Timeout(_) => "timeout",
             RpcError::BlockNotAvailable => "block_not_available",
+            RpcError::SlotSkipped => "slot_skipped",
             RpcError::Request(_) => "rpc_error",
             RpcError::AccountNotFound(_) => "not_found",
             RpcError::TransactionNotFound(_) => "not_found",
@@ -171,18 +178,7 @@ impl RpcError {
 
     /// Check if this error indicates a skipped slot.
     pub fn is_skipped_slot(&self) -> bool {
-        match self {
-            RpcError::Request(msg) => is_skipped_slot_message(msg),
-            RpcError::Timeout(_) => false,
-            RpcError::BlockNotAvailable => false,
-            RpcError::AccountNotFound(_) => false,
-            RpcError::TransactionNotFound(_) => false,
-            RpcError::Deserialization(_) => false,
-            RpcError::Transaction { .. } => false,
-            RpcError::BlockhashExpired => false,
-            RpcError::AllEndpointsFailed { .. } => false,
-            RpcError::Internal(_) => false,
-        }
+        matches!(self, RpcError::SlotSkipped)
     }
 }
 
@@ -192,6 +188,7 @@ fn is_retriable_message(msg: &str) -> bool {
     msg.contains("blockhash not found")
         || msg.contains("node is behind")
         || msg.contains("block not available")
+        || msg.contains("not yet available for slot")
         || msg.contains("timeout")
         || msg.contains("timed out")
         || msg.contains("too many requests")
@@ -223,13 +220,6 @@ fn is_endpoint_error_message(msg: &str) -> bool {
         || msg.contains("429")
 }
 
-fn is_skipped_slot_message(msg: &str) -> bool {
-    let msg = msg.to_lowercase();
-    // Providers render the standard message with the slot number inline:
-    // "Slot 12345 was skipped, or missing due to ledger jump to recent snapshot"
-    msg.contains("slotskipped") || (msg.contains("slot") && msg.contains("was skipped"))
-}
-
 /// True when a flattened error message reads like a transaction execution
 /// failure rather than a transport or RPC-layer problem.
 pub fn looks_like_transaction_error(msg: &str) -> bool {
@@ -241,6 +231,12 @@ pub fn looks_like_transaction_error(msg: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_status_race_is_retriable() {
+        let err = RpcError::Request("Block status not yet available for slot 6549".into());
+        assert!(err.is_retriable(), "a slot the validator has not committed yet is a retry");
+    }
 
     #[test]
     fn test_error_categories() {
@@ -350,24 +346,13 @@ mod tests {
         assert!(!RpcError::BlockhashExpired.is_compute_budget_exceeded());
     }
 
+    // a skip is a typed answer, never retried and never a failover
     #[test]
-    fn test_skipped_slot() {
-        assert!(RpcError::Request("SlotSkipped: slot 10 was skipped or not produced".to_string()).is_skipped_slot());
-        assert!(RpcError::Request("slot was skipped".to_string()).is_skipped_slot());
-        assert!(RpcError::Request(
-            "RPC response error -32007: Slot 476152068 was skipped, or missing due to ledger jump to recent snapshot".to_string()
-        )
-        .is_skipped_slot());
+    fn skipped_slot() {
+        assert!(RpcError::SlotSkipped.is_skipped_slot());
+        assert!(!RpcError::SlotSkipped.is_retriable());
+        assert!(!RpcError::SlotSkipped.should_failover());
         assert!(!RpcError::BlockNotAvailable.is_skipped_slot());
-        assert!(!RpcError::Request("connection reset".to_string()).is_skipped_slot());
-        assert!(!RpcError::Timeout(Duration::from_secs(1)).is_skipped_slot());
-    }
-
-    #[test]
-    fn skipped_slot_is_not_retriable() {
-        let real = "RPC response error -32007: Slot was skipped, or missing due to ledger jump to recent snapshot;";
-        let err = RpcError::Request(real.to_string());
-        assert!(err.is_skipped_slot());
-        assert!(!err.is_retriable());
+        assert!(!RpcError::Request("slot was skipped".to_string()).is_skipped_slot());
     }
 }

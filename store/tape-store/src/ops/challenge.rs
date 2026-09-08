@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use store::{Column, Store};
 use tape_core::challenge::PeerRecord;
 use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex};
@@ -45,6 +47,21 @@ pub trait ChallengeOps {
         certified: bool,
     ) -> Result<()>;
 
+    /// Note the round and the record it produced together.
+    ///
+    /// One fold writes both, and separately a crash between them leaves an
+    /// outcome no record counts. Every node folds every peer's spools, so this
+    /// is also the write the round rate multiplies.
+    fn put_round_fold(
+        &self,
+        peer: Address,
+        spool: SpoolIndex,
+        epoch: EpochNumber,
+        round: RoundNumber,
+        certified: bool,
+        record: PeerRecord,
+    ) -> Result<()>;
+
     /// The outcome recorded for one spool in one round, if any.
     fn round_outcome(
         &self,
@@ -62,6 +79,17 @@ pub trait ChallengeOps {
         &self,
         peer: Address,
         spool: SpoolIndex,
+    ) -> Result<Vec<(EpochNumber, RoundNumber, bool)>>;
+
+    /// The last `limit` of a spool's rounds, still oldest first.
+    ///
+    /// A recency rebuild reads a fixed tail, so it should not carry the whole
+    /// history back with it to throw away.
+    fn peer_rounds_tail(
+        &self,
+        peer: Address,
+        spool: SpoolIndex,
+        limit: usize,
     ) -> Result<Vec<(EpochNumber, RoundNumber, bool)>>;
 
     /// Drop every round recorded before an epoch, once nobody can dispute them.
@@ -139,6 +167,37 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
         Ok(())
     }
 
+    fn put_round_fold(
+        &self,
+        peer: Address,
+        spool: SpoolIndex,
+        epoch: EpochNumber,
+        round: RoundNumber,
+        certified: bool,
+        record: PeerRecord,
+    ) -> Result<()> {
+        let round_key = ChallengeRoundKey::new(peer, spool, epoch, round);
+        let record_key = PeerRecordKey::new(peer, spool);
+
+        let mut batch = store::WriteBatch::new();
+        batch.put_owned(
+            ChallengeRoundCol::CF_NAME,
+            wincode::serialize(&round_key)
+                .map_err(|e| TapeStoreError::Serialization(format!("round key: {e}")))?,
+            wincode::serialize(&certified)
+                .map_err(|e| TapeStoreError::Serialization(format!("round outcome: {e}")))?,
+        );
+        batch.put_owned(
+            ChallengeRecordCol::CF_NAME,
+            wincode::serialize(&record_key)
+                .map_err(|e| TapeStoreError::Serialization(format!("record key: {e}")))?,
+            wincode::serialize(&record)
+                .map_err(|e| TapeStoreError::Serialization(format!("peer record: {e}")))?,
+        );
+        self.inner().inner().write_batch(batch)?;
+        Ok(())
+    }
+
     fn round_outcome(
         &self,
         peer: Address,
@@ -172,6 +231,37 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
             rounds.push((key.epoch, key.round, certified));
         }
         Ok(rounds)
+    }
+
+    fn peer_rounds_tail(
+        &self,
+        peer: Address,
+        spool: SpoolIndex,
+        limit: usize,
+    ) -> Result<Vec<(EpochNumber, RoundNumber, bool)>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let prefix = ChallengeRoundKey::spool_prefix(peer, spool);
+        let iter = self
+            .inner()
+            .inner()
+            .iter_prefix(ChallengeRoundCol::CF_NAME, &prefix)?;
+
+        // The scan stays forward because the backend has no reverse cursor, but
+        // the window does not grow: older entries fall off as newer ones land.
+        let mut tail: VecDeque<(EpochNumber, RoundNumber, bool)> = VecDeque::with_capacity(limit);
+        for (key_bytes, value_bytes) in iter {
+            let key: ChallengeRoundKey = wincode::deserialize(&key_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("round key: {e}")))?;
+            let certified: bool = wincode::deserialize(&value_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("round outcome: {e}")))?;
+            if tail.len() == limit {
+                tail.pop_front();
+            }
+            tail.push_back((key.epoch, key.round, certified));
+        }
+        Ok(tail.into())
     }
 
     fn prune_rounds_before(&self, epoch: EpochNumber) -> Result<usize> {

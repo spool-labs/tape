@@ -384,11 +384,13 @@ pub struct LedgerReservation {
     pub meters_capacity: bool,
 }
 
-/// Decode limit for a buffered multipart part: S3's 5 GiB maximum part size.
-const MULTIPART_PART_BYTES_LIMIT: usize = 5 * 1024 * 1024 * 1024;
+/// Fixed size of one stored multipart chunk. A part is written as chunks of this
+/// size so a stored value always fits inside one store segment, whatever the
+/// part size.
+pub const MULTIPART_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 
-/// Buffered multipart part bytes with a widened decode limit
-type MultipartPartBytes = WincodeVec<Pod<u8>, BincodeLen<MULTIPART_PART_BYTES_LIMIT>>;
+/// Buffered multipart chunk bytes, decode-limited to one chunk
+type MultipartChunkBytes = WincodeVec<Pod<u8>, BincodeLen<MULTIPART_CHUNK_BYTES>>;
 
 /// An in-progress S3 multipart upload's target, keyed in `s3_multipart_upload`
 /// by its opaque upload id.
@@ -421,12 +423,81 @@ pub struct MultipartPart {
     pub size: u64,
 }
 
-/// The buffered bytes of one multipart part, stored in its own column so part
+/// One chunk of a buffered multipart part, stored in its own column so part
 /// metadata (ListParts, completion validation) loads without the payload.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
-pub struct MultipartPartData {
-    /// Raw part bytes
-    #[wincode(with = "MultipartPartBytes")]
+pub struct MultipartPartChunk {
+    /// Raw chunk bytes
+    #[wincode(with = "MultipartChunkBytes")]
+    pub data: Vec<u8>,
+}
+
+/// Fixed size of one stored chunk of a queued object. A payload is written as
+/// chunks of this size so a stored value always fits inside one store segment,
+/// whatever the object size.
+pub const PENDING_WRITE_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+
+/// Queued object chunk bytes, decode-limited to one chunk
+type PendingWriteChunkBytes = WincodeVec<Pod<u8>, BincodeLen<PENDING_WRITE_CHUNK_BYTES>>;
+
+/// The chain operation a queued S3 write will perform.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
+pub enum PendingOp {
+    /// Write the queued bytes as the object's track
+    Put {
+        /// Content type reported on GET and HEAD until the index has the key
+        content_type: ContentType,
+        /// ETag the client was already given
+        etag: Hash,
+        /// Object size in bytes
+        size: u64,
+        /// Last-modified time in unix seconds, set when the write was accepted
+        block_time: i64,
+        /// The track a superseded write landed, reclaimed on overwrite; `None` reads the index
+        prior: Option<Address>,
+    },
+    /// Delete the object's track
+    Delete {
+        /// The track a superseded Put landed; `None` reads the index
+        track: Option<Address>,
+    },
+}
+
+/// How far a queued S3 write has got.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
+pub enum PendingState {
+    /// Not yet attempted, or attempted and retryable
+    Queued,
+    /// The chain write landed; the entry is dropped once the index agrees
+    Landed {
+        /// Track the write produced, for a Put
+        track: Address,
+    },
+    /// Parked after repeated permanent failures; still retried, still served
+    Failed {
+        /// The last error, as reported by `/pending`
+        error: String,
+        /// Attempts made so far
+        attempts: u32,
+    },
+}
+
+/// One queued S3 write, keyed by tape and object key.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
+pub struct PendingWrite {
+    /// Enqueue order within the gateway; the newest entry for a key wins reads
+    pub seq: u64,
+    /// The chain operation to apply
+    pub op: PendingOp,
+    /// How far the drain has got with it
+    pub state: PendingState,
+}
+
+/// One chunk of a pending Put's queued bytes, stored apart from its metadata.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
+pub struct PendingWriteChunk {
+    /// This slice of the object bytes, exactly as the client sent them
+    #[wincode(with = "PendingWriteChunkBytes")]
     pub data: Vec<u8>,
 }
 

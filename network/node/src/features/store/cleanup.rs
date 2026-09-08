@@ -1,7 +1,7 @@
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::challenge::schedule::{
-    MAINNET_CADENCE_SLOTS, SAMPLE_LOOKBACK_SLOTS, round_width_slots,
+    SAMPLE_LOOKBACK_SLOTS, SETTLE_DEADLINE_SLOTS, SPAN_SLOTS, round_width_slots,
 };
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
@@ -111,8 +111,12 @@ pub fn cleanup_track_slices<Db: Store>(
 }
 
 /// Retains deleted slices until every round that sampled them has settled.
+///
+/// Bounded by settlement, not by cadence: a round opens up to the lookback plus
+/// its window after a deletion and then waits on its block rooting, so the last
+/// ask lands that far out and the slice has to outlive it.
 pub const DELETED_SLICE_HORIZON_SLOTS: u64 =
-    SAMPLE_LOOKBACK_SLOTS + MAINNET_CADENCE_SLOTS + round_width_slots();
+    SAMPLE_LOOKBACK_SLOTS + SPAN_SLOTS + SETTLE_DEADLINE_SLOTS + round_width_slots();
 
 /// Drops deleted sample rows, slices, and encodings after the round horizon.
 pub fn sweep_deleted_slices<Db: Store>(

@@ -1,4 +1,7 @@
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use rpc::Rpc;
 use store::Store;
@@ -18,7 +21,7 @@ const DISK_AVAILABLE: (&str, &str) = ("tape_store_disk_available_bytes", "Free d
 const CHANNEL_DEPTH: (&str, &str) = ("tape_node_channel_depth", "Queued items in internal channels");
 const NODE_STATUS: (&str, &str) = ("tape_node_status", "1 when active in committee, else 0");
 const SHARDS_OWNED: (&str, &str) = ("tape_node_shards_owned", "Spools currently owned by this node");
-const INGEST_TIP: (&str, &str) = ("tape_node_ingest_tip_slot", "Last known finalized tip slot");
+const INGEST_TIP: (&str, &str) = ("tape_node_ingest_tip_slot", "Last known confirmed tip slot");
 const INGEST_LAG: (&str, &str) = ("tape_node_ingest_lag_slots", "Slots between tip and last dispatched");
 const EPOCH: (&str, &str) = ("tape_node_epoch", "Current committee epoch number");
 const EPOCH_PHASE: (&str, &str) = ("tape_node_epoch_phase", "Current epoch phase (EpochPhase discriminant)");
@@ -168,7 +171,11 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> Col
 
     fn collect(&self) -> Vec<MetricFamily> {
         let state = self.context.state();
-        let status = i64::from(matches!(self.context.node_status(), NodeStatus::Active));
+        let active = matches!(self.context.node_status(), NodeStatus::Active);
+        let status = i64::from(active);
+        if active {
+            note_first_active(self.context.node_id().0);
+        }
         let shards = self.context.my_spools().len() as i64;
         let (tip, _, lag) = self.context.ingest.progress().tip_and_lag();
         let (tip, lag) = (tip as i64, lag as i64);
@@ -198,4 +205,24 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> Col
 
         families
     }
+}
+
+/// When this process began, for measuring how long a restart takes to matter.
+static PROCESS_START: OnceLock<Instant> = OnceLock::new();
+
+/// Logged once: wall time from process start to first sitting in committee,
+/// which is what an operator means by "how long until the node is back".
+static ANNOUNCED_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Call at startup so the elapsed figure counts from process start, not first scrape.
+pub fn mark_process_start() {
+    let _ = PROCESS_START.set(Instant::now());
+}
+
+fn note_first_active(node_id: u64) {
+    if ANNOUNCED_ACTIVE.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let since_start = PROCESS_START.get().map(|t| t.elapsed().as_millis()).unwrap_or_default();
+    tracing::info!(node_id, active_after_ms = since_start, "node: active in committee");
 }

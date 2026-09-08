@@ -2,7 +2,7 @@ use std::error::Error as StdError;
 
 use rpc::RpcError;
 use tape_blocks::ParseError;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, SlotNumber};
 use tape_retry::Retryable;
 use tokio::task::JoinError;
 
@@ -48,6 +48,9 @@ pub enum NodeError {
 
     #[error("malformed block at slot {slot}: {reason}")]
     BlockMalformed { slot: u64, reason: String },
+
+    #[error("confirmed chain diverged below the promoted head at slot {slot}")]
+    ChainDiverged { slot: SlotNumber },
 
     #[error("failed to send on channel {channel:?}")]
     ChannelSend { channel: ChannelName },

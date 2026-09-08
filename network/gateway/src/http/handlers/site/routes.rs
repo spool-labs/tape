@@ -30,7 +30,8 @@ use crate::http::handlers::object::{
     CachePolicy, DEFAULT_SITE_MAX_AGE_SECS, ObjectResponseMetadata, cache_control_header,
     range_header, read_object_response,
 };
-use crate::http::handlers::resolve::{ResolvedObject, resolve_object};
+use crate::http::handlers::object::response::object_response_ranged;
+use crate::http::handlers::resolve::{Readable, resolve_readable_with_pending};
 use crate::http::handlers::store_error;
 use crate::http::handlers::track::{parse_address, track_with_pending};
 use crate::http::state::AppState;
@@ -171,32 +172,52 @@ async fn serve_site<
     let is_spa = policy.spa_fallback.unwrap_or(config.spa_fallback);
     let max_age_secs = policy.max_age_secs.unwrap_or(DEFAULT_SITE_MAX_AGE_SECS);
 
-    let (resolved, status, served_name): (ResolvedObject, StatusCode, &str) =
+    let (readable, status, served_name): (Readable, StatusCode, &str) =
         match lookup(&state, tape, &name)? {
-            Some(resolved) => (resolved, StatusCode::OK, name.as_str()),
-            None => match lookup_miss(&state, tape, &name, is_spa)? {
-                Some((resolved, status, served)) => (resolved, status, served),
-                None => return Err(RouteError::NotFound),
-            },
+            Some(readable) => (readable, StatusCode::OK, name.as_str()),
+            None => {
+                // Static hosts redirect a directory path to its slash form.
+                if let Some(redirect) = directory_redirect(&state, tape, path)? {
+                    return Ok(redirect);
+                }
+                match lookup_miss(&state, tape, &name, is_spa)? {
+                    Some((readable, status, served)) => (readable, status, served),
+                    None => return Err(RouteError::NotFound),
+                }
+            }
         };
 
     // A revalidation hit answers before any decode work happens; the etag is
     // formatted once for both the comparison and the 304 headers.
     if status == StatusCode::OK {
-        let etag = resolved.etag.to_string();
+        let etag = readable.etag().to_string();
         if matches_etag(headers, &etag) {
             return not_modified(&etag, max_age_secs);
         }
     }
+
+    // Fallback pages take their type from the object served, not the requested path.
+    let metadata = site_metadata(readable.content_type(), served_name, download, max_age_secs);
+    let resolved = match readable {
+        Readable::Queued(object) => {
+            let bytes = staged_bytes(&state, tape, &name)?.ok_or(RouteError::NotFound)?;
+            return object_response_ranged(
+                bytes,
+                &metadata,
+                object.etag,
+                range_header(headers),
+                status,
+            )
+            .map_err(RouteError::from);
+        }
+        Readable::Track(resolved) => resolved,
+    };
 
     let track = track_with_pending(&state, resolved.track_address)?.ok_or(RouteError::NotFound)?;
     if !track.is_certified() {
         return Err(RouteError::NotFound);
     }
 
-    // Fallback pages take their type and download name from the object served,
-    // not the requested path, so a missing /route never mislabels index.html.
-    let metadata = site_metadata(&resolved, served_name, download, max_age_secs);
     read_object_response(
         state,
         resolved.track_address,
@@ -208,6 +229,40 @@ async fn serve_site<
         rate_limited_response,
     )
     .await
+}
+
+/// A redirect to the slash form when `path` names a directory with an index page.
+fn directory_redirect<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    tape: Address,
+    path: &str,
+) -> Result<Option<Response>, RouteError> {
+    let Some(name) = directory_index_name(path) else {
+        return Ok(None);
+    };
+    if lookup(state, tape, &name)?.is_none() {
+        return Ok(None);
+    }
+    let Some(location) = slash_location(path) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, location)]).into_response(),
+    ))
+}
+
+/// The index page a slashless path would serve as a directory, if it is one.
+fn directory_index_name(path: &str) -> Option<String> {
+    if path.is_empty() || path.ends_with('/') {
+        return None;
+    }
+    Some(format!("{path}/{INDEX_OBJECT}"))
+}
+
+/// The slash form as a relative location, valid under a path prefix and a site host alike.
+fn slash_location(path: &str) -> Option<HeaderValue> {
+    let segment = path.rsplit('/').next().unwrap_or(path);
+    HeaderValue::try_from(format!("{segment}/")).ok()
 }
 
 /// The tape a Host header serves as a site: a configured custom domain, or a
@@ -248,12 +303,29 @@ fn resolve_site_name(path: &str) -> String {
     path.to_string()
 }
 
+/// Resolve a site object name, the write queue first.
 fn lookup<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     tape: Address,
     name: &str,
-) -> Result<Option<ResolvedObject>, RouteError> {
-    resolve_object(state, tape, name).map_err(store_error)
+) -> Result<Option<Readable>, RouteError> {
+    resolve_readable_with_pending(
+        state.context.store.as_ref(),
+        state.staging.as_ref(),
+        state.context.pending.as_ref(),
+        tape,
+        name.as_bytes(),
+    )
+    .map_err(store_error)
+}
+
+/// The queued bytes behind a `Readable::Queued`.
+fn staged_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    tape: Address,
+    name: &str,
+) -> Result<Option<Vec<u8>>, RouteError> {
+    state.staging.bytes(tape, name.as_bytes()).map_err(store_error)
 }
 
 /// Resolve what a missing path serves: the index page when the single-page
@@ -263,15 +335,15 @@ fn lookup_miss<Db: Store, Cluster: Api, Blockchain: Rpc>(
     tape: Address,
     name: &str,
     is_spa: bool,
-) -> Result<Option<(ResolvedObject, StatusCode, &'static str)>, RouteError> {
+) -> Result<Option<(Readable, StatusCode, &'static str)>, RouteError> {
     // When the index itself was the miss, asking the store again cannot help.
     if is_spa && name != INDEX_OBJECT {
-        if let Some(resolved) = lookup(state, tape, INDEX_OBJECT)? {
-            return Ok(Some((resolved, StatusCode::OK, INDEX_OBJECT)));
+        if let Some(readable) = lookup(state, tape, INDEX_OBJECT)? {
+            return Ok(Some((readable, StatusCode::OK, INDEX_OBJECT)));
         }
     }
-    if let Some(resolved) = lookup(state, tape, NOT_FOUND_OBJECT)? {
-        return Ok(Some((resolved, StatusCode::NOT_FOUND, NOT_FOUND_OBJECT)));
+    if let Some(readable) = lookup(state, tape, NOT_FOUND_OBJECT)? {
+        return Ok(Some((readable, StatusCode::NOT_FOUND, NOT_FOUND_OBJECT)));
     }
     Ok(None)
 }
@@ -280,12 +352,12 @@ fn lookup_miss<Db: Store, Cluster: Api, Blockchain: Rpc>(
 /// caching, or a named download when the query asks for one. An unknown
 /// stored content type falls back to what the path extension implies.
 fn site_metadata(
-    resolved: &ResolvedObject,
+    recorded: ContentType,
     name: &str,
     download: Option<&str>,
     max_age_secs: u64,
 ) -> ObjectResponseMetadata {
-    let content_type = match resolved.content_type {
+    let content_type = match recorded {
         ContentType::Unknown => ContentType::from_extension(name_extension(name)),
         recorded => recorded,
     };
@@ -474,16 +546,6 @@ mod tests {
 
     use super::*;
 
-    fn resolved(etag: Hash) -> ResolvedObject {
-        ResolvedObject {
-            track_address: Address::new_unique(),
-            size: 4,
-            etag,
-            block_time: None,
-            content_type: ContentType::Unknown,
-        }
-    }
-
     // empty and directory paths resolve the index page, files pass through
     #[test]
     fn name_resolution() {
@@ -492,10 +554,30 @@ mod tests {
         assert_eq!(resolve_site_name("docs/guide.html"), "docs/guide.html");
     }
 
+    // a slashless path asks after its directory index, a slashed one does not
+    #[test]
+    fn directory_index() {
+        assert_eq!(directory_index_name("about"), Some("about/index.html".to_string()));
+        assert_eq!(
+            directory_index_name("docs/guide"),
+            Some("docs/guide/index.html".to_string())
+        );
+        assert_eq!(directory_index_name("about/"), None);
+        assert_eq!(directory_index_name(""), None);
+    }
+
+    // the redirect is relative to the last segment, so both site routes land right
+    #[test]
+    fn slash_redirect() {
+        assert_eq!(slash_location("about"), Some(HeaderValue::from_static("about/")));
+        assert_eq!(slash_location("docs/guide"), Some(HeaderValue::from_static("guide/")));
+        assert_eq!(slash_location("a\u{7f}b"), None);
+    }
+
     // unknown stored types are inferred from the path extension
     #[test]
     fn extension_inference() {
-        let metadata = site_metadata(&resolved(Hash::default()), "assets/app.css", None, 60);
+        let metadata = site_metadata(ContentType::Unknown, "assets/app.css", None, 60);
         assert_eq!(metadata.content_type, ContentType::TextCss);
         assert!(metadata.filename.is_none());
     }
@@ -503,7 +585,7 @@ mod tests {
     // the download query switches to a named attachment
     #[test]
     fn download_attachment() {
-        let metadata = site_metadata(&resolved(Hash::default()), "docs/guide.html", Some("1"), 60);
+        let metadata = site_metadata(ContentType::Unknown, "docs/guide.html", Some("1"), 60);
         assert_eq!(metadata.filename.as_deref(), Some(b"guide.html".as_slice()));
     }
 
@@ -660,7 +742,7 @@ mod tests {
     // an untyped index.html for an extensionless spa path still renders as html
     #[test]
     fn fallback_typed_from_served_object() {
-        let meta = site_metadata(&resolved(Hash::default()), INDEX_OBJECT, None, 60);
+        let meta = site_metadata(ContentType::Unknown, INDEX_OBJECT, None, 60);
         assert_eq!(meta.content_type, ContentType::TextHtml);
     }
 }

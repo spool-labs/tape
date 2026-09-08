@@ -1,0 +1,14 @@
+[package]
+name = "tape-observe-api"
+version.workspace = true
+edition = "2021"
+description = "Shared types for the Tapedrive observability board and dashboard."
+license = "Apache-2.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+wincode = { workspace = true }
+wincode-derive = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

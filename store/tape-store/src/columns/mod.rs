@@ -47,7 +47,9 @@
 //! - `ledger_reservation`: Outstanding budget reservations (LedgerReservationKey -> LedgerReservation)
 //! - `s3_multipart_upload`: In-flight multipart upload metadata (String -> MultipartUpload)
 //! - `s3_multipart_part`: Buffered multipart part metadata (MultipartPartKey -> MultipartPart)
-//! - `s3_multipart_part_data`: Buffered multipart part payloads (MultipartPartKey -> MultipartPartData)
+//! - `s3_multipart_part_data`: Buffered multipart part chunks (MultipartPartChunkKey -> MultipartPartChunk)
+//! - `s3_pending_write`: Queued S3 writes awaiting the chain (PendingWriteKey -> PendingWrite)
+//! - `s3_pending_write_data`: Queued object payload chunks (PendingWriteChunkKey -> PendingWriteChunk)
 
 pub mod audit_log;
 pub mod auth_state;
@@ -63,6 +65,7 @@ pub mod object_list;
 pub mod object_metadata;
 pub mod policy;
 pub mod s3_multipart;
+pub mod s3_pending;
 pub mod snapshot;
 pub mod slice;
 pub mod spool;
@@ -89,12 +92,13 @@ pub use object_list::ObjectListCol;
 pub use object_metadata::ObjectMetadataCol;
 pub use policy::PolicyRuleCol;
 pub use s3_multipart::{S3MultipartPartCol, S3MultipartPartDataCol, S3MultipartUploadCol};
+pub use s3_pending::{S3PendingWriteCol, S3PendingWriteDataCol};
 pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
 pub use spool::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
 };
-pub use sync_cursor::SyncCursorCol;
+pub use sync_cursor::{SyncCursor, SyncCursorCol};
 pub use tape::TapeCol;
 pub use track::TrackCol;
 pub use track_data::TrackDataCol;
@@ -134,4 +138,6 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "s3_multipart_upload",
     "s3_multipart_part",
     "s3_multipart_part_data",
+    "s3_pending_write",
+    "s3_pending_write_data",
 ];

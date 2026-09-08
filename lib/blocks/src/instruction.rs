@@ -8,7 +8,6 @@ use tape_api::event::{
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
 use tape_api::program::tapedrive::{track_pda, ID as TAPE_PROGRAM_ID};
-use bs58::decode as bs58_decode;
 use tape_core::spooler::GroupIndex;
 use tape_core::snapshot::replay::ReplayTrackObject;
 use tape_core::staking::RateSpan;
@@ -359,7 +358,7 @@ pub enum ParsedInstruction {
 /// Parse a single compiled instruction into a RawInstruction.
 pub fn parse_raw_instruction(
     ix: &CompiledInstruction,
-    account_keys: &[String],
+    account_keys: &[Address],
 ) -> Result<Option<RawInstruction>, ParseError> {
     // Get the program ID
     let program_id_index = ix.program_id_index as usize;
@@ -367,19 +366,15 @@ pub fn parse_raw_instruction(
         return Ok(None);
     }
 
-    let program_id: Address = account_keys[program_id_index]
-        .parse()
-        .map_err(|_| ParseError::InvalidPubkey)?;
+    let program_id: Address = account_keys[program_id_index];
 
     // Only process tapedrive program instructions
     if program_id != Address::from(TAPE_PROGRAM_ID) {
         return Ok(None);
     }
 
-    // Decode instruction data
-    let ix_data = bs58_decode(&ix.data)
-        .into_vec()
-        .map_err(|_| ParseError::InvalidData)?;
+    // Already bytes: base64 hands the payload over as it stands.
+    let ix_data = &ix.data;
 
     if ix_data.is_empty() {
         return Ok(None);
@@ -400,9 +395,7 @@ pub fn parse_raw_instruction(
         if account_idx >= account_keys.len() {
             return Err(ParseError::MissingAccount("account index out of bounds"));
         }
-        account_keys[account_idx]
-            .parse()
-            .map_err(|_| ParseError::InvalidPubkey)
+        Ok(account_keys[account_idx])
     };
 
     match ix_type {
@@ -745,13 +738,13 @@ mod tests {
 
     fn compiled_instruction(
         instruction: &Instruction,
-    ) -> (CompiledInstruction, Vec<String>) {
-        let mut account_keys = vec![TAPE_PROGRAM_ID.to_string()];
+    ) -> (CompiledInstruction, Vec<Address>) {
+        let mut account_keys = vec![Address::from(TAPE_PROGRAM_ID)];
         let accounts = instruction
             .accounts
             .iter()
             .map(|meta| {
-                account_keys.push(meta.pubkey.to_string());
+                account_keys.push(Address::from(meta.pubkey.to_bytes()));
                 (account_keys.len() - 1) as u8
             })
             .collect();
@@ -759,7 +752,7 @@ mod tests {
             CompiledInstruction {
                 program_id_index: 0,
                 accounts,
-                data: bs58::encode(&instruction.data).into_string(),
+                data: instruction.data.clone(),
             },
             account_keys,
         )

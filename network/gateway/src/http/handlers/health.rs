@@ -1,6 +1,7 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
+use serde::Serialize;
 use rpc::Rpc;
 use store::{DiskVolume, Store, StoreVolume};
 use tape_node::features::http::handlers::health::{HealthResponse, HealthStatus};
@@ -12,6 +13,29 @@ use tape_store::ops::{MetaOps, SliceOps, TrackOps};
 use crate::http::error::RouteError;
 use crate::http::handlers::store_error;
 use crate::http::state::AppState;
+
+/// Where the S3 listener is and which delegate it writes as.
+pub const S3_INFO_PATH: &str = "/v1/s3";
+
+#[derive(Serialize)]
+pub struct S3Info {
+    /// Public S3 endpoint, when the operator configured one.
+    pub endpoint: Option<String>,
+    /// Address tape owners delegate to so the gateway can write for them.
+    pub delegate: Option<String>,
+    /// Largest object a single upload may carry, in bytes.
+    pub max_object_bytes: u64,
+}
+
+pub async fn s3_info<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+) -> Json<S3Info> {
+    Json(S3Info {
+        endpoint: state.context.config.gateway.s3.public_endpoint.clone(),
+        delegate: state.s3_delegate.map(|address| address.to_string()),
+        max_object_bytes: state.context.config.gateway.s3.max_object_bytes as u64,
+    })
+}
 
 pub async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
@@ -81,6 +105,12 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .inner()
         .actual_size_bytes()
         .map_err(store_error)?;
+    let store_data_bytes = store
+        .inner()
+        .inner()
+        .live_data_size_bytes()
+        .map_err(store_error)?
+        .unwrap_or(0);
     let free_disk_bytes = store
         .inner()
         .inner()
@@ -105,6 +135,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         tracks_stored: store.count_tracks().map_err(store_error)? as u64,
         slice_payload_bytes,
         store_disk_bytes,
+        store_data_bytes,
         free_disk_bytes,
         disk_volumes,
         reclaim_pending: state.context.is_reclaim_pending(),
@@ -125,6 +156,9 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         bootstrap_current_slot: bootstrap.current_slot,
         bootstrap_target_slot: bootstrap.target_slot,
         fee_payer_lamports: state.context.fee_payer_balance().map(|b| b.0),
+        // Node-only counters: the gateway runs no challenge.
+        restarts: tape_node::core::restarts::count(),
+        ..Default::default()
     }))
 }
 

@@ -49,10 +49,11 @@ fn node_opens() {
     let dir = TempDir::new().expect("dir");
     let store = reel_store::open_node_store(
         dir.path().join("volume"),
-        0,
-        8 * 1024 * 1024,
-        reel::IoBackend::Posix,
-        reel_store::Reserve::Fleet,
+        reel_store::NodeStoreOptions {
+            sync_bytes: 8 * 1024 * 1024,
+            backend: reel::IoBackend::Posix,
+            ..reel_store::NodeStoreOptions::default()
+        },
     )
     .expect("open the node store");
 
@@ -76,12 +77,7 @@ fn node_opens() {
 // a node gets the shipped sync, backend and mapping knobs unasked
 #[test]
 fn shipped_defaults() {
-    let config = reel_store::node_config(
-        0,
-        reel_store::DEFAULT_SYNC_BYTES,
-        reel_store::default_backend(),
-        reel_store::Reserve::Fleet,
-    );
+    let config = reel_store::node_config(reel_store::NodeStoreOptions::default());
 
     assert_eq!(
         config.sync,
@@ -113,8 +109,10 @@ fn probe_follows() {
         (reel::IoBackend::Uring, reel::PointReads::Probed),
         (reel::IoBackend::UringDirect, reel::PointReads::Queued),
     ] {
-        let config =
-            reel_store::node_config(0, 8 * 1024 * 1024, backend, reel_store::Reserve::Fleet);
+        let config = reel_store::node_config(reel_store::NodeStoreOptions {
+            backend,
+            ..reel_store::NodeStoreOptions::default()
+        });
         assert_eq!(config.point_reads, wanted, "{backend:?}");
     }
 }
@@ -123,9 +121,11 @@ fn probe_follows() {
 // leave a gibibyte on disk before the first slice
 #[test]
 fn small_reservation() {
-    let backend = reel_store::default_backend();
-    let fleet = reel_store::node_config(0, 8 * 1024 * 1024, backend, reel_store::Reserve::Fleet);
-    let small = reel_store::node_config(0, 8 * 1024 * 1024, backend, reel_store::Reserve::Small);
+    let fleet = reel_store::node_config(reel_store::NodeStoreOptions::default());
+    let small = reel_store::node_config(reel_store::NodeStoreOptions {
+        reserve: reel_store::Reserve::Small,
+        ..reel_store::NodeStoreOptions::default()
+    });
 
     assert_eq!(fleet.preallocate, reel::Preallocate::Full);
     assert_eq!(small.preallocate, reel::Preallocate::Chunk);
