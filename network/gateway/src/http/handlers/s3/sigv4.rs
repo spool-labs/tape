@@ -6,8 +6,7 @@ use axum::extract::{Request, State};
 use axum::http::{Method, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
+use tape_crypto::hash::{hash, hashv};
 
 use tape_node::config::gateway::S3Config;
 
@@ -26,8 +25,15 @@ const AMZ_DATE: &str = "x-amz-date";
 const AMZ_CONTENT_SHA256: &str = "x-amz-content-sha256";
 /// Sentinel payload hash used by presigned URLs
 const UNSIGNED_PAYLOAD: &str = "UNSIGNED-PAYLOAD";
-/// Prefix of the `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`
+/// Prefix of the `STREAMING-*` payload sentinels
 const STREAMING_PAYLOAD_PREFIX: &str = "STREAMING-";
+/// Streaming sentinels whose chunks each carry their own signature
+const STREAMING_SIGNED: [&str; 2] = [
+    "STREAMING-AWS4-HMAC-SHA256-PAYLOAD",
+    "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER",
+];
+/// Algorithm line in a chunk's string-to-sign
+pub const CHUNK_ALGORITHM: &str = "AWS4-HMAC-SHA256-PAYLOAD";
 /// Hex SHA-256 of the empty string, the payload hash for bodyless requests
 const EMPTY_PAYLOAD_SHA256: &str =
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -43,7 +49,14 @@ const MAX_PRESIGNED_EXPIRY_SECS: i64 = 604_800;
 
 use super::clock::{SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, days_from_civil};
 
-type HmacSha256 = Hmac<Sha256>;
+/// Bytes in one SHA-256 input block, which is the width an HMAC key is padded to
+const HMAC_BLOCK_BYTES: usize = 64;
+
+/// The byte XORed over the padded key for the inner hash, per RFC 2104
+const HMAC_INNER_PAD: u8 = 0x36;
+
+/// The byte XORed over the padded key for the outer hash, per RFC 2104
+const HMAC_OUTER_PAD: u8 = 0x5c;
 
 /// A SigV4 credential the gateway accepts on signed requests
 #[derive(Clone)]
@@ -70,17 +83,17 @@ impl SigV4Verifier {
         &self,
         request: &Request,
         now: i64,
-    ) -> Result<(Auth, Option<String>), S3Error> {
+    ) -> Result<(Auth, Option<String>, Option<ChunkVerification>), S3Error> {
         match PresentedSignature::extract(request)? {
             Some(presented) => {
-                let auth = self.verify(request, &presented)?;
+                let (auth, chunk) = self.verify(request, &presented)?;
                 check_request_freshness(&presented, now)?;
-                Ok((auth, Some(presented.payload_hash)))
+                Ok((auth, Some(presented.payload_hash), chunk))
             }
             None => {
                 // Unsigned: reads are public, writes require a signature.
                 if is_read_method(request.method()) {
-                    Ok((Auth::Anonymous, None))
+                    Ok((Auth::Anonymous, None, None))
                 } else {
                     Err(S3Error::AccessDenied(
                         "anonymous access to this S3 write operation is not allowed".to_string(),
@@ -96,7 +109,7 @@ impl SigV4Verifier {
         &self,
         request: &Request,
         presented: &PresentedSignature,
-    ) -> Result<Auth, S3Error> {
+    ) -> Result<(Auth, Option<ChunkVerification>), S3Error> {
         let credential = self
             .credential
             .as_ref()
@@ -140,14 +153,26 @@ impl SigV4Verifier {
         );
 
         let signing_key =
-            derive_signing_key(&credential.secret_access_key, date_stamp, region, service)?;
-        let expected = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
+            derive_signing_key(&credential.secret_access_key, date_stamp, region, service);
+        let expected = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes()));
 
-        if constant_time_eq(expected.as_bytes(), presented.signature.as_bytes()) {
-            Ok(Auth::verified(presented.access_key_id.clone()))
-        } else {
-            Err(S3Error::SignatureDoesNotMatch)
+        if !constant_time_eq(expected.as_bytes(), presented.signature.as_bytes()) {
+            return Err(S3Error::SignatureDoesNotMatch);
         }
+
+        // A signed-streaming request promised a signature per chunk. The body
+        // reader is what checks them, so hand it the key and the seed rather
+        // than deriving them a second time.
+        let chunk = STREAMING_SIGNED
+            .contains(&presented.payload_hash.as_str())
+            .then(|| ChunkVerification {
+                signing_key: signing_key.to_vec(),
+                date: presented.date.clone(),
+                scope: presented.scope.clone(),
+                seed_signature: presented.signature.clone(),
+            });
+
+        Ok((Auth::verified(presented.access_key_id.clone()), chunk))
     }
 }
 
@@ -179,16 +204,40 @@ pub async fn sigv4_auth(
     next: Next,
 ) -> Response {
     match verifier.authenticate_with_payload(&request, now_unix()) {
-        Ok((auth, signed_payload)) => {
+        Ok((auth, signed_payload, chunk)) => {
             request.extensions_mut().insert(auth);
             request
                 .extensions_mut()
                 .insert(SignedPayloadHash(signed_payload));
+            request.extensions_mut().insert(ChunkSigning(chunk));
             next.run(request).await
         }
         Err(error) => error.into_response(),
     }
 }
+
+/// Everything a signed `aws-chunked` body's per-chunk signatures are checked
+/// against, carried out of request verification for the body reader.
+///
+/// The seed is the request signature itself, and each chunk signs the one
+/// before it, so the chain ties every byte of the body back to the credential
+/// that signed the request.
+#[derive(Clone)]
+pub struct ChunkVerification {
+    /// SigV4 signing key derived for this request's credential scope
+    pub signing_key: Vec<u8>,
+    /// Request timestamp (`YYYYMMDDTHHMMSSZ`)
+    pub date: String,
+    /// Credential scope `YYYYMMDD/region/service/aws4_request`
+    pub scope: String,
+    /// The request signature, which the first chunk chains from
+    pub seed_signature: String,
+}
+
+/// The chunk-signature chain for this request, attached to the request
+/// extensions by `sigv4_auth`. `None` when the body is not signed-streaming.
+#[derive(Clone)]
+pub struct ChunkSigning(pub Option<ChunkVerification>);
 
 /// The SigV4-signed `x-amz-content-sha256` for a verified request, attached to
 /// the request extensions by `sigv4_auth``.
@@ -212,6 +261,17 @@ impl SignedPayloadHash {
         self.0
             .as_deref()
             .is_some_and(|claimed| claimed.starts_with(STREAMING_PAYLOAD_PREFIX))
+    }
+
+    /// Whether the sentinel promises a signature on every chunk.
+    ///
+    /// The unsigned streaming sentinel is the client declining to sign its
+    /// body, which is the same bargain as `UNSIGNED-PAYLOAD`; the signed ones
+    /// promise a chain, and a promised chain is checked.
+    pub fn is_signed_streaming(&self) -> bool {
+        self.0
+            .as_deref()
+            .is_some_and(|claimed| STREAMING_SIGNED.contains(&claimed))
     }
 }
 
@@ -518,32 +578,42 @@ fn is_read_method(method: &Method) -> bool {
 }
 
 /// Derive the SigV4 signing key for the given scope
-fn derive_signing_key(
+pub(super) fn derive_signing_key(
     secret: &str,
     date_stamp: &str,
     region: &str,
     service: &str,
-) -> Result<[u8; 32], S3Error> {
+) -> [u8; 32] {
     let signing_key_secret = format!("AWS4{secret}");
-    let signing_key_date = hmac_sha256(signing_key_secret.as_bytes(), date_stamp.as_bytes())?;
-    let signing_key_region = hmac_sha256(&signing_key_date, region.as_bytes())?;
-    let signing_key_service = hmac_sha256(&signing_key_region, service.as_bytes())?;
+    let signing_key_date = hmac_sha256(signing_key_secret.as_bytes(), date_stamp.as_bytes());
+    let signing_key_region = hmac_sha256(&signing_key_date, region.as_bytes());
+    let signing_key_service = hmac_sha256(&signing_key_region, service.as_bytes());
     hmac_sha256(&signing_key_service, AWS4_REQUEST.as_bytes())
 }
 
-/// Compute `HMAC-SHA256(key, data)`.
-pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; 32], S3Error> {
-    let mut mac = HmacSha256::new_from_slice(key)
-        .map_err(|error| S3Error::Internal(format!("hmac key init: {error}")))?;
-    mac.update(data);
-    Ok(mac.finalize().into_bytes().into())
+/// `HMAC-SHA256(key, data)` per RFC 2104, two tape-sha256 digests over a block-padded key
+pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut padded = [0u8; HMAC_BLOCK_BYTES];
+    if key.len() > HMAC_BLOCK_BYTES {
+        padded[..32].copy_from_slice(hash(key).as_ref());
+    } else {
+        padded[..key.len()].copy_from_slice(key);
+    }
+
+    let mut inner_key = [0u8; HMAC_BLOCK_BYTES];
+    let mut outer_key = [0u8; HMAC_BLOCK_BYTES];
+    for (index, byte) in padded.iter().enumerate() {
+        inner_key[index] = byte ^ HMAC_INNER_PAD;
+        outer_key[index] = byte ^ HMAC_OUTER_PAD;
+    }
+
+    let inner = hashv(&[&inner_key, data]);
+    hashv(&[&outer_key, inner.as_ref()]).to_bytes()
 }
 
 /// Compute the lowercase hex `SHA-256(data)`
-fn sha256_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
+pub fn sha256_hex(data: &[u8]) -> String {
+    hex::encode(hash(data).as_ref())
 }
 
 /// Trim leading/trailing whitespace and collapse internal runs of spaces to a
@@ -762,8 +832,8 @@ mod tests {
             "{ALGORITHM}\n{date}\n{scope}\n{}",
             sha256_hex(canonical_request.as_bytes())
         );
-        let key = derive_signing_key(secret, parts[0], parts[1], parts[2]).expect("derive signing key");
-        hex::encode(hmac_sha256(&key, string_to_sign.as_bytes()).expect("hmac"))
+        let key = derive_signing_key(secret, parts[0], parts[1], parts[2]);
+        hex::encode(hmac_sha256(&key, string_to_sign.as_bytes()))
     }
 
     fn verifier() -> Arc<SigV4Verifier> {
@@ -782,7 +852,7 @@ mod tests {
 
         fn authenticate_at(&self, request: &Request, now: i64) -> Result<Auth, S3Error> {
             self.authenticate_with_payload(request, now)
-                .map(|(auth, _)| auth)
+                .map(|(auth, _, _)| auth)
         }
     }
 
@@ -1269,4 +1339,25 @@ mod tests {
             Err(S3Error::AccessDenied(_))
         ));
     }
+
+    // RFC 4231 test cases 1, 2 and 6: a short key, the "Jefe" key, and a key past one block
+    #[test]
+    fn hmac_matches_rfc_4231() {
+        assert_eq!(
+            hex::encode(hmac_sha256(&[0x0b; 20], b"Hi There")),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+        assert_eq!(
+            hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        assert_eq!(
+            hex::encode(hmac_sha256(
+                &[0xaa; 131],
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            )),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+    }
+
 }

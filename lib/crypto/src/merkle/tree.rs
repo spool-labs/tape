@@ -429,6 +429,13 @@ fn pad_odd_tail(level: &mut Vec<Hash>, depth: usize) {
 /// so the root is identical.
 pub fn root_from_leaf_hashes<const N: usize>(hashes: &[Hash]) -> Hash {
     assert!(N > 0 && N <= MAX_MERKLE_TREE_HEIGHT);
+    // Folding a level too wide for the tree leaves more than one node standing,
+    // and taking the first is a root over a prefix of the leaves. Refuse it the
+    // way a bad N is refused rather than committing to a subset of the data.
+    assert!(
+        hashes.len() <= 1usize << N,
+        "leaf count exceeds the tree height"
+    );
     if hashes.is_empty() {
         // The empty-tree root Default installs. It reads one level shallow, but
         // the table holds MAX_MERKLE_TREE_HEIGHT entries and N may equal that,
@@ -445,7 +452,6 @@ pub fn root_from_leaf_hashes<const N: usize>(hashes: &[Hash]) -> Hash {
         level = hash_level(&level);
     }
 
-    debug_assert_eq!(level.len(), 1, "leaf count exceeds the tree height");
     level[0]
 }
 
@@ -999,6 +1005,25 @@ mod tests {
         let root = root_from_leaf_hashes::<5>(&hashes);
 
         assert_eq!(tree.root(), root);
+    }
+
+    // a full tree still folds to one root
+    #[test]
+    fn root_from_leaf_hashes_at_capacity() {
+        let hashes: Vec<Hash> = (0..32u8).map(|i| hash_leaf(&[i])).collect();
+        let mut tree = MerkleTree::<5>::new();
+        for hash in &hashes {
+            tree.add_leaf_hash(*hash).expect("insert");
+        }
+        assert_eq!(tree.root(), root_from_leaf_hashes::<5>(&hashes));
+    }
+
+    // one leaf past capacity is refused, not folded to a root over a prefix
+    #[test]
+    #[should_panic(expected = "leaf count exceeds the tree height")]
+    fn root_from_leaf_hashes_over_capacity() {
+        let hashes: Vec<Hash> = (0..33u8).map(|i| hash_leaf(&[i])).collect();
+        root_from_leaf_hashes::<5>(&hashes);
     }
 
     /// One height's worth of the fold-equals-insert check

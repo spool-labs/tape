@@ -347,6 +347,7 @@ where
             tokio::spawn(reservation_sweep_loop(
                 self.accounting.clone(),
                 self.context.store.clone(),
+                self.context.config.gateway.s3.write.reservation_ttl_secs,
                 self.cancel.clone(),
             ))
         });

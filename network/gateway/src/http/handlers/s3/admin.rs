@@ -214,8 +214,7 @@ where
         require_known_grade(&state, grade)?;
     }
     let credential = Credential {
-        secret_hmac: peppered_secret_hmac(pepper, &request.secret_access_key)
-            .map_err(|_| AdminError::internal("credential secret hashing failed"))?,
+        secret_hmac: peppered_secret_hmac(pepper, &request.secret_access_key),
         principal,
         scope,
         caps,

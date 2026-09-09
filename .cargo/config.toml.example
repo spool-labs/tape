@@ -1,0 +1,11 @@
+# Copy to .cargo/config.toml to build against a local reel checkout rather than
+# the commit Cargo.lock resolved from reel's main. Point the paths at your clone.
+#
+# Absolute, because cargo finds this file by walking up from the working
+# directory and the same one has to serve every worktree.
+#
+# While this is in place cargo rewrites the two reel entries in Cargo.lock to
+# name a local directory. Check the lock out again before committing.
+[patch."https://github.com/spool-labs/reel.git"]
+reel = { path = "/abs/path/to/reel/crates/reel" }
+reel-core = { path = "/abs/path/to/reel/crates/reel-core" }

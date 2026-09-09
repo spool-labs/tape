@@ -7,30 +7,22 @@ fn main() {
     // Watch the HEAD reflog, not just HEAD: a pull moves the ref without
     // touching the symref. The dirty flag only refreshes on rebuild.
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=TAPE_SOURCE_REVISION");
     if let Some(git_dir) = run_git(&["rev-parse", "--absolute-git-dir"]) {
         println!("cargo:rerun-if-changed={git_dir}/HEAD");
         println!("cargo:rerun-if-changed={git_dir}/logs/HEAD");
     }
 
-    let supplied_revision = std::env::var("TAPE_SOURCE_REVISION")
-        .ok()
-        .filter(|value| !value.is_empty());
-    let sha = supplied_revision
-        .clone()
-        .or_else(|| run_git(&["rev-parse", "--short", "HEAD"]))
-        .unwrap_or_else(|| "unknown".into());
+    let sha = run_git(&["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| "unknown".into());
     // Refresh the stat cache first: on a bind-mounted tree (the linux builder)
     // every entry is stat-dirty and diff-index would report a clean tree dirty.
     let _ = Command::new("git").args(["update-index", "-q", "--refresh"]).status();
-    let dirty = supplied_revision.is_none()
-        && match Command::new("git")
-            .args(["diff-index", "--quiet", "HEAD", "--"])
-            .status()
-        {
-            Ok(status) => !status.success(),
-            Err(_) => false,
-        };
+    let dirty = match Command::new("git")
+        .args(["diff-index", "--quiet", "HEAD", "--"])
+        .status()
+    {
+        Ok(status) => !status.success(),
+        Err(_) => false,
+    };
     let suffix = if dirty { "-dirty" } else { "" };
 
     println!("cargo:rustc-env=TAPE_BUILD_SHA={sha}");

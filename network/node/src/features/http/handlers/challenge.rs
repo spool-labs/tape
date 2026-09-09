@@ -17,7 +17,7 @@ use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
 use tracing::{debug, trace, warn};
 
 use crate::features::challenge::audit::{
-    Round, attest_message, round_of, spawn_relay_and_attest,
+    Round, attest_message, group_members_at, round_of, spawn_relay_and_attest,
 };
 use crate::features::challenge::certify::agreement_threshold;
 use crate::features::challenge::fold::fold_outcome;
@@ -250,6 +250,10 @@ struct Claimed {
     key: RoundKey,
     owner: Address,
     threshold: usize,
+    /// The challenged group's roster in the round's epoch. The threshold is a
+    /// fraction of it, so a signer outside it is not the agreement the
+    /// threshold describes.
+    members: Vec<Address>,
     attestations: Vec<(Address, BlsSignature)>,
     signers: BTreeMap<Address, BlsPubkey>,
 }
@@ -376,6 +380,10 @@ fn claim_certificate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     key: RoundKey,
     threshold: usize,
 ) -> Option<Claimed> {
+    // Read before the claim: the claim is spent whether or not this returns one,
+    // so anything that can refuse belongs ahead of it.
+    let members = group_members_at(protocol, key.epoch, group_for_spool(key.spool))?;
+
     if !state.context.round_buffer.claim_certificate(key, threshold) {
         return None;
     }
@@ -393,7 +401,7 @@ fn claim_certificate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .filter_map(|(signer, _)| Some((*signer, protocol.peer(*signer)?.bls_pubkey)))
         .collect();
 
-    Some(Claimed { key, owner, threshold, attestations, signers })
+    Some(Claimed { key, owner, threshold, members, attestations, signers })
 }
 
 /// Certifies everything one batch claimed, on the certify stage rather than
@@ -521,14 +529,16 @@ fn aggregate_stands(round: &Round, claim: &Claimed) -> bool {
     // what the slow path would accept
     let summed = quorum_key(claim).is_some_and(|quorum| {
         certificate.as_ref().is_some_and(|certificate| {
-            certificate.verify_summed(claim.threshold, claim.owner, &quorum).is_ok()
+            certificate
+                .verify_summed(claim.threshold, claim.owner, &claim.members, &quorum)
+                .is_ok()
         })
     });
 
     summed
         || certificate.as_ref().is_some_and(|certificate| {
             certificate
-                .verify(claim.threshold, claim.owner, |signer| {
+                .verify(claim.threshold, claim.owner, &claim.members, |signer| {
                     claim.signers.get(&signer).copied()
                 })
                 .inspect_err(|rejection| {
