@@ -21,7 +21,7 @@ use tape_core::challenge::record::{
     MAX_CONSECUTIVE_MISSES, MIN_OPPORTUNITIES, RATE_FLOOR, RECENT_ROUNDS,
 };
 use tape_core::system::NodeStatus;
-use crate::features::http::handlers::challenge::agreement_threshold;
+use crate::features::challenge::certify::agreement_threshold;
 use tape_crypto::Address;
 use crate::features::challenge::trace::{MarkKind, RoundTrace as TracedRound, TraceClose};
 use tape_metrics::prometheus::proto::{Histogram, MetricFamily};

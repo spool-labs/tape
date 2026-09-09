@@ -209,7 +209,20 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let cancel = CancellationToken::new();
+    run_with_cancel(context, config, admission, CancellationToken::new()).await
+}
+
+pub async fn run_with_cancel<Db, Cluster, Blockchain>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    config: NodeConfig,
+    admission: Arc<dyn Admission>,
+    cancel: CancellationToken,
+) -> Result<(), NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
 
     // The slice cache and per-IP meter are built once and shared by the native
     // read listener and the S3 listener, so the disk-cache budget and the rate

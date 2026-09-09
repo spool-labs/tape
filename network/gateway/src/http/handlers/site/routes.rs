@@ -44,12 +44,6 @@ pub const SITE_PATH: &str = "/site/{tape}/{*path}";
 const INDEX_OBJECT: &str = "index.html";
 const NOT_FOUND_OBJECT: &str = "404.html";
 
-// Same-origin everywhere, with inline styles and scripts allowed: static
-// sites routinely inline both, and the policy's job here is keeping the
-// page from reaching other origins, not hardening the site against itself.
-const SITE_CONTENT_SECURITY_POLICY: &str =
-    "default-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'";
-
 #[derive(Deserialize)]
 pub struct SiteQuery {
     download: Option<String>,
@@ -133,6 +127,16 @@ pub async fn host_site_serving<
         }
     }
     let Some(tape) = tape else {
+        // A host under the site suffix that names no tape is nobody's: it
+        // must never fall through to the gateway's own routes.
+        if host.is_some_and(|host| is_under_suffix(site, host)) {
+            return RouteError::NotFound.into_response();
+        }
+        if site.subdomain_redirect {
+            if let Some(location) = subdomain_location(site, req.headers(), req.uri()) {
+                return Redirect::permanent(&location).into_response();
+            }
+        }
         return next.run(req).await;
     };
 
@@ -152,6 +156,48 @@ fn is_well_known(path: &str) -> bool {
 fn site_uri(tape: Address, uri: &Uri) -> Option<Uri> {
     let path_and_query = uri.path_and_query().map_or("/", PathAndQuery::as_str);
     format!("/site/{tape}{path_and_query}").parse().ok()
+}
+
+/// Whether a host is the site suffix itself or a name under it. Such hosts
+/// belong to sites alone, so one that maps to no tape is answered not found
+/// rather than by whatever the gateway serves on its own name.
+fn is_under_suffix(config: &GatewaySiteConfig, host: &str) -> bool {
+    let Some(suffix) = config.subdomain_suffix.as_deref() else {
+        return false;
+    };
+    let host = strip_port(host);
+    if host.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return ends_with_suffix(&host.to_ascii_lowercase(), suffix);
+    }
+    ends_with_suffix(host, suffix)
+}
+
+fn ends_with_suffix(host: &str, suffix: &str) -> bool {
+    host == suffix
+        || host
+            .strip_suffix(suffix)
+            .is_some_and(|rest| rest.ends_with('.'))
+}
+
+/// Where a path-form site request goes once path serving is retired: the
+/// same path and query on the site's own subdomain, over the scheme the
+/// edge proxy reported, so tenant pages leave the gateway's origin.
+fn subdomain_location(config: &GatewaySiteConfig, headers: &HeaderMap, uri: &Uri) -> Option<String> {
+    let suffix = config.subdomain_suffix.as_deref()?;
+    let tape = path_tape(uri.path())?;
+    let rest = uri.path().strip_prefix("/site/")?;
+    let path = match rest.split_once('/') {
+        Some((_, tail)) => format!("/{tail}"),
+        None => "/".to_string(),
+    };
+    let query = uri.query().map_or_else(String::new, |query| format!("?{query}"));
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .filter(|scheme| *scheme == "https")
+        .unwrap_or("http");
+    let label = tape.to_subdomain_label();
+    Some(format!("{scheme}://{label}.{suffix}{path}{query}"))
 }
 
 async fn serve_site<
@@ -207,8 +253,7 @@ async fn serve_site<
                 object.etag,
                 range_header(headers),
                 status,
-            )
-            .map_err(RouteError::from);
+            );
         }
         Readable::Track(resolved) => resolved,
     };
@@ -421,11 +466,11 @@ fn not_modified(etag: &str, max_age_secs: u64) -> Result<Response, RouteError> {
 }
 
 /// Stamp the site headers on every site response: no MIME sniffing, the
-/// content policy, and the cross-origin allowance when one applies. The
-/// tape's own policy is read here, once per request, and handed to the
-/// handler through the request extensions. Path-based hosting does not
-/// isolate tenants from each other; host-based serving gives each site its
-/// own origin.
+/// content policy when one is configured, and the cross-origin allowance
+/// when one applies. The tape's own policy is read here, once per request,
+/// and handed to the handler through the request extensions. Path-based
+/// hosting does not isolate tenants from each other; host-based serving
+/// gives each site its own origin.
 pub async fn site_response_headers<Db, Cluster, Blockchain>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     mut req: Request,
@@ -445,11 +490,10 @@ where
     let cors_list = policy.cors_origins.as_deref().unwrap_or(&site.cors_origins);
     let cors = cors_origin(cors_list, req.headers());
     let vary_on_origin = varies_on_origin(cors_list);
-    let connect_list = policy
-        .connect_origins
-        .as_deref()
-        .unwrap_or(&site.connect_origins);
-    let content_policy = site_content_security_policy(connect_list);
+    let content_policy = content_policy_header(
+        policy.content_security_policy.as_deref(),
+        site.content_security_policy.as_deref(),
+    );
 
     req.extensions_mut().insert(policy);
     let mut response = next.run(req).await;
@@ -459,7 +503,9 @@ where
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(header::CONTENT_SECURITY_POLICY, content_policy);
+    if let Some(value) = content_policy {
+        headers.insert(header::CONTENT_SECURITY_POLICY, value);
+    }
     if let Some(origin) = cors {
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
     }
@@ -490,19 +536,12 @@ fn path_tape(path: &str) -> Option<Address> {
     label.parse().ok()
 }
 
-/// The content security policy for site responses: same-origin plus the
-/// API origins the effective policy lets hosted pages call.
-fn site_content_security_policy(connect_origins: &[String]) -> HeaderValue {
-    if connect_origins.is_empty() {
-        return HeaderValue::from_static(SITE_CONTENT_SECURITY_POLICY);
-    }
-
-    let origins = connect_origins.join(" ");
-    let policy = format!("{SITE_CONTENT_SECURITY_POLICY}; connect-src 'self' {origins}");
-    // Origins are validated at config load and sanitized when tenant
-    // supplied; fall back to the closed policy rather than fail a response.
-    HeaderValue::from_str(&policy)
-        .unwrap_or_else(|_| HeaderValue::from_static(SITE_CONTENT_SECURITY_POLICY))
+/// The content policy a site response carries: the tape's own when it set
+/// one, else the operator's, else none. Both are validated where they are
+/// read, so a value that still cannot be a header is dropped, not repaired.
+fn content_policy_header(tenant: Option<&str>, operator: Option<&str>) -> Option<HeaderValue> {
+    let policy = tenant.or(operator)?;
+    HeaderValue::from_str(policy).ok()
 }
 
 /// The Access-Control-Allow-Origin value a request earns from the
@@ -609,24 +648,73 @@ mod tests {
         assert_eq!(host_tape(&config, "sites.test"), None);
     }
 
-    // connect origins extend the policy; an empty list keeps it closed
+    // the suffix and every name under it are site hosts, port and case aside
     #[test]
-    fn connect_policy() {
+    fn suffix_membership() {
+        let mut config = GatewaySiteConfig::default();
+        assert!(!is_under_suffix(&config, "sites.test"));
+
+        config.subdomain_suffix = Some("sites.test".to_string());
+        assert!(is_under_suffix(&config, "sites.test"));
+        assert!(is_under_suffix(&config, "nosuch.sites.test"));
+        assert!(is_under_suffix(&config, "NoSuch.Sites.Test:443"));
+        assert!(!is_under_suffix(&config, "notsites.test"));
+        assert!(!is_under_suffix(&config, "gw.example"));
+    }
+
+    // a path-form request redirects to the same path on the site's subdomain,
+    // over the scheme the edge reported; other paths and no suffix do not
+    #[test]
+    fn subdomain_redirect() {
+        let tape = Address::new_unique();
+        let label = tape.to_subdomain_label();
+        let plain = HeaderMap::new();
+        let mut forwarded = HeaderMap::new();
+        forwarded.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        let asset: Uri = format!("/site/{tape}/a/b.css?download=1")
+            .parse()
+            .expect("parse asset uri");
+        let bare: Uri = format!("/site/{tape}").parse().expect("parse bare uri");
+        let index: Uri = format!("/site/{tape}/").parse().expect("parse index uri");
+        let other: Uri = "/object/abc".parse().expect("parse other uri");
+
+        let mut config = GatewaySiteConfig::default();
+        assert!(subdomain_location(&config, &plain, &asset).is_none());
+
+        config.subdomain_suffix = Some("sites.test".to_string());
         assert_eq!(
-            site_content_security_policy(&[]),
-            HeaderValue::from_static(SITE_CONTENT_SECURITY_POLICY)
+            subdomain_location(&config, &plain, &asset),
+            Some(format!("http://{label}.sites.test/a/b.css?download=1"))
+        );
+        assert_eq!(
+            subdomain_location(&config, &plain, &bare),
+            Some(format!("http://{label}.sites.test/"))
+        );
+        assert_eq!(
+            subdomain_location(&config, &forwarded, &index),
+            Some(format!("https://{label}.sites.test/"))
+        );
+        assert!(subdomain_location(&config, &plain, &other).is_none());
+    }
+
+    // no policy anywhere means no header; the tape's policy wins over the operator's
+    #[test]
+    fn content_policy() {
+        assert!(content_policy_header(None, None).is_none());
+
+        let operator = "default-src 'self'";
+        assert_eq!(
+            content_policy_header(None, Some(operator)),
+            Some(HeaderValue::from_static("default-src 'self'"))
         );
 
-        let origins = vec![
-            "https://api.devnet.solana.com".to_string(),
-            "wss://api.devnet.solana.com".to_string(),
-        ];
-        let policy = site_content_security_policy(&origins);
-        let policy = policy.to_str().expect("policy is ascii");
-        assert!(policy.starts_with(SITE_CONTENT_SECURITY_POLICY));
-        assert!(policy.ends_with(
-            "connect-src 'self' https://api.devnet.solana.com wss://api.devnet.solana.com"
-        ));
+        let tenant = "img-src *";
+        assert_eq!(
+            content_policy_header(Some(tenant), Some(operator)),
+            Some(HeaderValue::from_static("img-src *"))
+        );
+
+        assert!(content_policy_header(Some("bad\nvalue"), None).is_none());
     }
 
     // cors answers the wildcard or a listed origin, and nothing else

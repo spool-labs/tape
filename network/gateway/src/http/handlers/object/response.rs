@@ -233,6 +233,12 @@ pub fn object_headers(
     headers.insert(header::ETAG, etag_header(etag)?);
     headers.insert(header::CACHE_CONTROL, cache_control_header(metadata.cache));
     headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    // Tape content is typed by whoever wrote it; the browser must not
+    // second-guess that type into something that renders.
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     if let Some(filename) = metadata.filename.as_deref() {
         headers.insert(
             header::CONTENT_DISPOSITION,
@@ -324,6 +330,25 @@ mod tests {
                 .get(header::CONTENT_DISPOSITION)
                 .and_then(|value| value.to_str().ok()),
             Some("attachment; filename*=UTF-8''reports%2Fjune%20final.txt")
+        );
+    }
+
+    // every object response forbids type sniffing
+    #[test]
+    fn nosniff_always() {
+        let metadata = ObjectResponseMetadata {
+            content_type: ContentType::Unknown,
+            filename: None,
+            cache: CachePolicy::Immutable,
+        };
+
+        let headers = object_headers(1, &metadata, Hash::default()).unwrap();
+
+        assert_eq!(
+            headers
+                .get(header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|value| value.to_str().ok()),
+            Some("nosniff")
         );
     }
 
