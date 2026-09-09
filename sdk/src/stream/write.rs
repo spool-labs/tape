@@ -6,6 +6,7 @@ use futures::stream::{self, FuturesOrdered, Stream, StreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::sleep;
+use tracing::debug;
 
 use rpc::{CommitmentLevel, Rpc};
 use tape_api::program::tapedrive::track_pda;
@@ -1104,12 +1105,20 @@ pub(crate) async fn verify_mirror_root<Blockchain: Rpc, Cluster: Api>(
     tape_key: &impl TapeOperator,
     mirror: &Mutex<ArchiveMirror>,
 ) -> Result<(), TapedriveError> {
-    let expected = mirror.lock().await.root();
+    // A mirror reseeded from chain state holds none of this client's tracks,
+    // so its root is a chain snapshot and comparing it proves nothing.
+    if mirror.lock().await.is_empty() {
+        debug!(tape = %tape_key.address(), "mirror holds no appended tracks; skipping root check");
+        return Ok(());
+    }
 
     retry_if(
         root_poll_config(),
         None,
         || async {
+            // Reread the root each attempt: a certify landing during the poll
+            // moves the mirror the comparison must honour.
+            let expected = mirror.lock().await.root();
             let tape = client.get_tape(&tape_key.address()).await?;
             let observed = tape.tracks.tree.root();
             if observed == expected {
