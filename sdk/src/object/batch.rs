@@ -112,7 +112,6 @@ enum StoredItem {
 struct PendingCertification {
     written: WrittenTrack,
     collected: CollectedSignatures,
-    receipts: Vec<CertifyRes>,
 }
 
 struct StoredCertification {
@@ -128,7 +127,6 @@ struct StoredCertification {
 #[must_use = "coded batch objects remain uncertified until this handle is consumed"]
 pub struct ObjectBatchVerification {
     pending: Vec<StoredCertification>,
-    mirror: Mutex<ArchiveMirror>,
 }
 
 /// A batch whose registrations have confirmed and whose coded slices have
@@ -193,6 +191,14 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         objects: Vec<ObjectBatchItem>,
     ) -> Result<StoredObjectBatch, TapedriveError> {
         validate_batch(&objects)?;
+        if objects.is_empty() {
+            return Ok(StoredObjectBatch {
+                receipts: Vec::new(),
+                verification: ObjectBatchVerification {
+                    pending: Vec::new(),
+                },
+            });
+        }
 
         let total_bytes = objects.iter().map(|object| object.data.len() as u64).sum();
         let timer = self
@@ -207,9 +213,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Certify every coded object represented by a stored batch handle.
     ///
     /// Tape mutations remain ordered while signature collection and final
-    /// visibility checks overlap. Proofs come from the mirror the store phase
-    /// left in the handle; a writer that touched the tape in between stales
-    /// them and the certify falls back to a peer proof.
+    /// visibility checks overlap. The tape mirror is refreshed here so other
+    /// ordered work may safely land between storage and certification.
     pub async fn certify_objects_batch(
         &self,
         bucket: &TapeKey,
@@ -460,7 +465,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
         Ok(StoredObjectBatch {
             receipts,
-            verification: ObjectBatchVerification { pending, mirror },
+            verification: ObjectBatchVerification { pending },
         })
     }
 
@@ -469,12 +474,13 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         bucket: &TapeKey,
         verification: ObjectBatchVerification,
     ) -> Result<(), TapedriveError> {
-        let ObjectBatchVerification { pending, mirror } = verification;
-        if pending.is_empty() {
+        if verification.pending.is_empty() {
             return Ok(());
         }
 
-        let pending: Vec<PendingCertification> = stream::iter(pending)
+        let tape = self.get_tape(&bucket.address()).await?;
+        let mirror = Mutex::new(ArchiveMirror::new(&tape.tracks));
+        let pending: Vec<PendingCertification> = stream::iter(verification.pending)
             .map(|stored| async move {
                 let collected = collect_certification(
                     self,
@@ -486,7 +492,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 Ok::<_, TapedriveError>(PendingCertification {
                     written: stored.written,
                     collected,
-                    receipts: stored.receipts,
                 })
             })
             .buffered(COLLECT_CONCURRENCY)
@@ -500,8 +505,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 bucket,
                 &mirror,
                 &pending.written,
-                pending.collected,
-                &pending.receipts,
+                &pending.collected,
                 Operation::WriteBatch,
             )
             .await?;
