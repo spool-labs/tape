@@ -6152,7 +6152,9 @@ dependencies = [
  "serde_yaml",
  "solana-client",
  "solana-commitment-config",
+ "solana-instruction",
  "solana-message",
+ "solana-transaction",
  "solana-transaction-error",
  "solana-transaction-status",
  "tape-api",
@@ -6166,6 +6168,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "wincode 0.5.5",
 ]
 
 [[package]]

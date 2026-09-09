@@ -1,8 +1,10 @@
 //! Axum server glue. Two distinct request paths:
 //!
 //! - `getBlock` is served from the in-memory slot store (filled by
-//!   bootstrap + live tail). On miss, falls through to upstream without
-//!   inserting — the live tail owns slot-store writes.
+//!   bootstrap + live tail), in the encoding the request asks for: json,
+//!   the default, or base64. On miss, falls through to upstream without
+//!   inserting — the live tail owns slot-store writes. Other encodings
+//!   pass through to upstream.
 //! - Everything else uses the original moka-based read-through cache
 //!   (per-method TTLs from `cache::Policy`). Submit methods are logged
 //!   and forwarded uncached.
@@ -42,11 +44,18 @@ use crate::upstream::{Upstream, UpstreamError};
 /// one.
 const SKIPPED_SLOT_ERROR_CODE: i32 = -32007;
 
+/// The transaction encodings the slot store can answer
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockEncoding {
+    Json,
+    Base64,
+}
+
 #[derive(Clone)]
 pub enum CachedBlock {
-    /// Pre-serialized JSON-RPC `result` body for a confirmed,
-    /// filtered block. Wrapped in an envelope at serve time.
-    Present(Bytes),
+    /// Pre-serialized JSON-RPC `result` bodies for a confirmed, filtered
+    /// block, one per encoding. Wrapped in an envelope at serve time.
+    Present { base64: Bytes, json: Bytes },
     /// The slot was skipped or never produced. Replays the standard
     /// upstream error envelope.
     Skipped,
@@ -232,13 +241,13 @@ async fn handle(
     // replay ranges outside the boot window are still shared fleet-wide.
     if method == "getBlock" {
         if is_confirmed_get_block(&params) {
-            if let Some(slot) = parse_slot_param(&params) {
+            if let (Some(slot), Some(encoding)) = (parse_slot_param(&params), get_block_encoding(&params)) {
                 if let Some(cached) = state.slot_store.get(&slot).await {
                     state.stats.slot_store_hits.fetch_add(1, Ordering::Relaxed);
-                    return serve_cached_block(id, cached);
+                    return serve_cached_block(id, cached, encoding);
                 }
                 state.stats.slot_store_misses.fetch_add(1, Ordering::Relaxed);
-                return fill_and_serve_cached_block(&state, id, slot).await;
+                return fill_and_serve_cached_block(&state, id, slot, encoding).await;
             }
         } else if parse_slot_param(&params).is_some() {
             state.stats.slot_store_misses.fetch_add(1, Ordering::Relaxed);
@@ -306,9 +315,25 @@ fn get_block_commitment(params: &Value) -> Option<&str> {
     }
 }
 
-fn serve_cached_block(id: Value, cached: CachedBlock) -> Response {
+/// The transaction encoding a `getBlock` asks for: json when absent, as
+/// the rpc defaults it; nothing for an encoding the store does not hold
+fn get_block_encoding(params: &Value) -> Option<BlockEncoding> {
+    let config = params.as_array()?.get(1);
+    let encoding = config.and_then(|config| config.get("encoding"));
+    match encoding.and_then(Value::as_str) {
+        None => Some(BlockEncoding::Json),
+        Some("json") => Some(BlockEncoding::Json),
+        Some("base64") => Some(BlockEncoding::Base64),
+        Some(_) => None,
+    }
+}
+
+fn serve_cached_block(id: Value, cached: CachedBlock, encoding: BlockEncoding) -> Response {
     match cached {
-        CachedBlock::Present(bytes) => serve_present_block(id, bytes),
+        CachedBlock::Present { base64, json } => match encoding {
+            BlockEncoding::Json => serve_present_block(id, json),
+            BlockEncoding::Base64 => serve_present_block(id, base64),
+        },
         CachedBlock::Skipped => serve_skipped_envelope(id),
     }
 }
@@ -317,6 +342,7 @@ async fn fill_and_serve_cached_block(
     state: &Arc<AppState>,
     id: Value,
     slot: u64,
+    encoding: BlockEncoding,
 ) -> Response {
     let fetch_state = Arc::clone(state);
     match state
@@ -326,7 +352,7 @@ async fn fill_and_serve_cached_block(
         })
         .await
     {
-        Ok(cached) => serve_cached_block(id, cached),
+        Ok(cached) => serve_cached_block(id, cached, encoding),
         Err(error) => slot_fill_err(id, error.as_str()).into_response(),
     }
 }
@@ -480,6 +506,16 @@ mod tests {
         assert_eq!(parse_slot_param(&Value::Null), None);
         assert_eq!(parse_slot_param(&json!([])), None);
         assert_eq!(parse_slot_param(&json!(["not-a-number"])), None);
+    }
+
+    // the encoding defaults to json, base64 is served, the rest pass through
+    #[test]
+    fn encoding_from_params() {
+        assert_eq!(get_block_encoding(&json!([1, {"commitment": "confirmed"}])), Some(BlockEncoding::Json));
+        assert_eq!(get_block_encoding(&json!([1, {"encoding": "json"}])), Some(BlockEncoding::Json));
+        assert_eq!(get_block_encoding(&json!([1, {"encoding": "base64"}])), Some(BlockEncoding::Base64));
+        assert_eq!(get_block_encoding(&json!([1, {"encoding": "jsonParsed"}])), None);
+        assert_eq!(get_block_encoding(&json!([1, {"encoding": "base58"}])), None);
     }
 
     #[test]

@@ -47,8 +47,12 @@ const MAX_BLOCK_FETCH_ATTEMPTS: u32 = 5;
 const RETRY_BASE: Duration = Duration::from_millis(100);
 const RETRY_CAP: Duration = Duration::from_secs(30);
 
+/// Blocks come from upstream as base64 bytes
+///
+/// Smaller than the json tree, decoded once by the filter, and what the
+/// fleet's block decoder reads.
 const BLOCK_FETCH_CONFIG: RpcBlockConfig = RpcBlockConfig {
-    encoding: Some(UiTransactionEncoding::Json),
+    encoding: Some(UiTransactionEncoding::Base64),
     transaction_details: Some(TransactionDetails::Full),
     rewards: Some(false),
     commitment: Some(CommitmentConfig {
@@ -181,7 +185,7 @@ fn build_state(config: &Config) -> Result<Arc<AppState>> {
 fn build_slot_store(max_bytes: u64) -> MokaCache<u64, CachedBlock> {
     MokaCache::builder()
         .weigher(|_key: &u64, value: &CachedBlock| match value {
-            CachedBlock::Present(b) => b.len().min(u32::MAX as usize) as u32,
+            CachedBlock::Present { base64, json } => (base64.len() + json.len()).min(u32::MAX as usize) as u32,
             // Tombstone — small fixed weight. Big enough that they
             // can't dominate the cache, small enough that they
             // don't crowd out real blocks.
@@ -448,14 +452,24 @@ fn build_present_block(
     slot: u64,
     block: UiConfirmedBlock,
 ) -> Result<CachedBlock, String> {
-    let filtered = filter_block(block, &state.program_ids);
-    let serialized = match serde_json::to_vec(&filtered) {
-        Ok(v) => v,
-        Err(e) => {
-            return Err(format!("serialize filtered block at slot {slot}: {e}"));
-        }
-    };
-    Ok(CachedBlock::Present(Bytes::from(serialized)))
+    let mut filtered = filter_block(block, &state.program_ids);
+    let base64 = serialize_block(&filtered.block, slot)?;
+    // The same block, its kept transactions swapped for their json
+    // rendering, is the json body; nothing else differs between the two.
+    let kept = filtered.block.transactions.iter_mut().flatten();
+    for (tx, json_transaction) in kept.zip(filtered.json_transactions) {
+        tx.transaction = json_transaction;
+    }
+    let json = serialize_block(&filtered.block, slot)?;
+    Ok(CachedBlock::Present { base64, json })
+}
+
+/// One encoding of a filtered block as the `result` body it is served as
+fn serialize_block(block: &UiConfirmedBlock, slot: u64) -> Result<Bytes, String> {
+    match serde_json::to_vec(block) {
+        Ok(serialized) => Ok(Bytes::from(serialized)),
+        Err(e) => Err(format!("serialize filtered block at slot {slot}: {e}")),
+    }
 }
 
 fn retry_delay(attempt: u32) -> Duration {

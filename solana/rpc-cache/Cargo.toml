@@ -39,6 +39,7 @@ serde_yaml = "0.9"
 solana-client = { workspace = true }
 solana-commitment-config = { workspace = true }
 solana-message = { workspace = true }
+solana-transaction = { workspace = true }
 solana-transaction-status = { workspace = true }
 solana-transaction-error = { workspace = true }
 thiserror = { workspace = true }
@@ -48,3 +49,8 @@ tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[dev-dependencies]
+solana-instruction = { workspace = true }
+# The agave transaction types serialise with this wincode line, as lib/blocks pins it.
+wincode = "0.5"
