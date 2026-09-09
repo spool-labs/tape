@@ -112,6 +112,7 @@ enum StoredItem {
 struct PendingCertification {
     written: WrittenTrack,
     collected: CollectedSignatures,
+    receipts: Vec<CertifyRes>,
 }
 
 struct StoredCertification {
@@ -485,6 +486,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 Ok::<_, TapedriveError>(PendingCertification {
                     written: stored.written,
                     collected,
+                    receipts: stored.receipts,
                 })
             })
             .buffered(COLLECT_CONCURRENCY)
@@ -498,7 +500,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 bucket,
                 &mirror,
                 &pending.written,
-                &pending.collected,
+                pending.collected,
+                &pending.receipts,
                 Operation::WriteBatch,
             )
             .await?;
