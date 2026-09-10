@@ -225,11 +225,95 @@ async fn object_layer_round_trip_inner() {
         batch_phase_count(&metrics, Phase::CertifyProof) > 0,
         "root-only conflict should fall back to a fresh peer proof"
     );
+    assert_eq!(
+        batch_phase_count(&metrics, Phase::CertifySubmit),
+        batch_phase_count(&metrics, Phase::CertifyProof),
+        "a submit without a proof fetch is the doomed submit on the stale mirror"
+    );
     let later_track = wait_for_certified_track(&sdk, &later_track, Duration::from_secs(10)).await;
     assert!(
         later_track.is_certified(),
         "batch should certify after another handle changes the tape root"
     );
+
+    // Repository tracks certified after a deferred site batch must not stale it.
+    let mut repo_tracks = Vec::new();
+    for byte in [b'p', b'q'] {
+        let pack = vec![byte; 4 * 1024];
+        let stored = sdk
+            .store_named_object(
+                &bucket,
+                b"",
+                ContentType::Unknown,
+                StorageUnits::from_bytes(pack.len() as u64),
+                pack.as_slice(),
+            )
+            .await
+            .expect("store repository pack");
+        repo_tracks.push(stored);
+    }
+    let refs = vec![b'r'; 4 * 1024];
+    let (refs_written, refs_plan) = sdk
+        .write_named_blob(&bucket, "refs.idx", ContentType::Unknown, &refs)
+        .await
+        .expect("write repository index");
+    let refs_receipts = sdk
+        .upload(&refs_written, &refs_plan)
+        .await
+        .expect("upload repository index");
+    repo_tracks.push((refs_written, refs_receipts));
+
+    let site = sdk
+        .store_objects_batch(
+            &bucket,
+            vec![
+                ObjectBatchItem {
+                    name: "site/main.css".into(),
+                    data: vec![b'c'; 4 * 1024],
+                    content_type: ContentType::TextCss,
+                    plan: None,
+                },
+                ObjectBatchItem {
+                    name: "site/main.js".into(),
+                    data: vec![b'j'; 4 * 1024],
+                    content_type: ContentType::TextJavascript,
+                    plan: None,
+                },
+            ],
+        )
+        .await
+        .expect("store site batch");
+    let mut site_tracks = Vec::new();
+    for receipt in &site.receipts {
+        site_tracks.push(receipt.address);
+    }
+
+    for (written, receipts) in &repo_tracks {
+        sdk.certify_with_receipts(&bucket, written, receipts)
+            .await
+            .expect("certify repository track");
+    }
+
+    metrics.clear();
+    sdk.certify_objects_batch(&bucket, site.verification)
+        .await
+        .expect("certify site batch behind repository tracks");
+    assert!(
+        batch_phase_count(&metrics, Phase::CertifyProof) > 0,
+        "repository certifications should force fresh peer proofs"
+    );
+    assert_eq!(
+        batch_phase_count(&metrics, Phase::CertifySubmit),
+        batch_phase_count(&metrics, Phase::CertifyProof),
+        "a submit without a proof fetch is the doomed submit on the stale mirror"
+    );
+    for address in &site_tracks {
+        let site_track = wait_for_certified_track(&sdk, address, Duration::from_secs(10)).await;
+        assert!(
+            site_track.is_certified(),
+            "site object should certify behind the repository tracks"
+        );
+    }
 
     metrics.clear();
     let fully_put = sdk
