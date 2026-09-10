@@ -773,7 +773,7 @@ where
                 resolved = in_flight.next(), if !in_flight.is_empty() => {
                     let Some(resolved) = resolved else { continue };
                     let (chunk_index, (written, plan)) = resolved?;
-                    append_to_mirror(mirror, &written).await?;
+                    append_to_mirror(client, tape_key, mirror, &written).await?;
                     let registered = RegisteredChunk {
                         entry: ChunkEntry {
                             track_number: written.track.track_number,
@@ -909,24 +909,31 @@ where
     Ok(pending_chunks)
 }
 
-/// Mirror a resolved register. A mirror reseeded from chain state mid-stream
-/// already holds recently confirmed tracks in its base, so appends for those
-/// are skipped rather than failed.
-pub(crate) async fn append_to_mirror(
+/// Mirror a resolved register, reseeding from chain state when the register sequence moved on
+pub(crate) async fn append_to_mirror<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
     mirror: &Mutex<ArchiveMirror>,
     written: &WrittenTrack,
 ) -> Result<(), TapedriveError> {
-    let mut mirror = mirror.lock().await;
-    if written.track.track_number < mirror.next_number() {
-        return Ok(());
+    {
+        let mut guard = mirror.lock().await;
+        if written.track.track_number < guard.next_number() {
+            return Ok(());
+        }
+        if guard.append(&written.track).is_ok() {
+            return Ok(());
+        }
     }
 
-    mirror.append(&written.track).map_err(|_| {
-        stream_error(StreamError::Integrity(format!(
-            "track {} arrived out of mirror order; an external writer touched the tape",
-            written.track.track_number
-        )))
-    })
+    let reseeded = reseed_mirror(client, tape_key).await?;
+    *mirror.lock().await = reseeded;
+    debug!(
+        tape = %tape_key.address(),
+        track = %written.address,
+        "mirror could not follow a foreign register; later proofs come from storage nodes"
+    );
+    Ok(())
 }
 
 /// Certify one stored chunk. The fast path proves the track against the

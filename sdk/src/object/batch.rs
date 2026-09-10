@@ -364,7 +364,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                     written
                 }
             };
-            append_to_mirror(&mirror, written).await?;
+            append_to_mirror(self, bucket, &mirror, written).await?;
         }
 
         let store_depth = self.write_options.store_depth.max(1);

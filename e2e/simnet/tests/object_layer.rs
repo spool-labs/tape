@@ -349,6 +349,83 @@ async fn object_layer_round_trip_inner() {
         "put_objects_batch should prove its track against its own mirror"
     );
 
+    // Two batches writing one bucket at once interleave their registers, which
+    // costs each handle its mirror and must not fail either write.
+    let left_first = vec![b'm'; 4 * 1024];
+    let left_second = vec![b'n'; 4 * 1024];
+    let right_first = vec![b'o'; 4 * 1024];
+    let right_second = vec![b'q'; 4 * 1024];
+    let (left, right) = tokio::join!(
+        sdk.store_objects_batch(
+            &bucket,
+            vec![
+                ObjectBatchItem {
+                    name: "left/0.css".into(),
+                    data: left_first.clone(),
+                    content_type: ContentType::TextCss,
+                    plan: None,
+                },
+                ObjectBatchItem {
+                    name: "left/1.css".into(),
+                    data: left_second.clone(),
+                    content_type: ContentType::TextCss,
+                    plan: None,
+                },
+            ],
+        ),
+        sdk.store_objects_batch(
+            &bucket,
+            vec![
+                ObjectBatchItem {
+                    name: "right/0.css".into(),
+                    data: right_first.clone(),
+                    content_type: ContentType::TextCss,
+                    plan: None,
+                },
+                ObjectBatchItem {
+                    name: "right/1.css".into(),
+                    data: right_second.clone(),
+                    content_type: ContentType::TextCss,
+                    plan: None,
+                },
+            ],
+        ),
+    );
+    let left = left.expect("store left concurrent batch");
+    let right = right.expect("store right concurrent batch");
+
+    let (left_certified, right_certified) = tokio::join!(
+        sdk.certify_objects_batch(&bucket, left.verification),
+        sdk.certify_objects_batch(&bucket, right.verification),
+    );
+    left_certified.expect("certify left concurrent batch");
+    right_certified.expect("certify right concurrent batch");
+
+    let mut concurrent_receipts = left.receipts;
+    concurrent_receipts.extend(right.receipts);
+    for receipt in &concurrent_receipts {
+        let track =
+            wait_for_certified_track(&sdk, &receipt.address, Duration::from_secs(10)).await;
+        assert!(
+            track.is_certified(),
+            "object written under a concurrent batch should certify"
+        );
+    }
+
+    let concurrent_objects = [
+        ("left/0.css", &left_first),
+        ("left/1.css", &left_second),
+        ("right/0.css", &right_first),
+        ("right/1.css", &right_second),
+    ];
+    for (name, data) in concurrent_objects {
+        let read = sdk
+            .get_object(&bucket.address(), name)
+            .await
+            .expect("read concurrent batch object");
+        assert_eq!(&read, data, "concurrent batch object should round-trip");
+    }
+
     harness.stop_all().await.expect("stop runtimes");
 }
 
