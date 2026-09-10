@@ -1,9 +1,13 @@
 [package]
 name = "tape-observe-api"
-version.workspace = true
-edition = "2021"
 description = "Shared types for the Tapedrive observability board and dashboard."
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+readme.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

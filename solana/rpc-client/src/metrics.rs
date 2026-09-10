@@ -1,4 +1,4 @@
-//! Prometheus metrics for rpc-client operations.
+//! Prometheus metrics for tape-rpc-client operations.
 //!
 //! This module provides metrics tracking for client operations including:
 //! - Operation duration and success/failure rates
@@ -27,7 +27,7 @@ const LATENCY_BUCKETS: &[f64] = &[
 
 /// Metrics collector for RpcClient operations.
 ///
-/// This struct holds all Prometheus metrics for the rpc-client crate.
+/// This struct holds all Prometheus metrics for the tape-rpc-client crate.
 /// It is designed to be shared across threads via `Arc`.
 ///
 /// # Example

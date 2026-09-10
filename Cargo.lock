@@ -5306,45 +5306,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "peer-http"
-version = "0.4.0"
-dependencies = [
- "async-trait",
- "axum",
- "axum-server",
- "dashmap 6.1.0",
- "peer-manager",
- "peer-tls",
- "prometheus",
- "rand 0.8.5",
- "reqwest",
- "tape-api",
- "tape-core",
- "tape-crypto",
- "tape-protocol",
- "tokio",
- "wincode 0.1.2",
-]
-
-[[package]]
-name = "peer-manager"
-version = "0.4.0"
-dependencies = [
- "arc-swap",
- "bytemuck",
- "dashmap 6.1.0",
- "rpc",
- "rpc-client",
- "tape-api",
- "tape-core",
- "tape-crypto",
- "tape-protocol",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "peer-memory"
 version = "0.4.0"
 dependencies = [
@@ -5353,23 +5314,6 @@ dependencies = [
  "tape-crypto",
  "tape-protocol",
  "tokio",
-]
-
-[[package]]
-name = "peer-tls"
-version = "0.4.0"
-dependencies = [
- "rand 0.8.5",
- "rcgen",
- "reqwest",
- "rustls",
- "tape-core",
- "tape-crypto",
- "thiserror 2.0.20",
- "tokio",
- "tokio-rustls",
- "webpki-roots 0.26.11",
- "x509-parser 0.16.0",
 ]
 
 [[package]]
@@ -6114,25 +6058,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rpc"
-version = "0.4.0"
-dependencies = [
- "async-trait",
- "solana-account 4.3.2",
- "solana-client",
- "solana-commitment-config",
- "solana-hash",
- "solana-instruction-error",
- "solana-leader-schedule",
- "solana-transaction",
- "solana-transaction-error",
- "solana-transaction-status",
- "tape-blocks",
- "tape-crypto",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "rpc-cache"
 version = "0.4.0"
 dependencies = [
@@ -6172,47 +6097,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "rpc-client"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "arc-swap",
- "bytemuck",
- "rpc",
- "rpc-litesvm",
- "rpc-solana",
- "solana-account-decoder",
- "solana-client",
- "solana-commitment-config",
- "solana-compute-budget-interface",
- "solana-hash",
- "solana-instruction",
- "solana-keypair",
- "solana-pubkey 4.2.1",
- "solana-signature",
- "solana-signer",
- "solana-system-interface 3.2.0",
- "solana-transaction",
- "solana-transaction-status",
- "tape-api",
- "tape-blocks",
- "tape-core",
- "tape-crypto",
- "tape-metrics",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "rpc-litesvm"
 version = "0.4.0"
 dependencies = [
  "agave-feature-set",
  "async-trait",
  "litesvm",
- "rpc",
- "rpc-client",
  "solana-account 4.3.2",
  "solana-client",
  "solana-clock",
@@ -6231,35 +6121,9 @@ dependencies = [
  "tape-api",
  "tape-blocks",
  "tape-crypto",
+ "tape-rpc",
+ "tape-rpc-client",
  "tokio",
-]
-
-[[package]]
-name = "rpc-solana"
-version = "0.4.0"
-dependencies = [
- "async-trait",
- "reqwest",
- "rpc",
- "serde",
- "serde_json",
- "solana-account 4.3.2",
- "solana-client",
- "solana-commitment-config",
- "solana-hash",
- "solana-instruction-error",
- "solana-pubkey 4.2.1",
- "solana-signature",
- "solana-transaction",
- "solana-transaction-error",
- "solana-transaction-status",
- "tape-blocks",
- "tape-crypto",
- "tape-metrics",
- "tape-retry",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -10022,11 +9886,7 @@ dependencies = [
  "indicatif 0.17.11",
  "mime_guess",
  "openssl",
- "peer-http",
  "rand 0.8.5",
- "rpc",
- "rpc-client",
- "rpc-solana",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -10035,6 +9895,10 @@ dependencies = [
  "tape-cli-common",
  "tape-core",
  "tape-crypto",
+ "tape-peer-http",
+ "tape-rpc",
+ "tape-rpc-client",
+ "tape-rpc-solana",
  "tape-sdk",
  "thiserror 2.0.20",
  "tokio",
@@ -10050,9 +9914,6 @@ dependencies = [
  "clap",
  "hex",
  "reel-store",
- "rpc",
- "rpc-client",
- "rpc-solana",
  "serde",
  "serde_json",
  "solana-instruction",
@@ -10064,6 +9925,9 @@ dependencies = [
  "tape-cli-common",
  "tape-core",
  "tape-crypto",
+ "tape-rpc",
+ "tape-rpc-client",
+ "tape-rpc-solana",
  "tape-sdk",
  "tape-snapshot",
  "tape-store",
@@ -10146,8 +10010,6 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "bytemuck",
- "rpc",
- "rpc-client",
  "rpc-litesvm",
  "solana-instruction",
  "solana-keypair",
@@ -10161,6 +10023,8 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-protocol",
+ "tape-rpc",
+ "tape-rpc-client",
  "tape-test",
  "tokio",
  "tracing",
@@ -10173,12 +10037,12 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs",
- "rpc",
  "serde",
  "serde_json",
  "serde_yaml",
  "tape-api",
  "tape-crypto",
+ "tape-rpc",
  "tape-sdk",
  "thiserror 2.0.20",
  "tracing",
@@ -10196,10 +10060,7 @@ dependencies = [
  "futures",
  "log",
  "maxminddb",
- "peer-tls",
  "reqwest",
- "rpc-client",
- "rpc-solana",
  "serde",
  "serde_yaml",
  "tape-api",
@@ -10207,6 +10068,9 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-observe-api",
+ "tape-peer-tls",
+ "tape-rpc-client",
+ "tape-rpc-solana",
  "tokio",
  "tower-http",
  "wincode 0.5.5",
@@ -10303,13 +10167,10 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "crossterm",
- "peer-http",
- "peer-tls",
  "rand 0.8.5",
  "ratatui",
  "reel-store",
  "reqwest",
- "rpc-client",
  "rpc-litesvm",
  "solana-keypair",
  "solana-pubkey 4.2.1",
@@ -10319,7 +10180,10 @@ dependencies = [
  "tape-crypto",
  "tape-e2e-simnet",
  "tape-node",
+ "tape-peer-http",
+ "tape-peer-tls",
  "tape-protocol",
+ "tape-rpc-client",
  "tape-sdk",
  "tape-store",
  "tokio",
@@ -10343,9 +10207,6 @@ dependencies = [
  "ratatui",
  "reel-store",
  "reqwest",
- "rpc",
- "rpc-client",
- "rpc-solana",
  "serde",
  "serde_json",
  "solana-client",
@@ -10363,6 +10224,9 @@ dependencies = [
  "tape-observe-api",
  "tape-protocol",
  "tape-retry",
+ "tape-rpc",
+ "tape-rpc-client",
+ "tape-rpc-solana",
  "tape-sdk",
  "tape-store",
  "tokio",
@@ -10380,14 +10244,9 @@ dependencies = [
  "bytemuck",
  "hex",
  "hmac",
- "peer-http",
- "peer-manager",
- "peer-tls",
  "rand 0.8.5",
  "reel-store",
  "reqwest",
- "rpc",
- "rpc-client",
  "rpc-litesvm",
  "sha2 0.10.9",
  "solana-compute-budget-interface",
@@ -10406,7 +10265,12 @@ dependencies = [
  "tape-gateway",
  "tape-node",
  "tape-observe-api",
+ "tape-peer-http",
+ "tape-peer-manager",
+ "tape-peer-tls",
  "tape-protocol",
+ "tape-rpc",
+ "tape-rpc-client",
  "tape-sdk",
  "tape-store",
  "tempfile",
@@ -10432,7 +10296,6 @@ dependencies = [
  "hmac",
  "moka",
  "openssl",
- "rpc",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -10444,6 +10307,7 @@ dependencies = [
  "tape-metrics",
  "tape-node",
  "tape-protocol",
+ "tape-rpc",
  "tape-sdk",
  "tape-store",
  "tokio",
@@ -10518,7 +10382,6 @@ dependencies = [
  "hex",
  "regex",
  "reqwest",
- "rpc",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -10528,6 +10391,7 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-protocol",
+ "tape-rpc",
  "tape-sdk",
  "tempfile",
  "thiserror 2.0.20",
@@ -10553,20 +10417,14 @@ dependencies = [
  "lz4_flex",
  "memory-stats",
  "openssl",
- "peer-http",
- "peer-manager",
  "peer-memory",
- "peer-tls",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "reel",
  "reel-store",
  "reqwest",
  "rlimit",
- "rpc",
- "rpc-client",
  "rpc-litesvm",
- "rpc-solana",
  "rustls",
  "serde",
  "serde_json",
@@ -10583,8 +10441,14 @@ dependencies = [
  "tape-crypto",
  "tape-metrics",
  "tape-observe-api",
+ "tape-peer-http",
+ "tape-peer-manager",
+ "tape-peer-tls",
  "tape-protocol",
  "tape-retry",
+ "tape-rpc",
+ "tape-rpc-client",
+ "tape-rpc-solana",
  "tape-sdk",
  "tape-slicer",
  "tape-snapshot",
@@ -10614,20 +10478,76 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-peer-http"
+version = "0.4.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "axum-server",
+ "dashmap 6.1.0",
+ "prometheus",
+ "rand 0.8.5",
+ "reqwest",
+ "tape-api",
+ "tape-core",
+ "tape-crypto",
+ "tape-peer-manager",
+ "tape-peer-tls",
+ "tape-protocol",
+ "tokio",
+ "wincode 0.1.2",
+]
+
+[[package]]
+name = "tape-peer-manager"
+version = "0.4.0"
+dependencies = [
+ "arc-swap",
+ "bytemuck",
+ "dashmap 6.1.0",
+ "tape-api",
+ "tape-core",
+ "tape-crypto",
+ "tape-protocol",
+ "tape-rpc",
+ "tape-rpc-client",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "tape-peer-tls"
+version = "0.4.0"
+dependencies = [
+ "rand 0.8.5",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "tape-core",
+ "tape-crypto",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots 0.26.11",
+ "x509-parser 0.16.0",
+]
+
+[[package]]
 name = "tape-protocol"
 version = "0.4.0"
 dependencies = [
  "arc-swap",
  "async-trait",
  "bytemuck",
- "rpc",
- "rpc-client",
  "serde",
  "tape-api",
  "tape-core",
  "tape-crypto",
  "tape-observe-api",
  "tape-retry",
+ "tape-rpc",
+ "tape-rpc-client",
  "tape-snapshot",
  "thiserror 2.0.20",
  "tokio",
@@ -10644,9 +10564,6 @@ dependencies = [
  "clap",
  "futures",
  "reel-store",
- "rpc",
- "rpc-client",
- "rpc-solana",
  "serde",
  "serde_json",
  "solana-client",
@@ -10661,6 +10578,9 @@ dependencies = [
  "tape-node",
  "tape-protocol",
  "tape-retry",
+ "tape-rpc",
+ "tape-rpc-client",
+ "tape-rpc-solana",
  "tape-sdk",
  "tape-store",
  "thiserror 2.0.20",
@@ -10684,6 +10604,86 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-rpc"
+version = "0.4.0"
+dependencies = [
+ "async-trait",
+ "solana-account 4.3.2",
+ "solana-client",
+ "solana-commitment-config",
+ "solana-hash",
+ "solana-instruction-error",
+ "solana-leader-schedule",
+ "solana-transaction",
+ "solana-transaction-error",
+ "solana-transaction-status",
+ "tape-blocks",
+ "tape-crypto",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "tape-rpc-client"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "bytemuck",
+ "rpc-litesvm",
+ "solana-account-decoder",
+ "solana-client",
+ "solana-commitment-config",
+ "solana-compute-budget-interface",
+ "solana-hash",
+ "solana-instruction",
+ "solana-keypair",
+ "solana-pubkey 4.2.1",
+ "solana-signature",
+ "solana-signer",
+ "solana-system-interface 3.2.0",
+ "solana-transaction",
+ "solana-transaction-status",
+ "tape-api",
+ "tape-blocks",
+ "tape-core",
+ "tape-crypto",
+ "tape-metrics",
+ "tape-rpc",
+ "tape-rpc-solana",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "tape-rpc-solana"
+version = "0.4.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "solana-account 4.3.2",
+ "solana-client",
+ "solana-commitment-config",
+ "solana-hash",
+ "solana-instruction-error",
+ "solana-pubkey 4.2.1",
+ "solana-signature",
+ "solana-transaction",
+ "solana-transaction-error",
+ "solana-transaction-status",
+ "tape-blocks",
+ "tape-crypto",
+ "tape-metrics",
+ "tape-retry",
+ "tape-rpc",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "tape-sdk"
 version = "0.4.0"
 dependencies = [
@@ -10692,14 +10692,9 @@ dependencies = [
  "bytemuck",
  "futures",
  "hex",
- "peer-http",
- "peer-manager",
  "peer-memory",
  "rand 0.8.5",
- "rpc",
- "rpc-client",
  "rpc-litesvm",
- "rpc-solana",
  "serde",
  "serde_json",
  "serial_test",
@@ -10713,8 +10708,13 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-metrics",
+ "tape-peer-http",
+ "tape-peer-manager",
  "tape-protocol",
  "tape-retry",
+ "tape-rpc",
+ "tape-rpc-client",
+ "tape-rpc-solana",
  "tape-slicer",
  "tape-store",
  "tempfile",
@@ -10838,12 +10838,7 @@ dependencies = [
  "dioxus 0.7.10",
  "dioxus-ssr",
  "openssl",
- "peer-http",
- "peer-manager",
  "peer-memory",
- "rpc",
- "rpc-client",
- "rpc-solana",
  "rusqlite",
  "serde",
  "serde_json",
@@ -10851,7 +10846,12 @@ dependencies = [
  "tape-blocks",
  "tape-core",
  "tape-crypto",
+ "tape-peer-http",
+ "tape-peer-manager",
  "tape-protocol",
+ "tape-rpc",
+ "tape-rpc-client",
+ "tape-rpc-solana",
  "tape-sdk",
  "tape-snapshot",
  "thiserror 2.0.20",

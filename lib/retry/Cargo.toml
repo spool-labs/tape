@@ -3,6 +3,11 @@ name = "tape-retry"
 version.workspace = true
 edition.workspace = true
 description = "Shared retry infrastructure with exponential backoff"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+readme.workspace = true
 
 [dependencies]
 tokio = { workspace = true }

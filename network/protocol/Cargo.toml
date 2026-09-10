@@ -1,7 +1,13 @@
 [package]
 name = "tape-protocol"
+description = "Network protocol types and state management for Tapedrive nodes"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+readme.workspace = true
 
 [dependencies]
 tape-api = { workspace = true }

@@ -19,7 +19,7 @@
 //! # Usage sketch
 //!
 //! ```no_run
-//! use peer_tls::{install_default_provider, apply_pinned_tls, build_server_config};
+//! use tape_peer_tls::{install_default_provider, apply_pinned_tls, build_server_config};
 //! use tape_core::types::tls::NetworkTlsPubkey;
 //!
 //! // Once per process, before any rustls config is built:
