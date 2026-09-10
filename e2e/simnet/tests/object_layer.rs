@@ -187,6 +187,50 @@ async fn object_layer_round_trip_inner() {
         index
     );
 
+    // Certifying one retained batch must not stale a later handle.
+    let earlier = sdk
+        .store_objects_batch(
+            &bucket,
+            vec![ObjectBatchItem {
+                name: "earlier.css".into(),
+                data: vec![b'a'; 4 * 1024],
+                content_type: ContentType::TextCss,
+                plan: None,
+            }],
+        )
+        .await
+        .expect("store earlier deferred batch");
+    let later = sdk
+        .store_objects_batch(
+            &bucket,
+            vec![ObjectBatchItem {
+                name: "later.css".into(),
+                data: vec![b'b'; 4 * 1024],
+                content_type: ContentType::TextCss,
+                plan: None,
+            }],
+        )
+        .await
+        .expect("store later deferred batch");
+    let later_track = later.receipts[0].address;
+
+    sdk.certify_objects_batch(&bucket, earlier.verification)
+        .await
+        .expect("certify earlier deferred batch");
+    metrics.clear();
+    sdk.certify_objects_batch(&bucket, later.verification)
+        .await
+        .expect("certify batch after root-only conflict");
+    assert!(
+        batch_phase_count(&metrics, Phase::CertifyProof) > 0,
+        "root-only conflict should fall back to a fresh peer proof"
+    );
+    let later_track = wait_for_certified_track(&sdk, &later_track, Duration::from_secs(10)).await;
+    assert!(
+        later_track.is_certified(),
+        "batch should certify after another handle changes the tape root"
+    );
+
     metrics.clear();
     let fully_put = sdk
         .put_objects_batch(

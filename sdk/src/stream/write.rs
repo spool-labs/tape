@@ -992,9 +992,9 @@ pub(crate) async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
 /// Retry a conflicted mirror certify against refetched chain state, reusing
 /// the already-collected signatures. An interfering writer stales the proof
 /// between generation and execution; a mirror still in lockstep with the
-/// chain regenerates a valid proof, while registers the mirror never saw
-/// force a reseed that drops the track out of its provable range. Returns
-/// false when the caller must fall back to the peer-proof path.
+/// chain regenerates a valid proof, while any tape-tree mutation the mirror
+/// never saw forces a reseed that drops the track out of its provable range.
+/// Returns false when the caller must fall back to the peer-proof path.
 async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -1011,7 +1011,9 @@ async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
         let reseeded = reseed_mirror(client, tape_key).await?;
         let proof = {
             let mut mirror = mirror.lock().await;
-            if reseeded.next_number() != mirror.next_number() {
+            if reseeded.next_number() != mirror.next_number()
+                || reseeded.root() != mirror.root()
+            {
                 *mirror = reseeded;
                 return Ok(false);
             }
