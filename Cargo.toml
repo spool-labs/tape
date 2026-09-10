@@ -122,18 +122,9 @@ tape-snapshot = { version = "0.4.0", path = "./lib/snapshot" }
 store = { version = "0.4.0", path = "./store/store" }
 store-memory = { version = "0.4.0", path = "./store/store-memory" }
 store-rocks = { version = "0.4.0", path = "./store/store-rocks" }
-reel-store = { version = "0.4.0", path = "./store/reel-store" }
-
-# The reel engine, pinned to one commit. Moving it is an edit to the rev here
-# followed by `cargo update -p reel -p reel-core`. To work against a local
-# checkout instead, patch it in .cargo/config.toml, which is ignored:
-#
-#   [patch."https://github.com/spool-labs/reel.git"]
-#   reel = { path = "/abs/path/to/reel/crates/reel" }
-#   reel-core = { path = "/abs/path/to/reel/crates/reel-core" }
-#
-reel = { git = "https://github.com/spool-labs/reel.git", rev = "5d6ae27", features = ["serde"] }
-reel-core = { git = "https://github.com/spool-labs/reel.git", rev = "5d6ae27" }
+reel-store = { package = "tape-reel-store", version = "0.4.0", path = "./store/reel-store" }
+reel = { package = "tape-reel", version = "0.2.0", features = ["serde"] }
+reel-core = { package = "tape-reel-core", version = "0.2.0" }
 tape-sdk = { version = "0.4.0", path = "./sdk" }
 tape-test = { version = "0.4.0", path = "./test" }
 tape-chain-harness = { version = "0.4.0", path = "./test/harness" }

@@ -1,8 +1,12 @@
 [package]
-name = "reel-store"
+name = "tape-reel-store"
 version.workspace = true
 edition.workspace = true
 description = "The node's store: tapedrive's columns on the reel engine"
+
+[lib]
+name = "reel_store"
+path = "src/lib.rs"
 
 [dependencies]
 store.workspace = true
@@ -18,7 +22,7 @@ tracing = "0.1"
 # The RocksDB arm the reel is measured against, which only a bench opens.
 # A node that wants RocksDB builds tape-node with its own `rocks` feature and
 # never touches this one. Tests opt in with
-# `cargo test -p reel-store --features rocks`.
+# `cargo test -p tape-reel-store --features rocks`.
 rocks = ["dep:store-rocks", "tape-store/rocks"]
 
 # Emit the shared store counters the node's board reads. Off by default so a

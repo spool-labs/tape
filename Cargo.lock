@@ -5874,51 +5874,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reel"
-version = "0.2.0"
-source = "git+https://github.com/spool-labs/reel.git?rev=5d6ae27#5d6ae27a6bf1ad24ab0dba6f656c64251e026646"
-dependencies = [
- "crc-fast",
- "io-uring",
- "libc",
- "loom",
- "lz4_flex",
- "reel-core",
- "serde",
- "thiserror 2.0.20",
- "tracing",
-]
-
-[[package]]
-name = "reel-core"
-version = "0.2.0"
-source = "git+https://github.com/spool-labs/reel.git?rev=5d6ae27#5d6ae27a6bf1ad24ab0dba6f656c64251e026646"
-dependencies = [
- "thiserror 2.0.20",
- "wincode 0.1.2",
-]
-
-[[package]]
-name = "reel-store"
-version = "0.4.0"
-dependencies = [
- "libc",
- "lz4_flex",
- "reel",
- "reel-core",
- "serde",
- "store",
- "store-rocks",
- "tape-core",
- "tape-crypto",
- "tape-metrics",
- "tape-store",
- "tempfile",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "regex"
 version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9692,10 +9647,10 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 name = "store"
 version = "0.4.0"
 dependencies = [
- "reel-core",
  "serde",
  "store-memory",
  "tape-metrics",
+ "tape-reel-core",
  "thiserror 2.0.20",
  "wincode 0.1.2",
 ]
@@ -9913,7 +9868,6 @@ dependencies = [
  "bytemuck",
  "clap",
  "hex",
- "reel-store",
  "serde",
  "serde_json",
  "solana-instruction",
@@ -9925,6 +9879,7 @@ dependencies = [
  "tape-cli-common",
  "tape-core",
  "tape-crypto",
+ "tape-reel-store",
  "tape-rpc",
  "tape-rpc-client",
  "tape-rpc-solana",
@@ -10132,13 +10087,13 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
- "reel",
- "reel-store",
  "serde",
  "serde_json",
  "store",
  "tape-core",
  "tape-crypto",
+ "tape-reel",
+ "tape-reel-store",
  "tape-slicer",
  "tape-store",
  "tempfile",
@@ -10169,7 +10124,6 @@ dependencies = [
  "crossterm",
  "rand 0.8.5",
  "ratatui",
- "reel-store",
  "reqwest",
  "rpc-litesvm",
  "solana-keypair",
@@ -10183,6 +10137,7 @@ dependencies = [
  "tape-peer-http",
  "tape-peer-tls",
  "tape-protocol",
+ "tape-reel-store",
  "tape-rpc-client",
  "tape-sdk",
  "tape-store",
@@ -10205,7 +10160,6 @@ dependencies = [
  "nix 0.29.0",
  "rand 0.8.5",
  "ratatui",
- "reel-store",
  "reqwest",
  "serde",
  "serde_json",
@@ -10223,6 +10177,7 @@ dependencies = [
  "tape-node",
  "tape-observe-api",
  "tape-protocol",
+ "tape-reel-store",
  "tape-retry",
  "tape-rpc",
  "tape-rpc-client",
@@ -10245,7 +10200,6 @@ dependencies = [
  "hex",
  "hmac",
  "rand 0.8.5",
- "reel-store",
  "reqwest",
  "rpc-litesvm",
  "sha2 0.10.9",
@@ -10269,6 +10223,7 @@ dependencies = [
  "tape-peer-manager",
  "tape-peer-tls",
  "tape-protocol",
+ "tape-reel-store",
  "tape-rpc",
  "tape-rpc-client",
  "tape-sdk",
@@ -10420,8 +10375,6 @@ dependencies = [
  "peer-memory",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
- "reel",
- "reel-store",
  "reqwest",
  "rlimit",
  "rpc-litesvm",
@@ -10445,6 +10398,8 @@ dependencies = [
  "tape-peer-manager",
  "tape-peer-tls",
  "tape-protocol",
+ "tape-reel",
+ "tape-reel-store",
  "tape-retry",
  "tape-rpc",
  "tape-rpc-client",
@@ -10563,7 +10518,6 @@ version = "0.4.0"
 dependencies = [
  "clap",
  "futures",
- "reel-store",
  "serde",
  "serde_json",
  "solana-client",
@@ -10577,6 +10531,7 @@ dependencies = [
  "tape-crypto",
  "tape-node",
  "tape-protocol",
+ "tape-reel-store",
  "tape-retry",
  "tape-rpc",
  "tape-rpc-client",
@@ -10592,6 +10547,53 @@ name = "tape-reed-solomon"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8d60ec175b7c0ef10297410f621b88006ce9e327b18fd85a12982839e6c294b"
+
+[[package]]
+name = "tape-reel"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da5c553dc242be7ea66e477e6c39f5d80c3a844d6b13edff9df432699c0bb09d"
+dependencies = [
+ "crc-fast",
+ "io-uring",
+ "libc",
+ "loom",
+ "lz4_flex",
+ "serde",
+ "tape-reel-core",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "tape-reel-core"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b1bcec9fa5a78e1c2a40bf867fe086a0f27d28508c5f615354532fed13ea35e"
+dependencies = [
+ "thiserror 2.0.20",
+ "wincode 0.1.2",
+]
+
+[[package]]
+name = "tape-reel-store"
+version = "0.4.0"
+dependencies = [
+ "libc",
+ "lz4_flex",
+ "serde",
+ "store",
+ "store-rocks",
+ "tape-core",
+ "tape-crypto",
+ "tape-metrics",
+ "tape-reel",
+ "tape-reel-core",
+ "tape-store",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "tape-retry"
@@ -10789,7 +10791,6 @@ name = "tape-store"
 version = "0.4.0"
 dependencies = [
  "bytemuck",
- "reel-store",
  "rocksdb",
  "serde",
  "store",
@@ -10798,6 +10799,7 @@ dependencies = [
  "tape-api",
  "tape-core",
  "tape-crypto",
+ "tape-reel-store",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
