@@ -6,7 +6,7 @@ use futures::stream::{self, FuturesOrdered, Stream, StreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use rpc::{CommitmentLevel, Rpc};
 use tape_api::program::tapedrive::track_pda;
@@ -21,6 +21,7 @@ use tape_crypto::hash::hash;
 use tape_crypto::Hash;
 use tape_protocol::Api;
 use tape_protocol::api::CertifyRes;
+use tape_retry::{retry_if, RetryConfig};
 
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
@@ -71,12 +72,6 @@ const CERTIFY_CONFLICT_ATTEMPTS: usize = 3;
 /// Delay before each conflict refetch; the interfering transaction may be
 /// processed but not yet confirmed, so an immediate refetch can miss it.
 const CERTIFY_CONFLICT_DELAY: Duration = Duration::from_millis(400);
-
-/// Root comparisons made at the end of a write before the mirror is dropped.
-const ROOT_CHECK_ATTEMPTS: usize = 10;
-
-/// Flat delay between root comparisons, the confirmed root only trails briefly
-const ROOT_CHECK_DELAY: Duration = Duration::from_millis(400);
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Store a named byte stream and return before final manifest certification.
@@ -773,7 +768,7 @@ where
                 resolved = in_flight.next(), if !in_flight.is_empty() => {
                     let Some(resolved) = resolved else { continue };
                     let (chunk_index, (written, plan)) = resolved?;
-                    append_to_mirror(client, tape_key, mirror, &written).await?;
+                    append_to_mirror(mirror, &written).await?;
                     let registered = RegisteredChunk {
                         entry: ChunkEntry {
                             track_number: written.track.track_number,
@@ -909,31 +904,24 @@ where
     Ok(pending_chunks)
 }
 
-/// Mirror a resolved register, reseeding from chain state when the register sequence moved on
-pub(crate) async fn append_to_mirror<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
+/// Mirror a resolved register. A mirror reseeded from chain state mid-stream
+/// already holds recently confirmed tracks in its base, so appends for those
+/// are skipped rather than failed.
+pub(crate) async fn append_to_mirror(
     mirror: &Mutex<ArchiveMirror>,
     written: &WrittenTrack,
 ) -> Result<(), TapedriveError> {
-    {
-        let mut guard = mirror.lock().await;
-        if written.track.track_number < guard.next_number() {
-            return Ok(());
-        }
-        if guard.append(&written.track).is_ok() {
-            return Ok(());
-        }
+    let mut mirror = mirror.lock().await;
+    if written.track.track_number < mirror.next_number() {
+        return Ok(());
     }
 
-    let reseeded = reseed_mirror(client, tape_key).await?;
-    *mirror.lock().await = reseeded;
-    debug!(
-        tape = %tape_key.address(),
-        track = %written.address,
-        "mirror could not follow a foreign register; later proofs come from storage nodes"
-    );
-    Ok(())
+    mirror.append(&written.track).map_err(|_| {
+        stream_error(StreamError::Integrity(format!(
+            "track {} arrived out of mirror order; an external writer touched the tape",
+            written.track.track_number
+        )))
+    })
 }
 
 /// Certify one stored chunk. The fast path proves the track against the
@@ -1071,7 +1059,10 @@ async fn reseed_mirror<Blockchain: Rpc, Cluster: Api>(
     Ok(ArchiveMirror::new(&tape.tracks))
 }
 
-/// Replay a landed certify on the mirror, reseeding when a covered track fails to apply
+/// Replay a landed certify on the mirror; the chain wrote this exact leaf.
+/// The fast path reuses the proof the certify was submitted with. If the
+/// mirror cannot apply the leaf it has diverged, so reseed it from chain
+/// state and let later certifies fall back until it covers them again.
 async fn apply_certified_to_mirror<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -1081,9 +1072,6 @@ async fn apply_certified_to_mirror<Blockchain: Rpc, Cluster: Api>(
 ) -> Result<(), TapedriveError> {
     let applied = {
         let mut mirror = mirror.lock().await;
-        if !mirror.covers(certified.track_number) {
-            return Ok(());
-        }
         match proof {
             Some(proof) => {
                 mirror.apply_certified_with_proof(certified.track_number, certified, proof)
@@ -1095,14 +1083,25 @@ async fn apply_certified_to_mirror<Blockchain: Rpc, Cluster: Api>(
         return Ok(());
     }
 
-    match reseed_mirror(client, tape_key).await {
-        Ok(reseeded) => *mirror.lock().await = reseeded,
-        Err(err) => warn!(tape = %tape_key.address(), %err, "mirror reseed failed; later proofs fall back"),
-    }
+    let reseeded = reseed_mirror(client, tape_key).await?;
+    *mirror.lock().await = reseeded;
     Ok(())
 }
 
-/// Poll the chain root against the mirror and log a lasting mismatch, every track is already certified
+/// Flat short poll for the end-of-stream root comparison; the confirmed
+/// root can briefly trail the last processed certify, and a backoff would
+/// oversleep its arrival.
+fn root_poll_config() -> RetryConfig {
+    RetryConfig {
+        base_delay: Duration::from_millis(400),
+        max_delay: Duration::from_millis(400),
+        max_retries: Some(10),
+    }
+}
+
+/// Compare the mirrored root with the on-chain root, retrying the comparison
+/// before declaring divergence. A lasting mismatch means an external writer
+/// touched the tape mid-stream.
 pub(crate) async fn verify_mirror_root<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -1115,35 +1114,28 @@ pub(crate) async fn verify_mirror_root<Blockchain: Rpc, Cluster: Api>(
         return Ok(());
     }
 
-    let mut expected = Hash::default();
-    let mut observed = Hash::default();
-    for attempt in 0..ROOT_CHECK_ATTEMPTS {
-        if attempt > 0 {
-            sleep(ROOT_CHECK_DELAY).await;
-        }
-
-        // A certify landing during the poll moves the mirror, so reread it
-        expected = mirror.lock().await.root();
-        let tape = match client.get_tape(&tape_key.address()).await {
-            Ok(tape) => tape,
-            Err(err) => {
-                warn!(tape = %tape_key.address(), %err, "mirror root check skipped; tape fetch failed");
+    retry_if(
+        root_poll_config(),
+        None,
+        || async {
+            // Reread the root each attempt: a certify landing during the poll
+            // moves the mirror the comparison must honour.
+            let expected = mirror.lock().await.root();
+            let tape = client.get_tape(&tape_key.address()).await?;
+            let observed = tape.tracks.tree.root();
+            if observed == expected {
                 return Ok(());
             }
-        };
-        observed = tape.tracks.tree.root();
-        if observed == expected {
-            return Ok(());
-        }
-    }
 
-    warn!(
-        tape = %tape_key.address(),
-        mirror_root = %expected,
-        chain_root = %observed,
-        "tape track tree diverged from the mirror; another writer touched the tape"
-    );
-    Ok(())
+            Err(stream_error(StreamError::Integrity(format!(
+                "tape track tree diverged from the stream mirror: mirror root {expected}, chain root {observed}"
+            ))))
+        },
+        // Only the mismatch itself is worth re-polling; fetch errors fail
+        // the stream as they always did.
+        |err| matches!(err, TapedriveError::Stream(_)),
+    )
+    .await
 }
 
 /// Read one chunk's bytes from the source reader.

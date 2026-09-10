@@ -1471,15 +1471,9 @@ pub(crate) async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
     match result {
         Ok(track) => Ok(track),
         Err(TrackCompletionError::Client(err)) => Err(err),
-        // Nodes can trail the chain; the track account is the last word.
-        Err(TrackCompletionError::NotCertifiedYet) => {
-            match client.get_track(&track_pda(*tape, track_number).0).await {
-                Ok(track) if track.is_certified() => Ok(track),
-                _ => Err(TapedriveError::Upload(UploadError::Network(
-                    "track never became visible as certified".into(),
-                ))),
-            }
-        }
+        Err(TrackCompletionError::NotCertifiedYet) => Err(TapedriveError::Upload(
+            UploadError::Network("track never became visible as certified".into()),
+        )),
     }
 }
 

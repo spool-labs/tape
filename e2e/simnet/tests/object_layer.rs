@@ -225,95 +225,11 @@ async fn object_layer_round_trip_inner() {
         batch_phase_count(&metrics, Phase::CertifyProof) > 0,
         "root-only conflict should fall back to a fresh peer proof"
     );
-    assert_eq!(
-        batch_phase_count(&metrics, Phase::CertifySubmit),
-        batch_phase_count(&metrics, Phase::CertifyProof),
-        "a submit without a proof fetch is the doomed submit on the stale mirror"
-    );
     let later_track = wait_for_certified_track(&sdk, &later_track, Duration::from_secs(10)).await;
     assert!(
         later_track.is_certified(),
         "batch should certify after another handle changes the tape root"
     );
-
-    // Repository tracks certified after a deferred site batch must not stale it.
-    let mut repo_tracks = Vec::new();
-    for byte in [b'p', b'q'] {
-        let pack = vec![byte; 4 * 1024];
-        let stored = sdk
-            .store_named_object(
-                &bucket,
-                b"",
-                ContentType::Unknown,
-                StorageUnits::from_bytes(pack.len() as u64),
-                pack.as_slice(),
-            )
-            .await
-            .expect("store repository pack");
-        repo_tracks.push(stored);
-    }
-    let refs = vec![b'r'; 4 * 1024];
-    let (refs_written, refs_plan) = sdk
-        .write_named_blob(&bucket, "refs.idx", ContentType::Unknown, &refs)
-        .await
-        .expect("write repository index");
-    let refs_receipts = sdk
-        .upload(&refs_written, &refs_plan)
-        .await
-        .expect("upload repository index");
-    repo_tracks.push((refs_written, refs_receipts));
-
-    let site = sdk
-        .store_objects_batch(
-            &bucket,
-            vec![
-                ObjectBatchItem {
-                    name: "site/main.css".into(),
-                    data: vec![b'c'; 4 * 1024],
-                    content_type: ContentType::TextCss,
-                    plan: None,
-                },
-                ObjectBatchItem {
-                    name: "site/main.js".into(),
-                    data: vec![b'j'; 4 * 1024],
-                    content_type: ContentType::TextJavascript,
-                    plan: None,
-                },
-            ],
-        )
-        .await
-        .expect("store site batch");
-    let mut site_tracks = Vec::new();
-    for receipt in &site.receipts {
-        site_tracks.push(receipt.address);
-    }
-
-    for (written, receipts) in &repo_tracks {
-        sdk.certify_with_receipts(&bucket, written, receipts)
-            .await
-            .expect("certify repository track");
-    }
-
-    metrics.clear();
-    sdk.certify_objects_batch(&bucket, site.verification)
-        .await
-        .expect("certify site batch behind repository tracks");
-    assert!(
-        batch_phase_count(&metrics, Phase::CertifyProof) > 0,
-        "repository certifications should force fresh peer proofs"
-    );
-    assert_eq!(
-        batch_phase_count(&metrics, Phase::CertifySubmit),
-        batch_phase_count(&metrics, Phase::CertifyProof),
-        "a submit without a proof fetch is the doomed submit on the stale mirror"
-    );
-    for address in &site_tracks {
-        let site_track = wait_for_certified_track(&sdk, address, Duration::from_secs(10)).await;
-        assert!(
-            site_track.is_certified(),
-            "site object should certify behind the repository tracks"
-        );
-    }
 
     metrics.clear();
     let fully_put = sdk
@@ -348,83 +264,6 @@ async fn object_layer_round_trip_inner() {
         0,
         "put_objects_batch should prove its track against its own mirror"
     );
-
-    // Two batches writing one bucket at once interleave their registers, which
-    // costs each handle its mirror and must not fail either write.
-    let left_first = vec![b'm'; 4 * 1024];
-    let left_second = vec![b'n'; 4 * 1024];
-    let right_first = vec![b'o'; 4 * 1024];
-    let right_second = vec![b'q'; 4 * 1024];
-    let (left, right) = tokio::join!(
-        sdk.store_objects_batch(
-            &bucket,
-            vec![
-                ObjectBatchItem {
-                    name: "left/0.css".into(),
-                    data: left_first.clone(),
-                    content_type: ContentType::TextCss,
-                    plan: None,
-                },
-                ObjectBatchItem {
-                    name: "left/1.css".into(),
-                    data: left_second.clone(),
-                    content_type: ContentType::TextCss,
-                    plan: None,
-                },
-            ],
-        ),
-        sdk.store_objects_batch(
-            &bucket,
-            vec![
-                ObjectBatchItem {
-                    name: "right/0.css".into(),
-                    data: right_first.clone(),
-                    content_type: ContentType::TextCss,
-                    plan: None,
-                },
-                ObjectBatchItem {
-                    name: "right/1.css".into(),
-                    data: right_second.clone(),
-                    content_type: ContentType::TextCss,
-                    plan: None,
-                },
-            ],
-        ),
-    );
-    let left = left.expect("store left concurrent batch");
-    let right = right.expect("store right concurrent batch");
-
-    let (left_certified, right_certified) = tokio::join!(
-        sdk.certify_objects_batch(&bucket, left.verification),
-        sdk.certify_objects_batch(&bucket, right.verification),
-    );
-    left_certified.expect("certify left concurrent batch");
-    right_certified.expect("certify right concurrent batch");
-
-    let mut concurrent_receipts = left.receipts;
-    concurrent_receipts.extend(right.receipts);
-    for receipt in &concurrent_receipts {
-        let track =
-            wait_for_certified_track(&sdk, &receipt.address, Duration::from_secs(10)).await;
-        assert!(
-            track.is_certified(),
-            "object written under a concurrent batch should certify"
-        );
-    }
-
-    let concurrent_objects = [
-        ("left/0.css", &left_first),
-        ("left/1.css", &left_second),
-        ("right/0.css", &right_first),
-        ("right/1.css", &right_second),
-    ];
-    for (name, data) in concurrent_objects {
-        let read = sdk
-            .get_object(&bucket.address(), name)
-            .await
-            .expect("read concurrent batch object");
-        assert_eq!(&read, data, "concurrent batch object should round-trip");
-    }
 
     harness.stop_all().await.expect("stop runtimes");
 }
