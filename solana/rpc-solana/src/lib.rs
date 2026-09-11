@@ -1,4 +1,4 @@
-//! # rpc-solana
+//! # tape-rpc-solana
 //!
 //! Production Solana RPC client with retry and failover capabilities.
 //!
@@ -14,7 +14,7 @@
 //!
 //! One trait, one production backend, test backends beside it:
 //! ```text
-//! tape-rpc (trait)  →  rpc-solana (production) | test backends
+//! tape-rpc (trait)  →  tape-rpc-solana (production) | test backends
 //!                           ↓
 //!                     tape-client<R: Rpc>
 //! ```
@@ -22,8 +22,8 @@
 //! ## Example
 //!
 //! ```ignore
-//! use rpc::Rpc;
-//! use rpc_solana::{SolanaRpc, RpcConfig, RpcRetryConfig};
+//! use tape_rpc::Rpc;
+//! use tape_rpc_solana::{SolanaRpc, RpcConfig, RpcRetryConfig};
 //!
 //! // Create with default settings
 //! let rpc = SolanaRpc::new(RpcConfig::default())?;

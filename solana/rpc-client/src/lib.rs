@@ -1,11 +1,11 @@
-//! # rpc-client
+//! # tape-rpc-client
 //!
 //! RPC client library for querying Tapedrive on-chain program state.
 //!
 //! This crate provides a convenient interface for:
 //! - Fetching Tapedrive account state (System, Epoch, Nodes, Tapes, etc.)
 //! - Submitting transactions to Tapedrive programs
-//! - Automatic retry and failover via the underlying rpc-solana layer
+//! - Automatic retry and failover via the underlying tape-rpc-solana layer
 //!
 //! ## Generic RPC Pattern
 //!
@@ -17,8 +17,8 @@
 //! ## Example
 //!
 //! ```ignore
-//! use rpc_client::RpcClient;
-//! use rpc_solana::RpcConfig;
+//! use tape_rpc_client::RpcClient;
+//! use tape_rpc_solana::RpcConfig;
 //! use solana_keypair::Keypair;
 //! use solana_signer::Signer;
 //!

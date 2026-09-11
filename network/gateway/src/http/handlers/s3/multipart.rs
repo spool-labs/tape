@@ -115,7 +115,6 @@ pub fn put_part(
     part_number: u32,
     data: Vec<u8>,
     max_object_bytes: usize,
-    principal: Address,
 ) -> Result<Hash, S3Error> {
     if !(MIN_PART_NUMBER..=MAX_PART_NUMBER).contains(&part_number) {
         return Err(S3Error::InvalidRequest(format!(
@@ -123,7 +122,7 @@ pub fn put_part(
         )));
     }
 
-    load_upload(store, upload_id, bucket, key, principal)?;
+    load_upload(store, upload_id, bucket, key)?;
 
     // A re-upload of this part number replaces it, so exclude it from the
     // already-staged total before admitting the new bytes.
@@ -157,9 +156,8 @@ pub fn list_parts(
     upload_id: &str,
     bucket: Address,
     key: &str,
-    principal: Address,
 ) -> Result<UploadListing, S3Error> {
-    let upload = load_upload(store, upload_id, bucket, key, principal)?;
+    let upload = load_upload(store, upload_id, bucket, key)?;
     let stored = store.list_multipart_parts(upload_id).map_err(store_error)?;
 
     let mut parts = Vec::with_capacity(stored.len());
@@ -188,7 +186,12 @@ pub fn abort(
     key: &str,
     principal: Address,
 ) -> Result<(), S3Error> {
-    load_upload(store, upload_id, bucket, key, principal)?;
+    let upload = load_upload(store, upload_id, bucket, key)?;
+    if upload.principal != principal {
+        return Err(S3Error::AccessDenied(
+            "this multipart upload belongs to another principal".to_string(),
+        ));
+    }
     store.delete_multipart_upload(upload_id).map_err(store_error)
 }
 
@@ -201,7 +204,6 @@ pub fn assemble(
     key: &str,
     requested: &[CompletedPartRef],
     max_object_bytes: usize,
-    principal: Address,
 ) -> Result<AssembledUpload, S3Error> {
     if requested.is_empty() {
         return Err(S3Error::InvalidRequest(
@@ -209,7 +211,7 @@ pub fn assemble(
         ));
     }
 
-    let upload = load_upload(store, upload_id, bucket, key, principal)?;
+    let upload = load_upload(store, upload_id, bucket, key)?;
     let stored = store.list_multipart_parts(upload_id).map_err(store_error)?;
     let by_number: HashMap<u32, &MultipartPart> =
         stored.iter().map(|part| (part.part_number, part)).collect();
@@ -301,19 +303,15 @@ pub struct UploadSummary {
     pub initiated: i64,
 }
 
-/// List `principal`'s in-flight uploads targeting `bucket`
-/// (ListMultipartUploads), sorted by key then upload id as S3 reports them
-///
-/// Scoped to the caller: the upload ids in this listing are what an operation
-/// on someone else's upload would need, and two principals can share a bucket.
+/// List the in-flight uploads targeting `bucket` (ListMultipartUploads), sorted
+/// by key then upload id as S3 reports them
 pub fn list_uploads(
     store: &impl MultipartOps,
     bucket: Address,
-    principal: Address,
 ) -> Result<Vec<UploadSummary>, S3Error> {
     let mut summaries = Vec::new();
     for (upload_id, upload) in store.list_multipart_uploads().map_err(store_error)? {
-        if upload.bucket == bucket && upload.principal == principal {
+        if upload.bucket == bucket {
             summaries.push(UploadSummary {
                 upload_id,
                 key: upload.key,
@@ -329,30 +327,19 @@ pub fn list_uploads(
     Ok(summaries)
 }
 
-/// Load an upload by id, requiring its target `(bucket, key)` to match the
-/// request path and `principal` to be the one that opened it.
-///
-/// An upload id is not a capability: `ListMultipartUploads` hands every id in a
-/// bucket to anyone scoped to that bucket. Ownership is what separates two
-/// principals sharing one bucket, so every operation on an upload settles it
-/// here rather than each caller remembering to.
+/// Load an upload by id, requiring its target `(bucket, key)` to match the request
+/// path.
 fn load_upload(
     store: &impl MultipartOps,
     upload_id: &str,
     bucket: Address,
     key: &str,
-    principal: Address,
 ) -> Result<MultipartUpload, S3Error> {
     let upload = store
         .get_multipart_upload(upload_id)
         .map_err(store_error)?
         .ok_or(S3Error::NoSuchUpload)?;
     if upload.bucket != bucket || upload.key != key {
-        return Err(S3Error::NoSuchUpload);
-    }
-    if upload.principal != principal {
-        // Indistinguishable from a wrong id, so a stranger holding one learns
-        // nothing about whether it exists.
         return Err(S3Error::NoSuchUpload);
     }
     Ok(upload)
@@ -403,13 +390,6 @@ mod tests {
         Address::new_unique()
     }
 
-    /// The principal every helper below acts as, and the one the tests open
-    /// their uploads under. Stable so the helpers are the upload's owner;
-    /// `stranger_is_refused` is where a different one is used on purpose.
-    fn owner() -> Address {
-        Address::new([7u8; 32])
-    }
-
     fn completed(part_number: u32, etag: Hash) -> CompletedPartRef {
         CompletedPartRef {
             part_number,
@@ -434,16 +414,7 @@ mod tests {
         part_number: u32,
         data: Vec<u8>,
     ) -> Result<Hash, S3Error> {
-        super::put_part(
-            store,
-            upload_id,
-            bucket,
-            key,
-            part_number,
-            data,
-            TEST_MAX_OBJECT,
-            owner(),
-        )
+        super::put_part(store, upload_id, bucket, key, part_number, data, TEST_MAX_OBJECT)
     }
 
     fn assemble(
@@ -453,7 +424,7 @@ mod tests {
         key: &str,
         requested: &[CompletedPartRef],
     ) -> Result<AssembledUpload, S3Error> {
-        super::assemble(store, upload_id, bucket, key, requested, TEST_MAX_OBJECT, owner())
+        super::assemble(store, upload_id, bucket, key, requested, TEST_MAX_OBJECT)
     }
 
     fn abort(
@@ -462,25 +433,7 @@ mod tests {
         bucket: Address,
         key: &str,
     ) -> Result<(), S3Error> {
-        super::abort(store, upload_id, bucket, key, owner())
-    }
-
-    fn list_parts(
-        store: &TapeStore<MemoryStore>,
-        upload_id: &str,
-        bucket: Address,
-        key: &str,
-    ) -> Result<UploadListing, S3Error> {
-        super::list_parts(store, upload_id, bucket, key, owner())
-    }
-
-    fn create(
-        store: &TapeStore<MemoryStore>,
-        bucket: Address,
-        key: &str,
-        content_type: ContentType,
-    ) -> String {
-        create_upload(store, bucket, key.into(), content_type, owner()).expect("create upload")
+        super::abort(store, upload_id, bucket, key, Address::new_unique())
     }
 
     // create, upload parts, then assemble round-trips the bytes
@@ -488,7 +441,8 @@ mod tests {
     fn round_trip() {
         let store = store();
         let bucket = bucket();
-        let upload_id = create(&store, bucket, "obj", ContentType::TextPlain);
+        let upload_id = create_upload(&store, bucket, "obj".into(), ContentType::TextPlain, principal())
+            .expect("create upload");
 
         let head = big_part();
         let etag1 = put_part(&store, &upload_id, bucket, "obj", 1, head.clone()).expect("part 1");
@@ -522,7 +476,7 @@ mod tests {
         let store = store();
         let bucket = bucket();
         let upload_id =
-            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, owner()).expect("create");
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
         let mut part = Vec::with_capacity(MULTIPART_CHUNK_BYTES + 7);
         for index in 0..MULTIPART_CHUNK_BYTES + 7 {
             part.push((index % 251) as u8);
@@ -540,12 +494,13 @@ mod tests {
     fn abort_clears_chunks() {
         let store = store();
         let bucket = bucket();
+        let owner = principal();
         let upload_id =
-            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, owner()).expect("create");
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, owner).expect("create");
         put_part(&store, &upload_id, bucket, "obj", 1, vec![7; MULTIPART_CHUNK_BYTES + 7])
             .expect("p1");
 
-        super::abort(&store, &upload_id, bucket, "obj", owner()).expect("abort");
+        super::abort(&store, &upload_id, bucket, "obj", owner).expect("abort");
 
         assert!(store.get_multipart_part_data(&upload_id, 1).expect("data").is_none());
         assert!(matches!(
@@ -560,10 +515,10 @@ mod tests {
         let store = store();
         let bucket = bucket();
         let upload_id =
-            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, owner()).expect("create");
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
 
         assert!(matches!(
-            super::put_part(&store, &upload_id, bucket, "obj", 1, vec![0; 9], 8, owner()),
+            super::put_part(&store, &upload_id, bucket, "obj", 1, vec![0; 9], 8),
             Err(S3Error::EntityTooLarge(_))
         ));
         assert!(store.get_multipart_part_data(&upload_id, 1).expect("data").is_none());
@@ -575,7 +530,7 @@ mod tests {
         let store = store();
         let bucket = bucket();
         let upload_id =
-            create(&store, bucket, "obj", ContentType::Unknown);
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
         let etag1 = put_part(&store, &upload_id, bucket, "obj", 1, b"small".to_vec()).expect("p1");
         let etag2 = put_part(&store, &upload_id, bucket, "obj", 2, b"tail".to_vec()).expect("p2");
         assert!(matches!(
@@ -596,7 +551,7 @@ mod tests {
         let store = store();
         let bucket = bucket();
         let upload_id =
-            create(&store, bucket, "obj", ContentType::Unknown);
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
         let etag = put_part(&store, &upload_id, bucket, "obj", 1, b"tiny".to_vec()).expect("p1");
 
         let assembled = assemble(&store, &upload_id, bucket, "obj", &[completed(1, etag)])
@@ -625,7 +580,7 @@ mod tests {
         let store = store();
         let bucket = bucket();
         let upload_id =
-            create(&store, bucket, "obj", ContentType::Unknown);
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
         assert!(matches!(
             put_part(&store, &upload_id, bucket, "other", 1, b"x".to_vec()),
             Err(S3Error::NoSuchUpload)
@@ -638,7 +593,7 @@ mod tests {
         let store = store();
         let bucket = bucket();
         let upload_id =
-            create(&store, bucket, "obj", ContentType::Unknown);
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
         assert!(matches!(
             put_part(&store, &upload_id, bucket, "obj", 0, b"x".to_vec()),
             Err(S3Error::InvalidRequest(_))
@@ -655,7 +610,7 @@ mod tests {
         let store = store();
         let bucket = bucket();
         let upload_id =
-            create(&store, bucket, "obj", ContentType::Unknown);
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
         let etag1 = put_part(&store, &upload_id, bucket, "obj", 1, b"a".to_vec()).expect("p1");
         let etag2 = put_part(&store, &upload_id, bucket, "obj", 2, b"b".to_vec()).expect("p2");
         assert!(matches!(
@@ -676,7 +631,7 @@ mod tests {
         let store = store();
         let bucket = bucket();
         let upload_id =
-            create(&store, bucket, "obj", ContentType::Unknown);
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
         put_part(&store, &upload_id, bucket, "obj", 1, b"a".to_vec()).expect("p1");
         assert!(matches!(
             assemble(
@@ -696,7 +651,7 @@ mod tests {
         let store = store();
         let bucket = bucket();
         let upload_id =
-            create(&store, bucket, "obj", ContentType::Unknown);
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
         let etag1 = put_part(&store, &upload_id, bucket, "obj", 1, big_part()).expect("p1");
         assert!(matches!(
             assemble(
@@ -716,7 +671,7 @@ mod tests {
         let store = store();
         let bucket = bucket();
         let upload_id =
-            create(&store, bucket, "obj", ContentType::Unknown);
+            create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
         put_part(&store, &upload_id, bucket, "obj", 2, b"bb".to_vec()).expect("p2");
         put_part(&store, &upload_id, bucket, "obj", 1, b"a".to_vec()).expect("p1");
         let listing = list_parts(&store, &upload_id, bucket, "obj").expect("list");
@@ -731,78 +686,9 @@ mod tests {
     fn unique_ids() {
         let store = store();
         let bucket = bucket();
-        let a = create(&store, bucket, "obj", ContentType::Unknown);
-        let b = create(&store, bucket, "obj", ContentType::Unknown);
+        let a = create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
+        let b = create_upload(&store, bucket, "obj".into(), ContentType::Unknown, principal()).expect("create");
         assert_ne!(a, b);
-    }
-
-    // an upload id is not a capability: a second principal holding one can
-    // neither read, extend, complete nor destroy the upload it names
-    #[test]
-    fn stranger_is_refused() {
-        let store = store();
-        let bucket = bucket();
-        let stranger = principal();
-        let upload_id = create(&store, bucket, "obj", ContentType::Unknown);
-        let etag = put_part(&store, &upload_id, bucket, "obj", 1, b"mine".to_vec()).expect("p1");
-
-        assert!(matches!(
-            super::put_part(
-                &store,
-                &upload_id,
-                bucket,
-                "obj",
-                2,
-                b"theirs".to_vec(),
-                TEST_MAX_OBJECT,
-                stranger,
-            ),
-            Err(S3Error::NoSuchUpload)
-        ));
-        assert!(matches!(
-            super::list_parts(&store, &upload_id, bucket, "obj", stranger),
-            Err(S3Error::NoSuchUpload)
-        ));
-        assert!(matches!(
-            super::assemble(
-                &store,
-                &upload_id,
-                bucket,
-                "obj",
-                &[completed(1, etag)],
-                TEST_MAX_OBJECT,
-                stranger,
-            ),
-            Err(S3Error::NoSuchUpload)
-        ));
-        assert!(matches!(
-            super::abort(&store, &upload_id, bucket, "obj", stranger),
-            Err(S3Error::NoSuchUpload)
-        ));
-
-        // and none of that disturbed the upload
-        let listing = list_parts(&store, &upload_id, bucket, "obj").expect("list");
-        assert_eq!(listing.parts.len(), 1);
-    }
-
-    // the bucket listing shows a principal only its own uploads, so the ids in
-    // it are never another principal's to act on
-    #[test]
-    fn listing_is_scoped_to_the_principal() {
-        let store = store();
-        let bucket = bucket();
-        let stranger = principal();
-        create(&store, bucket, "mine", ContentType::Unknown);
-        create_upload(&store, bucket, "theirs".into(), ContentType::Unknown, stranger)
-            .expect("create");
-
-        let mine = list_uploads(&store, bucket, owner()).expect("list");
-        let keys: Vec<&str> = mine.iter().map(|upload| upload.key.as_str()).collect();
-        assert_eq!(keys, vec!["mine"]);
-
-        let theirs = list_uploads(&store, bucket, stranger).expect("list");
-        let keys: Vec<&str> = theirs.iter().map(|upload| upload.key.as_str()).collect();
-        assert_eq!(keys, vec!["theirs"]);
     }
 
     // the open-upload count is per-principal and drops when a record is removed

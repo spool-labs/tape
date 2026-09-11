@@ -1,5 +1,5 @@
 [package]
-name = "rpc-client"
+name = "tape-rpc-client"
 description = "RPC client for Tapedrive on-chain program queries"
 version.workspace = true
 edition.workspace = true
@@ -7,11 +7,12 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
+readme.workspace = true
 
 [dependencies]
 # RPC trait and production implementation
-rpc = { version = "0.4.0", path = "../rpc" }
-rpc-solana = { version = "0.4.0", path = "../rpc-solana" }
+rpc.workspace = true
+rpc-solana.workspace = true
 
 # Tape crates
 tape-api.workspace = true

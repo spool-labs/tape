@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use rpc::Rpc;
-use rpc_solana::{EndpointStrategy, RpcConfig, RpcRetryConfig, SolanaRpc};
+use tape_rpc_solana::{EndpointStrategy, RpcConfig, RpcRetryConfig, SolanaRpc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 

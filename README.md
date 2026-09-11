@@ -1,56 +1,48 @@
 # Tapedrive
 
-Tapedrive runs its own network of storage nodes, much like a blockchain runs its
-own validators. Instead of validating transactions, the nodes store files, and they keep
-proving your data is still there. 
-
-To you, it just looks like S3: same tools, new endpoint.
+Tapedrive is fast object storage you can run on your computer, deploy to hardware you
+control, or use through Tapenet, the open network of Tapedrive nodes.
 
 > [!NOTE]
-> Tapedrive is in early access and invite-only. The links on this page are placeholders.
-> 
-> [Sign up](https://tape.network/#sign-up) for access, or join the [Discord](https://discord.gg/dVa9TWA45X) to follow development,
-> and read the [docs](https://docs.tape.network) for the full picture.
+> Tapedrive is in early access. Read the [docs](https://docs.tape.network) or join the
+> [Discord](https://discord.gg/dVa9TWA45X) to follow development and get help with
+> devnet.
 
 
-## What you get
+## How it works
 
-Your data is distributed to many nodes on the network. Every large write is [erasure-coded](https://docs.tape.network/protocol/architecture/slicing), onto a spool group. The network runs many groups, with no cap on the number of groups or nodes.
+We use Solana as the control plane. It tracks participating nodes, where erasure-coded 
+pieces are stored, and the state everyone agrees on. Tapedrive nodes are the data plane
+and store the data itself.
 
-Storage overhead is about 2.8x the stored size, far less than other storage networks. Repair is **bandwidth-optimal**: a lost piece is rebuilt from small fragments read across many nodes, not from whole copies.
+This gives Tapedrive a fast, fully replicated log without putting Solana in the data 
+path. Local Tapedrive uses the same design with a light, fast Solana control
+plane.
 
-The [S3-gateway](https://docs.tape.network/tools/s3-gateway) means most existing tooling works after changing an endpoint and a credential.
 
-When you want signed writes and verified reads straight from your own code, the [CLI](https://docs.tape.network/tools/cli) and [SDKs](https://docs.tape.network/sdks/quickstart) speak the network natively.
+## No Hardware?
 
+Tapenet is an open network of independently run Tapedrive nodes. Use it when you do not
+want to run the storage yourself, or join with hardware you control.
+
+> [!NOTE] 
+> If you want to use devnet or run a node while we are pre-mainnet, join us on [Discord](https://discord.gg/dVa9TWA45X) and we will help you get set up. The [node setup guide](https://docs.tape.network/protocol/node-setup) covers the operator path.
 
 ## Try it
 
-![Terminal recording of tape create, tape write, and tape read](tools/tape/demos/write.gif)
+> Install the [CLI](https://docs.tape.network/tools/cli). Prefer code? The [SDK quickstart](https://docs.tape.network/sdks/quickstart) walks the same flow in multiple languages.
 
+<img src="https://github.com/user-attachments/assets/d223349d-0b72-42c3-9332-9e35e1383440" />
 
-> Install the [CLI](https://docs.tape.network/tools/cli). Prefer code? The [SDK quickstart](https://docs.tape.network/sdks/quickstart) walks the same flow in six languages.
-> 
 > Already on S3? Point your existing tooling at the [S3-gateway](https://docs.tape.network/tools/s3-gateway) and keep your workflow.
-
-
-## Run a node
-
-Storage nodes stake TAPE, hold slices of the network's data, and earn for proving they
-still have them, on hardware you own or rent. The
-[node setup guide](https://docs.tape.network/protocol/node-setup) takes you from a bare
-Linux machine to a registered, earning node.
-
 
 ## Learn more
 
-- [Docs](https://docs.tape.network): from the
-  [quickstart](https://docs.tape.network/protocol/quickstart) to the
-  [white paper](https://docs.tape.network/protocol/architecture/white-paper).
-- [When to use Tapedrive](https://docs.tape.network/protocol#when-to-use-tapedrive), and
-  when not to.
-- [Explorer](https://explorer.tape.network): watch the network live.
-- [Discord](https://discord.gg/dVa9TWA45X) and [X](https://x.com/tapedrive_io).
+- Read the [docs](https://docs.tape.network), starting with the
+  [quickstart](https://docs.tape.network/protocol/quickstart).
+- Watch Tapenet in the [explorer](https://explorer.tape.network).
+- Follow [X](https://x.com/tapedrive_io) or join the
+  [Discord](https://discord.gg/dVa9TWA45X).
 
 Looking for the earlier Proof-of-Work version? It lives on the
 [`PoW`](https://github.com/spool-labs/tape/tree/pow) branch.
