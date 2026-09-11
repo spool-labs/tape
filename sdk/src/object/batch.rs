@@ -170,7 +170,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .chunks(objects.len() as u64);
         let result = async {
             let stored = self.store_objects_batch_inner(bucket, objects).await?;
-            self.certify_objects_batch_inner(bucket, stored.verification)
+            // Store and certify share this call; a rare outside write still lands on the conflict fallback.
+            self.certify_objects_batch_inner(bucket, stored.verification, false)
                 .await?;
             Ok(stored.receipts)
         }
@@ -208,14 +209,15 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     ///
     /// Tape mutations remain ordered while signature collection and final
     /// visibility checks overlap. Proofs come from the mirror the store phase
-    /// left in the handle; a writer that touched the tape in between stales
-    /// them and the certify falls back to a peer proof.
+    /// left in the handle; a writer that moved the tape root in between drops
+    /// that mirror and every track certifies against a fresh peer proof.
     pub async fn certify_objects_batch(
         &self,
         bucket: &TapeKey,
         verification: ObjectBatchVerification,
     ) -> Result<(), TapedriveError> {
-        self.certify_objects_batch_inner(bucket, verification).await
+        self.certify_objects_batch_inner(bucket, verification, true)
+            .await
     }
 
     async fn store_objects_batch_inner(
@@ -362,7 +364,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                     written
                 }
             };
-            append_to_mirror(&mirror, written).await?;
+            append_to_mirror(self, bucket, &mirror, written).await?;
         }
 
         let store_depth = self.write_options.store_depth.max(1);
@@ -468,6 +470,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         &self,
         bucket: &TapeKey,
         verification: ObjectBatchVerification,
+        should_recheck_root: bool,
     ) -> Result<(), TapedriveError> {
         let ObjectBatchVerification { pending, mirror } = verification;
         if pending.is_empty() {
@@ -492,6 +495,15 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .buffered(COLLECT_CONCURRENCY)
             .try_collect()
             .await?;
+
+        if should_recheck_root {
+            // A root moved by another writer stales every proof the mirror holds.
+            let tape = self.get_tape(&bucket.address()).await?;
+            let mut mirror = mirror.lock().await;
+            if !mirror.is_empty() && tape.tracks.tree.root() != mirror.root() {
+                *mirror = ArchiveMirror::new(&tape.tracks);
+            }
+        }
 
         let mut certified = Vec::with_capacity(pending.len());
         for pending in pending {

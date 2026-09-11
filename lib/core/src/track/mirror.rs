@@ -5,8 +5,8 @@
 //! a stream of tracks form a serial chain. The mirror seeds from a fetched
 //! archive snapshot and replays the client's own appends and certified leaf
 //! updates locally, so each proof comes from memory instead of a round trip
-//! per track. The mirrored root must match the on-chain root at stream end;
-//! a mismatch means an external writer touched the tape.
+//! per track. The mirrored root matches the on-chain root at stream end
+//! unless another writer touched the tape.
 
 use tape_crypto::Hash;
 use tape_crypto::merkle::{empty_subtree_root, hash_pair, MerkleError, MerkleTree};
@@ -143,6 +143,11 @@ impl ArchiveMirror {
     /// True when nothing has been appended, so the mirror proves no track
     pub fn is_empty(&self) -> bool {
         self.base_number == self.next_number
+    }
+
+    /// True when the track was appended through the mirror and can be proved
+    pub fn covers(&self, track_number: TrackNumber) -> bool {
+        self.offset_of(track_number).is_ok()
     }
 
     fn offset_of(&self, track_number: TrackNumber) -> Result<usize, MerkleError> {
@@ -390,6 +395,21 @@ mod tests {
             .expect("mirror append");
 
         assert!(!mirror.is_empty());
+    }
+
+    // only tracks appended through the mirror are covered by it
+    #[test]
+    fn covered_range() {
+        let mut archive = TrackArchive::zeroed();
+        archive
+            .append(&registered(TrackNumber(0)))
+            .expect("pre-seed append");
+        let mut mirror = ArchiveMirror::new(&archive);
+        append_both(&mut archive, &mut mirror, &registered(TrackNumber(1)));
+
+        assert!(!mirror.covers(TrackNumber(0)));
+        assert!(mirror.covers(TrackNumber(1)));
+        assert!(!mirror.covers(TrackNumber(2)));
     }
 
     // certify with a different track identity is rejected
