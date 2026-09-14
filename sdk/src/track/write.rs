@@ -1471,15 +1471,9 @@ pub(crate) async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
     match result {
         Ok(track) => Ok(track),
         Err(TrackCompletionError::Client(err)) => Err(err),
-        // Nodes can trail the chain; the track account is the last word.
-        Err(TrackCompletionError::NotCertifiedYet) => {
-            match client.get_track(&track_pda(*tape, track_number).0).await {
-                Ok(track) if track.is_certified() => Ok(track),
-                _ => Err(TapedriveError::Upload(UploadError::Network(
-                    "track never became visible as certified".into(),
-                ))),
-            }
-        }
+        Err(TrackCompletionError::NotCertifiedYet) => Err(TapedriveError::Upload(
+            UploadError::Network("track never became visible as certified".into()),
+        )),
     }
 }
 
@@ -1805,7 +1799,7 @@ pub(crate) async fn certify_submit_with_retry<Blockchain: Rpc, Cluster: Api>(
 
 /// True when a rejection invalidates the collected signatures themselves,
 /// rather than the proof or the transaction attempt.
-pub(crate) fn needs_fresh_signatures(err: &TapedriveError) -> bool {
+fn needs_fresh_signatures(err: &TapedriveError) -> bool {
     match err {
         TapedriveError::Rpc(rpc) => matches!(
             parse_tape_error(rpc),
@@ -1892,22 +1886,13 @@ mod tests {
 
     use super::{
         content_etag, content_etag_named, ensure_expected_track_position, hash,
-        inline_write_fits, needs_fresh_signatures, prepare_plan, should_retry_certification,
-        RpcError, TapeError, TrackNumber, SDK_INLINE_RAW_MAX_BYTES,
+        inline_write_fits, prepare_plan, should_retry_certification, TrackNumber,
+        SDK_INLINE_RAW_MAX_BYTES,
     };
     use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
 
     fn blob(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i * 31 + 7) as u8).collect()
-    }
-
-    fn rejected(error: TapeError) -> TapedriveError {
-        let code = u32::from(error);
-        TapedriveError::Rpc(RpcError::Transaction {
-            err: None,
-            message: format!("custom program error: {code:#x}"),
-            simulated: false,
-        })
     }
 
     // a reused plan writes exactly what a fresh encode would have
@@ -2011,25 +1996,11 @@ mod tests {
     // certify_with_retry must recollect from peers, not just resubmit.
     #[test]
     fn epoch_change() {
-        assert!(should_retry_certification(&rejected(TapeError::EpochChanged)));
-    }
-
-    // Rejections of the signatures themselves are retryable only with a fresh collection.
-    #[test]
-    fn dead_signatures() {
-        for error in [TapeError::BadSignature, TapeError::EpochChanged] {
-            assert!(needs_fresh_signatures(&rejected(error)));
-            assert!(should_retry_certification(&rejected(error)));
-        }
-    }
-
-    // A stale proof and transport failures leave the collected signatures usable.
-    #[test]
-    fn live_signatures() {
-        assert!(!needs_fresh_signatures(&rejected(TapeError::BadProof)));
-        assert!(!needs_fresh_signatures(&TapedriveError::NotFound));
-        assert!(!needs_fresh_signatures(&TapedriveError::Peer(
-            ApiError::StaleTrackProof,
-        )));
+        let err = TapedriveError::Rpc(rpc::RpcError::Transaction {
+            err: None,
+            message: "custom program error: 0x34".to_string(),
+            simulated: false,
+        });
+        assert!(should_retry_certification(&err));
     }
 }

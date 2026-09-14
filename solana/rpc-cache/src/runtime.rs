@@ -8,12 +8,13 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use moka::future::Cache as MokaCache;
+use rpc::skip::{TRUSTED_SKIP_RUN, slots_to_fetch, trusted_skip};
 use serde_json::{Value, json};
 use solana_client::rpc_config::RpcBlockConfig;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
@@ -22,6 +23,7 @@ use tape_api::program::tapedrive::{epoch_pda, SYSTEM_ADDRESS};
 use tape_api::state::{Epoch, System};
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
+use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -31,18 +33,21 @@ use crate::cache::{CacheStore, Policy};
 use crate::config::Config;
 use crate::filter::filter_block;
 use crate::server::{AppState, CacheStats, CachedBlock};
-use crate::upstream::{Upstream, UpstreamError};
+use crate::upstream::{RateLimitWait, Upstream, UpstreamError};
 
-/// Solana JSON-RPC error code returned for `getBlock` on a slot that
-/// was either skipped or has aged out of long-term storage. Both are
-/// permanent — cache as a tombstone and stop retrying.
+/// A rooted skip: permanent, stored as a tombstone
 const SKIPPED_SLOT_CODE: i64 = -32007;
-const SKIPPED_OR_LTS_CODE: i64 = -32009;
+/// No block at this commitment yet, which is also how a skip reads until it roots
+const BLOCK_NOT_AVAILABLE_CODE: i64 = -32004;
+/// Skipped, or missing from long-term storage; only the confirmed listing tells which
+const LONG_TERM_STORAGE_SLOT_SKIPPED_CODE: i64 = -32009;
 
 const BOOTSTRAP_CONCURRENCY: usize = 16;
 const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(30);
 const LIVE_TAIL_POLL: Duration = Duration::from_millis(400);
 const LIVE_TAIL_CONCURRENCY: usize = 4;
+/// Slots listed per getBlocks round trip while filling
+const FILL_WINDOW_SLOTS: u64 = 4096;
 const MAX_BLOCK_FETCH_ATTEMPTS: u32 = 5;
 const RETRY_BASE: Duration = Duration::from_millis(100);
 const RETRY_CAP: Duration = Duration::from_secs(30);
@@ -65,8 +70,24 @@ const BLOCK_FETCH_CONFIG: RpcBlockConfig = RpcBlockConfig {
 enum BlockOutcome {
     Present(UiConfirmedBlock),
     Skipped,
-    Unavailable(String),
+    /// No block, and no word yet on whether the slot was skipped; carries the upstream error
+    NotAvailable(Value),
+    /// Gone from this upstream's ledger for good
+    Pruned(String),
     Retriable(String),
+}
+
+/// Why a slot could not be filled
+#[derive(Debug, Error)]
+pub enum FillError {
+    /// No block, and the confirmed chain does not list the slot as skipped;
+    /// carries the upstream error to answer with
+    #[error("block not available: {0}")]
+    NotAvailable(Value),
+
+    /// Transport, decode, or upstream failure
+    #[error("{0}")]
+    Failed(String),
 }
 
 pub async fn run_application(config: Config) -> Result<()> {
@@ -165,6 +186,7 @@ fn build_state(config: &Config) -> Result<Arc<AppState>> {
         config.upstream.clone(),
         config.min_429_delay,
         config.upstream_headers.clone(),
+        config.upstream_max_in_flight,
     );
     let slot_store = build_slot_store(config.slot_store_max_bytes);
     let program_ids = parse_program_ids(&config.filter_program_ids)?;
@@ -260,13 +282,13 @@ async fn bootstrap(
         return Ok(());
     }
 
-    fetch_range(&state, fill_start..=live, BOOTSTRAP_CONCURRENCY, &cancel).await;
-    state.stats.newest_cached_slot.store(live, Ordering::Relaxed);
+    let covered = fill_range(&state, fill_start, live, BOOTSTRAP_CONCURRENCY, &cancel).await;
+    state.stats.newest_cached_slot.store(covered, Ordering::Relaxed);
 
     info!(
         slots_fetched = state.stats.slots_fetched.load(Ordering::Relaxed),
         slots_skipped = state.stats.slots_skipped.load(Ordering::Relaxed),
-        newest_cached_slot = live,
+        newest_cached_slot = covered,
         "rpc-cache bootstrap complete"
     );
     Ok(())
@@ -337,52 +359,126 @@ async fn live_tail(state: Arc<AppState>, cancel: CancellationToken) -> Result<()
             continue;
         }
 
-        let from = newest + 1;
-        fetch_range(&state, from..=live, LIVE_TAIL_CONCURRENCY, &cancel).await;
-        state.stats.newest_cached_slot.store(live, Ordering::Relaxed);
+        let covered = fill_range(&state, newest + 1, live, LIVE_TAIL_CONCURRENCY, &cancel).await;
+        state.stats.newest_cached_slot.fetch_max(covered, Ordering::Relaxed);
     }
 }
 
-async fn fetch_range(
+/// Fill `from..=to` window by window and return the last slot covered
+///
+/// A failed listing is retried until it succeeds or shutdown. A window with
+/// nothing listed ends the fill at the live edge, where the backend is behind
+/// the tip it reported, and is passed over below it.
+async fn fill_range(
     state: &Arc<AppState>,
-    range: std::ops::RangeInclusive<u64>,
+    from: u64,
+    to: u64,
+    concurrency: usize,
+    cancel: &CancellationToken,
+) -> u64 {
+    let started = Instant::now();
+    let mut last_progress_log = Instant::now();
+    let mut next = from;
+    let mut failures: u32 = 0;
+
+    while next <= to && !cancel.is_cancelled() {
+        let window_end = to.min(next.saturating_add(FILL_WINDOW_SLOTS - 1));
+        match fill_window(state, next, window_end, concurrency, cancel).await {
+            Ok(Some(last)) => {
+                next = last + 1;
+                failures = 0;
+            }
+            Ok(None) if window_end < to => next = window_end + 1,
+            Ok(None) => break,
+            Err(error) => {
+                warn!(from = next, %error, "fill listing failed; retrying");
+                tokio::time::sleep(retry_delay(failures)).await;
+                failures += 1;
+            }
+        }
+
+        if last_progress_log.elapsed() >= PROGRESS_LOG_INTERVAL {
+            last_progress_log = Instant::now();
+            log_fill_progress(next, next - from, to - from + 1, started);
+        }
+    }
+    next.saturating_sub(1)
+}
+
+/// Fill `from..=to` from one getBlocks listing
+///
+/// Produced slots and absent runs too long to trust are fetched; short absent
+/// runs are stored as skips. Returns the last listed slot, which the next
+/// window starts after, or None when nothing is listed.
+async fn fill_window(
+    state: &Arc<AppState>,
+    from: u64,
+    to: u64,
+    concurrency: usize,
+    cancel: &CancellationToken,
+) -> Result<Option<u64>, String> {
+    state.stats.upstream_calls.fetch_add(1, Ordering::Relaxed);
+    let produced = fetch_produced(&state.upstream, from, to, RateLimitWait::Unbounded).await?;
+    let Some(&last) = produced.last() else {
+        return Ok(None);
+    };
+
+    let fetch = slots_to_fetch(from, &produced);
+    for slot in skipped_slots(from, last, &fetch) {
+        // Never overwrite a block a fill already cached.
+        if !state.slot_store.contains_key(&slot) {
+            state.slot_store.insert(slot, CachedBlock::Skipped).await;
+            state.stats.slots_skipped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    fetch_slots(state, &fetch, concurrency, cancel).await;
+    Ok(Some(last))
+}
+
+/// The slots in `from..=last` left out of the sorted `fetch`, which the listing settled as skipped
+fn skipped_slots(from: u64, last: u64, fetch: &[u64]) -> Vec<u64> {
+    let mut skipped = Vec::new();
+    let mut fetch = fetch.iter().peekable();
+    for slot in from..=last {
+        if fetch.next_if_eq(&&slot).is_none() {
+            skipped.push(slot);
+        }
+    }
+    skipped
+}
+
+/// Fetch the given slots with bounded concurrency, passing over any a fill already cached
+async fn fetch_slots(
+    state: &Arc<AppState>,
+    slots: &[u64],
     concurrency: usize,
     cancel: &CancellationToken,
 ) {
-    let total = range.end().saturating_sub(*range.start()).saturating_add(1);
-    let done = Arc::new(AtomicU64::new(0));
-    let started = Instant::now();
-    let mut last_progress_log = Instant::now();
-
     let mut set: JoinSet<()> = JoinSet::new();
-    for slot in range {
+    for &slot in slots {
         if cancel.is_cancelled() {
             break;
+        }
+        if state.slot_store.contains_key(&slot) {
+            continue;
         }
         while set.len() >= concurrency {
             let _ = set.join_next().await;
         }
 
-        if last_progress_log.elapsed() >= PROGRESS_LOG_INTERVAL {
-            last_progress_log = Instant::now();
-            log_range_progress(slot, done.load(Ordering::Relaxed), total, started);
-        }
-
-        let st = state.clone();
-        let ct = cancel.clone();
-        let done = done.clone();
+        let task_state = state.clone();
+        let task_cancel = cancel.clone();
         set.spawn(async move {
-            if ct.is_cancelled() {
+            if task_cancel.is_cancelled() {
                 return;
             }
-            fetch_and_store(&st, slot).await;
-            done.fetch_add(1, Ordering::Relaxed);
+            fetch_and_store(&task_state, slot).await;
         });
     }
     while set.join_next().await.is_some() {}
 }
 
-fn log_range_progress(slot: u64, done: u64, total: u64, started: Instant) {
+fn log_fill_progress(slot: u64, done: u64, total: u64, started: Instant) {
     let elapsed = started.elapsed().as_secs_f64();
     let slots_per_sec = if elapsed > 0.0 { done as f64 / elapsed } else { 0.0 };
     let remaining = total.saturating_sub(done);
@@ -399,29 +495,40 @@ fn log_range_progress(slot: u64, done: u64, total: u64, started: Instant) {
         percent = (done as f64 * 1000.0 / total as f64).round() / 10.0,
         slots_per_sec = (slots_per_sec * 10.0).round() / 10.0,
         eta_secs,
-        "fetch range progress"
+        "fill progress"
     );
 }
 
 async fn fetch_and_store(state: &AppState, slot: u64) {
-    match fetch_slot_block(state, slot).await {
+    match fetch_slot_block(state, slot, RateLimitWait::Unbounded).await {
         Ok(cached) => {
             state.slot_store.insert(slot, cached).await;
             state.stats.newest_cached_slot.fetch_max(slot, Ordering::Relaxed);
         }
-        Err(msg) => {
+        Err(FillError::NotAvailable(error)) => {
+            debug!(slot, %error, "block not available yet; leaving slot uncached");
+        }
+        Err(FillError::Failed(msg)) => {
             warn!(slot, error = %msg, "block fetch failed; leaving slot uncached");
         }
     }
 }
 
-pub async fn fetch_slot_block(state: &AppState, slot: u64) -> Result<CachedBlock, String> {
+/// Fetch one slot's block
+///
+/// A not-available answer becomes a skip when the confirmed chain lists a
+/// later slot within reach, the same check a node makes.
+pub async fn fetch_slot_block(
+    state: &AppState,
+    slot: u64,
+    wait: RateLimitWait,
+) -> Result<CachedBlock, FillError> {
     let mut attempt: u32 = 0;
     loop {
         state.stats.upstream_calls.fetch_add(1, Ordering::Relaxed);
-        match fetch_block(&state.upstream, slot).await {
+        match fetch_block(&state.upstream, slot, wait).await {
             BlockOutcome::Present(block) => {
-                let cached = build_present_block(state, slot, block)?;
+                let cached = build_present_block(state, slot, block).map_err(FillError::Failed)?;
                 state.stats.slots_fetched.fetch_add(1, Ordering::Relaxed);
                 return Ok(cached);
             }
@@ -429,22 +536,40 @@ pub async fn fetch_slot_block(state: &AppState, slot: u64) -> Result<CachedBlock
                 state.stats.slots_skipped.fetch_add(1, Ordering::Relaxed);
                 return Ok(CachedBlock::Skipped);
             }
-            BlockOutcome::Unavailable(msg) => {
-                // Permanently gone from this upstream but not a skip. Retrying the
-                // same endpoint won't help.
-                return Err(msg);
+            BlockOutcome::NotAvailable(error) => {
+                return resolve_not_available(state, slot, error, wait).await;
             }
+            // Permanently gone from this upstream but not a skip. Retrying the
+            // same endpoint won't help.
+            BlockOutcome::Pruned(msg) => return Err(FillError::Failed(msg)),
             BlockOutcome::Retriable(msg) if attempt < MAX_BLOCK_FETCH_ATTEMPTS => {
                 let delay = retry_delay(attempt);
                 debug!(slot, attempt, delay_ms = delay.as_millis() as u64, error = %msg, "retrying block fetch");
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }
-            BlockOutcome::Retriable(msg) => {
-                return Err(msg);
-            }
+            BlockOutcome::Retriable(msg) => return Err(FillError::Failed(msg)),
         }
     }
+}
+
+/// Settle a not-available answer: a skip when getBlocks lists a later slot within reach
+async fn resolve_not_available(
+    state: &AppState,
+    slot: u64,
+    error: Value,
+    wait: RateLimitWait,
+) -> Result<CachedBlock, FillError> {
+    state.stats.upstream_calls.fetch_add(1, Ordering::Relaxed);
+    let produced = fetch_produced(&state.upstream, slot, slot + TRUSTED_SKIP_RUN, wait)
+        .await
+        .map_err(FillError::Failed)?;
+
+    if !produced.first().is_some_and(|first| trusted_skip(slot, *first)) {
+        return Err(FillError::NotAvailable(error));
+    }
+    state.stats.slots_skipped.fetch_add(1, Ordering::Relaxed);
+    Ok(CachedBlock::Skipped)
 }
 
 fn build_present_block(
@@ -478,7 +603,7 @@ fn retry_delay(attempt: u32) -> Duration {
     scaled.min(RETRY_CAP)
 }
 
-async fn fetch_block(upstream: &Upstream, slot: u64) -> BlockOutcome {
+async fn fetch_block(upstream: &Upstream, slot: u64, wait: RateLimitWait) -> BlockOutcome {
     let config_json = match serde_json::to_value(BLOCK_FETCH_CONFIG) {
         Ok(v) => v,
         Err(e) => return BlockOutcome::Retriable(format!("config encode: {e}")),
@@ -490,49 +615,74 @@ async fn fetch_block(upstream: &Upstream, slot: u64) -> BlockOutcome {
         "params": [slot, config_json],
     });
 
-    match upstream.forward(&body).await {
+    match upstream.forward(&body, wait).await {
         Ok(env) => match (env.result, env.error) {
             (Some(result), _) => match serde_json::from_value::<UiConfirmedBlock>(result) {
                 Ok(block) => BlockOutcome::Present(block),
                 Err(e) => BlockOutcome::Retriable(format!("decode block: {e}")),
             },
-            (None, Some(err)) => classify_block_error(&err),
+            (None, Some(err)) => classify_block_error(err),
             (None, None) => BlockOutcome::Retriable("empty envelope".into()),
         },
         Err(e) => upstream_to_outcome(&e),
     }
 }
 
-fn classify_block_error(err: &Value) -> BlockOutcome {
-    let code = err.get("code").and_then(Value::as_i64);
-    if matches!(code, Some(SKIPPED_SLOT_CODE) | Some(SKIPPED_OR_LTS_CODE)) {
-        return BlockOutcome::Skipped;
+fn classify_block_error(error: Value) -> BlockOutcome {
+    let code = error.get("code").and_then(Value::as_i64);
+    match code {
+        Some(SKIPPED_SLOT_CODE) => return BlockOutcome::Skipped,
+        // Settled by code ahead of the message checks, since -32009's text says skipped.
+        Some(BLOCK_NOT_AVAILABLE_CODE | LONG_TERM_STORAGE_SLOT_SKIPPED_CODE) => {
+            return BlockOutcome::NotAvailable(error);
+        }
+        Some(_) | None => {}
     }
-    let msg = err
+
+    let msg = error
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or("");
+    let described = format!("code={} message={}", code.unwrap_or(0), msg);
     let lower = msg.to_lowercase();
     if lower.contains("cleaned up") || lower.contains("does not exist") {
-        return BlockOutcome::Unavailable(format!(
-            "code={} message={}",
-            code.unwrap_or(0),
-            msg
-        ));
+        return BlockOutcome::Pruned(described);
     }
     // A genuine skip reported only by message (non-standard or missing code).
     if lower.contains("skipped") {
         return BlockOutcome::Skipped;
     }
-    BlockOutcome::Retriable(format!(
-        "code={} message={}",
-        code.unwrap_or(0),
-        msg
-    ))
+    BlockOutcome::Retriable(described)
 }
 
 fn upstream_to_outcome(e: &UpstreamError) -> BlockOutcome {
     BlockOutcome::Retriable(e.to_string())
+}
+
+/// The slots getBlocks lists as produced on the confirmed chain in `start..=end`
+async fn fetch_produced(
+    upstream: &Upstream,
+    start: u64,
+    end: u64,
+    wait: RateLimitWait,
+) -> Result<Vec<u64>, String> {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getBlocks",
+        "params": [start, end, {"commitment": "confirmed"}],
+    });
+    let envelope = upstream
+        .forward(&body, wait)
+        .await
+        .map_err(|error| format!("getBlocks upstream: {error}"))?;
+    match (envelope.result, envelope.error) {
+        (Some(result), _) => {
+            serde_json::from_value(result).map_err(|error| format!("decode getBlocks: {error}"))
+        }
+        (None, Some(error)) => Err(format!("getBlocks error: {error}")),
+        (None, None) => Err("getBlocks returned an empty envelope".into()),
+    }
 }
 
 async fn fetch_live_slot(upstream: &Upstream) -> Result<u64> {
@@ -543,7 +693,7 @@ async fn fetch_live_slot(upstream: &Upstream) -> Result<u64> {
         "params": [{"commitment": "confirmed"}],
     });
     let env = upstream
-        .forward(&body)
+        .forward(&body, RateLimitWait::Unbounded)
         .await
         .map_err(|e| anyhow!("getSlot upstream: {e}"))?;
     let result = env.result.ok_or_else(|| anyhow!("getSlot returned no result"))?;
@@ -592,7 +742,7 @@ async fn fetch_account_data(
     address: &str,
 ) -> Result<Vec<u8>> {
     let env = upstream
-        .forward(body)
+        .forward(body, RateLimitWait::Unbounded)
         .await
         .map_err(|e| anyhow!("getAccountInfo upstream: {e}"))?;
     let result = env
@@ -641,10 +791,31 @@ fn join_result<T>(result: std::result::Result<Result<T>, tokio::task::JoinError>
 
 #[cfg(test)]
 mod tests {
+    use crate::mock_upstream::{MockUpstream, Reply};
+
     use super::*;
 
+    const SLOT: u64 = 100;
+
+    fn state(upstream: &str) -> Arc<AppState> {
+        let yaml = format!("listen: \"127.0.0.1:0\"\nupstream: \"{upstream}\"\napi_key: \"key\"\n");
+        let config: Config = serde_yaml::from_str(&yaml).expect("test config");
+        build_state(&config).expect("test state")
+    }
+
+    /// An upstream answering every getBlock with this error and every getBlocks with this listing
+    async fn upstream(block_code: i64, message: &'static str, listed: Value) -> MockUpstream {
+        MockUpstream::start(move |_, body| match body["method"].as_str() {
+            Some("getBlock") => Reply::error(block_code, message),
+            Some("getBlocks") => Reply::result(listed.clone()),
+            Some(_) | None => Reply::status("400 Bad Request"),
+        })
+        .await
+    }
+
+    // retry delays grow, then cap
     #[test]
-    fn retry_delay_grows_then_caps() {
+    fn retry_growth() {
         let d0 = retry_delay(0);
         let d1 = retry_delay(1);
         let d10 = retry_delay(10);
@@ -652,39 +823,115 @@ mod tests {
         assert!(d10 <= RETRY_CAP);
     }
 
+    // -32007 is a skip
     #[test]
-    fn classify_block_error_skipped_by_code() {
-        let err = json!({"code": SKIPPED_SLOT_CODE, "message": "anything"});
-        assert!(matches!(classify_block_error(&err), BlockOutcome::Skipped));
+    fn skip_code() {
+        let error = json!({"code": SKIPPED_SLOT_CODE, "message": "anything"});
 
-        let err = json!({"code": SKIPPED_OR_LTS_CODE, "message": "anything"});
-        assert!(matches!(classify_block_error(&err), BlockOutcome::Skipped));
+        assert!(matches!(classify_block_error(error), BlockOutcome::Skipped));
     }
 
+    // -32004 and -32009 need the listing, whatever the message says
     #[test]
-    fn classify_block_error_skipped_by_message_text() {
-        let err = json!({"code": -1, "message": "Slot 42 was Skipped or missing"});
-        assert!(matches!(classify_block_error(&err), BlockOutcome::Skipped));
+    fn not_available_codes() {
+        let not_available = json!({
+            "code": BLOCK_NOT_AVAILABLE_CODE,
+            "message": "Block not available for slot 42",
+        });
+        let long_term_storage = json!({
+            "code": LONG_TERM_STORAGE_SLOT_SKIPPED_CODE,
+            "message": "Slot 42 was skipped, or missing in long-term storage",
+        });
+
+        assert!(matches!(classify_block_error(not_available), BlockOutcome::NotAvailable(_)));
+        assert!(matches!(classify_block_error(long_term_storage), BlockOutcome::NotAvailable(_)));
     }
 
+    // a nonstandard code whose message says skipped is a skip
     #[test]
-    fn classify_block_error_pruned_is_unavailable() {
-        let err = json!({
+    fn skip_message() {
+        let error = json!({"code": -1, "message": "Slot 42 was Skipped or missing"});
+
+        assert!(matches!(classify_block_error(error), BlockOutcome::Skipped));
+    }
+
+    // a cleaned-up block is pruned
+    #[test]
+    fn pruned() {
+        let error = json!({
             "code": -32001,
             "message": "Block 2170 cleaned up, does not exist on node. First available block: 4756",
         });
+
+        assert!(matches!(classify_block_error(error), BlockOutcome::Pruned(_)));
+    }
+
+    // any other error is retried
+    #[test]
+    fn retriable() {
+        let error = json!({"code": -32099, "message": "transient hiccup"});
+
+        assert!(matches!(classify_block_error(error), BlockOutcome::Retriable(_)));
+    }
+
+    // a not-available slot with a later slot listed within reach is a skip
+    #[tokio::test]
+    async fn resolved_skip() {
+        let mock = upstream(BLOCK_NOT_AVAILABLE_CODE, "Block not available for slot 100", json!([SLOT + 2])).await;
+        let state = state(&mock.url);
+
+        let filled = fetch_slot_block(&state, SLOT, RateLimitWait::Unbounded).await;
+
+        assert!(matches!(filled, Ok(CachedBlock::Skipped)));
+    }
+
+    // with nothing listed past it, the slot answers with the upstream error
+    #[tokio::test]
+    async fn not_available() {
+        let mock = upstream(BLOCK_NOT_AVAILABLE_CODE, "Block not available for slot 100", json!([])).await;
+        let state = state(&mock.url);
+
+        let filled = fetch_slot_block(&state, SLOT, RateLimitWait::Unbounded).await;
+
         assert!(matches!(
-            classify_block_error(&err),
-            BlockOutcome::Unavailable(_)
+            &filled,
+            Err(FillError::NotAvailable(error)) if error["code"] == BLOCK_NOT_AVAILABLE_CODE
         ));
     }
 
-    #[test]
-    fn classify_block_error_retriable_otherwise() {
-        let err = json!({"code": -32099, "message": "transient hiccup"});
-        assert!(matches!(
-            classify_block_error(&err),
-            BlockOutcome::Retriable(_)
-        ));
+    // -32009 on a slot the listing shows as produced is not a skip
+    #[tokio::test]
+    async fn long_term_storage() {
+        let message = "Slot 100 was skipped, or missing in long-term storage";
+        let mock = upstream(LONG_TERM_STORAGE_SLOT_SKIPPED_CODE, message, json!([SLOT, SLOT + 1])).await;
+        let state = state(&mock.url);
+
+        let filled = fetch_slot_block(&state, SLOT, RateLimitWait::Unbounded).await;
+
+        assert!(matches!(filled, Err(FillError::NotAvailable(_))));
+    }
+
+    // a window fetches listed slots and long runs, stores short runs as skips, and stops at the last listed slot
+    #[tokio::test]
+    async fn window_plan() {
+        let mock = upstream(SKIPPED_SLOT_CODE, "Slot was skipped", json!([10, 12, 30])).await;
+        let state = state(&mock.url);
+        state.slot_store.insert(13, CachedBlock::Skipped).await;
+
+        let last = fill_window(&state, 10, 40, LIVE_TAIL_CONCURRENCY, &CancellationToken::new()).await;
+
+        let mut fetched: Vec<u64> = Vec::new();
+        for body in mock.bodies() {
+            if body["method"] == "getBlock" {
+                fetched.extend(body["params"][0].as_u64());
+            }
+        }
+        fetched.sort_unstable();
+        let mut expected = vec![10, 12];
+        expected.extend(14..=30);
+        assert_eq!(last, Ok(Some(30)));
+        assert_eq!(fetched, expected);
+        assert!(state.slot_store.contains_key(&11));
+        assert!(!state.slot_store.contains_key(&31));
     }
 }

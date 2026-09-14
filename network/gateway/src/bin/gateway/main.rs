@@ -7,7 +7,11 @@ use tape_node::runtime::{build_runtime, init_tracing};
 use tracing::info;
 
 #[derive(Parser)]
-#[command(name = "tape-gateway", about = "Tapedrive read gateway runtime")]
+#[command(
+    name = "tape-gateway",
+    about = "Tapedrive read gateway runtime",
+    version = tape_node::VERSION
+)]
 struct Cli {
     #[arg(short, long, default_value_t = default_config_path().to_string_lossy().into_owned())]
     config: String,

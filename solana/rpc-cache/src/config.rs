@@ -30,10 +30,16 @@ pub struct Config {
     #[serde(default, with = "humantime_map")]
     pub ttls: HashMap<String, Duration>,
 
-    /// Minimum delay before retrying upstream after a 429, when the
+    /// How long every upstream request holds off after a 429, when the
     /// server doesn't send a `Retry-After` header. Default 10 s.
     #[serde(default = "default_min_429", with = "humantime_serde")]
     pub min_429_delay: Duration,
+
+    /// Upstream requests allowed in flight at once. Caps the burst when
+    /// many fills land together, such as nodes catching up after an
+    /// upstream outage. Default 32.
+    #[serde(default = "default_upstream_max_in_flight")]
+    pub upstream_max_in_flight: usize,
 
     /// Write a structured line to stderr for every transaction submit
     /// (`sendTransaction` etc). Used to identify which callers spam
@@ -75,6 +81,10 @@ pub struct Config {
 
 fn default_min_429() -> Duration {
     Duration::from_secs(10)
+}
+
+fn default_upstream_max_in_flight() -> usize {
+    32
 }
 
 fn default_true() -> bool {
@@ -176,6 +186,7 @@ api_key: "deadbeef"
         let config: Config = serde_yaml::from_str(&substitute_env(yaml).unwrap()).unwrap();
         assert_eq!(config.listen.port(), 8899);
         assert_eq!(config.min_429_delay, Duration::from_secs(10));
+        assert_eq!(config.upstream_max_in_flight, 32);
         assert!(config.log_submits);
         assert_eq!(config.api_key, "deadbeef");
     }
