@@ -146,9 +146,16 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             .await
             .map_err(|error| rpc_failed("get_blocks", error))?;
         let Some(&last) = produced.last() else {
-            // A window the chain lists nothing in holds nothing to ingest, so resume at its end
+            // A member behind the window lists nothing for a range it lacks, so read the tip again
+            let answered_tip = self
+                .context
+                .rpc
+                .get_slot()
+                .await
+                .map_err(|error| rpc_failed("get_slot", error))?;
             sleep(self.tip_poll_delay()).await;
-            return Ok(SlotNumber(window_end));
+            // A window the chain lists nothing in holds nothing to ingest, so resume at its end
+            return Ok(SlotNumber(window_end.min(answered_tip).max(next_slot.0)));
         };
         let end_slot = SlotNumber(last);
 
