@@ -3,8 +3,7 @@
 //! - `getBlock` is served from the in-memory slot store (filled by
 //!   bootstrap + live tail), in the encoding the request asks for: json,
 //!   the default, or base64. A confirmed miss fills the store from
-//!   upstream; a slot with no block yet is answered with upstream's own
-//!   error. Other encodings and commitments pass through to upstream.
+//!   upstream. Other encodings and commitments pass through to upstream.
 //! - Everything else uses the original moka-based read-through cache
 //!   (per-method TTLs from `cache::Policy`). Submit methods are logged
 //!   and forwarded uncached.
@@ -35,7 +34,7 @@ use tracing::{info, warn};
 
 use crate::cache::{CacheStore, MethodKind, Policy};
 use crate::key::CacheKey;
-use crate::runtime::{FillError, fetch_slot_block};
+use crate::runtime::fetch_slot_block;
 use crate::submit_log;
 use crate::upstream::{CALLER_RATE_LIMIT_WAIT, RpcEnvelope, Upstream, UpstreamError};
 
@@ -346,27 +345,15 @@ async fn fill_and_serve_cached_block(
     encoding: BlockEncoding,
 ) -> Response {
     let fetch_state = Arc::clone(state);
-    let filled = state
+    match state
         .slot_store
         .try_get_with(slot, async move {
             fetch_slot_block(fetch_state.as_ref(), slot, CALLER_RATE_LIMIT_WAIT).await
         })
-        .await;
-    match filled {
+        .await
+    {
         Ok(cached) => serve_cached_block(id, cached, encoding),
-        Err(error) => serve_fill_error(id, &error),
-    }
-}
-
-/// Answer a fill that produced no block
-///
-/// A slot with no block yet gets upstream's own error as a normal JSON-RPC
-/// reply, so a node reads it as not available rather than as a dead
-/// endpoint to fail over from.
-fn serve_fill_error(id: Value, error: &FillError) -> Response {
-    match error {
-        FillError::NotAvailable(upstream_error) => serve_error_envelope(id, upstream_error.clone()),
-        FillError::Failed(message) => slot_fill_err(id, message).into_response(),
+        Err(error) => slot_fill_err(id, error.as_str()).into_response(),
     }
 }
 
@@ -391,23 +378,15 @@ fn serve_present_block(id: Value, result_bytes: Bytes) -> Response {
 }
 
 fn serve_skipped_envelope(id: Value) -> Response {
-    serve_error_envelope(
-        id,
-        json!({
-            "code": SKIPPED_SLOT_ERROR_CODE,
-            "message": "Slot was skipped, or missing due to ledger jump to recent snapshot",
-        }),
-    )
-}
-
-/// A JSON-RPC error at HTTP 200, the way a Solana RPC answers one
-fn serve_error_envelope(id: Value, error: Value) -> Response {
     (
         StatusCode::OK,
         axum::Json(json!({
             "jsonrpc": "2.0",
             "id": id,
-            "error": error,
+            "error": {
+                "code": SKIPPED_SLOT_ERROR_CODE,
+                "message": "Slot was skipped, or missing due to ledger jump to recent snapshot",
+            },
         })),
     )
         .into_response()
@@ -568,18 +547,5 @@ mod tests {
     fn skipped_envelope_carries_solana_error_code() {
         let resp = serve_skipped_envelope(json!(42));
         assert_eq!(resp.status(), StatusCode::OK);
-    }
-
-    // a slot with no block yet answers at 200, a failed fill at 502
-    #[test]
-    fn fill_errors() {
-        let not_available = FillError::NotAvailable(json!({
-            "code": -32004,
-            "message": "Block not available for slot 1",
-        }));
-        let failed = FillError::Failed("gave up after 5 transient retries".into());
-
-        assert_eq!(serve_fill_error(json!(1), &not_available).status(), StatusCode::OK);
-        assert_eq!(serve_fill_error(json!(1), &failed).status(), StatusCode::BAD_GATEWAY);
     }
 }

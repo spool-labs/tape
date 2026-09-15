@@ -23,7 +23,6 @@ use tape_api::program::tapedrive::{epoch_pda, SYSTEM_ADDRESS};
 use tape_api::state::{Epoch, System};
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
-use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -70,24 +69,11 @@ const BLOCK_FETCH_CONFIG: RpcBlockConfig = RpcBlockConfig {
 enum BlockOutcome {
     Present(UiConfirmedBlock),
     Skipped,
-    /// No block, and no word yet on whether the slot was skipped; carries the upstream error
-    NotAvailable(Value),
+    /// No block, and no word yet on whether the slot was skipped
+    NotAvailable(String),
     /// Gone from this upstream's ledger for good
     Pruned(String),
     Retriable(String),
-}
-
-/// Why a slot could not be filled
-#[derive(Debug, Error)]
-pub enum FillError {
-    /// No block, and the confirmed chain does not list the slot as skipped;
-    /// carries the upstream error to answer with
-    #[error("block not available: {0}")]
-    NotAvailable(Value),
-
-    /// Transport, decode, or upstream failure
-    #[error("{0}")]
-    Failed(String),
 }
 
 pub async fn run_application(config: Config) -> Result<()> {
@@ -505,10 +491,7 @@ async fn fetch_and_store(state: &AppState, slot: u64) {
             state.slot_store.insert(slot, cached).await;
             state.stats.newest_cached_slot.fetch_max(slot, Ordering::Relaxed);
         }
-        Err(FillError::NotAvailable(error)) => {
-            debug!(slot, %error, "block not available yet; leaving slot uncached");
-        }
-        Err(FillError::Failed(msg)) => {
+        Err(msg) => {
             warn!(slot, error = %msg, "block fetch failed; leaving slot uncached");
         }
     }
@@ -516,19 +499,28 @@ async fn fetch_and_store(state: &AppState, slot: u64) {
 
 /// Fetch one slot's block
 ///
-/// A not-available answer becomes a skip when the confirmed chain lists a
-/// later slot within reach, the same check a node makes.
+/// A first not-available answer is checked against the confirmed listing, and
+/// a short absent run settles as a skip. Anything else is retried like a late
+/// block, so every node waiting on the slot shares one fill window.
 pub async fn fetch_slot_block(
     state: &AppState,
     slot: u64,
     wait: RateLimitWait,
-) -> Result<CachedBlock, FillError> {
+) -> Result<CachedBlock, String> {
     let mut attempt: u32 = 0;
     loop {
         state.stats.upstream_calls.fetch_add(1, Ordering::Relaxed);
-        match fetch_block(&state.upstream, slot, wait).await {
+        let mut outcome = fetch_block(&state.upstream, slot, wait).await;
+        if attempt == 0
+            && matches!(outcome, BlockOutcome::NotAvailable(_))
+            && is_confirmed_skip(state, slot, wait).await?
+        {
+            outcome = BlockOutcome::Skipped;
+        }
+
+        let msg = match outcome {
             BlockOutcome::Present(block) => {
-                let cached = build_present_block(state, slot, block).map_err(FillError::Failed)?;
+                let cached = build_present_block(state, slot, block)?;
                 state.stats.slots_fetched.fetch_add(1, Ordering::Relaxed);
                 return Ok(cached);
             }
@@ -536,40 +528,27 @@ pub async fn fetch_slot_block(
                 state.stats.slots_skipped.fetch_add(1, Ordering::Relaxed);
                 return Ok(CachedBlock::Skipped);
             }
-            BlockOutcome::NotAvailable(error) => {
-                return resolve_not_available(state, slot, error, wait).await;
-            }
+            BlockOutcome::NotAvailable(msg) | BlockOutcome::Retriable(msg) => msg,
             // Permanently gone from this upstream but not a skip. Retrying the
             // same endpoint won't help.
-            BlockOutcome::Pruned(msg) => return Err(FillError::Failed(msg)),
-            BlockOutcome::Retriable(msg) if attempt < MAX_BLOCK_FETCH_ATTEMPTS => {
-                let delay = retry_delay(attempt);
-                debug!(slot, attempt, delay_ms = delay.as_millis() as u64, error = %msg, "retrying block fetch");
-                tokio::time::sleep(delay).await;
-                attempt += 1;
-            }
-            BlockOutcome::Retriable(msg) => return Err(FillError::Failed(msg)),
+            BlockOutcome::Pruned(msg) => return Err(msg),
+        };
+
+        if attempt >= MAX_BLOCK_FETCH_ATTEMPTS {
+            return Err(msg);
         }
+        let delay = retry_delay(attempt);
+        debug!(slot, attempt, delay_ms = delay.as_millis() as u64, error = %msg, "retrying block fetch");
+        tokio::time::sleep(delay).await;
+        attempt += 1;
     }
 }
 
-/// Settle a not-available answer: a skip when getBlocks lists a later slot within reach
-async fn resolve_not_available(
-    state: &AppState,
-    slot: u64,
-    error: Value,
-    wait: RateLimitWait,
-) -> Result<CachedBlock, FillError> {
+/// Whether getBlocks lists a later slot within reach, which settles the slot as skipped
+async fn is_confirmed_skip(state: &AppState, slot: u64, wait: RateLimitWait) -> Result<bool, String> {
     state.stats.upstream_calls.fetch_add(1, Ordering::Relaxed);
-    let produced = fetch_produced(&state.upstream, slot, slot + TRUSTED_SKIP_RUN, wait)
-        .await
-        .map_err(FillError::Failed)?;
-
-    if !produced.first().is_some_and(|first| trusted_skip(slot, *first)) {
-        return Err(FillError::NotAvailable(error));
-    }
-    state.stats.slots_skipped.fetch_add(1, Ordering::Relaxed);
-    Ok(CachedBlock::Skipped)
+    let produced = fetch_produced(&state.upstream, slot, slot + TRUSTED_SKIP_RUN, wait).await?;
+    Ok(produced.first().is_some_and(|first| trusted_skip(slot, *first)))
 }
 
 fn build_present_block(
@@ -621,29 +600,30 @@ async fn fetch_block(upstream: &Upstream, slot: u64, wait: RateLimitWait) -> Blo
                 Ok(block) => BlockOutcome::Present(block),
                 Err(e) => BlockOutcome::Retriable(format!("decode block: {e}")),
             },
-            (None, Some(err)) => classify_block_error(err),
+            (None, Some(err)) => classify_block_error(&err),
             (None, None) => BlockOutcome::Retriable("empty envelope".into()),
         },
         Err(e) => upstream_to_outcome(&e),
     }
 }
 
-fn classify_block_error(error: Value) -> BlockOutcome {
+fn classify_block_error(error: &Value) -> BlockOutcome {
     let code = error.get("code").and_then(Value::as_i64);
-    match code {
-        Some(SKIPPED_SLOT_CODE) => return BlockOutcome::Skipped,
-        // Settled by code ahead of the message checks, since -32009's text says skipped.
-        Some(BLOCK_NOT_AVAILABLE_CODE | LONG_TERM_STORAGE_SLOT_SKIPPED_CODE) => {
-            return BlockOutcome::NotAvailable(error);
-        }
-        Some(_) | None => {}
-    }
-
     let msg = error
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or("");
     let described = format!("code={} message={}", code.unwrap_or(0), msg);
+
+    match code {
+        Some(SKIPPED_SLOT_CODE) => return BlockOutcome::Skipped,
+        // Settled by code ahead of the message checks, since -32009's text says skipped.
+        Some(BLOCK_NOT_AVAILABLE_CODE | LONG_TERM_STORAGE_SLOT_SKIPPED_CODE) => {
+            return BlockOutcome::NotAvailable(described);
+        }
+        Some(_) | None => {}
+    }
+
     let lower = msg.to_lowercase();
     if lower.contains("cleaned up") || lower.contains("does not exist") {
         return BlockOutcome::Pruned(described);
@@ -813,6 +793,17 @@ mod tests {
         .await
     }
 
+    /// How many requests of this method the mock received
+    fn count(mock: &MockUpstream, method: &str) -> usize {
+        let mut matched = 0;
+        for body in mock.bodies() {
+            if body["method"] == method {
+                matched += 1;
+            }
+        }
+        matched
+    }
+
     // retry delays grow, then cap
     #[test]
     fn retry_growth() {
@@ -828,7 +819,7 @@ mod tests {
     fn skip_code() {
         let error = json!({"code": SKIPPED_SLOT_CODE, "message": "anything"});
 
-        assert!(matches!(classify_block_error(error), BlockOutcome::Skipped));
+        assert!(matches!(classify_block_error(&error), BlockOutcome::Skipped));
     }
 
     // -32004 and -32009 need the listing, whatever the message says
@@ -843,8 +834,8 @@ mod tests {
             "message": "Slot 42 was skipped, or missing in long-term storage",
         });
 
-        assert!(matches!(classify_block_error(not_available), BlockOutcome::NotAvailable(_)));
-        assert!(matches!(classify_block_error(long_term_storage), BlockOutcome::NotAvailable(_)));
+        assert!(matches!(classify_block_error(&not_available), BlockOutcome::NotAvailable(_)));
+        assert!(matches!(classify_block_error(&long_term_storage), BlockOutcome::NotAvailable(_)));
     }
 
     // a nonstandard code whose message says skipped is a skip
@@ -852,7 +843,7 @@ mod tests {
     fn skip_message() {
         let error = json!({"code": -1, "message": "Slot 42 was Skipped or missing"});
 
-        assert!(matches!(classify_block_error(error), BlockOutcome::Skipped));
+        assert!(matches!(classify_block_error(&error), BlockOutcome::Skipped));
     }
 
     // a cleaned-up block is pruned
@@ -863,7 +854,7 @@ mod tests {
             "message": "Block 2170 cleaned up, does not exist on node. First available block: 4756",
         });
 
-        assert!(matches!(classify_block_error(error), BlockOutcome::Pruned(_)));
+        assert!(matches!(classify_block_error(&error), BlockOutcome::Pruned(_)));
     }
 
     // any other error is retried
@@ -871,7 +862,7 @@ mod tests {
     fn retriable() {
         let error = json!({"code": -32099, "message": "transient hiccup"});
 
-        assert!(matches!(classify_block_error(error), BlockOutcome::Retriable(_)));
+        assert!(matches!(classify_block_error(&error), BlockOutcome::Retriable(_)));
     }
 
     // a not-available slot with a later slot listed within reach is a skip
@@ -883,20 +874,20 @@ mod tests {
         let filled = fetch_slot_block(&state, SLOT, RateLimitWait::Unbounded).await;
 
         assert!(matches!(filled, Ok(CachedBlock::Skipped)));
+        assert_eq!(count(&mock, "getBlock"), 1);
     }
 
-    // with nothing listed past it, the slot answers with the upstream error
+    // an unsettled slot is checked against the listing once, then retried like a late block
     #[tokio::test]
-    async fn not_available() {
+    async fn unsettled_retries() {
         let mock = upstream(BLOCK_NOT_AVAILABLE_CODE, "Block not available for slot 100", json!([])).await;
         let state = state(&mock.url);
 
         let filled = fetch_slot_block(&state, SLOT, RateLimitWait::Unbounded).await;
 
-        assert!(matches!(
-            &filled,
-            Err(FillError::NotAvailable(error)) if error["code"] == BLOCK_NOT_AVAILABLE_CODE
-        ));
+        assert!(matches!(&filled, Err(msg) if msg.contains("code=-32004")));
+        assert_eq!(count(&mock, "getBlocks"), 1);
+        assert_eq!(count(&mock, "getBlock"), MAX_BLOCK_FETCH_ATTEMPTS as usize + 1);
     }
 
     // -32009 on a slot the listing shows as produced is not a skip
@@ -908,7 +899,7 @@ mod tests {
 
         let filled = fetch_slot_block(&state, SLOT, RateLimitWait::Unbounded).await;
 
-        assert!(matches!(filled, Err(FillError::NotAvailable(_))));
+        assert!(filled.is_err());
     }
 
     // a window fetches listed slots and long runs, stores short runs as skips, and stops at the last listed slot

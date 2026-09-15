@@ -25,8 +25,8 @@ const MAX_DELAY_S: u64 = 5;
 
 /// Rate limiting a request a node is waiting on sits out before answering
 ///
-/// Under the node's 30 s request timeout, so the node hears back and fails
-/// over instead of timing out.
+/// Under the node's 30 s request timeout, so the node hears back and backs off
+/// instead of timing out.
 pub const CALLER_RATE_LIMIT_WAIT: RateLimitWait = RateLimitWait::Bounded(Duration::from_secs(10));
 
 /// How long a request waits out upstream rate limiting
