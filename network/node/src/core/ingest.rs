@@ -9,6 +9,9 @@ use tokio::sync::watch;
 /// tip by up to this many slots and still report `AtTip`.
 pub const AT_TIP_THRESHOLD_SLOTS: u64 = 5;
 
+/// The same slack as chain time, so a chain with a shorter slot gets the slots that come to it
+pub const AT_TIP_SLACK_MS: u64 = AT_TIP_THRESHOLD_SLOTS * 400;
+
 /// If no block fetch attempt or tip read has occurred for this long, the
 /// monitor reports `Stalled`. Independent from any retry-loop pacing.
 pub const STALL_THRESHOLD: Duration = Duration::from_secs(30);
@@ -230,6 +233,14 @@ impl IngestBus {
         self.current().is_at_tip()
     }
 
+    /// Slots the slack comes to at the measured slot time, never fewer than the slot count itself
+    pub fn at_tip_slots(&self) -> u64 {
+        match self.progress.slot_ms() {
+            Some(slot_ms) => (AT_TIP_SLACK_MS / slot_ms.max(1)).max(AT_TIP_THRESHOLD_SLOTS),
+            None => AT_TIP_THRESHOLD_SLOTS,
+        }
+    }
+
     /// Compute the next `IngestState` from current progress. Pure function
     /// of the atomics — exposed for the monitor task and unit tests.
     pub fn compute(&self) -> IngestState {
@@ -248,7 +259,7 @@ impl IngestBus {
         }
 
         let lag_slots = last_tip.saturating_sub(last_dispatched);
-        if lag_slots <= AT_TIP_THRESHOLD_SLOTS {
+        if lag_slots <= self.at_tip_slots() {
             IngestState::AtTip
         } else {
             IngestState::Catching { lag_slots }
@@ -265,6 +276,22 @@ impl Default for IngestBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // a chain with a shorter slot gets the slots its own slot time comes to
+    #[test]
+    fn at_tip_slack_follows_the_measured_slot_time() {
+        let bus = IngestBus::new();
+        assert_eq!(bus.at_tip_slots(), AT_TIP_THRESHOLD_SLOTS);
+
+        let progress = bus.progress();
+        progress.record_dispatched(0);
+        progress.record_chain_time(0);
+        progress.record_dispatched(100);
+        progress.record_chain_time(1);
+
+        assert_eq!(progress.slot_ms(), Some(10));
+        assert_eq!(bus.at_tip_slots(), AT_TIP_SLACK_MS / 10);
+    }
 
     #[test]
     fn fresh_bus_reports_catching_with_max_lag() {
