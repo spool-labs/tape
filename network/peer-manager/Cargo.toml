@@ -1,13 +1,8 @@
 [package]
-name = "tape-peer-manager"
+name = "peer-manager"
 version.workspace = true
 edition.workspace = true
 description = "Peer lifecycle, health tracking, and routing"
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
-keywords.workspace = true
-readme.workspace = true
 
 [dependencies]
 tape-protocol = { workspace = true }

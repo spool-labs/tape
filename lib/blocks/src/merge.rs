@@ -277,6 +277,22 @@ pub fn merge(
                 }
             }
 
+            RawInstruction::DestroyTape { owner, tape } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TapeDestroyed(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected TapeDestroyed event",
+                        ))
+                    }
+                };
+                ParsedInstruction::DestroyTape {
+                    owner,
+                    tape,
+                    event,
+                }
+            }
+
             RawInstruction::ExtendTape { payer, tape } => {
                 let event = match events.pop_front() {
                     Some(TapedriveEvent::TapeExtended(e)) => e,
@@ -493,7 +509,8 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::event::{
         AssignmentFinalized, EpochAdvanced, EpochCommitted, NodeEvicted, NodeJoinedCommittee,
-        NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSynced, TapeExtended, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated,
+        NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSynced, TapeDestroyed,
+        TapeExtended, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated,
         TrackWritten, VoteProposed, VoteRecorded,
     };
     use tape_core::bls::BlsPubkey;
@@ -955,6 +972,10 @@ mod tests {
                 owner: Address::new_unique(),
                 tape: Address::new_unique(),
             },
+            RawInstruction::DestroyTape {
+                owner: Address::new_unique(),
+                tape: Address::new_unique(),
+            },
             RawInstruction::RegisterNode {
                 authority: Address::new_unique(),
                 name: [0u8; 32],
@@ -988,6 +1009,7 @@ mod tests {
         let delete_tape = Address::new_unique();
         let invalid_track = Address::new_unique();
         let reserve_tape = Address::new_unique();
+        let destroy_tape = Address::new_unique();
         let register_node = Address::new_unique();
         let join_node = Address::new_unique();
 
@@ -1055,6 +1077,16 @@ mod tests {
                 }),
             ),
             (
+                RawInstruction::DestroyTape {
+                    owner: Address::new_unique(),
+                    tape: destroy_tape,
+                },
+                TapedriveEvent::TapeDestroyed(TapeDestroyed {
+                    tape: destroy_tape,
+                    authority: Address::new_unique(),
+                }),
+            ),
+            (
                 RawInstruction::RegisterNode {
                     authority: Address::new_unique(),
                     name: [0u8; 32],
@@ -1096,6 +1128,7 @@ mod tests {
                 | ParsedInstruction::DeleteTrack { .. }
                 | ParsedInstruction::InvalidateTrack { .. }
                 | ParsedInstruction::ReserveTape { .. }
+                | ParsedInstruction::DestroyTape { .. }
                 | ParsedInstruction::RegisterNode { .. }
                 | ParsedInstruction::JoinCommittee { .. } => {}
                 _ => panic!("expected one of the required instruction variants"),

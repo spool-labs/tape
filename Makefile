@@ -25,8 +25,7 @@
 #   make cache-linux  - Same, for rpc-cache
 #   make gateway-linux - Same, for tape-gateway
 #   make explorer-linux - Same, for tapedrive-explorer
-#   make moderation-linux - Same, for tape-moderation
-#   make linux-binaries - All five Linux deploy binaries
+#   make linux-binaries - All four Linux deploy binaries
 #   make deploy-tools - All of the above plus the Solana programs
 #   make install      - `cargo install` tape-node, tape-admin, tape-network, and
 #                       tape into ~/.cargo/bin
@@ -67,7 +66,7 @@ EXPLORER_RPC ?= http://$(CACHE_BIND)?api=$(CACHE_API_KEY)
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape tape-linux node-linux cache-linux gateway-linux collector-linux explorer-linux moderation-linux linux-binaries dashboard-web atlas-web s3-bench deploy-tools install uninstall
+.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape tape-linux node-linux cache-linux gateway-linux collector-linux explorer-linux linux-binaries dashboard-web atlas-web s3-bench deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
@@ -166,6 +165,7 @@ tape:
 # build in a linux container, since vendored openssl chokes under a
 # host cross-compiler. Artifacts land where the deploy tooling and ansible
 # trees expect them: target/x86_64-unknown-linux-gnu/release/.
+# No docker? Use the DO builder: `tape-network build-linux`.
 LINUX_TRIPLE := x86_64-unknown-linux-gnu
 
 ifeq ($(UNAME_S),Linux)
@@ -218,10 +218,7 @@ collector-linux:
 explorer-linux:
 	$(call linux-cargo,.,-p tapedrive-explorer,tapedrive-explorer)
 
-moderation-linux:
-	$(call linux-cargo,.,-p tape-moderation,tape-moderation)
-
-linux-binaries: node-linux cache-linux gateway-linux explorer-linux moderation-linux
+linux-binaries: node-linux cache-linux gateway-linux explorer-linux
 
 # Static wasm bundle for the observability dashboard (needs dioxus-cli: `dx`).
 # Deploy with `tape-network dashboard deploy`.

@@ -146,7 +146,7 @@ pub fn process_extend_tape_expiry(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         .is_writable()?
         .as_account_mut::<Tape>(&tapedrive::ID)?;
 
-    // Extending an expired tape would schedule epochs that have already passed.
+    // An expired tape is destroyable and must not also be extendable.
     let current = current_epoch(system);
     if current >= tape.expiry_epoch {
         return Err(TapeError::TapeExpired.into());

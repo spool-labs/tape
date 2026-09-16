@@ -40,9 +40,6 @@ pub struct Metrics {
     pub pending_writes_queued: IntGauge,
     pub pending_writes_queued_bytes: IntGauge,
     pub delegate_lamports: IntGauge,
-    pub blacklist_denied: IntGauge,
-    pub blacklist_tapes_near_expiry: IntGauge,
-    pub blacklist_tracks_skipped: IntGauge,
 
     // Stats endpoint only — intentionally NOT registered, so the HTTP histogram
     // stays the single Prometheus source for request and byte rates.
@@ -177,24 +174,6 @@ impl Metrics {
                 registry
             )
             .expect("register tape_gw_delegate_lamports"),
-            blacklist_denied: register_int_gauge_with_registry!(
-                "tape_gw_blacklist_denied",
-                "Tracks and tapes the followed blacklists deny",
-                registry
-            )
-            .expect("register tape_gw_blacklist_denied"),
-            blacklist_tapes_near_expiry: register_int_gauge_with_registry!(
-                "tape_gw_blacklist_tapes_near_expiry",
-                "Followed blacklist tapes close to expiry",
-                registry
-            )
-            .expect("register tape_gw_blacklist_tapes_near_expiry"),
-            blacklist_tracks_skipped: register_int_gauge_with_registry!(
-                "tape_gw_blacklist_tracks_skipped",
-                "Rack tracks and batches the followed blacklists skipped",
-                registry
-            )
-            .expect("register tape_gw_blacklist_tracks_skipped"),
 
             requests_total: IntCounter::new("tape_node_requests_total", "Requests handled")
                 .expect("tape_node_requests_total"),

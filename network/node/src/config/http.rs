@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_protocol::api::SLICE_BODY_LIMIT;
 
-use tape_forwarded::cidr::CidrBlock;
+use super::cidr::CidrBlock;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct NetworkConfig {

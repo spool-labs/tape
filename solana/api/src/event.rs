@@ -24,6 +24,7 @@ pub enum EventType {
 
     // Tape
     TapeReserved = 0x20,
+    TapeDestroyed = 0x21,
     TapeExtended = 0x22,
 
     // Node
@@ -79,7 +80,7 @@ pub struct TrackCertified {
 
 tape_solana::event!(EventType, TrackCertified);
 
-/// Emitted when a track is deleted from its tape.
+/// Emitted when a track is hard-deleted (account closed).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TrackDeleted {
@@ -172,6 +173,19 @@ pub struct TapeReserved {
 }
 
 tape_solana::event!(EventType, TapeReserved);
+
+/// Emitted when a tape is closed.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct TapeDestroyed {
+    /// Tape account address
+    pub tape: Address,
+
+    /// Owner who destroyed
+    pub authority: Address,
+}
+
+tape_solana::event!(EventType, TapeDestroyed);
 
 /// Emitted when a tape's capacity or expiry is extended.
 #[repr(C)]

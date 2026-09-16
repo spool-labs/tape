@@ -49,8 +49,6 @@ pub enum S3Error {
     SlowDown { retry_after_seconds: u64 },
     /// The operation is recognized but not implemented yet. HTTP 501
     NotImplemented(String),
-    /// The content was removed from this gateway. HTTP 410
-    Removed,
     /// An unexpected internal error. HTTP 500
     Internal(String),
 }
@@ -81,7 +79,6 @@ impl S3Error {
             Self::PreconditionFailed => "PreconditionFailed",
             Self::SlowDown { .. } => "SlowDown",
             Self::NotImplemented(_) => "NotImplemented",
-            Self::Removed => "ContentRemoved",
             Self::Internal(_) => "InternalError",
         }
     }
@@ -101,7 +98,6 @@ impl S3Error {
             Self::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             Self::SlowDown { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
-            Self::Removed => StatusCode::GONE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -125,9 +121,6 @@ impl S3Error {
                     .to_string()
             }
             Self::SlowDown { .. } => "Please reduce your request rate.".to_string(),
-            Self::Removed => {
-                "This content is no longer available through this gateway.".to_string()
-            }
             Self::PreconditionFailed => {
                 "At least one of the preconditions you specified did not hold.".to_string()
             }
@@ -169,7 +162,6 @@ impl S3Error {
             | Self::SlowDown { .. }
             | Self::InvalidRange(_)
             | Self::PreconditionFailed
-            | Self::Removed
             | Self::NotImplemented(_) => None,
         }
     }
@@ -180,7 +172,6 @@ impl From<RouteError> for S3Error {
     fn from(error: RouteError) -> Self {
         match error {
             RouteError::NotFound => Self::NoSuchKey,
-            RouteError::Gone => Self::Removed,
             RouteError::RangeNotSatisfiable(total) => Self::InvalidRange(total),
             RouteError::BadRequest(message) => Self::InvalidRequest(message),
             RouteError::BadGateway(message) | RouteError::Internal(message) => {
@@ -211,7 +202,6 @@ impl IntoResponse for S3Error {
             | Self::InvalidRange(_)
             | Self::PreconditionFailed
             | Self::NotImplemented(_)
-            | Self::Removed
             | Self::Internal(_) => None,
         };
 

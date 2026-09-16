@@ -32,9 +32,6 @@ fn default_ttls() -> HashMap<&'static str, Duration> {
         ("getSlot", sec(2)),
         ("getBlock", sec(300)),
         ("getBlockHeight", sec(2)),
-        // Long enough to share a node's skip check across the fleet; longer
-        // would hide newly confirmed slots from it.
-        ("getBlocks", ms(500)),
         // Blockhashes expire on-chain after ~90s of slots; by the time
         // we serve a cached value, queue it through the node's tx
         // pipeline, and land it, anything older than a few seconds is
@@ -142,16 +139,6 @@ mod tests {
     fn classify_known_read() {
         let p = Policy::new(HashMap::new());
         assert!(matches!(p.classify("getSlot"), MethodKind::Read { .. }));
-    }
-
-    // getBlocks is a short-lived cached read
-    #[test]
-    fn get_blocks() {
-        let policy = Policy::new(HashMap::new());
-
-        let kind = policy.classify("getBlocks");
-
-        assert_eq!(kind, MethodKind::Read { ttl: Duration::from_millis(500) });
     }
 
     #[test]

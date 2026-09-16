@@ -1,13 +1,8 @@
 [package]
-name = "tape-peer-tls"
+name = "peer-tls"
 version.workspace = true
 edition.workspace = true
 description = "TLS pinning and cert helpers for peer communication"
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
-keywords.workspace = true
-readme.workspace = true
 
 [dependencies]
 tape-core = { workspace = true }

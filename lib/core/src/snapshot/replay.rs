@@ -93,8 +93,7 @@ pub enum ReplayableEvent {
         scheduled: Coin<TAPE>,
     },
 
-    /// Tape was destroyed: reserved while snapshots on chain still hold it,
-    /// removed at the next chain reset.
+    /// Tape was destroyed.
     DestroyTape {
         tape: Address,
         epoch: EpochNumber,

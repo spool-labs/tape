@@ -69,21 +69,3 @@ pub fn set_delegate_lamports(lamports: u64) {
     #[cfg(feature = "metrics")]
     tape_metrics::metrics().delegate_lamports.set(lamports as i64);
 }
-
-/// Report how many tracks and tapes the followed blacklists deny.
-#[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
-pub fn set_blacklist_denied(count: usize) {
-    #[cfg(feature = "metrics")]
-    tape_metrics::metrics().blacklist_denied.set(count as i64);
-}
-
-/// Report followed blacklist tapes close to expiry and writes the lists skipped.
-#[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
-pub fn set_blacklist_health(tapes_near_expiry: usize, skipped: usize) {
-    #[cfg(feature = "metrics")]
-    {
-        let m = tape_metrics::metrics();
-        m.blacklist_tapes_near_expiry.set(tapes_near_expiry as i64);
-        m.blacklist_tracks_skipped.set(skipped as i64);
-    }
-}

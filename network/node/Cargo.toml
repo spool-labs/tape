@@ -9,8 +9,6 @@ name = "tape-node"
 path = "src/bin/node/main.rs"
 
 [dependencies]
-tape-blacklist = { workspace = true }
-tape-forwarded = { workspace = true }
 # Workspace crates
 tape-api = { workspace = true, features = ["wincode"] }
 tape-core = { workspace = true, features = ["wincode"] }

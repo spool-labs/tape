@@ -4,7 +4,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
-use tape_peer_tls::{
+use peer_tls::{
     TlsVerifier, apply_pinned_tls_with_identity, build_server_config,
     build_server_config_with_peer_auth, install_default_provider,
 };
@@ -141,7 +141,7 @@ async fn mtls_handshake_captures_client_cert() {
                 x509_parser::certificate::X509Certificate::from_der(certs[0].as_ref())
                     .expect("parse");
             let spki =
-                tape_peer_tls::decode_ed25519_spki(parsed.public_key().raw).expect("ed25519 spki");
+                peer_tls::decode_ed25519_spki(parsed.public_key().raw).expect("ed25519 spki");
             *captured_clone.lock().await = Some(spki);
         }
         stream.write_all(b"ack").await.expect("write");

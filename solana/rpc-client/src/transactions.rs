@@ -307,13 +307,50 @@ impl<R: Rpc> RpcClient<R> {
             0,
             ComputeBudgetInstruction::set_compute_unit_limit(compute_unit_limit),
         );
-        let result = self.submit(payer, signers, &capped, options).await;
+        let mut attempted = None;
+        let result = self
+            .submit_reporting(payer, signers, &capped, options, &mut attempted)
+            .await;
 
         let Err(err) = &result else {
             return result;
         };
         if !err.is_compute_budget_exceeded() {
             return result;
+        }
+
+        // The resend signs a second, independently valid transaction: a
+        // different budget instruction and a fresh blockhash, so both can land.
+        // The reported error is not by itself evidence the first one did not,
+        // so ask what became of its signature first.
+        //
+        // This narrows the window rather than closing it: `Ok(None)` means the
+        // RPC has not seen the signature, which is not the same as it never
+        // landing, and a hostile RPC can say anything. Refusing to resend on
+        // `Ok(None)` would delete the measured-limit path entirely, so the
+        // remaining exposure is a transaction in flight but not yet visible.
+        if let Some(attempted) = attempted {
+            match self.rpc().get_signature_status(&attempted).await {
+                // Not seen, or seen having failed. A transaction that landed as
+                // a failure moved nothing, which is the ordinary case here: the
+                // budget the caller named was too small and the chain said so.
+                Ok(None) | Ok(Some(Err(_))) => {}
+                Ok(Some(Ok(()))) => {
+                    tracing::warn!(
+                        %attempted,
+                        "compute budget exceeded was reported for a transaction that landed; \
+                         not resending"
+                    );
+                    return result;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %attempted, %error,
+                        "cannot confirm the failed transaction did not land; not resending"
+                    );
+                    return result;
+                }
+            }
         }
 
         // Reuse the batch for the probe and the resend by swapping out the
@@ -398,6 +435,24 @@ impl<R: Rpc> RpcClient<R> {
         instructions: &[Instruction],
         options: SubmitOptions,
     ) -> Result<Txid, RpcError> {
+        self.submit_reporting(payer, signers, instructions, options, &mut None)
+            .await
+    }
+
+    /// `submit`, additionally reporting the signature it put on the wire.
+    ///
+    /// A caller that wants to retry a failure has to know which signature to
+    /// ask about first, and the error alone does not carry one. `attempted` is
+    /// set as soon as the transaction is signed, so it is populated even when
+    /// the send itself reports a failure.
+    async fn submit_reporting(
+        &self,
+        payer: &dyn TapeSigner,
+        signers: &[&dyn TapeSigner],
+        instructions: &[Instruction],
+        options: SubmitOptions,
+        attempted: &mut Option<Txid>,
+    ) -> Result<Txid, RpcError> {
         #[cfg(not(feature = "metrics"))]
         let _ = options.operation;
         #[cfg(feature = "metrics")]
@@ -407,6 +462,10 @@ impl<R: Rpc> RpcClient<R> {
             let transaction = self
                 .build_signed_transaction(payer, signers, instructions)
                 .await?;
+            *attempted = transaction
+                .signatures
+                .first()
+                .map(|signature| Txid::new((*signature).into()));
 
             if options.simulate_first {
                 if let Some(rejection) = self.simulation_rejection(&transaction).await {

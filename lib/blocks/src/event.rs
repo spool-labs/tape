@@ -4,7 +4,7 @@ use tape_api::event::{
     AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
     EpochCreated, EventType, CommissionClaimed, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
-    StakeUnlockRequested, StakeWithdrawn, TapeExtended, TapeReserved,
+    StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeExtended, TapeReserved,
     TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 
@@ -32,6 +32,7 @@ pub enum TapedriveEvent {
     TrackInvalidated(TrackInvalidated),
     TrackWritten(TrackWritten),
     TapeReserved(TapeReserved),
+    TapeDestroyed(TapeDestroyed),
     TapeExtended(TapeExtended),
     NodeRegistered(NodeRegistered),
     NodeJoinedCommittee(NodeJoinedCommittee),
@@ -142,6 +143,11 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
             let event = bytemuck::try_from_bytes::<TapeReserved>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::TapeReserved(*event)))
+        }
+        EventType::TapeDestroyed => {
+            let event = bytemuck::try_from_bytes::<TapeDestroyed>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::TapeDestroyed(*event)))
         }
         EventType::TapeExtended => {
             let event = bytemuck::try_from_bytes::<TapeExtended>(event_data)

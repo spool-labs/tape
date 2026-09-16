@@ -79,7 +79,6 @@ pub fn apply_event<Db: Store>(
                 )
                 .map_err(store_error)?;
         }
-        // The deployed program can still close an expired tape
         ReplayableEvent::DestroyTape { tape, .. } => {
             delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE, slot)?;
         }
@@ -861,6 +860,106 @@ mod tests {
                     .is_some()
             );
         }
+    }
+
+    #[test]
+    fn destroys_tape() {
+        let store = test_store();
+        let slot = SlotNumber(13);
+        let tape = Address::new_unique();
+        let other_tape = Address::new_unique();
+        let track_a = track_pda(tape, TrackNumber(0)).0;
+        let track_b = track_pda(tape, TrackNumber(1)).0;
+        let track_other = track_pda(other_tape, TrackNumber(0)).0;
+        let group = GroupIndex::from(31);
+
+        store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
+                    end_epoch: EpochNumber(6),
+                    next_track_number: TrackNumber(0),
+                },
+            )
+            .unwrap();
+        store
+            .put_tape(
+                other_tape,
+                TapeInfo {
+                    id: TapeNumber(2),
+                    flags: 0,
+                    end_epoch: EpochNumber(7),
+                    next_track_number: TrackNumber(0),
+                },
+            )
+            .unwrap();
+
+        for (number, track) in [(TrackNumber(0), track_a), (TrackNumber(1), track_b)] {
+            store.put_track(track, track_info(tape, number, group)).unwrap();
+            store
+                .put_object_info(
+                    track,
+                    ObjectInfo::Valid {
+                        track_address: track,
+                        registered_epoch: EpochNumber(3),
+                        certified_epoch: None,
+                        slot,
+                    },
+                )
+                .unwrap();
+            for slice_index in 0..GROUP_SIZE {
+                store
+                    .put_slice(group.spool_at(slice_index), track, vec![0xCD; 8])
+                    .unwrap();
+            }
+        }
+
+        store
+            .put_track(track_other, track_info(other_tape, TrackNumber(0), group))
+            .unwrap();
+        store
+            .put_object_info(
+                track_other,
+                ObjectInfo::Valid {
+                    track_address: track_other,
+                    registered_epoch: EpochNumber(3),
+                    certified_epoch: None,
+                    slot,
+                },
+            )
+            .unwrap();
+
+        apply_slot(
+            &store,
+            SlotNumber(99),
+            None,
+            &[ReplayableEvent::DestroyTape {
+                tape,
+                epoch: EpochNumber(9),
+            }],
+        )
+        .unwrap();
+
+        assert!(store.get_tape(tape).unwrap().is_none());
+        for track in [track_a, track_b] {
+            assert!(store.get_track(track).unwrap().is_none());
+            assert!(store.get_object_info(track).unwrap().is_none());
+            // Slices outlive the deletion, as above.
+            for slice_index in 0..GROUP_SIZE {
+                assert!(
+                    store
+                        .get_slice(group.spool_at(slice_index), track)
+                        .unwrap()
+                        .is_some()
+                );
+            }
+        }
+
+        assert!(store.get_tape(other_tape).unwrap().is_some());
+        assert!(store.get_track(track_other).unwrap().is_some());
+        assert!(store.get_object_info(track_other).unwrap().is_some());
     }
 
     // extend updates the expiry while keeping id, flags and track cursor

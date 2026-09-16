@@ -116,9 +116,8 @@ pub enum TapeInstruction {
 
     // Tape
     ReserveTape = 0xA0,
-    // 0xA1 held DestroyTape, whose number stays reserved while the deployed
-    // program still has it
-    ExtendTapeCapacity = 0xA2,
+    DestroyTape,
+    ExtendTapeCapacity,
     ExtendTapeExpiry,
     SetTapeDelegate,
     RevokeTapeDelegate,
@@ -200,6 +199,7 @@ tape_solana::instruction!(TapeInstruction, AddToBlacklist);
 tape_solana::instruction!(TapeInstruction, RemoveFromBlacklist);
 
 tape_solana::instruction!(TapeInstruction, ReserveTape);
+tape_solana::instruction!(TapeInstruction, DestroyTape);
 tape_solana::instruction!(TapeInstruction, ExtendTapeCapacity);
 tape_solana::instruction!(TapeInstruction, ExtendTapeExpiry);
 tape_solana::instruction!(TapeInstruction, SetTapeDelegate);

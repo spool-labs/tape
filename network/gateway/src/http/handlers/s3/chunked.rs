@@ -12,6 +12,8 @@ use tokio::spawn;
 use tokio::task::JoinHandle;
 use tokio_util::io::StreamReader;
 
+use super::sigv4::{constant_time_eq, hmac_sha256, sha256_hex, ChunkVerification, CHUNK_ALGORITHM};
+
 /// In-memory pipe capacity between the body producer and the stream writer.
 const PIPE_CAPACITY: usize = 1024 * 1024;
 
@@ -24,17 +26,43 @@ const COPY_BUFFER: usize = 64 * 1024;
 /// growing the buffer without limit.
 const MAX_CHUNK_HEADER: u64 = 8 * 1024;
 
+/// Cap on one signed chunk's payload.
+///
+/// A signed chunk is held whole until its signature checks out, so this is what
+/// keeps "streaming" from meaning "buffer whatever the client says". Real
+/// clients chunk at 64 KiB to a few MiB, so this refuses only a client trying
+/// to make the gateway hold an object-sized buffer.
+const MAX_SIGNED_CHUNK_BYTES: usize = 32 * 1024 * 1024;
+
+/// Hex SHA-256 of the empty string, the "no extra headers" slot in a chunk's
+/// string-to-sign.
+const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+/// How a request body has to be read to recover the object bytes.
+pub enum BodyFraming {
+    /// Raw bytes, forwarded verbatim.
+    Plain,
+    /// `aws-chunked` framing whose chunks carry no signatures, stripped as it
+    /// streams. The client declined to sign its body.
+    Unsigned,
+    /// `aws-chunked` framing with a signature per chunk, checked against the
+    /// chain seeded by the request signature.
+    Signed(Box<ChunkVerification>),
+}
+
 /// Build an AsyncRead yielding the raw object bytes from a request body,
-/// de-framing `aws-chunked` when `is_aws_chunked` is set.
-pub fn object_reader(body: Body, is_aws_chunked: bool) -> (DuplexStream, JoinHandle<io::Result<()>>) {
+/// de-framing and verifying `aws-chunked` according to `framing`.
+pub fn object_reader(body: Body, framing: BodyFraming) -> (DuplexStream, JoinHandle<io::Result<()>>) {
     let framed = StreamReader::new(body.into_data_stream().map_err(io::Error::other));
     let (pipe_reader, pipe_writer) = duplex(PIPE_CAPACITY);
 
     let handle = spawn(async move {
-        if is_aws_chunked {
-            copy_dechunked(framed, pipe_writer).await
-        } else {
-            copy_plain(framed, pipe_writer).await
+        match framing {
+            BodyFraming::Plain => copy_plain(framed, pipe_writer).await,
+            BodyFraming::Unsigned => copy_dechunked(framed, pipe_writer, None).await,
+            BodyFraming::Signed(chunk) => {
+                copy_dechunked(framed, pipe_writer, Some(*chunk)).await
+            }
         }
     });
 
@@ -54,7 +82,17 @@ where
 
 /// Strip `aws-chunked` framing from `framed`, writing the de-framed bytes into
 /// `sink`, then close it.
-async fn copy_dechunked<Reader, Writer>(framed: Reader, mut sink: Writer) -> io::Result<()>
+///
+/// With `verification`, every chunk's signature is checked before any of its
+/// bytes reach `sink`: the chain starts at the request signature and each chunk
+/// signs its predecessor, so a body that does not verify never reaches the
+/// writer at all. Without it the framing is merely stripped, which is what the
+/// unsigned streaming sentinel asks for.
+async fn copy_dechunked<Reader, Writer>(
+    framed: Reader,
+    mut sink: Writer,
+    verification: Option<ChunkVerification>,
+) -> io::Result<()>
 where
     Reader: AsyncRead + Unpin,
     Writer: AsyncWrite + Unpin,
@@ -62,6 +100,9 @@ where
     let mut reader = BufReader::new(framed);
     let mut header = Vec::new();
     let mut buffer = [0u8; COPY_BUFFER];
+    let mut previous = verification
+        .as_ref()
+        .map(|chain| chain.seed_signature.clone());
 
     loop {
         header.clear();
@@ -85,17 +126,51 @@ where
         }
 
         let chunk_size = parse_chunk_size(&header)?;
+
+        let Some(chain) = verification.as_ref() else {
+            if chunk_size == 0 {
+                break;
+            }
+            let mut remaining = chunk_size;
+            while remaining > 0 {
+                let want = remaining.min(buffer.len());
+                reader.read_exact(&mut buffer[..want]).await?;
+                sink.write_all(&buffer[..want]).await?;
+                remaining -= want;
+            }
+            let mut line_ending = [0u8; 2];
+            reader.read_exact(&mut line_ending).await?;
+            continue;
+        };
+
+        if chunk_size > MAX_SIGNED_CHUNK_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("aws-chunked chunk exceeds the maximum of {MAX_SIGNED_CHUNK_BYTES} bytes"),
+            ));
+        }
+        let presented = parse_chunk_signature(&header)?;
+
+        // Held whole: a chunk that does not verify must not have already been
+        // forwarded, because the writer downstream commits what it is handed.
+        let mut chunk = vec![0u8; chunk_size];
+        reader.read_exact(&mut chunk).await?;
+
+        // The previous signature is what makes this a chain rather than a set
+        // of independently forgeable chunks, so it advances only on a match.
+        let expected = chunk_signature(chain, previous.as_deref().unwrap_or_default(), &chunk)?;
+        if !constant_time_eq(expected.as_bytes(), presented.as_bytes()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "aws-chunked chunk signature does not match",
+            ));
+        }
+        previous = Some(expected);
+
         if chunk_size == 0 {
             break;
         }
-
-        let mut remaining = chunk_size;
-        while remaining > 0 {
-            let want = remaining.min(buffer.len());
-            reader.read_exact(&mut buffer[..want]).await?;
-            sink.write_all(&buffer[..want]).await?;
-            remaining -= want;
-        }
+        sink.write_all(&chunk).await?;
 
         // Each chunk's data is followed by a CRLF before the next chunk header.
         let mut line_ending = [0u8; 2];
@@ -106,6 +181,38 @@ where
     sink.shutdown().await?;
     Ok(())
 }
+
+/// The `chunk-signature=` value from an `aws-chunked` header line.
+fn parse_chunk_signature(header: &[u8]) -> io::Result<String> {
+    let line = std::str::from_utf8(header)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-utf8 chunk header"))?;
+    line.split(';')
+        .skip(1)
+        .find_map(|extension| extension.trim().strip_prefix("chunk-signature="))
+        .map(|signature| signature.trim().to_string())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "signed aws-chunked body has a chunk with no chunk-signature",
+            )
+        })
+}
+
+/// The signature a chunk must carry, given the chain state and its bytes.
+fn chunk_signature(
+    chain: &ChunkVerification,
+    previous: &str,
+    chunk: &[u8],
+) -> io::Result<String> {
+    let string_to_sign = format!(
+        "{CHUNK_ALGORITHM}\n{date}\n{scope}\n{previous}\n{EMPTY_SHA256}\n{payload}",
+        date = chain.date,
+        scope = chain.scope,
+        payload = sha256_hex(chunk),
+    );
+    Ok(hex::encode(hmac_sha256(&chain.signing_key, string_to_sign.as_bytes())))
+}
+
 
 /// Parse the hex chunk size from an `aws-chunked` header line
 ///
@@ -143,15 +250,165 @@ mod tests {
         assert!(parse_chunk_size(b"zz\r\n").is_err());
     }
 
+    /// A chain whose key is fixed, so a test can sign a body the same way the
+    /// verifier will check it.
+    fn chain() -> ChunkVerification {
+        ChunkVerification {
+            signing_key: vec![0x2Au8; 32],
+            date: "20260823T000000Z".to_string(),
+            scope: "20260823/us-east-1/s3/aws4_request".to_string(),
+            seed_signature: "seed".to_string(),
+        }
+    }
+
+    /// Frame `chunks` the way a compliant client would, signing each one.
+    fn signed_body(chain: &ChunkVerification, chunks: &[&[u8]]) -> Vec<u8> {
+        let mut previous = chain.seed_signature.clone();
+        let mut out = Vec::new();
+        for chunk in chunks.iter().chain(std::iter::once(&b"".as_slice())) {
+            let signature = chunk_signature(chain, &previous, chunk).expect("sign");
+            out.extend_from_slice(
+                format!("{:x};chunk-signature={signature}\r\n", chunk.len()).as_bytes(),
+            );
+            out.extend_from_slice(chunk);
+            out.extend_from_slice(b"\r\n");
+            previous = signature;
+        }
+        out
+    }
+
+    // The bytes a chunk signature is taken over, spelled out here rather than
+    // built by the code under test.
+    //
+    // This is the wire format, so it is not ours to choose: the six lines and
+    // their order are what every AWS SDK signs, and the empty-string hash in
+    // line five is the slot real implementations keep for chunk headers. A
+    // client's body is rejected if this drifts, so the format is asserted
+    // literally rather than round-tripped through `chunk_signature`.
+    #[test]
+    fn chunk_string_to_sign_is_the_wire_format() {
+        let chain = chain();
+        let chunk = b"hello";
+        let payload = sha256_hex(chunk);
+
+        let expected_string_to_sign = [
+            "AWS4-HMAC-SHA256-PAYLOAD",
+            "20260823T000000Z",
+            "20260823/us-east-1/s3/aws4_request",
+            "seed",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            &payload,
+        ]
+        .join("\n");
+
+        let expected = hex::encode(hmac_sha256(
+            &chain.signing_key,
+            expected_string_to_sign.as_bytes(),
+        ));
+
+        assert_eq!(
+            chunk_signature(&chain, &chain.seed_signature, chunk).expect("sign"),
+            expected
+        );
+    }
+
     // aws-chunked framing is stripped back to the original payload
     #[tokio::test]
     async fn dechunk_roundtrip() {
         let framed = b"5;chunk-signature=aaaa\r\nhello\r\n6;chunk-signature=bbbb\r\n world\r\n0;chunk-signature=cccc\r\n\r\n";
 
         let mut output = Vec::new();
-        copy_dechunked(&framed[..], &mut output).await.expect("dechunk");
+        copy_dechunked(&framed[..], &mut output, None).await.expect("dechunk");
 
         assert_eq!(output, b"hello world");
+    }
+
+    // a signed body verifies chunk by chunk and yields the original payload
+    #[tokio::test]
+    async fn signed_roundtrip() {
+        let chain = chain();
+        let framed = signed_body(&chain, &[b"hello", b" world"]);
+
+        let mut output = Vec::new();
+        copy_dechunked(&framed[..], &mut output, Some(chain))
+            .await
+            .expect("dechunk");
+
+        assert_eq!(output, b"hello world");
+    }
+
+    // a chunk whose bytes were changed in flight does not verify, and none of
+    // its bytes reach the writer
+    #[tokio::test]
+    async fn tampered_chunk_is_refused() {
+        let chain = chain();
+        let mut framed = signed_body(&chain, &[b"hello", b" world"]);
+        let at = framed
+            .windows(5)
+            .position(|window| window == b"hello")
+            .expect("payload");
+        framed[at..at + 5].copy_from_slice(b"HELLO");
+
+        let mut output = Vec::new();
+        let result = copy_dechunked(&framed[..], &mut output, Some(chain)).await;
+
+        assert!(result.is_err());
+        assert!(output.is_empty(), "unverified bytes must not be forwarded");
+    }
+
+    // a body signed with a different key does not verify
+    #[tokio::test]
+    async fn wrong_key_is_refused() {
+        let signer = chain();
+        let framed = signed_body(&signer, &[b"hello"]);
+        let verifier = ChunkVerification { signing_key: vec![0x99u8; 32], ..chain() };
+
+        let mut output = Vec::new();
+        let result = copy_dechunked(&framed[..], &mut output, Some(verifier)).await;
+
+        assert!(result.is_err());
+        assert!(output.is_empty());
+    }
+
+    // chunks are a chain: replaying a later chunk earlier does not verify
+    #[tokio::test]
+    async fn reordered_chunks_are_refused() {
+        let chain = chain();
+        let first = chunk_signature(&chain, &chain.seed_signature, b"hello").expect("sign");
+        let second = chunk_signature(&chain, &first, b" world").expect("sign");
+
+        // The second chunk's own signature, presented in the first position.
+        let mut framed = Vec::new();
+        framed.extend_from_slice(format!("6;chunk-signature={second}\r\n").as_bytes());
+        framed.extend_from_slice(b" world\r\n");
+
+        let mut output = Vec::new();
+        let result = copy_dechunked(&framed[..], &mut output, Some(chain)).await;
+
+        assert!(result.is_err());
+        assert!(output.is_empty());
+    }
+
+    // a signed body whose chunk carries no signature at all is refused
+    #[tokio::test]
+    async fn missing_chunk_signature() {
+        let framed = b"5\r\nhello\r\n0\r\n\r\n";
+
+        let mut output = Vec::new();
+        let result = copy_dechunked(&framed[..], &mut output, Some(chain())).await;
+
+        assert!(result.is_err());
+    }
+
+    // a chunk larger than the cap is refused before it is read into memory
+    #[tokio::test]
+    async fn oversized_chunk() {
+        let framed = format!("{:x};chunk-signature=aa\r\n", MAX_SIGNED_CHUNK_BYTES + 1);
+
+        let mut output = Vec::new();
+        let result = copy_dechunked(framed.as_bytes(), &mut output, Some(chain())).await;
+
+        assert!(result.is_err());
     }
 
     // a body that ends before its terminating chunk is rejected, not silently accepted
@@ -160,7 +417,7 @@ mod tests {
         let framed = b"5;chunk-signature=aaaa\r\nhello\r\n";
 
         let mut output = Vec::new();
-        let result = copy_dechunked(&framed[..], &mut output).await;
+        let result = copy_dechunked(&framed[..], &mut output, None).await;
 
         assert!(result.is_err());
     }
@@ -171,7 +428,7 @@ mod tests {
         let framed = vec![b'a'; (MAX_CHUNK_HEADER as usize) + 16];
 
         let mut output = Vec::new();
-        let result = copy_dechunked(&framed[..], &mut output).await;
+        let result = copy_dechunked(&framed[..], &mut output, None).await;
 
         assert!(result.is_err());
     }

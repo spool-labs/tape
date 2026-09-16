@@ -1,5 +1,7 @@
 //! S3 write authorization.
 
+use std::sync::Arc;
+
 use rpc::Rpc;
 use store::Store;
 use tape_crypto::address::Address;
@@ -14,7 +16,7 @@ use tape_store::types::{
 };
 use tape_store::TapeStore;
 
-use super::accounting;
+use super::accounting::{self, Accounting};
 use super::clock::now_unix;
 use super::error::S3Error;
 use super::sigv4;
@@ -24,7 +26,7 @@ use crate::http::state::AppState;
 /// Flat per-op SOL fee estimate (lamports) reserved before a cost-bearing write.
 const ESTIMATED_LAMPORTS_PER_OP: u64 = 5_000;
 
-pub fn peppered_secret_hmac(pepper: &str, secret: &str) -> Result<[u8; 32], S3Error> {
+pub fn peppered_secret_hmac(pepper: &str, secret: &str) -> [u8; 32] {
     sigv4::hmac_sha256(pepper.as_bytes(), secret.as_bytes())
 }
 
@@ -154,7 +156,6 @@ impl WriteOp {
 
 /// A budget reservation granted by authorize_write.
 #[must_use = "a WritePermit must be committed on success or refunded on failure"]
-#[derive(Debug)]
 pub struct WritePermit {
     /// The access key id the write is billed to
     access_key_id: String,
@@ -169,6 +170,61 @@ pub struct WritePermit {
     reservation: Option<LedgerReservationKey>,
     /// The admission ticket to settle, when a gate admitted the write
     ticket: Option<u64>,
+    /// Accounting state, held so `Drop` can release the in-flight mark without
+    /// needing the whole `AppState` the commit and refund paths carry.
+    accounting: Arc<Accounting>,
+    /// Whether `commit` or `refund` ran, which is what makes `Drop` a no-op.
+    settled: bool,
+}
+
+/// Release the in-flight mark for a permit that was never settled.
+///
+/// A permit dropped between the grant and its commit or refund leaks its
+/// reservation. That was always survivable because the TTL sweep reclaimed it,
+/// but the sweep now skips anything still marked in flight, so an unreleased
+/// mark would hold the budget until the process restarts. Releasing here puts
+/// the reservation back in reach of the sweep.
+///
+/// The ledger record is deliberately left alone: only the sweep, under the
+/// ledger lock, decides whether an abandoned reservation is old enough to
+/// reclaim.
+impl Drop for WritePermit {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        let Some(key) = self.reservation else {
+            return;
+        };
+        // Bounded is not the same as fine: a permit reaching here is a path that
+        // returned between the grant and the settle, and the next one should be
+        // visible rather than absorbed silently by the sweep.
+        tracing::warn!(
+            access_key_id = %self.access_key_id,
+            owner = %self.owner,
+            op = ?self.op,
+            reserved = self.reserved,
+            "s3 write permit dropped without commit or refund; reservation left to the sweep"
+        );
+        self.accounting.release(&key);
+    }
+}
+
+// Hand-written so the permit stays printable without requiring `Debug` on the
+// shared accounting state it holds only to release its in-flight mark.
+impl std::fmt::Debug for WritePermit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WritePermit")
+            .field("access_key_id", &self.access_key_id)
+            .field("owner", &self.owner)
+            .field("op", &self.op)
+            .field("reserved", &self.reserved)
+            .field("reservation", &self.reservation)
+            .field("ticket", &self.ticket)
+            .field("settled", &self.settled)
+            .finish()
+    }
 }
 
 impl WritePermit {
@@ -180,7 +236,7 @@ impl WritePermit {
     /// Reconcile the reservation to the `actual` bytes written and commit the cost
     /// against the owner's accounting ledger (a no-op when nothing was reserved).
     pub fn commit<Db, Cluster, Blockchain>(
-        self,
+        mut self,
         state: &AppState<Db, Cluster, Blockchain>,
         actual: u64,
     ) where
@@ -188,6 +244,7 @@ impl WritePermit {
         Cluster: Api,
         Blockchain: Rpc,
     {
+        self.settled = true;
         if let Some(key) = &self.reservation {
             accounting::commit_budget(state, key, actual, now_unix());
         }
@@ -207,13 +264,14 @@ impl WritePermit {
     /// Release the reservation after a failed (or no-op) write so it never bills
     /// the principal (a no-op when nothing was reserved).
     pub fn refund<Db, Cluster, Blockchain>(
-        self,
+        mut self,
         state: &AppState<Db, Cluster, Blockchain>,
     ) where
         Db: Store,
         Cluster: Api,
         Blockchain: Rpc,
     {
+        self.settled = true;
         if let Some(key) = &self.reservation {
             accounting::refund_budget(state, key);
         }
@@ -571,6 +629,8 @@ where
         reserved: size,
         reservation,
         ticket,
+        accounting: state.accounting.clone(),
+        settled: false,
     })
 }
 
@@ -581,13 +641,15 @@ where
 /// are: leaking them lets a stranger enumerate or interfere with another
 /// tenant's uploads. They therefore require a usable, multipart-capable
 /// credential scoped to the bucket; the configured bootstrap credential is
-/// always allowed. This is a read check, so it neither reserves budget nor
-/// consults the write kill switch.
+/// always allowed. Returns the resolved principal, which the caller narrows the
+/// listing to: a bucket-scoped credential is not by itself entitlement to
+/// another principal's uploads. This is a read check, so it neither reserves
+/// budget nor consults the write kill switch.
 pub fn authorize_multipart_read<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     auth: &Auth,
     bucket: Address,
-) -> Result<(), S3Error>
+) -> Result<Address, S3Error>
 where
     Db: Store,
     Cluster: Api,
@@ -620,10 +682,10 @@ where
                     "credential scope does not include this bucket".to_string(),
                 ));
             }
-            Ok(())
+            Ok(credential.principal)
         }
         Ok(None) => match bootstrap_access_key_id(state) {
-            Some(bootstrap) if bootstrap == access_key_id => Ok(()),
+            Some(bootstrap) if bootstrap == access_key_id => Ok(Address::default()),
             Some(_) | None => Err(S3Error::AccessDenied(
                 "no active credential for this access key id".to_string(),
             )),
@@ -762,17 +824,17 @@ mod tests {
     // the peppered secret HMAC is deterministic and keyed by both inputs
     #[test]
     fn peppered_hmac() {
-        let a = peppered_secret_hmac("pepper", "secret").expect("hmac");
-        let b = peppered_secret_hmac("pepper", "secret").expect("hmac");
+        let a = peppered_secret_hmac("pepper", "secret");
+        let b = peppered_secret_hmac("pepper", "secret");
         assert_eq!(a, b, "same pepper+secret yields the same digest");
         assert_ne!(
             a,
-            peppered_secret_hmac("other-pepper", "secret").expect("hmac"),
+            peppered_secret_hmac("other-pepper", "secret"),
             "pepper is keyed into the digest"
         );
         assert_ne!(
             a,
-            peppered_secret_hmac("pepper", "other-secret").expect("hmac"),
+            peppered_secret_hmac("pepper", "other-secret"),
             "secret is hashed into the digest"
         );
     }
@@ -836,10 +898,65 @@ mod tests {
             reserved: 0,
             reservation: None,
             ticket: None,
+            accounting: Arc::new(Accounting::new()),
+            settled: false,
         };
         assert!(permit.reservation.is_none());
         assert_eq!(permit.op, WriteOp::CreateMultipart);
         drop(permit);
+    }
+
+    // a permit dropped between the grant and its settle puts the reservation
+    // back within reach of the ttl sweep
+    //
+    // the sweep skips anything still marked in flight, so a mark left behind by
+    // an early return would hold the budget until the process restarts.
+    #[test]
+    fn dropped_permit_releases_its_mark() {
+        let accounting = Arc::new(Accounting::new());
+        let key = LedgerReservationKey::new(1_000, Address::default(), 1);
+        accounting.hold(key);
+        assert!(accounting.in_flight().contains(&key));
+
+        let permit = WritePermit {
+            access_key_id: "AKIDEXAMPLE".to_string(),
+            owner: Address::default(),
+            op: WriteOp::Put,
+            reserved: 4096,
+            reservation: Some(key),
+            ticket: None,
+            accounting: accounting.clone(),
+            settled: false,
+        };
+        drop(permit);
+
+        assert!(
+            !accounting.in_flight().contains(&key),
+            "an unsettled permit must not strand its in-flight mark"
+        );
+    }
+
+    // a settled permit leaves the mark alone: commit and refund already released
+    // it, and Drop must not fire a second time
+    #[test]
+    fn settled_permit_leaves_the_mark_alone() {
+        let accounting = Arc::new(Accounting::new());
+        let key = LedgerReservationKey::new(1_000, Address::default(), 2);
+        accounting.hold(key);
+
+        let permit = WritePermit {
+            access_key_id: "AKIDEXAMPLE".to_string(),
+            owner: Address::default(),
+            op: WriteOp::Put,
+            reserved: 4096,
+            reservation: Some(key),
+            ticket: None,
+            accounting: accounting.clone(),
+            settled: true,
+        };
+        drop(permit);
+
+        assert!(accounting.in_flight().contains(&key));
     }
 
     // --- decision-flow ordering (steps 1–4), against the FakeReads double -----

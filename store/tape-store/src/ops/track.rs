@@ -159,66 +159,38 @@ impl<S: Store> TrackOps for TapeStore<S> {
         after_track_number: Option<TrackNumber>,
         limit: usize,
     ) -> Result<Vec<CompressedTrack>> {
+        let prefix = TrackLookupKey::tape_prefix(tape);
+        let start_key = match after_track_number {
+            Some(track_number) => wincode::serialize(&TrackLookupKey::after_track_number(tape, track_number))
+                .map_err(|e| TapeStoreError::Serialization(format!("track lookup key: {}", e)))?,
+            None => prefix.to_vec(),
+        };
+
+        let iter = self
+            .inner()
+            .inner()
+            .iter_from(TrackLookupCol::CF_NAME, &start_key, store::Direction::Asc)?;
+
         let mut results = Vec::new();
-        for track_address in tape_track_addresses(self, tape, after_track_number, limit)? {
+        for (key_bytes, _value_bytes) in iter {
+            if key_bytes.len() < 32 || key_bytes[..32] != prefix {
+                break;
+            }
+
+            let key: TrackLookupKey = wincode::deserialize(&key_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("track lookup key: {}", e)))?;
+            let track_address = key::track_address(tape, key.track_number);
             let track = self
                 .get_track(track_address)?
                 .ok_or_else(|| TapeStoreError::Serialization("missing track for lookup index".into()))?;
             results.push(track);
+            if results.len() >= limit {
+                break;
+            }
         }
 
         Ok(results)
     }
-}
-
-/// Addresses of a tape's tracks in track-number order, after an optional track number
-pub fn tape_track_addresses<S: Store>(
-    tape_store: &TapeStore<S>,
-    tape: Address,
-    after_track_number: Option<TrackNumber>,
-    limit: usize,
-) -> Result<Vec<Address>> {
-    let numbers = tape_track_numbers(tape_store, tape, after_track_number, limit)?;
-    Ok(numbers
-        .into_iter()
-        .map(|track_number| key::track_address(tape, track_number))
-        .collect())
-}
-
-/// Numbers of a tape's tracks in order, after an optional track number
-pub fn tape_track_numbers<S: Store>(
-    tape_store: &TapeStore<S>,
-    tape: Address,
-    after_track_number: Option<TrackNumber>,
-    limit: usize,
-) -> Result<Vec<TrackNumber>> {
-    let prefix = TrackLookupKey::tape_prefix(tape);
-    let start_key = match after_track_number {
-        Some(track_number) => wincode::serialize(&TrackLookupKey::after_track_number(tape, track_number))
-            .map_err(|e| TapeStoreError::Serialization(format!("track lookup key: {}", e)))?,
-        None => prefix.to_vec(),
-    };
-
-    let iter = tape_store
-        .inner()
-        .inner()
-        .iter_from(TrackLookupCol::CF_NAME, &start_key, store::Direction::Asc)?;
-
-    let mut numbers = Vec::new();
-    for (key_bytes, _value_bytes) in iter {
-        if key_bytes.len() < 32 || key_bytes[..32] != prefix {
-            break;
-        }
-
-        let key: TrackLookupKey = wincode::deserialize(&key_bytes)
-            .map_err(|e| TapeStoreError::Serialization(format!("track lookup key: {}", e)))?;
-        numbers.push(key.track_number);
-        if numbers.len() >= limit {
-            break;
-        }
-    }
-
-    Ok(numbers)
 }
 
 mod key {
