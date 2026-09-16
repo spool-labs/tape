@@ -1,0 +1,93 @@
+# tape-moderation config. Secrets are paths to files, never inline values.
+# Durations take ms, s, m or h.
+
+# SQLite records; operators read them with sqlite3
+database: /var/lib/tape-moderation/records.sqlite
+
+api:
+  listen: 0.0.0.0:8080
+  # Browsers on these origins may submit reports
+  allowed_origins:
+    - https://explorer.tapedrive.io
+  # Proxies whose x-forwarded-for names the real caller: an address or a CIDR range
+  trusted_proxies:
+    - 127.0.0.1
+  # Salt for hashing reporter addresses; records keep only the hash
+  reporter_salt_file: /etc/tape-moderation/reporter-salt
+  max_body_bytes: 4096
+  caller_limit:
+    reports: 10
+    window: 1h
+    max_callers: 100000
+
+# Checks read content through this gateway
+gateway:
+  url: https://gateway.tapedrive.io
+  request_timeout: 30s
+
+moderation:
+  base_url: https://api.openai.com/v1
+  model: omni-moderation-latest
+  api_key_file: /etc/tape-moderation/moderation-api-key
+  request_timeout: 60s
+  max_response_bytes: 1048576
+  # Every category the API flags removes content, as suits a public file service
+  removal_categories:
+    - harassment
+    - harassment/threatening
+    - hate
+    - hate/threatening
+    - illicit
+    - illicit/violent
+    - self-harm
+    - self-harm/instructions
+    - self-harm/intent
+    - sexual
+    - sexual/minors
+    - violence
+    - violence/graphic
+
+worker:
+  poll_interval: 2s
+  max_attempts: 6
+  initial_retry_delay: 30s
+  max_retry_delay: 1h
+  # Tracks a tape report checks
+  tape_track_limit: 50
+
+# A tape is unlisted on any sexual/minors removal, or once three of its tracks are removed
+tape_rule:
+  triggering_categories:
+    - sexual/minors
+  removal_count: 3
+
+# Decisions publish within the batch window
+publisher:
+  batch_window: 10s
+  poll_interval: 1s
+
+chain:
+  rpc_url: http://127.0.0.1:8899
+  payer_key_file: /etc/tape-moderation/payer.json
+
+tapes:
+  # One JSON keypair per rack or blacklist tape, written before the tape is reserved
+  key_dir: /var/lib/tape-moderation/tapes
+  initial_capacity: 1048576
+  initial_epochs: 52
+
+# Open decision 4: funding numbers are pending
+funder:
+  interval: 10m
+  expiry_horizon: 8
+  expiry_extension: 26
+  # Epochs to expiry at or below which a blacklist tape extending has not saved moves its decisions to the newest tape
+  move_horizon: 2
+  capacity_reserve: 65536
+  capacity_extension: 1048576
+  # Free track slots at or below which the newest blacklist tape gets a successor and the rack warns
+  track_headroom: 1024
+  # Lamports
+  sol_warn_below: 500000000
+  # Flux
+  tape_warn_below: 10000000000

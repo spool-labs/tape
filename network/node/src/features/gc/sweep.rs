@@ -66,7 +66,8 @@ pub async fn sweep_epoch<Db: Store>(
     Ok(stats)
 }
 
-async fn sweep_expired_tapes<Db: Store>(
+/// Delete every tape expired as of `current_epoch`, with its tracks; a no-op behind the tip
+pub async fn sweep_expired_tapes<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
     current_epoch: EpochNumber,

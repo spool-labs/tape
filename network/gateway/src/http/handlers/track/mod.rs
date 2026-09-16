@@ -25,10 +25,25 @@ pub fn track_with_pending<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok(state.context.pending.apply_to_track(track_addr, in_store))
 }
 
+/// Refuse a track this gateway no longer serves: removed, or on an unlisted tape
+pub fn ensure_readable<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    track_addr: Address,
+    tape: Address,
+) -> Result<(), RouteError> {
+    match state.blacklists.denies(track_addr, tape) {
+        true => Err(RouteError::Gone),
+        false => Ok(()),
+    }
+}
+
+/// A track's stored content, refused once reads of the track are denied
 pub fn track_data_with_pending<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
+    tape: Address,
 ) -> Result<Option<BlobData>, RouteError> {
+    ensure_readable(state, track_addr, tape)?;
     match state.context.pending.track_data(track_addr) {
         Some(data) => Ok(Some(data)),
         None => state

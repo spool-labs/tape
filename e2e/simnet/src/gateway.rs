@@ -12,6 +12,7 @@ use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use reel_store::ReelStore;
+use tape_blacklist::subscription::Subscription;
 use tape_core::bls::BlsPrivateKey;
 use tape_gateway::admission::{AdmitAll, Admission};
 use tape_core::types::network::NetworkAddress;
@@ -275,6 +276,11 @@ impl TestGateway {
     /// Site serving knobs, settable before the runtime starts.
     pub fn site_config_mut(&mut self) -> &mut GatewaySiteConfig {
         &mut self.app_config.gateway.site
+    }
+
+    /// Blacklist subscriptions, settable while the runtime is stopped.
+    pub fn blacklists_mut(&mut self) -> &mut Vec<Subscription> {
+        &mut self.app_config.gateway.blacklists
     }
 
     /// Poll the gateway's native health endpoint until it reports ready.

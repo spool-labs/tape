@@ -707,7 +707,7 @@ where
 async fn delete_bucket(Path(bucket): Path<String>) -> Result<Response, S3Error> {
     parse_bucket(&bucket)?;
     Err(S3Error::NotImplemented(
-        "DeleteBucket: a bucket is a tape, destroyed on chain".to_string(),
+        "DeleteBucket: a bucket is a tape, and tapes are never closed".to_string(),
     ))
 }
 
@@ -718,6 +718,9 @@ fn resolve_readable<Db: Store, Cluster: Api, Blockchain: Rpc>(
     key: &str,
 ) -> Result<Readable, S3Error> {
     let bucket = parse_bucket(bucket_label)?;
+    if state.blacklists.is_unlisted(bucket) {
+        return Err(S3Error::Removed);
+    }
     let readable = resolve::resolve_readable_with_pending(
         state.context.store.as_ref(),
         state.staging.as_ref(),
@@ -742,6 +745,10 @@ fn readable_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let track = track_with_pending(state, resolved.track_address)
         .map_err(S3Error::from)?
         .ok_or(S3Error::NoSuchKey)?;
+    // Checked here so HEAD and conditional reads, which never decode, answer gone too.
+    if state.blacklists.denies(resolved.track_address, track.tape) {
+        return Err(S3Error::Removed);
+    }
     if !track.is_certified() {
         return Err(S3Error::NoSuchKey);
     }

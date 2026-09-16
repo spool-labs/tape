@@ -252,6 +252,8 @@ impl NodeConfig {
             ));
         }
 
+        self.gateway.validate_blacklists().map_err(ConfigError::Invalid)?;
+
         if self.http.admission.anonymous_write_per_sec == 0 {
             return Err(ConfigError::Invalid(
                 "http.admission.anonymous_write_per_sec must be greater than zero".into(),
@@ -442,7 +444,8 @@ mod tests {
     use tape_core::types::{BasisPoints, SlotNumber};
 
     use super::{NodeConfig, default_config_path};
-    use crate::config::cidr::CidrBlock;
+    use tape_crypto::address::Address;
+    use tape_forwarded::cidr::CidrBlock;
     use crate::config::logs::LoggingFormat;
 
     const EXAMPLE_CONFIG: &str = r#"
@@ -720,6 +723,19 @@ node:
             config.gateway.site.content_security_policy.as_deref(),
             Some("default-src 'self'")
         );
+    }
+
+    // blacklist subscriptions load, and a tape subscribed twice is refused
+    #[test]
+    fn blacklist_subscriptions() {
+        let tape = Address::new([7u8; 32]);
+        let one = format!("gateway:\n  blacklists:\n    - name: a\n      tape: {tape}\n      actions: [remove]\n");
+        let twice = format!("{one}    - name: b\n      tape: {tape}\n      actions: [unlist]\n");
+
+        let config = NodeConfig::from_yaml_str(&one).expect("parse config");
+
+        assert_eq!(config.gateway.blacklists.len(), 1);
+        assert!(NodeConfig::from_yaml_str(&twice).is_err());
     }
 
     #[test]

@@ -16,6 +16,7 @@ use tracing::debug;
 
 use tape_store::TapeStore;
 
+use crate::blacklist::denials::GatewayBlacklists;
 use crate::http::handlers::resolve::{Readable, resolve_readable};
 use crate::http::state::AppState;
 use crate::staging::StagingStore;
@@ -48,6 +49,7 @@ pub fn tape_site_policy<Db: Store, Cluster: Api, Blockchain: Rpc>(
     site_policy(
         state.context.store.as_ref(),
         state.staging.as_ref(),
+        state.blacklists.as_ref(),
         state.context.config.gateway.site.tenant_overrides,
         tape,
     )
@@ -57,6 +59,7 @@ pub fn tape_site_policy<Db: Store, Cluster: Api, Blockchain: Rpc>(
 fn site_policy<Db: Store>(
     store: &TapeStore<Db>,
     staging: &StagingStore<Db>,
+    blacklists: &GatewayBlacklists,
     has_tenant_overrides: bool,
     tape: Address,
 ) -> TapeSitePolicy {
@@ -74,7 +77,7 @@ fn site_policy<Db: Store>(
         }
     };
 
-    let Some(bytes) = policy_bytes(store, staging, tape, readable) else {
+    let Some(bytes) = policy_bytes(store, staging, blacklists, tape, readable) else {
         return TapeSitePolicy::default();
     };
     match serde_json::from_slice(&bytes) {
@@ -90,6 +93,7 @@ fn site_policy<Db: Store>(
 fn policy_bytes<Db: Store>(
     store: &TapeStore<Db>,
     staging: &StagingStore<Db>,
+    blacklists: &GatewayBlacklists,
     tape: Address,
     readable: Readable,
 ) -> Option<Vec<u8>> {
@@ -101,7 +105,7 @@ fn policy_bytes<Db: Store>(
             staging.bytes(tape, SITE_POLICY_OBJECT.as_bytes()).ok().flatten()
         }
         Readable::Track(resolved) => {
-            if is_oversize(tape, resolved.size) {
+            if blacklists.denies(resolved.track_address, tape) || is_oversize(tape, resolved.size) {
                 return None;
             }
             let data = store.get_track_data(resolved.track_address);
@@ -167,7 +171,7 @@ mod tests {
             .await
             .expect("enqueue policy");
 
-        let policy = site_policy(&store, &staging, true, tape);
+        let policy = site_policy(&store, &staging, &GatewayBlacklists::default(), true, tape);
 
         assert_eq!(policy.spa_fallback, Some(true));
     }
@@ -178,7 +182,13 @@ mod tests {
         let store = Arc::new(TapeStore::new(MemoryStore::new()));
         let staging = StagingStore::try_new(store.clone()).expect("open queue");
 
-        let policy = site_policy(&store, &staging, true, Address::new([2u8; 32]));
+        let policy = site_policy(
+            &store,
+            &staging,
+            &GatewayBlacklists::default(),
+            true,
+            Address::new([2u8; 32]),
+        );
 
         assert!(policy.spa_fallback.is_none());
     }

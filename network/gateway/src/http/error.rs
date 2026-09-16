@@ -12,6 +12,8 @@ pub enum RouteError {
     /// A syntactically valid Range that cannot be satisfied; carries the
     /// object size for the `Content-Range: bytes */{size}` answer.
     RangeNotSatisfiable(u64),
+    /// Content this gateway no longer serves
+    Gone,
     BadGateway(String),
     Internal(String),
 }
@@ -26,6 +28,7 @@ impl IntoResponse for RouteError {
                 [(header::CONTENT_RANGE, format!("bytes */{total}"))],
             )
                 .into_response(),
+            Self::Gone => (StatusCode::GONE, "content removed").into_response(),
             Self::BadGateway(message) => {
                 tracing::warn!("gateway upstream error: {message}");
                 (StatusCode::BAD_GATEWAY, "bad gateway").into_response()
@@ -46,6 +49,7 @@ impl Display for RouteError {
             Self::RangeNotSatisfiable(total) => {
                 write!(f, "range not satisfiable for object of {total} bytes")
             }
+            Self::Gone => f.write_str("content removed"),
             Self::BadGateway(message) => write!(f, "bad gateway: {message}"),
             Self::Internal(message) => write!(f, "internal error: {message}"),
         }
@@ -56,6 +60,11 @@ impl std::error::Error for RouteError {}
 
 impl From<GatewayCacheError> for RouteError {
     fn from(error: GatewayCacheError) -> Self {
-        Self::Internal(error.to_string())
+        match error {
+            GatewayCacheError::Removed => Self::Gone,
+            GatewayCacheError::Store(_) | GatewayCacheError::Codec(_) | GatewayCacheError::State(_) => {
+                Self::Internal(error.to_string())
+            }
+        }
     }
 }

@@ -33,7 +33,7 @@ use crate::http::handlers::object::{
 use crate::http::handlers::object::response::object_response_ranged;
 use crate::http::handlers::resolve::{Readable, resolve_readable_with_pending};
 use crate::http::handlers::store_error;
-use crate::http::handlers::track::{parse_address, track_with_pending};
+use crate::http::handlers::track::{ensure_readable, parse_address, track_with_pending};
 use crate::http::state::AppState;
 use crate::meter::{MeterCaller, rate_limited_response};
 
@@ -213,6 +213,11 @@ async fn serve_site<
     download: Option<&str>,
     headers: &HeaderMap,
 ) -> Result<Response, RouteError> {
+    // An unlisted tape serves no site at all.
+    if state.blacklists.is_unlisted(tape) {
+        return Err(RouteError::Gone);
+    }
+
     let name = resolve_site_name(path);
     let config = &state.context.config.gateway.site;
     let is_spa = policy.spa_fallback.unwrap_or(config.spa_fallback);
@@ -232,6 +237,16 @@ async fn serve_site<
                 }
             }
         };
+
+    // A denied track answers gone before a revalidation could vouch for it.
+    let track = match &readable {
+        Readable::Track(resolved) => {
+            let track = track_with_pending(&state, resolved.track_address)?.ok_or(RouteError::NotFound)?;
+            ensure_readable(&state, resolved.track_address, track.tape)?;
+            Some(track)
+        }
+        Readable::Queued(_) => None,
+    };
 
     // A revalidation hit answers before any decode work happens; the etag is
     // formatted once for both the comparison and the 304 headers.
@@ -258,7 +273,7 @@ async fn serve_site<
         Readable::Track(resolved) => resolved,
     };
 
-    let track = track_with_pending(&state, resolved.track_address)?.ok_or(RouteError::NotFound)?;
+    let track = track.ok_or(RouteError::NotFound)?;
     if !track.is_certified() {
         return Err(RouteError::NotFound);
     }

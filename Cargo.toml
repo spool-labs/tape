@@ -7,6 +7,9 @@ members = [
   "lib/crypto",
   "solana/framework",
   "lib/blocks",
+  "lib/blacklist",
+  "lib/rack",
+  "lib/forwarded",
   "test/harness",
   "solana/programs/exchange",
   "solana/programs/staking",
@@ -39,6 +42,7 @@ members = [
   "network/peer-http",
   "network/peer-tls",
   "network/protocol",
+  "network/moderation",
   "lib/retry",
   "e2e/simnet",
   "e2e/devnet",
@@ -65,6 +69,9 @@ default-members = [
   "lib/crypto",
   "solana/framework",
   "lib/blocks",
+  "lib/blacklist",
+  "lib/rack",
+  "lib/forwarded",
   "lib/slicer",
   "lib/spooler",
   "lib/snapshot",
@@ -81,6 +88,7 @@ default-members = [
   "network/peer-http",
   "network/peer-tls",
   "network/protocol",
+  "network/moderation",
   "lib/retry",
   "tools/tape-admin",
   "tools/tape-grind",
@@ -106,6 +114,9 @@ keywords = ["object", "storage", "solana"]
 [workspace.dependencies]
 tape-api = { version = "0.4.0", path = "./solana/api" }
 tape-blocks = { version = "0.4.0", path = "./lib/blocks" }
+tape-blacklist = { version = "0.4.0", path = "./lib/blacklist" }
+tape-rack = { version = "0.4.0", path = "./lib/rack" }
+tape-forwarded = { version = "0.4.0", path = "./lib/forwarded" }
 tape-core = { version = "0.4.0", path = "./lib/core" }
 tape-crypto = { version = "0.4.0", path = "./lib/crypto" }
 tape-solana = { version = "0.4.0", path = "./solana/framework" }
@@ -238,6 +249,7 @@ futures = "0.3"
 rocksdb = {version = "0.23.0", features = ["multi-threaded-cf"]}
 tempdir = "0.3"
 axum = "0.8.4"
+http = "1"
 num_cpus = "1.17.0"
 tar = "0.4.44"
 prometheus = { version = "0.14.0", features = ["push"] }

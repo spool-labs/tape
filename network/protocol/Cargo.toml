@@ -31,3 +31,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 bytemuck.workspace = true
+peer-memory.workspace = true

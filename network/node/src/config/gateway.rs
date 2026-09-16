@@ -6,7 +6,8 @@ use serde::Deserialize;
 
 use tape_crypto::address::Address;
 
-use super::cidr::CidrBlock;
+use tape_blacklist::subscription::{Subscription, validate as validate_subscriptions};
+use tape_forwarded::cidr::CidrBlock;
 use super::helpers::{
     deserialize_domain_map, deserialize_option_pathbuf, deserialize_socket_addr,
     deserialize_subdomain_suffix,
@@ -31,6 +32,17 @@ pub struct GatewayConfig {
     /// Static site serving over the native read listener.
     #[serde(default)]
     pub site: GatewaySiteConfig,
+
+    /// Blacklists this gateway follows; reads of what they deny answer 410.
+    #[serde(default)]
+    pub blacklists: Vec<Subscription>,
+}
+
+impl GatewayConfig {
+    /// Why the blacklist subscriptions cannot be followed, if they cannot
+    pub fn validate_blacklists(&self) -> Result<(), String> {
+        validate_subscriptions(&self.blacklists).map_err(|error| format!("gateway.blacklists: {error}"))
+    }
 }
 
 

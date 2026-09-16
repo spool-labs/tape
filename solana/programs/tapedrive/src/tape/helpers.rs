@@ -1,4 +1,4 @@
-use tape_api::event::{TapeDestroyed, TapeReserved};
+use tape_api::event::TapeReserved;
 use tape_api::program::prelude::*;
 use tape_core::tape::{tape_reservation_cost, user_tape_number};
 
@@ -230,25 +230,3 @@ pub fn authorize_tape_operator(tape: &Tape, signer: Address) -> ProgramResult {
     Ok(())
 }
 
-pub fn destroy_expired<'account_info>(
-    tape_info: &AccountInfo<'account_info>,
-    fee_payer_info: &AccountInfo<'account_info>,
-    system: &System,
-    tape_address: Address,
-    authority: Address,
-    expiry_epoch: EpochNumber,
-) -> ProgramResult {
-    if current_epoch(system) < expiry_epoch {
-        return Err(TapeError::NotExpired.into());
-    }
-
-    TapeDestroyed {
-        tape: tape_address,
-        authority,
-    }
-    .log();
-
-    close_account(tape_info, fee_payer_info)?;
-
-    Ok(())
-}

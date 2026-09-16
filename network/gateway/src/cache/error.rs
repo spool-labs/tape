@@ -6,6 +6,8 @@ pub enum GatewayCacheError {
     Store(String),
     Codec(String),
     State(String),
+    /// The track was removed from this gateway
+    Removed,
 }
 
 impl Display for GatewayCacheError {
@@ -14,6 +16,7 @@ impl Display for GatewayCacheError {
             Self::Store(message) => write!(f, "store error: {message}"),
             Self::Codec(message) => write!(f, "codec error: {message}"),
             Self::State(message) => write!(f, "cache state error: {message}"),
+            Self::Removed => f.write_str("content removed"),
         }
     }
 }

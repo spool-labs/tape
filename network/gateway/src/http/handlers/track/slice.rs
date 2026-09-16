@@ -20,7 +20,8 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
 ) -> Result<impl IntoResponse, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
-    let read = read_cached_slice(&state, track_addr, spool_id).await?;
+    let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
+    let read = read_cached_slice(&state, track_addr, track.tape, spool_id).await?;
     let data = read.data;
     state.context.metrics.add_downloaded(data.len() as u64);
     if read.source == CacheSource::Hit {
@@ -33,11 +34,12 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 pub async fn read_cached_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
+    tape: Address,
     spool_id: SpoolIndex,
 ) -> Result<CacheRead, RouteError> {
     state
         .slice_cache
-        .get_or_insert_with(spool_id, track_addr, || {
+        .get_or_insert_with(spool_id, track_addr, tape, || {
             fetch_slice_from_owner(state, track_addr, spool_id)
         })
         .await
@@ -58,7 +60,7 @@ async fn fetch_slice_from_owner<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .position_of(spool_id)
         .ok_or_else(|| RouteError::BadRequest("spool is not in track group".into()))?;
 
-    let data = track_data_with_pending(state, track_addr)?.ok_or(RouteError::NotFound)?;
+    let data = track_data_with_pending(state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
     let BlobData::Coded(blob) = data else {
         return Err(RouteError::BadRequest(
             "track data is not blob metadata".into(),

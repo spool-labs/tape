@@ -18,7 +18,7 @@ use super::response::{
     range_header, resolve_range,
 };
 use crate::http::error::RouteError;
-use crate::http::handlers::track::{parse_address, track_with_pending};
+use crate::http::handlers::track::{ensure_readable, parse_address, track_with_pending};
 use crate::http::state::AppState;
 use crate::meter::{GatewayMeterDecision, MeterCaller, rate_limited_response};
 
@@ -37,6 +37,7 @@ pub async fn get_object<
 ) -> Result<Response, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
     let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
+    ensure_readable(&state, track_addr, track.tape)?;
     if !track.is_certified() {
         return Err(RouteError::BadRequest("track is not certified".into()));
     }
@@ -148,6 +149,7 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<Response, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
     let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
+    ensure_readable(&state, track_addr, track.tape)?;
     if !track.is_certified() {
         return Err(RouteError::BadRequest("track is not certified".into()));
     }

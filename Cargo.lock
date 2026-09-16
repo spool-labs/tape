@@ -9937,6 +9937,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9b3fce14bc6ba0c53705bc2cd9afa08e11d102a94c9bf65f03751b394f4af24"
 
 [[package]]
+name = "tape-blacklist"
+version = "0.4.0"
+dependencies = [
+ "serde",
+ "serde_yaml",
+ "tape-core",
+ "tape-crypto",
+ "tape-rack",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "tape-blocks"
 version = "0.4.0"
 dependencies = [
@@ -10214,6 +10226,7 @@ dependencies = [
  "spl-token",
  "store",
  "tape-api",
+ "tape-blacklist",
  "tape-chain-harness",
  "tape-core",
  "tape-crypto",
@@ -10224,6 +10237,7 @@ dependencies = [
  "tape-peer-manager",
  "tape-peer-tls",
  "tape-protocol",
+ "tape-rack",
  "tape-reel-store",
  "tape-rpc",
  "tape-rpc-client",
@@ -10235,6 +10249,14 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wincode 0.1.2",
+]
+
+[[package]]
+name = "tape-forwarded"
+version = "0.4.0"
+dependencies = [
+ "http",
+ "serde",
 ]
 
 [[package]]
@@ -10258,11 +10280,15 @@ dependencies = [
  "store",
  "store-memory",
  "tape-api",
+ "tape-blacklist",
  "tape-core",
  "tape-crypto",
+ "tape-forwarded",
  "tape-metrics",
  "tape-node",
  "tape-protocol",
+ "tape-rack",
+ "tape-retry",
  "tape-rpc",
  "tape-sdk",
  "tape-store",
@@ -10328,6 +10354,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-moderation"
+version = "0.4.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tape-api",
+ "tape-blacklist",
+ "tape-core",
+ "tape-crypto",
+ "tape-forwarded",
+ "tape-peer-http",
+ "tape-protocol",
+ "tape-rack",
+ "tape-rpc",
+ "tape-rpc-solana",
+ "tape-sdk",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "wincode 0.1.2",
+]
+
+[[package]]
 name = "tape-network"
 version = "0.4.0"
 dependencies = [
@@ -10389,10 +10450,12 @@ dependencies = [
  "store-memory",
  "store-rocks",
  "tape-api",
+ "tape-blacklist",
  "tape-blocks",
  "tape-chain-harness",
  "tape-core",
  "tape-crypto",
+ "tape-forwarded",
  "tape-metrics",
  "tape-observe-api",
  "tape-peer-http",
@@ -10496,6 +10559,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "bytemuck",
+ "peer-memory",
  "serde",
  "tape-api",
  "tape-core",
@@ -10511,6 +10575,15 @@ dependencies = [
  "tracing",
  "wincode 0.1.2",
  "wincode-derive 0.1.1",
+]
+
+[[package]]
+name = "tape-rack"
+version = "0.4.0"
+dependencies = [
+ "tape-core",
+ "tape-crypto",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -10840,18 +10913,23 @@ dependencies = [
  "chrono",
  "dioxus 0.7.10",
  "dioxus-ssr",
+ "futures",
  "openssl",
  "peer-memory",
  "rusqlite",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tape-api",
+ "tape-blacklist",
  "tape-blocks",
  "tape-core",
  "tape-crypto",
  "tape-peer-http",
  "tape-peer-manager",
  "tape-protocol",
+ "tape-rack",
+ "tape-retry",
  "tape-rpc",
  "tape-rpc-client",
  "tape-rpc-solana",
@@ -10860,6 +10938,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
+ "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",
