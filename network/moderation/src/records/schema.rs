@@ -136,4 +136,10 @@ CREATE TABLE IF NOT EXISTS rack_records (
     PRIMARY KEY (track, tape)
 );
 CREATE INDEX IF NOT EXISTS rack_records_tape ON rack_records (tape, track);
+
+-- One row the readiness probe rewrites, so a check proves the database takes a write
+CREATE TABLE IF NOT EXISTS probe (
+    id INTEGER PRIMARY KEY CHECK (id = 0),
+    written_at INTEGER NOT NULL
+);
 ";

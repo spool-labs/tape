@@ -16,10 +16,11 @@ use crate::chain::sdk::SdkChain;
 use crate::config::secret::read_secret;
 use crate::config::settings::Config;
 use crate::funder::upkeep::Funder;
+use crate::observe::state::{Limits, Observer};
 use crate::publisher::flush::Publisher;
 use crate::records::store::Records;
 use crate::service::error::ServiceError;
-use crate::service::producer::{run_producer, ProducerIntervals};
+use crate::service::producer::{Producer, ProducerIntervals};
 use crate::worker::gateway::GatewayClient;
 use crate::worker::moderation::ModerationClient;
 use crate::worker::runner::Worker;
@@ -30,6 +31,7 @@ pub async fn serve(config: Config) -> Result<(), ServiceError> {
     let salt = read_secret(&config.api.reporter_salt_file)?;
     let api_key = read_secret(&config.moderation.api_key_file)?;
     let chain = Arc::new(SdkChain::try_new(&config.chain)?);
+    let observer = Arc::new(Observer::try_new(Limits::new(&config.publisher, &config.funder))?);
     if records.list_tapes().await?.newest().is_none() {
         warn!("no named blacklist tape yet; decisions wait until `create-rack` finishes");
     }
@@ -43,8 +45,17 @@ pub async fn serve(config: Config) -> Result<(), ServiceError> {
         TapeRule::new(&config.tape_rule),
     );
     let publisher = Publisher::new(records.clone(), Arc::clone(&chain), config.publisher.batch_window);
-    let funder = Funder::new(records.clone(), chain, config.funder.clone(), config.tapes.clone());
-    let routes = router(ApiState::new(records, &config.api, salt), &config.api)?;
+    let funder = Funder::new(
+        records.clone(),
+        Arc::clone(&chain),
+        config.funder.clone(),
+        config.tapes.clone(),
+    );
+    let producer = Producer::new(publisher, funder, chain, records.clone(), Arc::clone(&observer));
+    let routes = router(
+        ApiState::new(records, &config.api, salt, Arc::clone(&observer)),
+        &config.api,
+    )?;
     let listener = TcpListener::bind(config.api.listen)
         .await
         .map_err(|source| ServiceError::Bind {
@@ -59,8 +70,8 @@ pub async fn serve(config: Config) -> Result<(), ServiceError> {
         upkeep: config.funder.interval,
     };
     let api = spawn_api(listener, routes, cancel.clone());
-    let checks = spawn_worker(worker, cancel.clone());
-    let producer = spawn_producer(publisher, funder, intervals, cancel.clone());
+    let checks = spawn_worker(worker, observer, cancel.clone());
+    let producer = spawn_producer(producer, intervals, cancel.clone());
 
     tokio::select! {
         // Safe: signal listeners hold no state worth keeping
@@ -97,22 +108,21 @@ fn spawn_api(listener: TcpListener, routes: Router, cancel: CancellationToken) -
     })
 }
 
-fn spawn_worker(worker: Worker, cancel: CancellationToken) -> JoinHandle<()> {
+fn spawn_worker(worker: Worker, observer: Arc<Observer>, cancel: CancellationToken) -> JoinHandle<()> {
     tokio::spawn(async move {
         let _stop_others = cancel.clone().drop_guard();
-        worker.run(cancel).await;
+        worker.run(cancel, observer).await;
     })
 }
 
 fn spawn_producer(
-    publisher: Publisher<SdkChain>,
-    funder: Funder<SdkChain>,
+    producer: Producer<SdkChain>,
     intervals: ProducerIntervals,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let _stop_others = cancel.clone().drop_guard();
-        run_producer(publisher, funder, intervals, cancel).await;
+        producer.run(intervals, cancel).await;
     })
 }
 

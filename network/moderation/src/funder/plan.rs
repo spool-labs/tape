@@ -1,7 +1,7 @@
 //! Upkeep decisions for one tape and the payer, from chain state alone
 
 use tape_core::types::coin::{SOL, TAPE};
-use tape_core::types::{EpochNumber, StorageUnits};
+use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
 use tape_sdk::stream::manifest::MAX_TRACKS_PER_TAPE;
 
 use crate::chain::tape_chain::{PayerBalances, TapeStatus};
@@ -23,6 +23,8 @@ pub enum TapeDuty {
 pub struct TapeUpkeep {
     pub extend_expiry: Option<EpochNumber>,
     pub extend_capacity: Option<StorageUnits>,
+    /// Track slots the tape has left
+    pub free_tracks: TrackNumber,
     /// A written tape whose free track slots are down to the headroom
     pub is_short_of_tracks: bool,
 }
@@ -44,12 +46,13 @@ pub fn plan_tape(
     let remaining = status.expiry_epoch.saturating_sub(current_epoch);
     let is_written = matches!(duty, TapeDuty::Rack | TapeDuty::Newest);
     let free = status.capacity.saturating_sub(status.used);
-    let slots_left = MAX_TRACKS_PER_TAPE.saturating_sub(status.next_track.0);
+    let free_tracks = TrackNumber(MAX_TRACKS_PER_TAPE.saturating_sub(status.next_track.0));
 
     TapeUpkeep {
         extend_expiry: (remaining < config.expiry_horizon).then_some(config.expiry_extension),
         extend_capacity: (is_written && free < config.capacity_reserve).then_some(config.capacity_extension),
-        is_short_of_tracks: is_written && slots_left <= config.track_headroom.0,
+        free_tracks,
+        is_short_of_tracks: is_written && free_tracks <= config.track_headroom,
     }
 }
 

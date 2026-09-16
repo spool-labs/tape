@@ -60,14 +60,22 @@ fn unresolved_reason(
             sent.input_count
         ));
     }
+    let input = sent.input_type.as_str();
     for result in &response.results {
-        for category in removal_categories {
+        // The API judges only some categories per input type: an image says nothing
+        // about harassment. Judge what applies and leave the rest out of it.
+        let applicable = removal_categories
+            .iter()
+            .filter(|category| result.applies_to(**category, sent.input_type));
+        let mut judged = 0;
+        for category in applicable {
             if result.flag(*category) != Some(false) {
                 return Some(format!("{category} was not returned"));
             }
-            if !result.applies_to(*category, sent.input_type) {
-                return Some(format!("{category} does not apply to {} input", sent.input_type.as_str()));
-            }
+            judged += 1;
+        }
+        if judged == 0 {
+            return Some(format!("no removal category applies to {input} input"));
         }
     }
     None
@@ -137,6 +145,50 @@ mod tests {
         let verdict = decide(&response(vec![result(&[], &["text"])]), &TEXT, &Category::ALL);
 
         assert_eq!(verdict, Verdict::Clean);
+    }
+
+    const IMAGE: SentInput = SentInput {
+        input_type: InputType::Image,
+        input_count: 1,
+        is_complete: true,
+    };
+
+    /// An image result: the API applies most categories to images, but not harassment
+    fn image_result(flagged: &[Category]) -> ModerationResult {
+        let mut result = result(flagged, &["image"]);
+        if let Some(applied) = result.category_applied_input_types.as_mut() {
+            applied.insert(Category::Harassment.as_str().to_string(), Some(vec!["text".to_string()]));
+        }
+        result
+    }
+
+    // an unflagged image is clean, even though harassment cannot apply to it
+    #[test]
+    fn image_clean() {
+        let verdict = decide(&response(vec![image_result(&[])]), &IMAGE, &Category::ALL);
+
+        assert_eq!(verdict, Verdict::Clean);
+    }
+
+    // an image flagged in a category that applies to images is removed
+    #[test]
+    fn image_flagged() {
+        let verdict = decide(&response(vec![image_result(&[Category::Sexual])]), &IMAGE, &Category::ALL);
+
+        assert_eq!(verdict, Verdict::Remove { categories: vec![Category::Sexual] });
+    }
+
+    // an applicable category the API left out still stays unresolved
+    #[test]
+    fn image_missing_value() {
+        let mut missing = image_result(&[]);
+        if let Some(categories) = missing.categories.as_mut() {
+            categories.insert("sexual".to_string(), None);
+        }
+
+        let verdict = decide(&response(vec![missing]), &IMAGE, &Category::ALL);
+
+        assert!(matches!(verdict, Verdict::Unresolved { .. }), "{verdict:?}");
     }
 
     // partial content, missing values, missing results and unapplied categories stay unresolved

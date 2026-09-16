@@ -26,6 +26,7 @@ rpc-solana.workspace = true
 axum.workspace = true
 base64 = "0.22"
 clap.workspace = true
+prometheus.workspace = true
 reqwest.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde.workspace = true

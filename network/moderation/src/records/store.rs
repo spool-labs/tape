@@ -255,6 +255,15 @@ impl Records {
             .await
     }
 
+    /// Take a write, then read the summary: what readiness and metrics answer from
+    pub async fn observe(&self, now: Timestamp) -> Result<StatusSummary, RecordsError> {
+        self.call(move |connection| {
+            status::probe(connection, now)?;
+            status::summary(connection, now)
+        })
+        .await
+    }
+
     async fn call<Output, Operation>(&self, operation: Operation) -> Result<Output, RecordsError>
     where
         Output: Send + 'static,

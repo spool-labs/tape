@@ -8,6 +8,7 @@ use thiserror::Error;
 use crate::api::error::ApiError;
 use crate::chain::error::ChainError;
 use crate::config::error::ConfigError;
+use crate::observe::error::ObserveError;
 use crate::records::error::RecordsError;
 use crate::worker::error::WorkerError;
 
@@ -28,6 +29,9 @@ pub enum ServiceError {
 
     #[error(transparent)]
     Api(#[from] ApiError),
+
+    #[error(transparent)]
+    Observe(#[from] ObserveError),
 
     #[error("binding {address}: {source}")]
     Bind {

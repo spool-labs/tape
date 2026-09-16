@@ -3,14 +3,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tokio::task::spawn_blocking;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::chain::keys::{load_key, persist_new_key};
-use crate::chain::tape_chain::{TapeChain, TapeStatus};
+use crate::chain::tape_chain::{PayerBalances, TapeChain, TapeStatus};
 use crate::config::settings::{FunderConfig, TapesConfig};
 use crate::funder::error::FunderError;
 use crate::funder::plan::{is_expired, is_expiring, low_balances, plan_tape, LowBalance, TapeDuty};
@@ -32,6 +32,18 @@ where
     tapes: TapesConfig,
 }
 
+/// What a run read, for readiness and metrics
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UpkeepFacts {
+    /// `None` when the balances could not be read
+    pub balances: Option<PayerBalances>,
+    pub rack_epochs_left: Option<EpochNumber>,
+    /// Epochs to expiry of the blacklist tape entries go to
+    pub newest_epochs_left: Option<EpochNumber>,
+    /// Free track slots on the blacklist tape entries go to
+    pub newest_free_tracks: Option<TrackNumber>,
+}
+
 /// What one run did
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct UpkeepReport {
@@ -48,6 +60,7 @@ pub struct UpkeepReport {
     pub expired: Vec<Address>,
     /// The blacklist tape added because the newest ran short of tracks or time
     pub new_tape: Option<Address>,
+    pub facts: UpkeepFacts,
 }
 
 /// A rack and the first blacklist tape it names
@@ -198,9 +211,17 @@ where
         }
 
         let is_expiring = is_expiring(expiry_epoch, current_epoch, &self.config);
+        let epochs_left = expiry_epoch.saturating_sub(current_epoch);
         match duty {
-            TapeDuty::Rack => note_rack(tape, &status, upkeep.is_short_of_tracks, is_expiring, report),
-            TapeDuty::Newest => return Ok(upkeep.is_short_of_tracks || is_expiring),
+            TapeDuty::Rack => {
+                report.facts.rack_epochs_left = Some(epochs_left);
+                note_rack(tape, &status, upkeep.is_short_of_tracks, is_expiring, report);
+            }
+            TapeDuty::Newest => {
+                report.facts.newest_epochs_left = Some(epochs_left);
+                report.facts.newest_free_tracks = Some(upkeep.free_tracks);
+                return Ok(upkeep.is_short_of_tracks || is_expiring);
+            }
             TapeDuty::Kept => self.vacate(tape, is_expiring, now, report).await?,
         }
         Ok(false)
@@ -245,7 +266,10 @@ where
 
     async fn check_balances(&self, report: &mut UpkeepReport) {
         match self.chain.payer_balances().await {
-            Ok(balances) => report.low_balances = low_balances(&balances, &self.config),
+            Ok(balances) => {
+                report.facts.balances = Some(balances);
+                report.low_balances = low_balances(&balances, &self.config);
+            }
             Err(error) => warn!(%error, "reading payer balances failed"),
         }
         for low in &report.low_balances {

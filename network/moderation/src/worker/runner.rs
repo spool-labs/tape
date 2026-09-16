@@ -1,5 +1,7 @@
 //! The check worker: runs due jobs through the gateway and the moderation API
 
+use std::sync::Arc;
+
 use tape_api::program::tapedrive::track_pda;
 use tape_crypto::address::Address;
 use tape_sdk::stream::manifest::ChunkManifest;
@@ -8,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use crate::config::settings::WorkerConfig;
+use crate::observe::state::Observer;
 use crate::records::rows::{CheckAttempt, CheckSettlement, Job, JobFailure, Removal};
 use crate::records::states::{CheckOutcome, TargetState};
 use crate::records::store::Records;
@@ -80,7 +83,7 @@ impl Worker {
         }
     }
 
-    pub async fn run(&self, cancel: CancellationToken) {
+    pub async fn run(&self, cancel: CancellationToken, observer: Arc<Observer>) {
         let mut ticker = interval(self.config.poll_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -90,7 +93,7 @@ impl Worker {
                 // Safe: a tick holds no state; a dropped one waits for the next
                 _ = ticker.tick() => {}
             }
-            self.drain(&cancel).await;
+            self.drain(&cancel, &observer).await;
         }
     }
 
@@ -109,13 +112,21 @@ impl Worker {
         }
     }
 
-    async fn drain(&self, cancel: &CancellationToken) {
+    async fn drain(&self, cancel: &CancellationToken, observer: &Observer) {
         while !cancel.is_cancelled() {
             match self.run_next(Timestamp::now(), cancel).await {
-                Ok(Some(outcome)) => debug!(?outcome, "job ran"),
-                Ok(None) => return,
+                Ok(Some(outcome)) => {
+                    observer.worked(Ok(()));
+                    count_verdict(observer, outcome);
+                    debug!(?outcome, "job ran");
+                }
+                Ok(None) => {
+                    observer.worked(Ok(()));
+                    return;
+                }
                 Err(error) => {
                     warn!(%error, "job did not run");
+                    observer.worked(Err(error.to_string()));
                     return;
                 }
             }
@@ -307,6 +318,13 @@ impl Worker {
             Some(_) => JobOutcome::Retrying,
             None => JobOutcome::Failed,
         })
+    }
+}
+
+fn count_verdict(observer: &Observer, outcome: JobOutcome) {
+    match outcome {
+        JobOutcome::Checked { outcome, .. } => observer.checked(outcome),
+        JobOutcome::Listed { .. } | JobOutcome::Retrying | JobOutcome::Failed => {}
     }
 }
 
@@ -855,6 +873,26 @@ mod tests {
         harness.stop().await;
     }
 
+    // a later report on an unresolved target is checked again, since nothing was decided
+    #[tokio::test]
+    async fn recheck_unresolved() {
+        let harness = Harness::new(config(), TapeRuleConfig::default()).await;
+        let track = address(9);
+        let text = "a".repeat(8 * 8_000 + 10);
+        harness.object(track, Some("text/plain"), text.as_bytes());
+        harness.report(Target::track(track), Timestamp(100)).await;
+        let first = harness.run(Timestamp(100)).await;
+
+        harness.object(track, Some("text/plain"), b"short enough to judge");
+        harness.report(Target::track(track), Timestamp(200)).await;
+        let second = harness.run(Timestamp(200)).await;
+
+        assert_eq!(first, Some(JobOutcome::Checked { outcome: CheckOutcome::Unresolved, decisions: 0 }));
+        assert_eq!(second, Some(JobOutcome::Checked { outcome: CheckOutcome::Clean, decisions: 0 }));
+        assert_eq!(target_state(&harness.database(), Target::track(track)), "clean");
+        harness.stop().await;
+    }
+
     // text longer than the segments sent stays unresolved even with no flags
     #[tokio::test]
     async fn partial_text() {
@@ -872,7 +910,7 @@ mod tests {
         harness.stop().await;
     }
 
-    // an image is sent whole but stays unresolved when text-only categories did not apply
+    // an image is sent whole and judged on the categories that apply to images
     #[tokio::test]
     async fn image() {
         let harness = Harness::new(config(), TapeRuleConfig::default()).await;
@@ -882,7 +920,7 @@ mod tests {
 
         let outcome = harness.run(Timestamp(100)).await;
 
-        assert_eq!(outcome, Some(JobOutcome::Checked { outcome: CheckOutcome::Unresolved, decisions: 0 }));
+        assert_eq!(outcome, Some(JobOutcome::Checked { outcome: CheckOutcome::Clean, decisions: 0 }));
         let input = &harness.requests()[0]["input"][0];
         assert_eq!(input["type"], "image_url");
         assert!(input["image_url"]["url"].as_str().is_some_and(|url| url.starts_with("data:image/png;base64,")));

@@ -1,4 +1,4 @@
-//! The summary `status` prints
+//! The summary `status` prints, and the write probe readiness reads it with
 
 use rusqlite::{params, Connection};
 
@@ -7,6 +7,15 @@ use crate::records::rows::StatusSummary;
 use crate::records::states::{JobState, TrackState};
 use crate::records::tapes;
 use crate::types::timestamp::Timestamp;
+
+/// Rewrite the probe row, so readiness knows the database takes a write and is not merely there
+pub fn probe(connection: &Connection, now: Timestamp) -> Result<(), RecordsError> {
+    connection.execute(
+        "INSERT INTO probe (id, written_at) VALUES (0, ?1) ON CONFLICT (id) DO UPDATE SET written_at = ?1",
+        params![now.0],
+    )?;
+    Ok(())
+}
 
 pub fn summary(connection: &Connection, now: Timestamp) -> Result<StatusSummary, RecordsError> {
     let (pending_jobs, due_jobs): (u64, u64) = connection.query_row(

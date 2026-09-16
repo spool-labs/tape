@@ -1,4 +1,4 @@
-//! Routes: `POST /v1/reports` and `GET /v1/health`
+//! Routes: `POST /v1/reports`, `GET /v1/health`, `GET /v1/ready` and `GET /metrics`
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::Router;
+use axum::{Json, Router};
 use tape_forwarded::caller::resolve_caller_ip;
 use tape_forwarded::cidr::CidrBlock;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -21,32 +21,38 @@ use crate::api::limiter::CallerLimiter;
 use crate::api::report::parse_report;
 use crate::api::reporter::ReporterHasher;
 use crate::config::settings::ApiConfig;
-use crate::records::rows::NewReport;
+use crate::observe::state::{Observer, ReportOutcome};
+use crate::records::rows::{NewReport, SubmitOutcome};
 use crate::records::store::Records;
 use crate::types::timestamp::Timestamp;
 
 pub const REPORTS_PATH: &str = "/v1/reports";
 pub const HEALTH_PATH: &str = "/v1/health";
+pub const READY_PATH: &str = "/v1/ready";
+pub const METRICS_PATH: &str = "/metrics";
 
 const ACKNOWLEDGED_BODY: &str = r#"{"acknowledged":true}"#;
 const JSON_CONTENT: &str = "application/json";
+const PROMETHEUS_CONTENT: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-/// Everything a report request needs
+/// Everything a report request needs, and what readiness and metrics read
 #[derive(Clone)]
 pub struct ApiState {
     records: Records,
     limiter: Arc<CallerLimiter>,
     reporter: Arc<ReporterHasher>,
     trusted_proxies: Arc<Vec<CidrBlock>>,
+    observer: Arc<Observer>,
 }
 
 impl ApiState {
-    pub fn new(records: Records, config: &ApiConfig, salt: String) -> Self {
+    pub fn new(records: Records, config: &ApiConfig, salt: String, observer: Arc<Observer>) -> Self {
         Self {
             records,
             limiter: Arc::new(CallerLimiter::new(&config.caller_limit)),
             reporter: Arc::new(ReporterHasher::new(salt)),
             trusted_proxies: Arc::new(config.trusted_proxies.clone()),
+            observer,
         }
     }
 }
@@ -64,6 +70,8 @@ pub fn router(state: ApiState, config: &ApiConfig) -> Result<Router, ApiError> {
     let router = Router::new()
         .route(REPORTS_PATH, post(submit_report))
         .route(HEALTH_PATH, get(health))
+        .route(READY_PATH, get(ready))
+        .route(METRICS_PATH, get(metrics))
         .layer(DefaultBodyLimit::max(config.max_body_bytes))
         .layer(cors)
         .with_state(state);
@@ -80,12 +88,16 @@ async fn submit_report(
     let caller = resolve_caller_ip(peer.ip(), &headers, &state.trusted_proxies);
     if !state.limiter.try_acquire(caller, Instant::now()) {
         debug!("report over its caller limit, acknowledged without recording");
+        state.observer.reported(ReportOutcome::Limited);
         return acknowledged();
     }
 
     let report = match parse_report(&body) {
         Ok(report) => report,
-        Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        Err(error) => {
+            state.observer.reported(ReportOutcome::Rejected);
+            return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
+        }
     };
     let new_report = NewReport {
         target: report.target,
@@ -96,16 +108,41 @@ async fn submit_report(
     };
 
     match state.records.submit_report(new_report, Timestamp::now()).await {
-        Ok(_) => acknowledged(),
+        Ok(SubmitOutcome::Accepted) => {
+            state.observer.reported(ReportOutcome::Accepted);
+            acknowledged()
+        }
+        Ok(SubmitOutcome::Duplicate) => {
+            state.observer.reported(ReportOutcome::Duplicate);
+            acknowledged()
+        }
         Err(error) => {
             warn!(%error, "report not recorded");
+            state.observer.reported(ReportOutcome::Failed);
             StatusCode::SERVICE_UNAVAILABLE.into_response()
         }
     }
 }
 
+/// Liveness: the process is up and serving
 async fn health() -> Response {
     (StatusCode::OK, "ok").into_response()
+}
+
+/// Readiness: every check and its state, 503 when one of them says the service cannot do its job
+async fn ready(State(state): State<ApiState>) -> Response {
+    let readiness = state.observer.readiness(Instant::now());
+    let status = match readiness.is_ready {
+        true => StatusCode::OK,
+        false => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    (status, Json(readiness)).into_response()
+}
+
+/// Prometheus text; no caller limit applies, so a scraper is never turned away
+async fn metrics(State(state): State<ApiState>) -> Response {
+    let text = state.observer.render(Instant::now());
+    (StatusCode::OK, [(CONTENT_TYPE, PROMETHEUS_CONTENT)], text).into_response()
 }
 
 fn acknowledged() -> Response {
@@ -125,11 +162,16 @@ mod tests {
     use axum::http::Request;
     use rusqlite::Connection;
     use serde_json::json;
+    use tape_core::types::coin::{SOL, TAPE};
+    use tape_core::types::{EpochNumber, TrackNumber};
     use tempfile::TempDir;
     use tower::ServiceExt;
 
     use super::*;
+    use crate::chain::tape_chain::PayerBalances;
     use crate::config::settings::CallerLimitConfig;
+    use crate::funder::upkeep::UpkeepFacts;
+    use crate::observe::state::{Limits, Observation};
     use crate::types::ids::ReportCount;
 
     const ORIGIN_ALLOWED: &str = "https://explorer.example";
@@ -139,6 +181,7 @@ mod tests {
     struct Api {
         dir: TempDir,
         router: Router,
+        observer: Arc<Observer>,
     }
 
     fn api() -> Api {
@@ -156,11 +199,41 @@ mod tests {
                 max_callers: 100,
             },
         };
-        let state = ApiState::new(records, &config, "salt".to_string());
+        let observer = Arc::new(Observer::try_new(Limits::default()).expect("observer"));
+        let state = ApiState::new(records, &config, "salt".to_string(), Arc::clone(&observer));
         Api {
             dir,
             router: router(state, &config).expect("router"),
+            observer,
         }
+    }
+
+    /// Record a pass of every kind, all healthy
+    fn healthy(api: &Api) {
+        api.observer.observed(Ok(Observation {
+            has_rack: true,
+            has_tape: true,
+            queued_decisions: 0,
+            queue_age: Duration::ZERO,
+            pending_jobs: 0,
+            failed_jobs: 0,
+        }));
+        api.observer.published(Ok(()));
+        api.observer.probed(Ok(EpochNumber(1_274)));
+        api.observer.upkept(Ok(UpkeepFacts {
+            balances: Some(PayerBalances {
+                sol: SOL(2 * SOL::SCALE),
+                tape: TAPE(50 * TAPE::SCALE),
+            }),
+            rack_epochs_left: Some(EpochNumber(40)),
+            newest_epochs_left: Some(EpochNumber(40)),
+            newest_free_tracks: Some(TrackNumber(30_000)),
+        }));
+    }
+
+    async fn get(api: &Api, path: &str) -> Response {
+        let request = Request::get(path).body(Body::empty()).expect("request");
+        api.router.clone().oneshot(request).await.expect("response")
     }
 
     fn report(key: &str) -> String {
@@ -324,10 +397,50 @@ mod tests {
     #[tokio::test]
     async fn health_check() {
         let api = api();
-        let request = Request::get(HEALTH_PATH).body(Body::empty()).expect("request");
 
-        let response = api.router.clone().oneshot(request).await.expect("response");
+        let response = get(&api, HEALTH_PATH).await;
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ready answers 503 with the failing check named, and 200 once every pass is healthy
+    #[tokio::test]
+    async fn readiness() {
+        let api = api();
+
+        let unrun = get(&api, READY_PATH).await;
+        let unrun_status = unrun.status();
+        let body = to_bytes(unrun.into_body(), usize::MAX).await.expect("body");
+        let unready: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        healthy(&api);
+        let ready = get(&api, READY_PATH).await;
+
+        assert_eq!(unrun_status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(unready["ready"], json!(false));
+        assert_eq!(unready["checks"]["chain"]["ready"], json!(false));
+        assert!(unready["checks"]["payer"]["detail"].is_string());
+        assert_eq!(ready.status(), StatusCode::OK);
+    }
+
+    // metrics are served on the same listener, in Prometheus text, past the caller limit
+    #[tokio::test]
+    async fn metrics_text() {
+        let api = api();
+        healthy(&api);
+        for index in 0..4 {
+            post_report(&api, "203.0.113.5:5000", None, report(&format!("key-metrics-0000{index}"))).await;
+        }
+
+        let response = get(&api, METRICS_PATH).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response.headers().get(CONTENT_TYPE).and_then(|value| value.to_str().ok());
+        assert_eq!(content_type, Some(PROMETHEUS_CONTENT));
+        let body = to_bytes(response.into_body(), usize::MAX).await.expect("body");
+        let text = String::from_utf8(body.to_vec()).expect("text");
+        assert!(text.contains("tape_moderation_payer_sol_lamports 2000000000"), "{text}");
+        assert!(text.contains("tape_moderation_payer_tape_flux 50000000000"), "{text}");
+        assert!(text.contains(r#"tape_moderation_reports_total{outcome="accepted"} 2"#), "{text}");
+        assert!(text.contains(r#"tape_moderation_reports_total{outcome="limited"} 2"#), "{text}");
     }
 }

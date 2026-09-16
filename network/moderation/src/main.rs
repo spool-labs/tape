@@ -5,6 +5,7 @@ pub mod chain;
 pub mod cli;
 pub mod config;
 pub mod funder;
+pub mod observe;
 pub mod operator;
 pub mod publisher;
 pub mod records;

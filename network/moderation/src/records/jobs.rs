@@ -135,11 +135,12 @@ fn is_checkable(kind: TargetKind, existing: Option<TargetRow>) -> bool {
         return true;
     };
     match existing.state {
-        TargetState::Pending | TargetState::Failed => true,
+        // Unresolved is not a decision: a later report deserves another look, since
+        // the policy or the API's answer may have changed since
+        TargetState::Pending | TargetState::Failed | TargetState::Unresolved => true,
         TargetState::Listed => kind == TargetKind::Tape,
         TargetState::Clean
         | TargetState::Removed
-        | TargetState::Unresolved
         | TargetState::Gone
         | TargetState::Unlisted
         | TargetState::Restored => false,
