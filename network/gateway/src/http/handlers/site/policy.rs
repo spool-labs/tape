@@ -9,13 +9,14 @@ use serde::Deserialize;
 use store::Store;
 use tape_core::track::data::BlobData;
 use tape_crypto::address::Address;
-use tape_node::config::gateway::is_valid_origin;
+use tape_node::config::gateway::{is_valid_origin, is_valid_policy};
 use tape_protocol::Api;
 use tape_store::ops::TrackDataOps;
 use tracing::debug;
 
 use tape_store::TapeStore;
 
+use crate::blacklist::denials::GatewayBlacklists;
 use crate::http::handlers::resolve::{Readable, resolve_readable};
 use crate::http::state::AppState;
 use crate::staging::StagingStore;
@@ -35,7 +36,7 @@ const MAX_TENANT_MAX_AGE_SECS: u64 = 86_400;
 pub struct TapeSitePolicy {
     pub spa_fallback: Option<bool>,
     pub cors_origins: Option<Vec<String>>,
-    pub connect_origins: Option<Vec<String>>,
+    pub content_security_policy: Option<String>,
     pub max_age_secs: Option<u64>,
 }
 
@@ -48,6 +49,7 @@ pub fn tape_site_policy<Db: Store, Cluster: Api, Blockchain: Rpc>(
     site_policy(
         state.context.store.as_ref(),
         state.staging.as_ref(),
+        state.blacklists.as_ref(),
         state.context.config.gateway.site.tenant_overrides,
         tape,
     )
@@ -57,6 +59,7 @@ pub fn tape_site_policy<Db: Store, Cluster: Api, Blockchain: Rpc>(
 fn site_policy<Db: Store>(
     store: &TapeStore<Db>,
     staging: &StagingStore<Db>,
+    blacklists: &GatewayBlacklists,
     has_tenant_overrides: bool,
     tape: Address,
 ) -> TapeSitePolicy {
@@ -74,7 +77,7 @@ fn site_policy<Db: Store>(
         }
     };
 
-    let Some(bytes) = policy_bytes(store, staging, tape, readable) else {
+    let Some(bytes) = policy_bytes(store, staging, blacklists, tape, readable) else {
         return TapeSitePolicy::default();
     };
     match serde_json::from_slice(&bytes) {
@@ -90,6 +93,7 @@ fn site_policy<Db: Store>(
 fn policy_bytes<Db: Store>(
     store: &TapeStore<Db>,
     staging: &StagingStore<Db>,
+    blacklists: &GatewayBlacklists,
     tape: Address,
     readable: Readable,
 ) -> Option<Vec<u8>> {
@@ -101,7 +105,7 @@ fn policy_bytes<Db: Store>(
             staging.bytes(tape, SITE_POLICY_OBJECT.as_bytes()).ok().flatten()
         }
         Readable::Track(resolved) => {
-            if is_oversize(tape, resolved.size) {
+            if blacklists.denies(resolved.track_address, tape) || is_oversize(tape, resolved.size) {
                 return None;
             }
             let data = store.get_track_data(resolved.track_address);
@@ -123,16 +127,16 @@ fn is_oversize(tape: Address, size: u64) -> bool {
 }
 
 /// Tame tenant-supplied values: drop origins that could break out of a
-/// header value or name no scheme, and cap the revalidation window. The
-/// tape owner controls the values, the gateway controls that they stay
-/// well-formed.
+/// header value or name no scheme, drop a policy that cannot travel as a
+/// header, and cap the revalidation window. The tape owner controls the
+/// values, the gateway controls that they stay well-formed.
 fn sanitized(mut policy: TapeSitePolicy) -> TapeSitePolicy {
     if let Some(origins) = policy.cors_origins.as_mut() {
         origins.retain(|origin| is_valid_origin(origin));
     }
-    if let Some(origins) = policy.connect_origins.as_mut() {
-        origins.retain(|origin| is_valid_origin(origin));
-    }
+    policy.content_security_policy = policy
+        .content_security_policy
+        .filter(|value| is_valid_policy(value));
     policy.max_age_secs = policy
         .max_age_secs
         .map(|secs| secs.min(MAX_TENANT_MAX_AGE_SECS));
@@ -167,7 +171,7 @@ mod tests {
             .await
             .expect("enqueue policy");
 
-        let policy = site_policy(&store, &staging, true, tape);
+        let policy = site_policy(&store, &staging, &GatewayBlacklists::default(), true, tape);
 
         assert_eq!(policy.spa_fallback, Some(true));
     }
@@ -178,30 +182,42 @@ mod tests {
         let store = Arc::new(TapeStore::new(MemoryStore::new()));
         let staging = StagingStore::try_new(store.clone()).expect("open queue");
 
-        let policy = site_policy(&store, &staging, true, Address::new([2u8; 32]));
+        let policy = site_policy(
+            &store,
+            &staging,
+            &GatewayBlacklists::default(),
+            true,
+            Address::new([2u8; 32]),
+        );
 
         assert!(policy.spa_fallback.is_none());
     }
 
-    // tenant origins keep valid entries and drop malformed or unsafe ones
+    // tenant values keep valid entries and drop malformed or unsafe ones
     #[test]
     fn origin_sanitizing() {
         let policy = sanitized(TapeSitePolicy {
             spa_fallback: None,
             cors_origins: Some(vec!["https://a.example".into(), "javascript:x".into()]),
-            connect_origins: Some(vec![
-                "wss://rpc.example".into(),
-                "https://x; script-src *".into(),
-                "*".into(),
-            ]),
+            content_security_policy: Some("default-src 'self'".into()),
             max_age_secs: None,
         });
 
         assert_eq!(policy.cors_origins.as_deref(), Some(&["https://a.example".to_string()][..]));
-        assert_eq!(
-            policy.connect_origins.as_deref(),
-            Some(&["wss://rpc.example".to_string(), "*".to_string()][..])
-        );
+        assert_eq!(policy.content_security_policy.as_deref(), Some("default-src 'self'"));
+    }
+
+    // a policy that could end the header early is dropped, not repaired
+    #[test]
+    fn policy_sanitizing() {
+        let policy = sanitized(TapeSitePolicy {
+            spa_fallback: None,
+            cors_origins: None,
+            content_security_policy: Some("default-src 'self'\r\nx-injected: 1".into()),
+            max_age_secs: None,
+        });
+
+        assert!(policy.content_security_policy.is_none());
     }
 
     // a tenant cannot pin content in caches beyond the ceiling
@@ -210,7 +226,7 @@ mod tests {
         let policy = sanitized(TapeSitePolicy {
             spa_fallback: None,
             cors_origins: None,
-            connect_origins: None,
+            content_security_policy: None,
             max_age_secs: Some(31_536_000),
         });
         assert_eq!(policy.max_age_secs, Some(MAX_TENANT_MAX_AGE_SECS));

@@ -7,8 +7,9 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use rpc::Rpc;
 use store::Store;
-use tape_node::config::cidr::CidrBlock;
-use tape_node::features::http::forwarded::{peer_ip, resolve_caller_ip};
+use tape_forwarded::caller::resolve_caller_ip;
+use tape_forwarded::cidr::CidrBlock;
+use tape_node::features::http::forwarded::peer_ip;
 use tape_protocol::Api;
 use tracing::debug;
 

@@ -164,7 +164,7 @@ mod tests {
     use tape_core::spooler::GroupIndex;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
@@ -218,6 +218,9 @@ mod tests {
                     flags: TapeFlags::SYSTEM,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(track_number.0 + 1),
+                    authority: Address::default(),
+                    delegate: Address::default(),
+                    grant_generation: 0,
                 },
             )
             .expect("seed snapshot tape");
@@ -227,6 +230,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
+            visibility: TrackVisibility::Public as u64,
             size: blob.size,
             group,
             value_hash: blob.get_hash(),

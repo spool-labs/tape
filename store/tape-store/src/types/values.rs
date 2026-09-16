@@ -90,6 +90,15 @@ pub struct TapeInfo {
 
     /// Next monotonic track number expected for this tape
     pub next_track_number: TrackNumber,
+
+    /// Authority that owns the tape
+    pub authority: Address,
+
+    /// Delegate allowed to operate on the tape, default when none is set
+    pub delegate: Address,
+
+    /// Generation every read grant on this tape must match
+    pub grant_generation: u64,
 }
 
 impl TapeInfo {
@@ -100,7 +109,16 @@ impl TapeInfo {
             flags,
             end_epoch,
             next_track_number,
+            authority: Address::default(),
+            delegate: Address::default(),
+            grant_generation: 0,
         }
+    }
+
+    /// Whether a signer may operate on this tape, matching the on-chain rule
+    pub fn is_operator(&self, signer: Address) -> bool {
+        signer == self.authority
+            || (self.delegate != Address::default() && signer == self.delegate)
     }
 }
 
@@ -184,6 +202,8 @@ pub struct CredentialCaps {
     pub can_delete: bool,
     /// May perform the multipart-upload lifecycle
     pub can_multipart: bool,
+    /// May read a restricted object
+    pub can_read: bool,
 }
 
 impl CredentialCaps {
@@ -193,6 +213,7 @@ impl CredentialCaps {
             can_put: true,
             can_delete: true,
             can_multipart: true,
+            can_read: true,
         }
     }
 
@@ -202,6 +223,7 @@ impl CredentialCaps {
             can_put: false,
             can_delete: false,
             can_multipart: false,
+            can_read: false,
         }
     }
 }
@@ -818,6 +840,9 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(200),
             next_track_number: TrackNumber(0),
+            authority: Address::new_unique(),
+            delegate: Address::default(),
+            grant_generation: 3,
         };
 
         let bytes = wincode::serialize(&info).unwrap();

@@ -1,4 +1,4 @@
-mod decode;
+pub mod decode;
 mod manifest;
 pub mod response;
 mod routes;

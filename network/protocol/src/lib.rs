@@ -1,5 +1,6 @@
 pub mod api;
 pub mod fetch;
+pub mod inline;
 pub mod snapshot;
 pub mod state;
 

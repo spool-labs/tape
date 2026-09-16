@@ -5,9 +5,11 @@ use store::Store;
 use tape_node::context::NodeContext;
 use tape_protocol::Api;
 
-use crate::admission::Admission;
+use crate::admission::{AdmitAll, Admission};
+use crate::blacklist::denials::GatewayBlacklists;
 use crate::staging::StagingStore;
 use crate::cache::GatewaySliceCache;
+use crate::grants::GrantStore;
 use crate::http::handlers::s3::accounting::Accounting;
 use crate::http::handlers::s3::write::S3WriteContext;
 use crate::http::handlers::site::hosts::SiteHostBindings;
@@ -35,6 +37,37 @@ pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub site_hosts: Option<Arc<SiteHostBindings>>,
     /// Writes acknowledged to the client but not yet applied on chain; reads serve from here first.
     pub staging: Arc<StagingStore<Db>>,
+    /// Read grants the operator configured, presented when fetching a restricted
+    /// track's slices.
+    pub grants: Arc<GrantStore>,
+    /// Blacklists this gateway follows; reads of what they deny are refused.
+    pub blacklists: Arc<GatewayBlacklists>,
+}
+
+impl<Db: Store, Cluster: Api, Blockchain: Rpc> AppState<Db, Cluster, Blockchain> {
+    /// State for reads alone: no delegate signer, no write accounting, no site hosts
+    pub fn reader(
+        context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+        slice_cache: Arc<GatewaySliceCache<Db>>,
+        meter: Arc<GatewayMeter>,
+        staging: Arc<StagingStore<Db>>,
+        blacklists: Arc<GatewayBlacklists>,
+    ) -> Self {
+        let grants = Arc::new(GrantStore::from_config(&context.config.gateway.grants));
+        Self {
+            context,
+            slice_cache,
+            meter,
+            write_ctx: None,
+            s3_delegate: None,
+            accounting: Arc::new(Accounting::new()),
+            admission: Arc::new(AdmitAll),
+            site_hosts: None,
+            staging,
+            grants,
+            blacklists,
+        }
+    }
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, Blockchain> {
@@ -49,6 +82,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, B
             admission: self.admission.clone(),
             site_hosts: self.site_hosts.clone(),
             staging: self.staging.clone(),
+            grants: self.grants.clone(),
+            blacklists: self.blacklists.clone(),
         }
     }
 }

@@ -4,8 +4,6 @@
 //! principal's budget before the on-chain write, then reconciles to the
 //! actual afterward.
 
-use std::collections::HashSet;
-
 use store::{Column, Direction, Store, WriteBatch};
 use tape_crypto::address::Address;
 
@@ -132,19 +130,9 @@ pub trait LedgerOps {
     /// Release a reservation without committing any cost.
     fn refund(&self, key: &LedgerReservationKey) -> Result<()>;
 
-    /// Reclaim every reservation older than `ttl_secs` that is not in
-    /// `in_flight`, by refunding it. Returns the number reclaimed. The caller
-    /// holds the ledger lock for the duration.
-    ///
-    /// A write still running holds a reservation the sweep must leave alone:
-    /// reclaiming it drops the charge, because the commit that follows finds
-    /// no record to reconcile and bills nothing.
-    fn sweep_reservations(
-        &self,
-        now: i64,
-        ttl_secs: i64,
-        in_flight: &HashSet<LedgerReservationKey>,
-    ) -> Result<usize>;
+    /// Reclaim every reservation older than `ttl_secs` by refunding it. Returns
+    /// the number reclaimed. The caller holds the ledger lock for the duration.
+    fn sweep_reservations(&self, now: i64, ttl_secs: i64) -> Result<usize>;
 }
 
 /// Serialize a value to wincode bytes, mapping errors to the store error type
@@ -325,12 +313,7 @@ impl<Backend: Store> LedgerOps for TapeStore<Backend> {
         Ok(())
     }
 
-    fn sweep_reservations(
-        &self,
-        now: i64,
-        ttl_secs: i64,
-        in_flight: &HashSet<LedgerReservationKey>,
-    ) -> Result<usize> {
+    fn sweep_reservations(&self, now: i64, ttl_secs: i64) -> Result<usize> {
         let cutoff = now.saturating_sub(ttl_secs);
         let raw = self.inner().inner();
 
@@ -343,9 +326,6 @@ impl<Backend: Store> LedgerOps for TapeStore<Backend> {
                 .map_err(|error| TapeStoreError::Serialization(format!("reservation key: {error}")))?;
             if key.created_at > cutoff {
                 break;
-            }
-            if in_flight.contains(&key) {
-                continue;
             }
             expired.push(key);
         }
@@ -415,7 +395,7 @@ mod tests {
         };
 
         // The TTL sweep reclaims the reservation before the slow write commits.
-        let swept = store.sweep_reservations(now + 10, 0, &HashSet::new()).expect("sweep");
+        let swept = store.sweep_reservations(now + 10, 0).expect("sweep");
         assert_eq!(swept, 1);
 
         // Commit finds nothing left to bill and reports it; the write goes unbilled.
@@ -666,17 +646,8 @@ mod tests {
             unreachable!("expected grant");
         };
 
-        // A write still running against the stale reservation keeps it: reclaiming
-        // it would leave the commit nothing to reconcile, so the write goes free.
-        let held = HashSet::from([stale]);
-        assert_eq!(store.sweep_reservations(old + 60, 50, &held).expect("sweep"), 0);
-        assert!(store
-            .get::<LedgerReservationCol>(&stale)
-            .expect("get reservation")
-            .is_some());
-
         // TTL of 50s at t=old+60: the t=old reservation is stale, the t=old+100 is not.
-        let reclaimed = store.sweep_reservations(old + 60, 50, &HashSet::new()).expect("sweep");
+        let reclaimed = store.sweep_reservations(old + 60, 50).expect("sweep");
         assert_eq!(reclaimed, 1);
         assert!(store
             .get::<LedgerReservationCol>(&stale)

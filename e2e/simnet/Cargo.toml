@@ -17,6 +17,8 @@ tokio.workspace = true
 rpc-litesvm.workspace = true
 rpc-client.workspace = true
 tape-api.workspace = true
+tape-blacklist.workspace = true
+tape-rack.workspace = true
 tape-node.workspace = true
 tape-gateway.workspace = true
 tape-store.workspace = true
@@ -48,6 +50,8 @@ tape-crypto.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
+tape-privacy.workspace = true
+ed25519-dalek.workspace = true
 async-trait.workspace = true
 bytemuck.workspace = true
 spl-token.workspace = true

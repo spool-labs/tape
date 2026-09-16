@@ -155,6 +155,33 @@ impl PendingTracks {
         inner.tapes_by_slot.entry(slot).or_default().push(tape);
     }
 
+    /// Push an updated snapshot of a pending tape so last-wins reads see the change.
+    /// A tape only known to the disk store is left alone; the finalized path applies
+    /// the same event there.
+    fn apply_tape_update(
+        &self,
+        slot: SlotNumber,
+        tape: Address,
+        update: impl FnOnce(&mut TapeInfo),
+    ) {
+        let mut inner = self.inner.write().expect("pending-tracks lock poisoned");
+        let Some(mut info) = inner
+            .reservations
+            .get(&tape)
+            .and_then(|events| events.last())
+            .map(|event| event.info.clone())
+        else {
+            return;
+        };
+        update(&mut info);
+        inner
+            .reservations
+            .entry(tape)
+            .or_default()
+            .push(TapeEvent { slot, info });
+        inner.tapes_by_slot.entry(slot).or_default().push(tape);
+    }
+
     pub fn apply_certify(&self, slot: SlotNumber, track: Address) {
         self.append(
             track,
@@ -177,6 +204,7 @@ impl PendingTracks {
                     track,
                     key,
                     object,
+                    visibility,
                     value,
                     event,
                     ..
@@ -190,6 +218,7 @@ impl PendingTracks {
                         key: *key,
                         kind: meta.kind as u64,
                         state: meta.state as u64,
+                        visibility: *visibility as u64,
                         size: meta.size,
                         group: event.group,
                         value_hash: meta.value_hash,
@@ -215,8 +244,19 @@ impl PendingTracks {
                             flags: event.flags,
                             end_epoch: event.expiry_epoch,
                             next_track_number: TrackNumber(0),
+                            authority: event.authority,
+                            delegate: Address::default(),
+                            grant_generation: 0,
                         },
                     );
+                }
+                ParsedInstruction::SetTapeDelegate { tape, delegate } => {
+                    self.apply_tape_update(block.slot, *tape, |info| info.delegate = *delegate);
+                }
+                ParsedInstruction::BumpGrantGeneration { tape } => {
+                    self.apply_tape_update(block.slot, *tape, |info| {
+                        info.grant_generation += 1;
+                    });
                 }
                 _ => {}
             }
@@ -460,7 +500,7 @@ mod tests {
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
-    use tape_core::track::types::TrackKind;
+    use tape_core::track::types::{TrackKind, TrackVisibility};
     use tape_core::types::{StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
 
@@ -473,6 +513,7 @@ mod tests {
             key: Hash::new_unique(),
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(1024),
             group: GroupIndex::from(0),
             value_hash: Hash::new_unique(),

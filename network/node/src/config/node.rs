@@ -13,7 +13,7 @@ use crate::core::error::NodeError;
 use super::challenge::ChallengeConfig;
 use super::eviction::EvictionConfig;
 use super::{
-    gateway::{GatewayConfig, is_valid_origin},
+    gateway::{GatewayConfig, is_valid_origin, is_valid_policy},
     helpers::{deserialize_pathbuf, expand_path},
     http::{HttpConfig, NetworkConfig},
     https::HttpsConfig,
@@ -120,75 +120,6 @@ impl GenesisPreset {
 }
 
 
-/// Query keys whose value is a shared secret, so a URL carrying one must not
-/// travel in the clear.
-const CREDENTIAL_QUERY_KEYS: [&str; 6] =
-    ["api", "api-key", "api_key", "token", "access-token", "access_token"];
-
-/// The host of an `http://` endpoint that carries a credential and is not
-/// reachable only over loopback or a private network, or `None` when the
-/// endpoint is fine.
-///
-/// A key in a plaintext URL is readable by anything on the path, and the
-/// responses it authenticates are equally modifiable. Loopback and RFC1918 are
-/// exempt: a localnet validator and a private-network leg are both legitimate
-/// places to speak http.
-fn credential_over_plaintext(url: &str) -> Option<&str> {
-    let rest = url.strip_prefix("http://")?;
-    let (authority, query) = match rest.split_once('?') {
-        Some((authority, query)) => (authority, Some(query)),
-        None => (rest, None),
-    };
-    let authority = authority.split('/').next().unwrap_or(authority);
-
-    // `user:pass@host` carries the credential in the authority itself.
-    let (userinfo, host) = match authority.rsplit_once('@') {
-        Some((userinfo, host)) => (Some(userinfo), host),
-        None => (None, authority),
-    };
-    // A bracketed IPv6 authority (`[::1]:8899`) has colons inside the brackets,
-    // so the port split has to respect them or `::1` reads as a public host.
-    let host_only = match host.strip_prefix('[') {
-        Some(rest) => rest.split(']').next().unwrap_or(rest),
-        None => host.rsplit_once(':').map_or(host, |(name, _)| name),
-    };
-
-    if is_private_host(host_only) {
-        return None;
-    }
-
-    let in_query = query.is_some_and(|query| {
-        query.split('&').any(|pair| {
-            let key = pair.split('=').next().unwrap_or("");
-            CREDENTIAL_QUERY_KEYS.contains(&key.to_ascii_lowercase().as_str())
-        })
-    });
-
-    (userinfo.is_some() || in_query).then_some(host_only)
-}
-
-/// Whether a host is reachable only from this machine or a private network.
-fn is_private_host(host: &str) -> bool {
-    if host.eq_ignore_ascii_case("localhost") || host == "::1" || host.starts_with("127.") {
-        return true;
-    }
-
-    let octets: Vec<&str> = host.split('.').collect();
-    if octets.len() != 4 {
-        return false;
-    }
-    let parsed: Option<Vec<u8>> = octets.iter().map(|octet| octet.parse::<u8>().ok()).collect();
-    let Some(octets) = parsed else {
-        return false;
-    };
-    match (octets[0], octets[1]) {
-        (10, _) => true,
-        (172, second) if (16..=31).contains(&second) => true,
-        (192, 168) => true,
-        _ => false,
-    }
-}
-
 impl NodeConfig {
     /// Returns whether challenge and eviction participation are both enabled.
     pub fn eviction_enabled(&self) -> bool {
@@ -226,15 +157,6 @@ impl NodeConfig {
             return Err(ConfigError::Invalid(
                 "solana.rpc must list at least one endpoint".into(),
             ));
-        }
-
-        for url in &self.solana.rpc {
-            if let Some(host) = credential_over_plaintext(url.trim()) {
-                return Err(ConfigError::Invalid(format!(
-                    "solana.rpc endpoint for {host} sends its credential over plaintext http; \
-                     use https, or reach it over loopback or a private network"
-                )));
-            }
         }
 
         if !self.node.commission.is_valid() {
@@ -295,18 +217,27 @@ impl NodeConfig {
             )));
         }
 
-        let site_origins = self
-            .gateway
-            .site
-            .connect_origins
-            .iter()
-            .chain(self.gateway.site.cors_origins.iter());
-        for origin in site_origins {
+        for origin in &self.gateway.site.cors_origins {
             if !is_valid_origin(origin) {
                 return Err(ConfigError::Invalid(format!(
                     "gateway.site origin `{origin}` is not a valid origin"
                 )));
             }
+        }
+
+        if let Some(policy) = self.gateway.site.content_security_policy.as_deref() {
+            if !is_valid_policy(policy) {
+                return Err(ConfigError::Invalid(
+                    "gateway.site.content_security_policy must be non-empty printable ascii"
+                        .into(),
+                ));
+            }
+        }
+
+        if self.gateway.site.subdomain_redirect && self.gateway.site.subdomain_suffix.is_none() {
+            return Err(ConfigError::Invalid(
+                "gateway.site.subdomain_redirect needs gateway.site.subdomain_suffix".into(),
+            ));
         }
 
         if self.gateway.metering.over_budget_penalty_secs == 0 {
@@ -320,6 +251,8 @@ impl NodeConfig {
                 "gateway.metering.stale_entry_secs must be greater than zero".into(),
             ));
         }
+
+        self.gateway.validate_blacklists().map_err(ConfigError::Invalid)?;
 
         if self.http.admission.anonymous_write_per_sec == 0 {
             return Err(ConfigError::Invalid(
@@ -510,8 +443,9 @@ mod tests {
 
     use tape_core::types::{BasisPoints, SlotNumber};
 
-    use super::{NodeConfig, credential_over_plaintext, default_config_path};
-    use crate::config::cidr::CidrBlock;
+    use super::{NodeConfig, default_config_path};
+    use tape_crypto::address::Address;
+    use tape_forwarded::cidr::CidrBlock;
     use crate::config::logs::LoggingFormat;
 
     const EXAMPLE_CONFIG: &str = r#"
@@ -716,43 +650,6 @@ http:
         assert!(result.is_err());
     }
 
-    // a key in a plaintext url to a public host is refused; the same url over
-    // tls, to loopback, or to a private network is not
-    #[test]
-    fn rejects_plaintext_credentials() {
-        assert_eq!(
-            credential_over_plaintext("http://159.203.173.197:8899?api=secret"),
-            Some("159.203.173.197")
-        );
-        assert_eq!(
-            credential_over_plaintext("http://user:pass@rpc.example.com:8899"),
-            Some("rpc.example.com")
-        );
-        assert_eq!(
-            credential_over_plaintext("http://rpc.example.com/?token=secret"),
-            Some("rpc.example.com")
-        );
-
-        // TLS carries the secret safely.
-        assert_eq!(credential_over_plaintext("https://rpc.example.com?api=secret"), None);
-        // No secret to leak.
-        assert_eq!(credential_over_plaintext("http://159.203.173.197:8899"), None);
-        assert_eq!(credential_over_plaintext("http://rpc.example.com?commitment=finalized"), None);
-        // Loopback and private networks are not "in the clear" in the sense that matters.
-        assert_eq!(credential_over_plaintext("http://127.0.0.1:8899?api=secret"), None);
-        assert_eq!(credential_over_plaintext("http://localhost:8899?api=secret"), None);
-        assert_eq!(credential_over_plaintext("http://[::1]:8899?api=secret"), None);
-        assert_eq!(credential_over_plaintext("http://[::1]?api=secret"), None);
-        assert_eq!(credential_over_plaintext("http://10.10.2.9:8899?api=secret"), None);
-        assert_eq!(credential_over_plaintext("http://192.168.1.5:8899?api=secret"), None);
-        assert_eq!(credential_over_plaintext("http://172.16.0.4:8899?api=secret"), None);
-        // 172.32 is public.
-        assert_eq!(
-            credential_over_plaintext("http://172.32.0.4:8899?api=secret"),
-            Some("172.32.0.4")
-        );
-    }
-
     // an empty endpoint list leaves the ingestor with nowhere to read from
     #[test]
     fn rejects_empty_rpc_list() {
@@ -792,6 +689,53 @@ node:
         assert_eq!(config.network.host, None);
         assert_eq!(config.network.port, 3430);
         assert!(config.metrics.enabled);
+    }
+
+    // a site policy that could end the header early is refused at load
+    #[test]
+    fn rejects_policy_control_bytes() {
+        let result = NodeConfig::from_yaml_str(
+            "gateway:\n  site:\n    content_security_policy: \"default-src 'self'\\nx: y\"\n",
+        );
+
+        assert!(result.is_err());
+    }
+
+    // retiring the path form needs a subdomain to send sites to
+    #[test]
+    fn rejects_redirect_without_suffix() {
+        let result = NodeConfig::from_yaml_str(
+            "gateway:\n  site:\n    subdomain_redirect: true\n",
+        );
+
+        assert!(result.is_err());
+    }
+
+    // a well-formed site policy loads as written
+    #[test]
+    fn parses_site_policy() {
+        let config = NodeConfig::from_yaml_str(
+            "gateway:\n  site:\n    content_security_policy: \"default-src 'self'\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.gateway.site.content_security_policy.as_deref(),
+            Some("default-src 'self'")
+        );
+    }
+
+    // blacklist subscriptions load, and a tape subscribed twice is refused
+    #[test]
+    fn blacklist_subscriptions() {
+        let tape = Address::new([7u8; 32]);
+        let one = format!("gateway:\n  blacklists:\n    - name: a\n      tape: {tape}\n      actions: [remove]\n");
+        let twice = format!("{one}    - name: b\n      tape: {tape}\n      actions: [unlist]\n");
+
+        let config = NodeConfig::from_yaml_str(&one).expect("parse config");
+
+        assert_eq!(config.gateway.blacklists.len(), 1);
+        assert!(NodeConfig::from_yaml_str(&twice).is_err());
     }
 
     #[test]

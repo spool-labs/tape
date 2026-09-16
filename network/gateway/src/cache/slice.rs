@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use store::{Column, Direction, Store};
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_node::config::gateway::GatewayCacheConfig;
@@ -16,6 +18,7 @@ use tracing::{debug, warn};
 use super::error::GatewayCacheError;
 use super::inflight::InflightFetches;
 use super::state::{CacheRead, CacheSource, CacheState, CacheStats, SliceCacheKey};
+use crate::blacklist::denials::GatewayBlacklists;
 
 pub struct GatewaySliceCache<Db: Store> {
     store: Arc<TapeStore<Db>>,
@@ -23,12 +26,14 @@ pub struct GatewaySliceCache<Db: Store> {
     state: Mutex<CacheState>,
     inflight: InflightFetches,
     deleted_since_reclaim: AtomicUsize,
+    blacklists: Arc<GatewayBlacklists>,
 }
 
 impl<Db: Store> GatewaySliceCache<Db> {
     pub fn new(
         store: Arc<TapeStore<Db>>,
         config: GatewayCacheConfig,
+        blacklists: Arc<GatewayBlacklists>,
     ) -> Result<Self, GatewayCacheError> {
         let state = Self::load_state(store.as_ref())?;
         let cache = Self {
@@ -37,6 +42,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
             state: Mutex::new(state),
             inflight: InflightFetches::default(),
             deleted_since_reclaim: AtomicUsize::new(0),
+            blacklists,
         };
         let evicted = cache.evict_to_budget()?;
         if evicted > 0 {
@@ -60,6 +66,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
         &self,
         spool_id: SpoolIndex,
         track_address: Address,
+        tape: Address,
         fetch: F,
     ) -> Result<CacheRead, E>
     where
@@ -72,6 +79,10 @@ impl<Db: Store> GatewaySliceCache<Db> {
         let mut waited = false;
 
         loop {
+            // Checked again after every wait, so a waiter never serves content denied meanwhile.
+            if self.blacklists.denies(track_address, tape) {
+                return Err(GatewayCacheError::Removed.into());
+            }
             if let Some(data) = self.get_cached(key).map_err(E::from)? {
                 crate::metrics::inc_cache(if waited { "coalesced" } else { "hit" });
                 return Ok(CacheRead {
@@ -91,7 +102,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
                     let result = fetch().await;
                     match result {
                         Ok(data) => self
-                            .store_fetched(key, data)
+                            .store_fetched(key, tape, data)
                             .map(|data| CacheRead {
                                 data,
                                 source: CacheSource::Miss,
@@ -109,6 +120,14 @@ impl<Db: Store> GatewaySliceCache<Db> {
             }
             return result;
         }
+    }
+
+    /// Delete every cached slice of a track across its group
+    pub fn purge_track(&self, track_address: Address, group: GroupIndex) -> Result<(), GatewayCacheError> {
+        for position in 0..GROUP_SIZE {
+            self.delete_cached(SliceCacheKey::new(group.spool_at(position), track_address))?;
+        }
+        Ok(())
     }
 
     fn load_state(store: &TapeStore<Db>) -> Result<CacheState, GatewayCacheError> {
@@ -155,16 +174,27 @@ impl<Db: Store> GatewaySliceCache<Db> {
     fn store_fetched(
         &self,
         key: SliceCacheKey,
+        tape: Address,
         data: Vec<u8>,
     ) -> Result<Vec<u8>, GatewayCacheError> {
         if self.config.max_bytes == 0 {
             self.delete_cached(key)?;
-            return Ok(data);
+            return match self.blacklists.denies(key.track_address, tape) {
+                true => Err(GatewayCacheError::Removed),
+                false => Ok(data),
+            };
         }
 
-        self.store
-            .put_slice(key.spool_id, key.track_address, data.clone())
-            .map_err(store_error)?;
+        // Held across the check and the write, so a batch applied meanwhile waits
+        // for this write and the purge after it deletes what was written.
+        let stored = self.blacklists.write_unless_denied(key.track_address, tape, || {
+            self.store
+                .put_slice(key.spool_id, key.track_address, data.clone())
+        });
+        match stored {
+            Some(result) => result.map_err(store_error)?,
+            None => return Err(GatewayCacheError::Removed),
+        }
 
         {
             let mut state = self.lock_state()?;
@@ -268,6 +298,17 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use store_memory::MemoryStore;
+    use std::convert::Infallible;
+
+    use tape_blacklist::batch::{render, render_first};
+    use tape_blacklist::blacklists::Blacklists;
+    use tape_blacklist::entry::Entry;
+    use tape_blacklist::extract::Change;
+    use tape_blacklist::subscription::{HonoredAction, Subscription};
+    use tape_core::types::TrackNumber;
+    use tape_rack::format::render_first as render_rack;
+    use tape_rack::record::Record;
+    use tape_rack::source::MemorySource;
     use tape_store::ops::SliceOps;
 
     use super::*;
@@ -284,6 +325,14 @@ mod tests {
         Arc::new(TapeStore::new(MemoryStore::new()))
     }
 
+    fn blacklists() -> Arc<GatewayBlacklists> {
+        Arc::new(GatewayBlacklists::default())
+    }
+
+    fn test_tape() -> Address {
+        Address::new([7u8; 32])
+    }
+
     #[tokio::test]
     async fn cache_hit_avoids_fetch() {
         let store = test_store();
@@ -291,10 +340,10 @@ mod tests {
         let spool = SpoolIndex(7);
         store.put_slice(spool, track, vec![1, 2, 3]).unwrap();
 
-        let cache = GatewaySliceCache::new(store, cache_config(1024)).unwrap();
+        let cache = GatewaySliceCache::new(store, cache_config(1024), blacklists()).unwrap();
         let fetches = AtomicUsize::new(0);
         let read = cache
-            .get_or_insert_with(spool, track, || async {
+            .get_or_insert_with(spool, track, test_tape(), || async {
                 fetches.fetch_add(1, Ordering::SeqCst);
                 Ok::<_, GatewayCacheError>(vec![9])
             })
@@ -309,7 +358,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_miss_fetches_once() {
         let store = test_store();
-        let cache = Arc::new(GatewaySliceCache::new(store, cache_config(1024)).unwrap());
+        let cache = Arc::new(GatewaySliceCache::new(store, cache_config(1024), blacklists()).unwrap());
         let track = Address::new_unique();
         let spool = SpoolIndex(11);
         let fetches = Arc::new(AtomicUsize::new(0));
@@ -320,7 +369,7 @@ mod tests {
             let fetches = fetches.clone();
             tasks.push(tokio::spawn(async move {
                 cache
-                    .get_or_insert_with(spool, track, || async move {
+                    .get_or_insert_with(spool, track, test_tape(), || async move {
                         fetches.fetch_add(1, Ordering::SeqCst);
                         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                         Ok::<_, GatewayCacheError>(vec![4, 5, 6])
@@ -346,19 +395,19 @@ mod tests {
     #[tokio::test]
     async fn evicts_lru_entry_when_budget_is_exceeded() {
         let store = test_store();
-        let cache = GatewaySliceCache::new(store.clone(), cache_config(5)).unwrap();
+        let cache = GatewaySliceCache::new(store.clone(), cache_config(5), blacklists()).unwrap();
         let first = Address::new_unique();
         let second = Address::new_unique();
         let spool = SpoolIndex(3);
 
         cache
-            .get_or_insert_with(spool, first, || async {
+            .get_or_insert_with(spool, first, test_tape(), || async {
                 Ok::<_, GatewayCacheError>(vec![1, 1, 1])
             })
             .await
             .unwrap();
         cache
-            .get_or_insert_with(spool, second, || async {
+            .get_or_insert_with(spool, second, test_tape(), || async {
                 Ok::<_, GatewayCacheError>(vec![2, 2, 2])
             })
             .await
@@ -375,12 +424,12 @@ mod tests {
     #[tokio::test]
     async fn zero_budget_does_not_persist_fetched_slices() {
         let store = test_store();
-        let cache = GatewaySliceCache::new(store.clone(), cache_config(0)).unwrap();
+        let cache = GatewaySliceCache::new(store.clone(), cache_config(0), blacklists()).unwrap();
         let track = Address::new_unique();
         let spool = SpoolIndex(19);
 
         let read = cache
-            .get_or_insert_with(spool, track, || async {
+            .get_or_insert_with(spool, track, test_tape(), || async {
                 Ok::<_, GatewayCacheError>(vec![7, 8, 9])
             })
             .await
@@ -390,5 +439,52 @@ mod tests {
         assert_eq!(read.data, vec![7, 8, 9]);
         assert!(store.get_slice(spool, track).unwrap().is_none());
         assert_eq!(cache.stats().unwrap().entries, 0);
+    }
+
+    // a fetch that finishes after its track is removed caches nothing, and later reads are refused
+    #[tokio::test]
+    async fn removed_track() {
+        let store = test_store();
+        let (rack, list_tape, track) = (Address::new_unique(), Address::new_unique(), Address::new_unique());
+        let spool = SpoolIndex(5);
+        let mut source = MemorySource::default();
+        source.reserve(rack);
+        source.write(rack, TrackNumber(0), &render_rack(&[Record::new(list_tape)]));
+        source.reserve(list_tape);
+        source.write(list_tape, TrackNumber(0), &render_first(&[]).expect("render header"));
+        let subscription = Subscription {
+            name: "list".to_string(),
+            tape: rack,
+            actions: vec![HonoredAction::Remove],
+        };
+        let blacklists = Arc::new(GatewayBlacklists::new(
+            Blacklists::try_new(vec![subscription]).expect("subscriptions"),
+        ));
+        let rebuilt: Result<_, Infallible> = blacklists.rebuild(&source);
+        assert!(rebuilt.is_ok());
+        let cache = GatewaySliceCache::new(store.clone(), cache_config(1024), blacklists.clone())
+            .expect("open cache");
+        source.write(list_tape, TrackNumber(1), &render(&[Entry::remove(track)]).expect("render"));
+        let removal = [Change::Written {
+            tape: list_tape,
+            track_number: TrackNumber(1),
+        }];
+
+        let read = cache
+            .get_or_insert_with(spool, track, test_tape(), || async {
+                let applied: Result<_, Infallible> = blacklists.apply(&removal, &source);
+                assert!(applied.is_ok());
+                Ok::<_, GatewayCacheError>(vec![1, 2, 3])
+            })
+            .await;
+        let again = cache
+            .get_or_insert_with(spool, track, test_tape(), || async {
+                Ok::<_, GatewayCacheError>(vec![9])
+            })
+            .await;
+
+        assert!(matches!(read, Err(GatewayCacheError::Removed)));
+        assert!(matches!(again, Err(GatewayCacheError::Removed)));
+        assert!(store.get_slice(spool, track).expect("read store").is_none());
     }
 }

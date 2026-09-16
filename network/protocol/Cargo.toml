@@ -1,7 +1,13 @@
 [package]
 name = "tape-protocol"
+description = "Network protocol types and state management for Tapedrive nodes"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+readme.workspace = true
 
 [dependencies]
 tape-api = { workspace = true }
@@ -13,6 +19,7 @@ rpc.workspace = true
 rpc-client.workspace = true
 tape-retry.workspace = true
 arc-swap.workspace = true
+base64.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true
@@ -25,3 +32,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 bytemuck.workspace = true
+peer-memory.workspace = true

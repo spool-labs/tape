@@ -16,7 +16,6 @@ use tape_node::config::http::HttpConfig;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_protocol::Api;
-use tape_crypto::address::Address;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower::limit::ConcurrencyLimitLayer;
@@ -25,7 +24,8 @@ use tower::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-use crate::admission::{AdmitAll, Admission};
+use crate::admission::Admission;
+use crate::blacklist::denials::GatewayBlacklists;
 use crate::drain::DrainStatus;
 use crate::cache::GatewaySliceCache;
 use crate::http::AppState;
@@ -40,6 +40,7 @@ use crate::http::handlers::s3::{
 };
 use crate::http::handlers::{health, object, site, track};
 use crate::meter::GatewayMeter;
+use crate::grants::GrantStore;
 use crate::staging::StagingStore;
 
 pub struct GatewayHttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -47,6 +48,7 @@ pub struct GatewayHttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
     staging: Arc<StagingStore<Db>>,
+    blacklists: Arc<GatewayBlacklists>,
     http_config: HttpConfig,
     cancel: CancellationToken,
 }
@@ -65,6 +67,7 @@ where
         slice_cache: Arc<GatewaySliceCache<Db>>,
         meter: Arc<GatewayMeter>,
         staging: Arc<StagingStore<Db>>,
+        blacklists: Arc<GatewayBlacklists>,
         http_config: HttpConfig,
         cancel: CancellationToken,
     ) -> Self {
@@ -73,25 +76,28 @@ where
             slice_cache,
             meter,
             staging,
+            blacklists,
             http_config,
             cancel,
         }
     }
 
     fn build_router(&self) -> Router {
+        // No route on this listener writes. The delegate is here so a tape that
+        // delegates to this gateway can have its restricted reads served on a
+        // grant the gateway signs itself.
+        let write_ctx = load_delegate(&self.context.config.gateway.s3);
         let state = AppState {
-            context: self.context.clone(),
-            slice_cache: self.slice_cache.clone(),
-            meter: self.meter.clone(),
-            // The native read listener never writes, so it carries no delegate
-            // signing context and its accounting and admission state are never
-            // exercised.
-            write_ctx: None,
-            s3_delegate: s3_delegate_address(&self.context.config.gateway.s3),
-            accounting: Arc::new(Accounting::new()),
-            admission: Arc::new(AdmitAll),
+            s3_delegate: write_ctx.as_ref().map(|ctx| ctx.delegate_address()),
+            write_ctx,
             site_hosts: SiteHostBindings::from_config(self.context.config.gateway.site.txt_domains),
-            staging: self.staging.clone(),
+            ..AppState::reader(
+                self.context.clone(),
+                self.slice_cache.clone(),
+                self.meter.clone(),
+                self.staging.clone(),
+                self.blacklists.clone(),
+            )
         };
         let peer_body_limit = DefaultBodyLimit::max(self.http_config.peer_max_bytes);
 
@@ -262,6 +268,7 @@ pub struct GatewayS3Server<Db: Store, Cluster: Api, Blockchain: Rpc> {
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
     staging: Arc<StagingStore<Db>>,
+    blacklists: Arc<GatewayBlacklists>,
     write_ctx: Option<Arc<S3WriteContext>>,
     accounting: Arc<Accounting>,
     admission: Arc<dyn Admission>,
@@ -283,6 +290,7 @@ where
         slice_cache: Arc<GatewaySliceCache<Db>>,
         meter: Arc<GatewayMeter>,
         staging: Arc<StagingStore<Db>>,
+        blacklists: Arc<GatewayBlacklists>,
         write_ctx: Option<Arc<S3WriteContext>>,
         accounting: Arc<Accounting>,
         admission: Arc<dyn Admission>,
@@ -294,6 +302,7 @@ where
             slice_cache,
             meter,
             staging,
+            blacklists,
             write_ctx,
             accounting,
             admission,
@@ -314,6 +323,8 @@ where
             // The S3 listener never serves site hosts.
             site_hosts: None,
             staging: self.staging.clone(),
+            grants: Arc::new(GrantStore::from_config(&self.context.config.gateway.grants)),
+            blacklists: self.blacklists.clone(),
         };
 
         let verifier = verifier_from_config(&self.s3_config);
@@ -347,7 +358,6 @@ where
             tokio::spawn(reservation_sweep_loop(
                 self.accounting.clone(),
                 self.context.store.clone(),
-                self.context.config.gateway.s3.write.reservation_ttl_secs,
                 self.cancel.clone(),
             ))
         });
@@ -480,14 +490,14 @@ async fn handle_http_error(error: axum::BoxError) -> StatusCode {
     }
 }
 
-/// Service routes 503 until bootstrap catch-up completes; status routes are
+/// Service routes 503 until bootstrap and blacklist catch-up complete; status routes are
 /// registered outside this layer and serve throughout.
 async fn require_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     req: Request,
     next: Next,
 ) -> Response {
-    if !state.context.bootstrap.is_ready() {
+    if !state.context.bootstrap.is_ready() || !state.blacklists.is_caught_up() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     next.run(req).await
@@ -517,11 +527,4 @@ async fn count_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     #[cfg(not(feature = "metrics"))]
     next.run(req).await
-}
-
-/// The S3 delegate address from the configured key, for a listener that does
-/// not sign writes itself.
-fn s3_delegate_address(s3_config: &S3Config) -> Option<Address> {
-    let path = s3_config.delegate_key.as_deref()?;
-    S3WriteContext::load(path).ok().map(|ctx| ctx.delegate_address())
 }

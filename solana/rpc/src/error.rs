@@ -1,7 +1,7 @@
 //! RPC error types
 //!
 //! This module provides error types for RPC operations that are
-//! implementation-agnostic. Specific implementations (like `rpc-solana`)
+//! implementation-agnostic. Specific implementations (like `tape-rpc-solana`)
 //! convert their internal errors into these types.
 
 use std::time::Duration;

@@ -70,6 +70,9 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(200),
             next_track_number: TrackNumber(0),
+            authority: Address::default(),
+            delegate: Address::default(),
+            grant_generation: 0,
         };
 
         assert!(store.get_tape(tape).unwrap().is_none());
@@ -88,8 +91,8 @@ mod tests {
 
         let tape1 = Address::new_unique();
         let tape2 = Address::new_unique();
-        store.put_tape(tape1, TapeInfo { id: TapeNumber(1), flags: 0, end_epoch: EpochNumber(100), next_track_number: TrackNumber(0) }).unwrap();
-        store.put_tape(tape2, TapeInfo { id: TapeNumber(2), flags: 0, end_epoch: EpochNumber(200), next_track_number: TrackNumber(0) }).unwrap();
+        store.put_tape(tape1, TapeInfo::new(TapeNumber(1), 0, EpochNumber(100), TrackNumber(0))).unwrap();
+        store.put_tape(tape2, TapeInfo::new(TapeNumber(2), 0, EpochNumber(200), TrackNumber(0))).unwrap();
 
         let tapes = store.iter_all_tapes().unwrap();
         assert_eq!(tapes.len(), 2);
@@ -109,6 +112,9 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(150),
             next_track_number: TrackNumber(0),
+            authority: Address::default(),
+            delegate: Address::default(),
+            grant_generation: 0,
         };
 
         store.put_tape(tape, info).unwrap();

@@ -700,23 +700,9 @@ mod protocol_tests {
             .expect("aggregate")
         }
 
-        /// Everyone holding a spool in this group, the roster a certificate is
-        /// measured against.
-        fn members(&self) -> Vec<Address> {
-            let mut members: Vec<Address> = Vec::new();
-            for spool in group_spools(&self.state, self.group) {
-                if let Some(owner) = self.state.spool_owner(spool) {
-                    if !members.contains(&owner) {
-                        members.push(owner);
-                    }
-                }
-            }
-            members
-        }
-
         fn check(&self, target: SpoolIndex, certificate: &SuccessCertificate) -> Result<(), CertificateRejection> {
             let owner = self.state.spool_owner(target).expect("owner");
-            certificate.verify(agreement_threshold(GROUP_SIZE), owner, &self.members(), |signer| {
+            certificate.verify(agreement_threshold(GROUP_SIZE), owner, |signer| {
                 self.state.peer(signer).map(|peer| peer.bls_pubkey)
             })
         }

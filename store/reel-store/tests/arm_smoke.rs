@@ -6,7 +6,7 @@
 //! and track traffic the rocks arm does, so a reel row comes off a store that
 //! actually served the workload.
 //!
-//! Run with: `cargo test -p reel-store --features rocks --test arm_smoke`.
+//! Run with: `cargo test -p tape-reel-store --features rocks --test arm_smoke`.
 
 use reel_store::{BenchArm, MetaBulkStore, ReelStore};
 use store_rocks::SplitStore;
@@ -14,7 +14,7 @@ use tape_core::erasure::{
     sample_window, sample_window_range, slice_sidecar, SAMPLE_WINDOW_BYTES, SAMPLE_WINDOW_LEAVES,
     SUB_LEAF_BYTES,
 };
-use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
 use tape_core::types::{GroupIndex, SpoolIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -34,6 +34,7 @@ fn track(tape: Address) -> CompressedTrack {
         track_number: TrackNumber(0),
         kind: TrackKind::Coded as u64,
         state: TrackState::Certified as u64,
+        visibility: TrackVisibility::Public as u64,
         size: StorageUnits::from_bytes(SLICE_SIZE as u64),
         group: GroupIndex(3),
         value_hash: Hash::new_unique(),

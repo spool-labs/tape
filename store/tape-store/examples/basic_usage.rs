@@ -4,7 +4,7 @@
 
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{SpoolState, SpoolStatus};
-use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
 use tape_core::types::{
     EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
 };
@@ -19,6 +19,7 @@ fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
         track_number: TrackNumber(track_number),
         kind: TrackKind::Inline as u64,
         state: TrackState::Certified as u64,
+        visibility: TrackVisibility::Public as u64,
         size: StorageUnits::from_bytes(1024),
         group: GroupIndex(3),
         value_hash: Hash::new_unique(),
@@ -78,6 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         flags: 0,
         end_epoch: EpochNumber(200),
         next_track_number: TrackNumber(0),
+        authority: Address::default(),
+        delegate: Address::default(),
+        grant_generation: 0,
     };
     store.put_tape(tape_address, tape_info)?;
     println!("Stored tape info");

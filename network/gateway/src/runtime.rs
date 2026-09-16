@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
+use tape_blacklist::blacklists::Blacklists;
 use tape_node::config::node::NodeConfig;
 use tape_node::context::{AppContext, NodeContext};
 use tape_node::core::startup::build_context;
@@ -24,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn, Instrument};
 
 use crate::admission::{AdmitAll, Admission};
+use crate::blacklist::denials::GatewayBlacklists;
 use crate::cache::GatewaySliceCache;
 use crate::drain::{DrainStatus, WriteDrain};
 use crate::http::handlers::s3::accounting::Accounting;
@@ -40,6 +42,7 @@ async fn supervise_with_context<Db, Cluster, Blockchain>(
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
     staging: Arc<StagingStore<Db>>,
+    blacklists: Arc<GatewayBlacklists>,
     start: LiveStart,
     cancel: CancellationToken,
     http_server: JoinHandle<Result<(), NodeError>>,
@@ -99,6 +102,7 @@ where
             slice_cache.clone(),
             meter.clone(),
             staging.clone(),
+            blacklists.clone(),
             write_ctx.clone(),
             accounting.clone(),
             admission,
@@ -166,7 +170,14 @@ where
 
     supervisor.spawn(
         ServiceName::StoreManager,
-        GatewayStoreManager::new(context.clone(), store_rx, cancel.clone()).run(),
+        GatewayStoreManager::new(
+            context.clone(),
+            store_rx,
+            slice_cache.clone(),
+            blacklists.clone(),
+            cancel.clone(),
+        )
+        .run(),
     );
 
     supervisor.spawn(
@@ -209,14 +220,34 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let cancel = CancellationToken::new();
+    run_with_cancel(context, config, admission, CancellationToken::new()).await
+}
+
+pub async fn run_with_cancel<Db, Cluster, Blockchain>(
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    config: NodeConfig,
+    admission: Arc<dyn Admission>,
+    cancel: CancellationToken,
+) -> Result<(), NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
 
     // The slice cache and per-IP meter are built once and shared by the native
     // read listener and the S3 listener, so the disk-cache budget and the rate
     // limit are each enforced once across both rather than twice.
+    let blacklists = Blacklists::try_new(context.config.gateway.blacklists.clone())
+        .map_err(|error| NodeError::Config(format!("gateway.blacklists: {error}")))?;
+    let blacklists = Arc::new(GatewayBlacklists::new(blacklists));
     let slice_cache = Arc::new(
-        GatewaySliceCache::new(context.store.clone(), context.config.gateway.cache.clone())
-            .map_err(|error| NodeError::Store(error.to_string()))?,
+        GatewaySliceCache::new(
+            context.store.clone(),
+            context.config.gateway.cache.clone(),
+            blacklists.clone(),
+        )
+        .map_err(|error| NodeError::Store(error.to_string()))?,
     );
     let meter = Arc::new(GatewayMeter::new(context.config.gateway.metering.clone()));
     // One write queue across both listeners, so an object written on the S3
@@ -231,6 +262,7 @@ where
         slice_cache.clone(),
         meter.clone(),
         staging.clone(),
+        blacklists.clone(),
         config.http.clone(),
         cancel.clone(),
     );
@@ -248,6 +280,7 @@ where
         slice_cache,
         meter,
         staging,
+        blacklists,
         start,
         cancel,
         http_server,

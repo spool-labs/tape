@@ -6,20 +6,28 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 use crate::error::TapedriveError;
 use crate::stream::manifest::ChunkManifest;
 use crate::tapedrive::Tapedrive;
+use crate::track::grant::with_grant;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Read a named object from a bucket.
+    ///
+    /// A restricted object needs the grant on the client's read options.
     pub async fn get_object(&self, bucket: &Address, name: &str) -> Result<Vec<u8>, TapedriveError> {
         let address = self.resolve_object(bucket, name).await?;
-        let bytes = self.read(&address).await?;
+        let grant = self.read_options.grant;
 
-        // A stream's representing track is its manifest; detect and follow it.
-        // (Hardening: a magic-prefixed manifest would make this unambiguous.)
-        if ChunkManifest::from_bytes(&bytes).is_ok() {
-            return self.read_bytes(&address).await;
-        }
+        with_grant(grant, async move {
+            let bytes = self.read(&address).await?;
 
-        Ok(bytes)
+            // A stream's representing track is its manifest; detect and follow it.
+            // (Hardening: a magic-prefixed manifest would make this unambiguous.)
+            if ChunkManifest::from_bytes(&bytes).is_ok() {
+                return self.read_bytes(&address).await;
+            }
+
+            Ok(bytes)
+        })
+        .await
     }
 
     /// Read a named object from a bucket into an async sink.
@@ -33,10 +41,11 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         mut writer: Writer,
     ) -> Result<u64, TapedriveError> {
         let address = self.resolve_object(bucket, name).await?;
-        let bytes = self.read(&address).await?;
+        let grant = self.read_options.grant;
+        let bytes = with_grant(grant, self.read(&address)).await?;
 
         if let Ok(manifest) = ChunkManifest::from_bytes(&bytes) {
-            self.read_into(&address, &mut writer).await?;
+            with_grant(grant, self.read_into(&address, &mut writer)).await?;
             return Ok(manifest.total_size.to_bytes());
         }
 

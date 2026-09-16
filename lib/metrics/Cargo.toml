@@ -3,6 +3,11 @@ name = "tape-metrics"
 version.workspace = true
 edition.workspace = true
 description = "Metrics infrastructure for Tapedrive"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+readme.workspace = true
 
 [features]
 default = []

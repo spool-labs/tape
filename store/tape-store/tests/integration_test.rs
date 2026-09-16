@@ -3,7 +3,7 @@
 //! Integration tests for TapeStore with RocksDB backend
 
 use tape_core::system::{SpoolState, SpoolStatus};
-use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
 use tape_core::types::{EpochNumber, SlotNumber, GroupIndex, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
@@ -17,6 +17,7 @@ fn sample_track(tape: Address) -> CompressedTrack {
         track_number: TrackNumber(0),
         kind: TrackKind::Coded as u64,
         state: TrackState::Certified as u64,
+        visibility: TrackVisibility::Public as u64,
         size: StorageUnits::from_bytes(1024),
         group: GroupIndex(3),
         value_hash: Hash::new_unique(),
@@ -83,6 +84,9 @@ fn all_column_families() {
         flags: 0,
         end_epoch: EpochNumber(150),
         next_track_number: TrackNumber(0),
+        authority: Address::default(),
+        delegate: Address::default(),
+        grant_generation: 0,
     };
     store.put_tape(tape_address, tape_info).unwrap();
 
@@ -392,6 +396,9 @@ fn tape_info_operations() {
         flags: 0,
         end_epoch: EpochNumber(200),
         next_track_number: TrackNumber(0),
+        authority: Address::default(),
+        delegate: Address::default(),
+        grant_generation: 0,
     };
 
     store.put_tape(tape, info.clone()).unwrap();

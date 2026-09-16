@@ -36,7 +36,7 @@ mod tests {
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::{track_key, BlobData, BlobDataSlice};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
         ChunkNumber, ContentType, EpochNumber, SlotNumber, StorageUnits, StripeCount,
@@ -90,6 +90,7 @@ mod tests {
                 track_number,
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Registered as u64,
+                visibility: TrackVisibility::Public as u64,
                 size: blob.size,
                 group: GroupIndex::from(4),
                 value_hash: blob.get_hash(),
@@ -116,6 +117,7 @@ mod tests {
                 kind: TrackKind::Coded as u64,
                 // Certified: the listing scan hides objects a GET would 404 on.
                 state: TrackState::Certified as u64,
+                visibility: TrackVisibility::Public as u64,
                 size: blob.size,
                 group: GroupIndex::from(4),
                 value_hash: blob.get_hash(),
@@ -147,6 +149,7 @@ mod tests {
                 track_number,
                 kind: meta.kind as u64,
                 state: meta.state as u64,
+                visibility: TrackVisibility::Public as u64,
                 size: meta.size,
                 group: GroupIndex::from(4),
                 value_hash: meta.value_hash,
@@ -203,6 +206,7 @@ mod tests {
     fn applies_reserve_tape_then_track() {
         let store = test_store();
         let tape = Address::new_unique();
+        let authority = Address::new_unique();
         let track_number = TrackNumber(3);
         let (track, _) = track_pda(tape, track_number);
 
@@ -218,7 +222,7 @@ mod tests {
                         tape,
                         id: TapeNumber(1),
                         flags: 0,
-                        authority: Address::new_unique(),
+                        authority,
                         capacity: StorageUnits::mb(10),
                         active_epoch: EpochNumber(6),
                         expiry_epoch: EpochNumber(12),
@@ -240,6 +244,9 @@ mod tests {
                 flags: 0,
                 end_epoch: EpochNumber(12),
                 next_track_number: TrackNumber(4),
+                authority,
+                delegate: Address::default(),
+                grant_generation: 0,
             })
         );
 

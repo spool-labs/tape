@@ -44,8 +44,11 @@ use crate::http::handlers::object::response::object_response_ranged;
 use crate::http::handlers::s3::response::head_response_parts;
 use crate::meter::{GatewayMeterDecision, MeterCaller};
 use super::accounting;
-use super::authz::{Auth, WriteOp, WritePermit, authorize_multipart_read, authorize_write};
-use super::chunked::{object_reader, BodyFraming};
+use super::authz::{
+    Auth, WriteOp, WritePermit, authorize_multipart_read, authorize_restricted_read, authorize_write,
+};
+use crate::grants::with_grant;
+use super::chunked::object_reader;
 use super::clock::now_unix;
 use super::conditional::{Preconditions, ReadCondition, check_read, check_write};
 use super::error::S3Error;
@@ -56,9 +59,7 @@ use super::response::{
     delete_response, head_response, not_modified_response, put_response, set_last_modified,
     upload_part_response,
 };
-use super::sigv4::{
-    query_param, sigv4_auth, verify_signed_body, ChunkSigning, SigV4Verifier, SignedPayloadHash,
-};
+use super::sigv4::{query_param, sigv4_auth, verify_signed_body, SigV4Verifier, SignedPayloadHash};
 use super::write::S3WriteContext;
 use super::xml::{
     BucketEntry, DeleteErrorEntry, ListObjectsV1, ListObjectsV2, ObjectEntry, Owner, PartEntry,
@@ -303,11 +304,11 @@ where
 {
     require_write_ctx(state, "ListMultipartUploads")?;
     let bucket = parse_bucket(&bucket_label)?;
-    let principal = authorize_multipart_read(state, auth, bucket)?;
+    authorize_multipart_read(state, auth, bucket)?;
     let store = state.context.store.as_ref();
 
     let mut uploads: Vec<UploadEntry> = Vec::new();
-    for upload in multipart::list_uploads(store, bucket, principal)? {
+    for upload in multipart::list_uploads(store, bucket)? {
         uploads.push(UploadEntry {
             key: upload.key,
             upload_id: upload.upload_id,
@@ -709,7 +710,7 @@ where
 async fn delete_bucket(Path(bucket): Path<String>) -> Result<Response, S3Error> {
     parse_bucket(&bucket)?;
     Err(S3Error::NotImplemented(
-        "DeleteBucket: a bucket is a tape, destroyed on chain".to_string(),
+        "DeleteBucket: a bucket is a tape, and tapes are never closed".to_string(),
     ))
 }
 
@@ -720,6 +721,9 @@ fn resolve_readable<Db: Store, Cluster: Api, Blockchain: Rpc>(
     key: &str,
 ) -> Result<Readable, S3Error> {
     let bucket = parse_bucket(bucket_label)?;
+    if state.blacklists.is_unlisted(bucket) {
+        return Err(S3Error::Removed);
+    }
     let readable = resolve::resolve_readable_with_pending(
         state.context.store.as_ref(),
         state.staging.as_ref(),
@@ -744,6 +748,10 @@ fn readable_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let track = track_with_pending(state, resolved.track_address)
         .map_err(S3Error::from)?
         .ok_or(S3Error::NoSuchKey)?;
+    // Checked here so HEAD and conditional reads, which never decode, answer gone too.
+    if state.blacklists.denies(resolved.track_address, track.tape) {
+        return Err(S3Error::Removed);
+    }
     if !track.is_certified() {
         return Err(S3Error::NoSuchKey);
     }
@@ -814,11 +822,12 @@ where
     let range = range_header(&headers).map(str::to_string);
     let preconditions = Preconditions::from_headers(&headers);
     let caller = meter_caller(&state, &headers, remote, &auth);
-    get_object_impl(state, caller, bucket, key, range, &preconditions).await
+    get_object_impl(state, &auth, caller, bucket, key, range, &preconditions).await
 }
 
 async fn get_object_impl<Db, Cluster, Blockchain>(
     state: AppState<Db, Cluster, Blockchain>,
+    auth: &Auth,
     caller: MeterCaller,
     bucket: String,
     key: String,
@@ -856,18 +865,30 @@ where
     };
     let block_time = resolved.block_time;
 
+    // Authorization runs here, ahead of the identity-blind slice cache: the
+    // decision is per request, the bytes are not.
+    let grant = if track.is_restricted() {
+        authorize_restricted_read(&state, auth, tape)?;
+        state.grants.grant_for(track.tape, track.key)
+    } else {
+        None
+    };
+
     // `Range` is honored for every object: single-track objects slice the
     // decoded bytes, multi-track streams decode only the chunks the range
     // touches; see docs/s3-gateway-status.md (Range).
-    let mut response = read_object_response(
-        state,
-        resolved.track_address,
-        track,
-        metadata,
-        StatusCode::OK,
-        &caller,
-        range,
-        |retry_after| S3Error::slow_down(retry_after).into_response(),
+    let mut response = with_grant(
+        grant,
+        read_object_response(
+            state,
+            resolved.track_address,
+            track,
+            metadata,
+            StatusCode::OK,
+            &caller,
+            range,
+            |retry_after| S3Error::slow_down(retry_after).into_response(),
+        ),
     )
     .await
     .map_err(S3Error::from)?;
@@ -896,11 +917,12 @@ where
 {
     let caller = meter_caller(&state, &headers, remote, &auth);
     let preconditions = Preconditions::from_headers(&headers);
-    head_object_impl(&state, &caller, &bucket, &key, range_header(&headers), &preconditions)
+    head_object_impl(&state, &auth, &caller, &bucket, &key, range_header(&headers), &preconditions)
 }
 
 fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
+    auth: &Auth,
     caller: &MeterCaller,
     bucket: &str,
     key: &str,
@@ -920,7 +942,13 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
             Some(object.block_time),
             range,
         ),
-        Readable::Track(resolved) => head_response(&resolved, range),
+        Readable::Track(resolved) => {
+            let track = track_with_pending(state, resolved.track_address)?.ok_or(S3Error::NoSuchKey)?;
+            if track.is_restricted() {
+                authorize_restricted_read(state, auth, parse_bucket(bucket)?)?;
+            }
+            head_response(&resolved, range)
+        }
     }
 }
 
@@ -1007,7 +1035,6 @@ async fn put_object<Db, Cluster, Blockchain>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(auth): Extension<Auth>,
     Extension(signed_payload): Extension<SignedPayloadHash>,
-    Extension(chunk_signing): Extension<ChunkSigning>,
     Path((bucket, key)): Path<(String, String)>,
     RawQuery(query): RawQuery,
     headers: HeaderMap,
@@ -1020,40 +1047,27 @@ where
 {
     if has_query_param(query.as_deref(), "uploadId", None) {
         // UploadPart buffers the part bytes under the upload id; the assembled
-        // object is written at CompleteMultipartUpload. A chunked part is
-        // de-framed (and, when signed, verified) first: the framing is transport,
-        // not part of the object, and storing it verbatim would splice chunk
-        // headers into the assembled bytes.
+        // object is written at CompleteMultipartUpload.
         let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
-        let part = match body_framing(&signed_payload, chunk_signing)? {
-            BodyFraming::Plain => {
+        // A streaming-signed part arrives aws-chunked, the same framing PutObject strips.
+        let part = match signed_payload.is_aws_chunked() {
+            true => buffer_streamed_body(body, true, max_buffered_bytes).await?,
+            false => {
                 let part = buffer_object_body(body, max_buffered_bytes).await?;
                 verify_signed_body(&signed_payload, &part)?;
                 part
             }
-            framing => buffer_streamed_body(body, framing, max_buffered_bytes).await?,
         };
         return upload_part(&state, &auth, bucket, key, query.as_deref(), part).await;
     }
 
-    put_object_impl(
-        state,
-        &auth,
-        &signed_payload,
-        chunk_signing,
-        bucket,
-        key,
-        &headers,
-        body,
-    )
-    .await
+    put_object_impl(state, &auth, &signed_payload, bucket, key, &headers, body).await
 }
 
 async fn put_object_impl<Db, Cluster, Blockchain>(
     state: AppState<Db, Cluster, Blockchain>,
     auth: &Auth,
     signed_payload: &SignedPayloadHash,
-    chunk_signing: ChunkSigning,
     bucket: String,
     key: String,
     headers: &HeaderMap,
@@ -1089,10 +1103,6 @@ where
                     "object size {size} exceeds the maximum of {max_object_bytes} bytes"
                 )));
             }
-            // Resolved before the grant: a permit is only released by commit,
-            // refund, or its Drop net, so nothing fallible belongs between the
-            // two if it can be hoisted instead.
-            let framing = body_framing(signed_payload, chunk_signing)?;
             let permit = authorize_write(&state, auth, tape, &key, WriteOp::Put, size).await?;
             // The bucket lock spans the chain write so the key cannot change under the condition.
             let _guard = state.staging.lock_tape(tape).await;
@@ -1100,7 +1110,7 @@ where
                 permit.refund(&state);
                 return Err(error);
             }
-            let (reader, producer) = object_reader(body, framing);
+            let (reader, producer) = object_reader(body, signed_payload.is_aws_chunked());
             let (write_result, producer_result) = join!(
                 write_ctx.write_object_stream(
                     state.context.as_ref(),
@@ -1132,8 +1142,8 @@ where
         streamed => {
             let data = match streamed {
                 Some(_) => {
-                    let framing = body_framing(signed_payload, chunk_signing)?;
-                    buffer_streamed_body(body, framing, max_buffered_bytes).await?
+                    buffer_streamed_body(body, signed_payload.is_aws_chunked(), max_buffered_bytes)
+                        .await?
                 }
                 None => {
                     let data = buffer_object_body(body, max_buffered_bytes).await?;
@@ -1252,16 +1262,12 @@ where
 }
 
 /// Buffer a streamed body whole, de-framed when aws-chunked, bounded by `max_bytes`
-///
-/// The producer is what checks chunk signatures, so its result decides whether
-/// these bytes are usable; a body that fails verification must not come back as
-/// a short read that looks like a small object.
 async fn buffer_streamed_body(
     body: Body,
-    framing: BodyFraming,
+    is_aws_chunked: bool,
     max_bytes: usize,
 ) -> Result<Bytes, S3Error> {
-    let (reader, producer) = object_reader(body, framing);
+    let (reader, producer) = object_reader(body, is_aws_chunked);
     let mut data = Vec::new();
     let read = reader.take(max_bytes as u64 + 1).read_to_end(&mut data).await;
     // A body longer than declared is left unread, so release the producer before awaiting it.
@@ -1276,28 +1282,6 @@ async fn buffer_streamed_body(
     }
     read.map_err(|error| S3Error::InvalidRequest(format!("request body: {error}")))?;
     Ok(Bytes::from(data))
-}
-
-/// How this request's body has to be read, given what it signed.
-///
-/// A sentinel promising per-chunk signatures must arrive with the chain the
-/// auth middleware derived; its absence means the request never verified as
-/// signed-streaming, and forwarding the body anyway would accept exactly the
-/// bytes the signature was supposed to cover.
-fn body_framing(
-    signed_payload: &SignedPayloadHash,
-    chunk_signing: ChunkSigning,
-) -> Result<BodyFraming, S3Error> {
-    if !signed_payload.is_aws_chunked() {
-        return Ok(BodyFraming::Plain);
-    }
-    if !signed_payload.is_signed_streaming() {
-        return Ok(BodyFraming::Unsigned);
-    }
-    match chunk_signing.0 {
-        Some(chain) => Ok(BodyFraming::Signed(Box::new(chain))),
-        None => Err(S3Error::SignatureDoesNotMatch),
-    }
 }
 
 /// Header carrying the decoded object size for an `aws-chunked` streaming upload.
@@ -1828,17 +1812,12 @@ where
     let size = body.len() as u64;
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let permit = authorize_write(state, auth, bucket, &key, WriteOp::UploadPart, size).await?;
-    let part = multipart::put_part(
-        store,
-        &upload_id,
-        bucket,
-        &key,
-        part_number,
-        body.to_vec(),
-        max_object_bytes,
-        permit.owner(),
-    );
-    let etag = settle(permit, state, size, part)?;
+    let etag = settle(
+        permit,
+        state,
+        size,
+        multipart::put_part(store, &upload_id, bucket, &key, part_number, body.to_vec(), max_object_bytes),
+    )?;
     upload_part_response(etag)
 }
 
@@ -1860,7 +1839,7 @@ where
 {
     require_write_ctx(state, "ListParts")?;
     let bucket = parse_bucket(&bucket_label)?;
-    let principal = authorize_multipart_read(state, auth, bucket)?;
+    authorize_multipart_read(state, auth, bucket)?;
     let upload_id = require_upload_id(query)?;
     let store = state.context.store.as_ref();
 
@@ -1872,7 +1851,7 @@ where
         .unwrap_or(MAX_PARTS_LIMIT)
         .clamp(1, MAX_PARTS_LIMIT);
 
-    let listing = multipart::list_parts(store, &upload_id, bucket, &key, principal)?;
+    let listing = multipart::list_parts(store, &upload_id, bucket, &key)?;
 
     // Return parts strictly after the marker, up to `max_parts`; truncate (and
     // report the resume marker) when more remain.
@@ -1970,10 +1949,6 @@ where
     require_write_ctx(state, "CompleteMultipartUpload")?;
     let bucket = parse_bucket(&bucket_label)?;
     let upload_id = require_upload_id(query)?;
-    // Assembly reads another principal's staged bytes, and the size it returns
-    // is what the write is then authorized against, so who is asking has to be
-    // settled before it runs rather than at the reservation below.
-    let principal = authorize_multipart_read(state, auth, bucket)?;
     let store = state.context.store.as_ref();
 
     let body_text = std::str::from_utf8(&body).map_err(|_| {
@@ -1989,15 +1964,7 @@ where
     // upload is retained until the write below lands, so a failed write leaves
     // it intact for the client to retry or abort.
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
-    let assembled = multipart::assemble(
-        store,
-        &upload_id,
-        bucket,
-        &key,
-        &requested,
-        max_object_bytes,
-        principal,
-    )?;
+    let assembled = multipart::assemble(store, &upload_id, bucket, &key, &requested, max_object_bytes)?;
 
     // Authorization chokepoint.
     let size = assembled.data.len() as u64;
@@ -2041,7 +2008,6 @@ mod tests {
     use tape_core::types::StorageUnits;
     use tape_store::types::PendingState;
 
-    use crate::http::handlers::s3::sigv4::ChunkVerification;
     use super::*;
 
     fn conditional(name: header::HeaderName, value: &str) -> Preconditions {
@@ -2313,49 +2279,5 @@ mod tests {
         assert_eq!(keys(&merged), vec!["a.txt"]);
         assert!(merged.is_truncated);
         assert_eq!(merged.next.as_deref(), Some(b"z.txt".as_slice()));
-    }
-
-    fn chunk_chain() -> ChunkVerification {
-        ChunkVerification {
-            signing_key: vec![0u8; 32],
-            date: "20130524T000000Z".to_string(),
-            scope: "20130524/us-east-1/s3/aws4_request".to_string(),
-            seed_signature: "0".repeat(64),
-        }
-    }
-
-    // a body claiming per-chunk signatures without the chain the middleware
-    // derives is refused, not forwarded unverified
-    #[test]
-    fn signed_streaming_needs_its_chain() {
-        let signed = SignedPayloadHash(Some(
-            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".to_string(),
-        ));
-
-        assert!(matches!(
-            body_framing(&signed, ChunkSigning(None)),
-            Err(S3Error::SignatureDoesNotMatch)
-        ));
-        assert!(matches!(
-            body_framing(&signed, ChunkSigning(Some(chunk_chain()))),
-            Ok(BodyFraming::Signed(_))
-        ));
-    }
-
-    // an unsigned chunked body is de-framed but not verified, and a plain body
-    // is neither
-    #[test]
-    fn unsigned_framings() {
-        let unsigned = SignedPayloadHash(Some("STREAMING-UNSIGNED-PAYLOAD".to_string()));
-        assert!(matches!(
-            body_framing(&unsigned, ChunkSigning(None)),
-            Ok(BodyFraming::Unsigned)
-        ));
-
-        let plain = SignedPayloadHash(Some("UNSIGNED-PAYLOAD".to_string()));
-        assert!(matches!(
-            body_framing(&plain, ChunkSigning(None)),
-            Ok(BodyFraming::Plain)
-        ));
     }
 }

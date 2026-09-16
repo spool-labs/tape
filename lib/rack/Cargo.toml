@@ -1,0 +1,15 @@
+[package]
+name = "tape-rack"
+description = "Racks: tapes that name other tapes, and which tapes a rack reaches"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+readme.workspace = true
+
+[dependencies]
+tape-core = { workspace = true }
+tape-crypto = { workspace = true }
+thiserror = { workspace = true }

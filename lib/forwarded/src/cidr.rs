@@ -1,9 +1,7 @@
-//! CIDR blocks for config fields that trust proxy address ranges
+//! CIDR blocks naming the proxies whose forwarded headers are trusted
 //!
-//! Accepts a bare address or an address with a prefix length, so existing
-//! single-address configs keep parsing while CDN ranges become expressible.
-//! Matching a request's caller against these blocks lives in
-//! features::http::forwarded.
+//! Accepts a bare address or an address with a prefix length, so a single
+//! proxy and a CDN range are both expressible.
 
 use std::fmt;
 use std::net::IpAddr;

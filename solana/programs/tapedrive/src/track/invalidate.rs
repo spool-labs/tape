@@ -115,7 +115,13 @@ mod tests {
     use super::*;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
-    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
+    use tape_core::track::types::{
+        CompressedTrack,
+        CompressedTrackProof,
+        TrackKind,
+        TrackState,
+        TrackVisibility,
+    };
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
     use tape_crypto::Hash;
     use tape_test::*;
@@ -150,6 +156,7 @@ mod tests {
             track_number,
             kind: kind as u64,
             state: state as u64,
+            visibility: TrackVisibility::Public as u64,
             size,
             group: group_id,
             value_hash: Hash::new_unique(),
@@ -286,6 +293,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Invalidated as u64,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::mb(250),
             group: group_id,
             value_hash: Hash::new_unique(),
@@ -378,6 +386,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::mb(250),
             group: group_id,
             value_hash: Hash::new_unique(),

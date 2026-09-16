@@ -5,7 +5,7 @@ use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::{
     BlobData, BlobDataSlice, BlobInfo, BlobInfoSlice, TrackObjectInfoSlice,
 };
-use tape_core::track::types::{CompressedTrackProof, TrackKind};
+use tape_core::track::types::{CompressedTrackProof, TrackKind, TrackVisibility};
 use tape_core::types::{ContentType, EpochNumber, SpoolBitmap, StorageUnits, StripeCount};
 use tape_crypto::address::Address;
 use tape_solana::*;
@@ -20,7 +20,16 @@ pub const MAX_NAME_LEN: usize = 1024;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TrackWrite {
     pub kind: u8,
+    pub visibility: u8,
     pub data_len: [u8; 2],
+}
+
+impl TrackWrite {
+    /// Decode the visibility byte carried by the wire header
+    pub fn visibility(&self) -> Result<TrackVisibility, ProgramError> {
+        TrackVisibility::try_from(self.visibility as u64)
+            .map_err(|_| ProgramError::InvalidInstructionData)
+    }
 }
 
 #[repr(C)]
@@ -50,6 +59,7 @@ pub fn build_track_write_ix(
     signer: Address,
     tape: Address,
     blob: BlobInfo,
+    visibility: TrackVisibility,
 ) -> Result<Instruction, ProgramError> {
     let (system_address, _) = system_pda();
 
@@ -63,7 +73,7 @@ pub fn build_track_write_ix(
             AccountMeta::new(tape.into(), false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
-        data: make_track_write(blob)?,
+        data: make_track_write(blob, visibility)?,
     })
 }
 
@@ -249,7 +259,10 @@ fn check_name(name: &[u8], expected_len: usize) -> Result<(), ProgramError> {
 }
 
 #[inline(always)]
-fn make_track_write(blob: BlobInfo) -> Result<Vec<u8>, ProgramError> {
+fn make_track_write(
+    blob: BlobInfo,
+    visibility: TrackVisibility,
+) -> Result<Vec<u8>, ProgramError> {
     if blob
         .object
         .as_ref()
@@ -285,6 +298,7 @@ fn make_track_write(blob: BlobInfo) -> Result<Vec<u8>, ProgramError> {
 
     let mut out = TrackWrite {
         kind: kind as u8,
+        visibility: visibility as u8,
         data_len: data_len.to_le_bytes(),
     }
     .to_bytes();
@@ -346,6 +360,7 @@ mod tests {
                 }),
                 data: BlobData::Coded(blob),
             },
+            TrackVisibility::Public,
         )
         .expect("track write instruction");
         assert_eq!(
@@ -376,6 +391,7 @@ mod tests {
                 object: None,
                 data: BlobData::Inline(payload.clone()),
             },
+            TrackVisibility::Public,
         )
         .expect("track write instruction");
         assert_eq!(
@@ -392,6 +408,40 @@ mod tests {
         assert_eq!(parsed_payload, payload.as_slice());
     }
 
+    // a restricted write carries its visibility through the wire header
+    #[test]
+    fn track_write_carries_visibility() {
+        let ix = build_track_write_ix(
+            Address::new_unique(),
+            Address::new_unique(),
+            Address::new_unique(),
+            BlobInfo {
+                object: None,
+                data: BlobData::Inline(b"secret".to_vec()),
+            },
+            TrackVisibility::Restricted,
+        )
+        .expect("track write instruction");
+
+        let (header, _parsed) = parse_track_write(&ix.data[1..]).expect("parse track write");
+
+        assert_eq!(header.visibility().expect("visibility"), TrackVisibility::Restricted);
+    }
+
+    // an unknown visibility byte is rejected
+    #[test]
+    fn track_write_rejects_unknown_visibility() {
+        let header = TrackWrite {
+            kind: TrackKind::Inline as u8,
+            visibility: 0xff,
+            data_len: [0, 0],
+        };
+
+        let err = header.visibility().expect_err("unknown visibility");
+
+        assert_eq!(err, ProgramError::InvalidInstructionData);
+    }
+
     #[test]
     fn track_write_rejects_partial_object_trailer() {
         let mut ix = build_track_write_ix(
@@ -402,6 +452,7 @@ mod tests {
                 object: None,
                 data: BlobData::Inline(b"chunk-data".to_vec()),
             },
+            TrackVisibility::Public,
         )
         .expect("track write instruction");
         ix.data.push(0xff);

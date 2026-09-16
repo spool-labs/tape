@@ -105,6 +105,19 @@ mod tests {
     use super::*;
     use tape_test::*;
 
+    /// A user tape that expired at epoch 50
+    fn expired_tape(authority: Pubkey) -> Tape {
+        Tape {
+            id: TapeNumber(1),
+            authority: authority.into(),
+            capacity: StorageUnits::mb(100),
+            used: StorageUnits::zero(),
+            active_epoch: EpochNumber(40),
+            expiry_epoch: EpochNumber(50),
+            ..Tape::zeroed()
+        }
+    }
+
     #[test]
     fn reserve_tape() {
         let fee_payer = Pubkey::new_unique();
@@ -192,6 +205,120 @@ mod tests {
                     token(archive_ata, archive_address, total_cost).1.data.as_ref()
                 ).build(),
             ]
+        );
+    }
+
+    // no tape instruction closes an expired tape, given the accounts closing one took
+    #[test]
+    fn expired_stays_open() {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let (tape_address, _) = tape_pda(authority.into());
+        let (system_address, _) = system_pda();
+        let tape = expired_tape(authority);
+        let system = System {
+            current_epoch: EpochNumber(60),
+            ..System::zeroed()
+        };
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+
+            pda(tape_address, tape.pack(), tapedrive::ID),
+            pda(system_address, system.pack(), tapedrive::ID),
+
+            system_program(),
+        ];
+
+        let env = test_env();
+        for discriminator in TapeInstruction::ReserveTape as u8..TapeInstruction::TrackWrite as u8 {
+            let instruction = Instruction {
+                program_id: tapedrive::ID,
+                accounts: vec![
+                    AccountMeta::new(fee_payer, true),
+                    AccountMeta::new_readonly(authority, true),
+
+                    AccountMeta::new(tape_address.into(), false),
+                    AccountMeta::new_readonly(system_address.into(), false),
+
+                    AccountMeta::new_readonly(system_program::ID, false),
+                ],
+                data: vec![discriminator],
+            };
+
+            env.process_instruction(
+                &instruction,
+                &accounts,
+                &[
+                    Check::account(&Pubkey::from(tape_address))
+                        .owner(&tapedrive::ID)
+                        .data(tape.pack().as_ref())
+                        .build(),
+                ],
+            );
+        }
+    }
+
+    // reserving an expired tape's address fails, since that tape is still open
+    #[test]
+    fn reserve_expired() {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let tape = expired_tape(authority);
+
+        let instruction = build_reserve_tape_ix(
+            fee_payer.into(),
+            authority.into(),
+            StorageUnits::mb(100),
+            EpochNumber(60),
+            EpochNumber(62),
+        );
+
+        let (system_address, _) = system_pda();
+        let (archive_address, _) = archive_pda();
+        let (archive_ata, _) = archive_ata();
+        let (tape_address, _) = tape_pda(authority.into());
+        let authority_ata = ata_address(&authority);
+
+        let system = System {
+            current_epoch: EpochNumber(60),
+            ..System::zeroed()
+        };
+
+        let archive = Archive {
+            storage_capacity: StorageUnits::mb(1000),
+            storage_price: TAPE::from("0.0001"),
+            schedule: EpochSchedule::new(),
+            ..Archive::zeroed()
+        };
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            token(authority_ata, authority, 100_000_000),
+
+            pda(tape_address, tape.pack(), tapedrive::ID),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(archive_address, archive.pack(), tapedrive::ID),
+            token(archive_ata, archive_address, 0),
+            mint(0),
+
+            token_program(),
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::err(ProgramError::AccountAlreadyInitialized),
+                Check::account(&Pubkey::from(tape_address))
+                    .data(tape.pack().as_ref())
+                    .build(),
+            ],
         );
     }
 }

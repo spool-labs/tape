@@ -13,6 +13,7 @@ use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
 
 mod delete;
+pub(crate) mod grant;
 mod query;
 mod read;
 pub mod write;

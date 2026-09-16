@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
 use rpc::Rpc;
@@ -25,9 +25,11 @@ use tape_protocol::api::{
 };
 use tape_store::ops::{ObjectListOps, TapeOps, TrackDataOps, TrackOps};
 
-use crate::features::http::auth::{local_access_threshold, MaybeStakedPeer};
+use crate::features::http::auth::{local_access_threshold, MaybeActivePeer, MaybeStakedPeer};
 use crate::features::blacklist::refuses_object;
 use crate::features::http::error::RouteError;
+use crate::features::http::grant::authorize_restricted_read;
+use crate::features::http::peer_identity::PeerIdentity;
 use crate::features::http::state::AppState;
 
 const MAX_TRACK_SCAN_LIMIT: usize = u32::MAX as usize;
@@ -63,7 +65,10 @@ pub async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
 pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     MaybeStakedPeer(staked_peer): MaybeStakedPeer,
+    MaybeActivePeer(active_peer): MaybeActivePeer,
+    identity: PeerIdentity,
     Path(track_id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, RouteError> {
 
     let track_addr: Address = track_id
@@ -107,6 +112,8 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     {
         return Err(RouteError::BlacklistedObject);
     }
+
+    authorize_restricted_read(&state, &track, identity, active_peer, &headers)?;
 
     let data_addr = track_pda(track.tape, track.track_number).0;
     let data = match state.context.pending.track_data(data_addr) {
@@ -473,7 +480,7 @@ mod tests {
     use bytemuck::Zeroable;
     use peer_manager::PeerNode;
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{TrackKind, TrackState};
+    use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{EpochNumber, StorageUnits, TapeNumber};
     use tape_store::ops::{TapeOps, TrackOps};
@@ -518,6 +525,9 @@ mod tests {
                     flags,
                     end_epoch: EpochNumber(100),
                     next_track_number: TrackNumber(1),
+                    authority: Address::default(),
+                    delegate: Address::default(),
+                    grant_generation: 0,
                 },
             )
             .expect("put tape");
@@ -529,6 +539,7 @@ mod tests {
             key: Hash::from([1u8; 32]),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(64),
             group: GroupIndex(0),
             value_hash: Hash::from([2u8; 32]),
@@ -603,6 +614,7 @@ mod tests {
             key: Hash::from([1u8; 32]),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(64),
             group: GroupIndex(0),
             value_hash: Hash::from([2u8; 32]),
@@ -634,6 +646,9 @@ mod tests {
                 flags: 0,
                 end_epoch: EpochNumber(100),
                 next_track_number: TrackNumber(0),
+                authority: Address::default(),
+                delegate: Address::default(),
+                grant_generation: 0,
             },
         );
         assert!(

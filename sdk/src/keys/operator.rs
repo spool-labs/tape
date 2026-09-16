@@ -1,7 +1,10 @@
 //! Tape operator abstraction.
 
+use tape_core::grant::ReadGrant;
+use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::{Keypair, Pubkey};
+use tape_crypto::hash::Hash;
 
 use crate::keys::tape_key::TapeKey;
 
@@ -15,6 +18,27 @@ pub trait TapeOperator: Send + Sync {
 
     /// On-chain address of the tape being operated on.
     fn address(&self) -> Address;
+
+    /// Sign a read grant letting one reader fetch one track key.
+    ///
+    /// The generation and expiry come from the caller, which is what keeps this
+    /// free of any chain lookup; `Tapedrive::issue_read_grant` fills them in.
+    fn issue_read_grant(
+        &self,
+        key_hash: Hash,
+        reader: NetworkTlsPubkey,
+        grant_generation: u64,
+        expiry: i64,
+    ) -> ReadGrant {
+        ReadGrant::issue(
+            self.keypair(),
+            self.address(),
+            key_hash,
+            reader,
+            grant_generation,
+            expiry,
+        )
+    }
 }
 
 impl TapeOperator for TapeKey {

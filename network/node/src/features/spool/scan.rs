@@ -137,7 +137,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 mod tests {
     use super::*;
     use tape_core::encoding::EncodingProfile;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -170,6 +170,7 @@ mod tests {
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(1024),
             group,
             value_hash: Hash::new_unique(),

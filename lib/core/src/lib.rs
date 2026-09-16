@@ -6,6 +6,7 @@ pub mod cert;
 pub mod challenge;
 pub mod encoding;
 pub mod erasure;
+pub mod grant;
 pub mod object;
 pub mod track;
 pub mod spooler;
