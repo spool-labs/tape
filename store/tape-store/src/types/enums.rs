@@ -103,8 +103,6 @@ pub enum PolicyAction {
     Delete,
     /// Matches the multipart-upload lifecycle (create / upload-part / complete)
     Multipart,
-    /// Matches reading a restricted object
-    Read,
 }
 
 /// The outcome an audit entry records for a write-authorization decision

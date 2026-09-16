@@ -1,14 +1,12 @@
 //! Protocol API: routes, wire types, ops, and the `Api` trait.
 
 pub mod error;
-pub mod grant;
 pub mod ops;
 pub mod request_id;
 pub mod routes;
 pub mod types;
 
 pub use error::ApiError;
-pub use grant::*;
 pub use ops::*;
 pub use request_id::*;
 pub use routes::*;

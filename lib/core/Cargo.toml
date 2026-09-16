@@ -21,7 +21,6 @@ wincode = { workspace = true, optional = true }
 wincode-derive = { workspace = true, optional = true }
 
 [dev-dependencies]
-rand.workspace = true
 solana-keypair.workspace = true
 wincode.workspace = true
 

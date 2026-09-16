@@ -112,8 +112,6 @@ readme = "./README.md"
 keywords = ["object", "storage", "solana"]
 
 [workspace.dependencies]
-tape-privacy = { git = "https://github.com/spool-labs/privacy.git", rev = "defc4e5" }
-ed25519-dalek = "2.2.0"
 tape-api = { version = "0.4.0", path = "./solana/api" }
 tape-blocks = { version = "0.4.0", path = "./lib/blocks" }
 tape-blacklist = { version = "0.4.0", path = "./lib/blacklist" }

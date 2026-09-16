@@ -415,7 +415,7 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{
         EpochNumber, RoundNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
     };
@@ -473,7 +473,6 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(1024),
             group,
             value_hash: Hash::new_unique(),
@@ -500,9 +499,6 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(2),
                     next_track_number: TrackNumber(0),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    grant_generation: 0,
                 },
             )
             .unwrap();
@@ -537,9 +533,6 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(2),
                     next_track_number: TrackNumber(0),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    grant_generation: 0,
                 },
             )
             .expect("put tape");
@@ -602,9 +595,6 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(10),
                     next_track_number: TrackNumber(0),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    grant_generation: 0,
                 },
             )
             .unwrap();
@@ -651,9 +641,6 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(0),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    grant_generation: 0,
                 },
             )
             .unwrap();
@@ -710,9 +697,6 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(10),
                     next_track_number: TrackNumber(0),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    grant_generation: 0,
                 },
             )
             .unwrap();
@@ -754,9 +738,6 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(1),
                     next_track_number: TrackNumber(0),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    grant_generation: 0,
                 },
             )
             .unwrap();
@@ -798,7 +779,7 @@ mod tests {
             .set_spool_state(unowned_spool, SpoolState::new(SpoolStatus::Active, EpochNumber(5)))
             .unwrap();
         store
-            .put_tape(tape, TapeInfo::new(TapeNumber(1), 0, EpochNumber(20), TrackNumber(0)))
+            .put_tape(tape, TapeInfo { id: TapeNumber(1), flags: 0, end_epoch: EpochNumber(20), next_track_number: TrackNumber(0) })
             .unwrap();
 
         // Stale uncertified: registered epoch 2, current epoch 5 -> age 3 >= threshold 2

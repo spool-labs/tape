@@ -104,8 +104,7 @@ impl SimnetHarness {
                 }
             }
 
-            self.check_cluster_alive(what)?;
-            if satisfied == running {
+            if running > 0 && satisfied == running {
                 return Ok(());
             }
             if start.elapsed() >= timeout {
@@ -113,63 +112,5 @@ impl SimnetHarness {
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-    }
-
-    /// Wait until every running node has ingested everything submitted so far.
-    ///
-    /// A transaction is recorded in the slot after the confirmed tip and stays
-    /// invisible until the producer closes that slot, so the barrier is the
-    /// tip plus one.
-    pub async fn wait_ingest_current(&self, timeout: Duration) -> Result<()> {
-        let tip = self.chain().current_slot().await.context("current_slot")?;
-        self.wait_ingest_slot(tip + 1, timeout).await
-    }
-
-    /// Wait until every running node has dispatched the block at `slot`.
-    ///
-    /// Peers, tracks and tape metadata reach a node only when the ingestor
-    /// promotes the block carrying them, so a test that submits a transaction
-    /// and then reads node state has to wait for that slot. The at tip check
-    /// will not do: it tolerates a few slots of lag, which is the exact
-    /// window a just submitted transaction sits in.
-    pub async fn wait_ingest_slot(&self, slot: u64, timeout: Duration) -> Result<()> {
-        let start = Instant::now();
-        loop {
-            let mut running = 0usize;
-            let mut caught_up = 0usize;
-            let mut slowest = u64::MAX;
-            for node in self.nodes().iter().filter(|node| node.is_running()) {
-                running += 1;
-                let dispatched = node.context().ingest.progress().last_dispatched_slot();
-                slowest = slowest.min(dispatched);
-                if dispatched >= slot {
-                    caught_up += 1;
-                }
-            }
-
-            self.check_cluster_alive("ingest progress")?;
-            if caught_up == running {
-                return Ok(());
-            }
-            if start.elapsed() >= timeout {
-                bail!(
-                    "timed out waiting for ingest through slot {slot}:                      {caught_up}/{running} nodes, slowest at {slowest}"
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// A stopped cluster is not a slow one. Node runtimes exit on their own
-    /// only on a service failure or a process signal, so a wait that keeps
-    /// polling a stopped cluster reports the timeout instead of the cause.
-    fn check_cluster_alive(&self, what: &str) -> Result<()> {
-        if self.nodes().iter().any(|node| node.is_running()) {
-            return Ok(());
-        }
-        bail!(
-            "{what}: all {} node runtimes have exited; check target/sim-e2e/sim.log for              service failures or shutdown signals",
-            self.nodes().len()
-        );
     }
 }

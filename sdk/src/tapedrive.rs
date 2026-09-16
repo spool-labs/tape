@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use peer_http::{HttpApi, HttpApiBuilder};
+use peer_http::HttpApi;
 use peer_manager::PeerManager;
 use rpc::Rpc;
 use rpc_client::RpcClient;
@@ -53,31 +53,6 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
     /// peer client for storage node communication.
     pub fn new(rpc: Blockchain, payer: Keypair) -> Self {
         Self::new_read_only(rpc).with_payer(payer)
-    }
-
-    /// Create a read-only client that presents a reader identity over mTLS.
-    ///
-    /// A restricted read is bound to this identity: the grant a node checks names
-    /// the same pubkey the client cert carries.
-    pub fn new_reader(
-        rpc: Blockchain,
-        identity: Arc<Keypair>,
-    ) -> Result<Self, peer_tls::TlsError> {
-        let rpc_client = Arc::new(RpcClient::from_rpc(rpc));
-        let peer_manager = Arc::new(PeerManager::new());
-        let api = Arc::new(
-            HttpApiBuilder::new()
-                .local_identity(identity)
-                .build(peer_manager.clone())?,
-        );
-
-        Ok(Self::from_parts(
-            ArcSwap::from_pointee(ProtocolState::default()),
-            peer_manager,
-            api,
-            rpc_client,
-            None,
-        ))
     }
 
     /// Create a read-only Tapedrive client.
@@ -237,16 +212,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .bytes(data.len() as u64);
 
         let result =
-            write_or_resume(
-                self,
-                tape_key,
-                name.as_ref(),
-                content_type,
-                data,
-                epochs,
-                self.write_options.visibility,
-            )
-            .await;
+            write_or_resume(self, tape_key, name.as_ref(), content_type, data, epochs).await;
         total.finish_result(&result);
 
         result

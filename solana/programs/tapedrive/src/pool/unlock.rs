@@ -113,12 +113,7 @@ mod tests {
     use tape_core::staking::RateSpan;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
-    use tape_core::track::types::{
-        CompressedTrack,
-        CompressedTrackProof,
-        TrackKind,
-        TrackVisibility,
-    };
+    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind};
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
     use tape_crypto::Hash;
     use tape_test::*;
@@ -134,7 +129,6 @@ mod tests {
             track_number: TrackNumber(0),
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(core::mem::size_of::<RateSpan>() as u64),
             group: GroupIndex(0),
             value_hash: span.value_hash(),

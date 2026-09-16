@@ -561,7 +561,6 @@ async fn resume_stream_chunk<Blockchain: Rpc, Cluster: Api>(
                 logical_size,
                 chunk_data,
                 Operation::WriteStream,
-                client.write_options.visibility,
             )
             .await?;
             verify_track_number(&written, track_number)?;
@@ -733,7 +732,6 @@ where
                 logical_size,
                 plan,
                 Operation::WriteStream,
-                client.write_options.visibility,
             )
             .await?;
             if sent_sender.send((chunk_index, sent)).await.is_err() {
@@ -1228,7 +1226,6 @@ async fn store_manifest<Blockchain: Rpc, Cluster: Api>(
             logical_size,
             manifest_bytes,
             Operation::WriteStream,
-            client.write_options.visibility,
         )
         .await?;
         return Ok((written, Vec::new()));
@@ -1242,7 +1239,6 @@ async fn store_manifest<Blockchain: Rpc, Cluster: Api>(
         logical_size,
         manifest_bytes,
         Operation::WriteStream,
-        client.write_options.visibility,
     )
     .await?;
     let receipts = upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;

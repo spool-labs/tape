@@ -40,20 +40,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aes-gcm"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
-dependencies = [
- "aead",
- "aes",
- "cipher",
- "ctr",
- "ghash",
- "subtle",
-]
-
-[[package]]
 name = "aes-gcm-siv"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -335,18 +321,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
 dependencies = [
  "rustversion",
-]
-
-[[package]]
-name = "argon2"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
-dependencies = [
- "base64ct",
- "blake2",
- "cpufeatures 0.2.17",
- "password-hash",
 ]
 
 [[package]]
@@ -1000,15 +974,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blake2"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
-dependencies = [
- "digest 0.10.7",
-]
-
-[[package]]
 name = "blake3"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1323,6 +1288,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -3368,16 +3334,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ghash"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
-dependencies = [
- "opaque-debug",
- "polyval",
-]
-
-[[package]]
 name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3633,15 +3589,6 @@ name = "histogram"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12cb882ccb290b8646e554b157ab0b71e64e8d5bef775cd66b6531e52d302669"
-
-[[package]]
-name = "hkdf"
-version = "0.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
-dependencies = [
- "hmac",
-]
 
 [[package]]
 name = "hmac"
@@ -5292,17 +5239,6 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
-]
-
-[[package]]
-name = "password-hash"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
-dependencies = [
- "base64ct",
- "rand_core 0.6.4",
- "subtle",
 ]
 
 [[package]]
@@ -9851,6 +9787,7 @@ name = "tape"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "dirs",
  "hex",
@@ -9867,7 +9804,6 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-peer-http",
- "tape-protocol",
  "tape-rpc",
  "tape-rpc-client",
  "tape-rpc-solana",
@@ -10066,7 +10002,6 @@ version = "0.4.0"
 dependencies = [
  "bytemuck",
  "num_enum",
- "rand 0.8.5",
  "serde",
  "solana-keypair",
  "tape-base58",
@@ -10186,7 +10121,6 @@ dependencies = [
  "axum",
  "clap",
  "crossterm",
- "ed25519-dalek",
  "futures",
  "nix 0.29.0",
  "rand 0.8.5",
@@ -10207,8 +10141,6 @@ dependencies = [
  "tape-crypto",
  "tape-node",
  "tape-observe-api",
- "tape-peer-http",
- "tape-privacy",
  "tape-protocol",
  "tape-reel-store",
  "tape-retry",
@@ -10230,7 +10162,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytemuck",
- "ed25519-dalek",
  "hex",
  "hmac",
  "rand 0.8.5",
@@ -10257,7 +10188,6 @@ dependencies = [
  "tape-peer-http",
  "tape-peer-manager",
  "tape-peer-tls",
- "tape-privacy",
  "tape-protocol",
  "tape-rack",
  "tape-reel-store",
@@ -10577,30 +10507,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-privacy"
-version = "0.1.0"
-source = "git+https://github.com/spool-labs/privacy.git?rev=defc4e5#defc4e50b7cd6fba74858a293c0827f97bf97487"
-dependencies = [
- "aes-gcm",
- "argon2",
- "curve25519-dalek",
- "ed25519-dalek",
- "hkdf",
- "num_enum",
- "rand 0.8.5",
- "sha2 0.10.9",
- "thiserror 2.0.20",
- "x25519-dalek",
- "zeroize",
-]
-
-[[package]]
 name = "tape-protocol"
 version = "0.4.0"
 dependencies = [
  "arc-swap",
  "async-trait",
- "base64 0.13.1",
  "bytemuck",
  "peer-memory",
  "serde",
@@ -10829,7 +10740,6 @@ dependencies = [
  "tape-metrics",
  "tape-peer-http",
  "tape-peer-manager",
- "tape-peer-tls",
  "tape-protocol",
  "tape-retry",
  "tape-rpc",
@@ -12441,18 +12351,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
-]
-
-[[package]]
-name = "x25519-dalek"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
-dependencies = [
- "curve25519-dalek",
- "rand_core 0.6.4",
- "serde",
- "zeroize",
 ]
 
 [[package]]

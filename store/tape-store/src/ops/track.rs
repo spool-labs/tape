@@ -235,7 +235,6 @@ mod key {
 mod tests {
     use super::*;
     use tape_api::program::tapedrive::track_pda;
-    use tape_core::track::types::TrackVisibility;
     use tape_core::types::StorageUnits;
     use tape_core::spooler::GroupIndex;
     use tape_crypto::Hash;
@@ -252,7 +251,6 @@ mod tests {
             track_number: TrackNumber(0),
             kind: 0,
             state: 1,
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits(1024 * 1024),
             group: GroupIndex(3),
             value_hash: Hash::new_unique(),

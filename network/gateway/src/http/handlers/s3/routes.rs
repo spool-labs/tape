@@ -44,10 +44,7 @@ use crate::http::handlers::object::response::object_response_ranged;
 use crate::http::handlers::s3::response::head_response_parts;
 use crate::meter::{GatewayMeterDecision, MeterCaller};
 use super::accounting;
-use super::authz::{
-    Auth, WriteOp, WritePermit, authorize_multipart_read, authorize_restricted_read, authorize_write,
-};
-use crate::grants::with_grant;
+use super::authz::{Auth, WriteOp, WritePermit, authorize_multipart_read, authorize_write};
 use super::chunked::object_reader;
 use super::clock::now_unix;
 use super::conditional::{Preconditions, ReadCondition, check_read, check_write};
@@ -822,12 +819,11 @@ where
     let range = range_header(&headers).map(str::to_string);
     let preconditions = Preconditions::from_headers(&headers);
     let caller = meter_caller(&state, &headers, remote, &auth);
-    get_object_impl(state, &auth, caller, bucket, key, range, &preconditions).await
+    get_object_impl(state, caller, bucket, key, range, &preconditions).await
 }
 
 async fn get_object_impl<Db, Cluster, Blockchain>(
     state: AppState<Db, Cluster, Blockchain>,
-    auth: &Auth,
     caller: MeterCaller,
     bucket: String,
     key: String,
@@ -865,30 +861,18 @@ where
     };
     let block_time = resolved.block_time;
 
-    // Authorization runs here, ahead of the identity-blind slice cache: the
-    // decision is per request, the bytes are not.
-    let grant = if track.is_restricted() {
-        authorize_restricted_read(&state, auth, tape)?;
-        state.grants.grant_for(track.tape, track.key)
-    } else {
-        None
-    };
-
     // `Range` is honored for every object: single-track objects slice the
     // decoded bytes, multi-track streams decode only the chunks the range
     // touches; see docs/s3-gateway-status.md (Range).
-    let mut response = with_grant(
-        grant,
-        read_object_response(
-            state,
-            resolved.track_address,
-            track,
-            metadata,
-            StatusCode::OK,
-            &caller,
-            range,
-            |retry_after| S3Error::slow_down(retry_after).into_response(),
-        ),
+    let mut response = read_object_response(
+        state,
+        resolved.track_address,
+        track,
+        metadata,
+        StatusCode::OK,
+        &caller,
+        range,
+        |retry_after| S3Error::slow_down(retry_after).into_response(),
     )
     .await
     .map_err(S3Error::from)?;
@@ -917,12 +901,11 @@ where
 {
     let caller = meter_caller(&state, &headers, remote, &auth);
     let preconditions = Preconditions::from_headers(&headers);
-    head_object_impl(&state, &auth, &caller, &bucket, &key, range_header(&headers), &preconditions)
+    head_object_impl(&state, &caller, &bucket, &key, range_header(&headers), &preconditions)
 }
 
 fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
-    auth: &Auth,
     caller: &MeterCaller,
     bucket: &str,
     key: &str,
@@ -942,13 +925,7 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
             Some(object.block_time),
             range,
         ),
-        Readable::Track(resolved) => {
-            let track = track_with_pending(state, resolved.track_address)?.ok_or(S3Error::NoSuchKey)?;
-            if track.is_restricted() {
-                authorize_restricted_read(state, auth, parse_bucket(bucket)?)?;
-            }
-            head_response(&resolved, range)
-        }
+        Readable::Track(resolved) => head_response(&resolved, range),
     }
 }
 

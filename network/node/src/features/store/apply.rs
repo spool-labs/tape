@@ -1,5 +1,5 @@
 use store::Store;
-use tape_api::program::tapedrive::{blacklist_pda, history_pda, track_pda, SYSTEM_ADDRESS};
+use tape_api::program::tapedrive::{blacklist_pda, history_pda, track_pda};
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::object::object_etag;
 use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
@@ -64,7 +64,6 @@ pub fn apply_event<Db: Store>(
             tape,
             id,
             flags,
-            authority,
             expiry_epoch,
             ..
         } => {
@@ -76,9 +75,6 @@ pub fn apply_event<Db: Store>(
                         flags: *flags,
                         end_epoch: *expiry_epoch,
                         next_track_number: TrackNumber(0),
-                        authority: *authority,
-                        delegate: Address::default(),
-                        grant_generation: 0,
                     },
                 )
                 .map_err(store_error)?;
@@ -108,14 +104,6 @@ pub fn apply_event<Db: Store>(
                 }
             }
         }
-        ReplayableEvent::SetTapeDelegate { tape, delegate } => {
-            update_tape(store, *tape, "set delegate", |info| info.delegate = *delegate)?;
-        }
-        ReplayableEvent::BumpGrantGeneration { tape } => {
-            update_tape(store, *tape, "bump grant generation", |info| {
-                info.grant_generation = info.grant_generation.saturating_add(1)
-            })?;
-        }
         ReplayableEvent::RegisterNode { node, id, .. } => {
             let (history, _) = history_pda(*node);
             store
@@ -126,9 +114,6 @@ pub fn apply_event<Db: Store>(
                         flags: TapeFlags::SYSTEM,
                         end_epoch: EpochNumber(u64::MAX),
                         next_track_number: TrackNumber(0),
-                        authority: SYSTEM_ADDRESS,
-                        delegate: Address::default(),
-                        grant_generation: 0,
                     },
                 )
                 .map_err(store_error)?;
@@ -142,9 +127,6 @@ pub fn apply_event<Db: Store>(
                         flags: TapeFlags::SYSTEM,
                         end_epoch: EpochNumber(u64::MAX),
                         next_track_number: TrackNumber(0),
-                        authority: SYSTEM_ADDRESS,
-                        delegate: Address::default(),
-                        grant_generation: 0,
                     },
                 )
                 .map_err(store_error)?;
@@ -171,9 +153,6 @@ pub fn apply_event<Db: Store>(
                         flags: TapeFlags::SYSTEM,
                         end_epoch: EpochNumber(u64::MAX),
                         next_track_number,
-                        authority: SYSTEM_ADDRESS,
-                        delegate: Address::default(),
-                        grant_generation: 0,
                     },
                 )
                 .map_err(store_error)?;
@@ -383,24 +362,6 @@ fn validate_replay_track(replay: &ReplayTrack) -> Result<(), NodeError> {
     }
 }
 
-fn update_tape<Db: Store, Edit: FnOnce(&mut TapeInfo)>(
-    store: &TapeStore<Db>,
-    tape: Address,
-    what: &str,
-    edit: Edit,
-) -> Result<(), NodeError> {
-    let Some(mut info) = store.get_tape(tape).map_err(store_error)? else {
-        // A lagging node may have swept the tape already; there is nothing to update.
-        warn!(tape = %tape, what, "tape update for unknown tape, skipping");
-        return Ok(());
-    };
-
-    edit(&mut info);
-    store.put_tape(tape, info).map_err(store_error)?;
-
-    Ok(())
-}
-
 fn set_certified<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
@@ -534,7 +495,7 @@ mod tests {
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
         ContentType, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
@@ -572,7 +533,6 @@ mod tests {
                 track_number,
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Registered as u64,
-                visibility: TrackVisibility::Public as u64,
                 size: blob.size,
                 group: GroupIndex::from(4),
                 value_hash: blob.get_hash(),
@@ -591,7 +551,6 @@ mod tests {
                 track_number,
                 kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
                 size: StorageUnits::from_bytes(4 * 1024),
                 group: GroupIndex::from(5),
                 value_hash: Hash::new_unique(),
@@ -609,7 +568,6 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(1024),
             group,
             value_hash: Hash::new_unique(),
@@ -621,7 +579,6 @@ mod tests {
         let store = test_store();
         let slot = SlotNumber(55);
         let tape = Address::new_unique();
-        let authority = Address::new_unique();
         let track_number = TrackNumber(9);
         let (track, _) = track_pda(tape, track_number);
 
@@ -630,7 +587,7 @@ mod tests {
                 tape,
                 id: TapeNumber(1),
                 flags: 0,
-                authority,
+                authority: Address::new_unique(),
                 capacity: StorageUnits::mb(10),
                 active_epoch: EpochNumber(6),
                 expiry_epoch: EpochNumber(12),
@@ -654,9 +611,6 @@ mod tests {
                 flags: 0,
                 end_epoch: EpochNumber(12),
                 next_track_number: TrackNumber(10),
-                authority,
-                delegate: Address::default(),
-                grant_generation: 0,
             })
         );
 
@@ -914,14 +868,13 @@ mod tests {
     fn extends_tape() {
         let store = test_store();
         let tape = Address::new_unique();
-        let authority = Address::new_unique();
 
         let events = vec![
             ReplayableEvent::ReserveTape {
                 tape,
                 id: TapeNumber(3),
                 flags: 0,
-                authority,
+                authority: Address::new_unique(),
                 capacity: StorageUnits::mb(10),
                 active_epoch: EpochNumber(6),
                 expiry_epoch: EpochNumber(12),
@@ -949,9 +902,6 @@ mod tests {
                 flags: 0,
                 end_epoch: EpochNumber(30),
                 next_track_number: TrackNumber(5),
-                authority,
-                delegate: Address::default(),
-                grant_generation: 0,
             })
         );
     }

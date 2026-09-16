@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 
 use rpc::Rpc;
@@ -14,20 +14,15 @@ use tape_protocol::api::{BINARY_CONTENT, RepairRequest};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 
 use crate::features::blacklist::refuses_object;
-use crate::features::http::auth::{MaybeActivePeer, StakedPeer};
+use crate::features::http::auth::StakedPeer;
 use crate::features::http::error::RouteError;
-use crate::features::http::grant::authorize_restricted_read;
-use crate::features::http::peer_identity::PeerIdentity;
 use crate::features::http::state::AppState;
 use crate::features::spool::repair::extract_repair_data;
 
 pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     _staked_peer: StakedPeer,
-    MaybeActivePeer(active_peer): MaybeActivePeer,
-    identity: PeerIdentity,
     Path(track_id): Path<String>,
-    headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
 
@@ -69,8 +64,6 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BlacklistedObject);
     }
 
-    authorize_restricted_read(&state, &track, identity, active_peer, &headers)?;
-
     let track_data = state
         .context
         .store
@@ -109,7 +102,7 @@ fn store_error(error: impl Display) -> RouteError {
 mod tests {
     use axum::body::{to_bytes, Bytes};
     use axum::extract::{Path, State};
-    use axum::http::{HeaderMap, StatusCode};
+    use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
@@ -120,7 +113,7 @@ mod tests {
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
@@ -196,9 +189,6 @@ mod tests {
                     flags: TapeFlags::SYSTEM,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(track_number.0 + 1),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    grant_generation: 0,
                 },
             )
             .expect("seed snapshot tape");
@@ -209,7 +199,6 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: blob.size,
             group,
             value_hash: blob.get_hash(),
@@ -268,10 +257,7 @@ mod tests {
                 tls_pubkey: ctx.tls_pubkey(),
                 stake: TAPE(1),
             },
-            MaybeActivePeer(None),
-            PeerIdentity::default(),
             Path(track_address.to_string()),
-            HeaderMap::new(),
             Bytes::from(body),
         )
         .await;

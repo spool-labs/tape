@@ -122,7 +122,6 @@ pub enum TapeInstruction {
     ExtendTapeExpiry,
     SetTapeDelegate,
     RevokeTapeDelegate,
-    BumpGrantGeneration,
 
     // Track
     TrackWrite = 0xB0,
@@ -205,7 +204,6 @@ tape_solana::instruction!(TapeInstruction, ExtendTapeCapacity);
 tape_solana::instruction!(TapeInstruction, ExtendTapeExpiry);
 tape_solana::instruction!(TapeInstruction, SetTapeDelegate);
 tape_solana::instruction!(TapeInstruction, RevokeTapeDelegate);
-tape_solana::instruction!(TapeInstruction, BumpGrantGeneration);
 
 tape_solana::instruction!(TapeInstruction, TrackWrite);
 tape_solana::instruction!(TapeInstruction, DeleteTrack);

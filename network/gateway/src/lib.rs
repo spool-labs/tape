@@ -2,7 +2,6 @@ pub mod admission;
 pub mod blacklist;
 pub mod cache;
 pub mod drain;
-pub mod grants;
 pub mod http;
 mod meter;
 pub(crate) mod metrics;

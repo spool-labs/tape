@@ -273,12 +273,6 @@ impl TestGateway {
         format!("http://{}:{}", self.public_host, self.public_port)
     }
 
-    /// Read grants this gateway presents when fetching restricted tracks,
-    /// settable before the runtime starts.
-    pub fn set_grants(&mut self, grants: Vec<String>) {
-        self.app_config.gateway.grants = grants;
-    }
-
     /// Site serving knobs, settable before the runtime starts.
     pub fn site_config_mut(&mut self) -> &mut GatewaySiteConfig {
         &mut self.app_config.gateway.site

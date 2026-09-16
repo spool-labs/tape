@@ -33,10 +33,6 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub site: GatewaySiteConfig,
 
-    /// Base64 read grants this gateway presents when fetching restricted tracks.
-    #[serde(default)]
-    pub grants: Vec<String>,
-
     /// Blacklists this gateway follows; reads of what they deny answer 410.
     #[serde(default)]
     pub blacklists: Vec<Subscription>,

@@ -63,7 +63,6 @@ use crate::pool::{
     process_unstake_from_pool,
 };
 use crate::tape::{
-    process_bump_grant_generation,
     process_extend_tape_capacity,
     process_extend_tape_expiry,
     process_revoke_tape_delegate,
@@ -159,7 +158,6 @@ pub fn process_instruction(
         TapeInstruction::ExtendTapeExpiry => process_extend_tape_expiry(accounts, data)?,
         TapeInstruction::SetTapeDelegate => process_set_tape_delegate(accounts, data)?,
         TapeInstruction::RevokeTapeDelegate => process_revoke_tape_delegate(accounts, data)?,
-        TapeInstruction::BumpGrantGeneration => process_bump_grant_generation(accounts, data)?,
 
         // Track
         TapeInstruction::TrackWrite => process_track_write(accounts, data)?,

@@ -6,7 +6,6 @@ use tape_protocol::api::BINARY_CONTENT;
 
 use super::error::RouteError;
 
-pub(crate) mod grant;
 pub(crate) mod health;
 pub(crate) mod object;
 pub(crate) mod resolve;

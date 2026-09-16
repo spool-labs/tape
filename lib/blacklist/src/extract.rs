@@ -43,7 +43,7 @@ pub fn change(record: &ReplayRecord) -> Option<Change> {
 mod tests {
     use tape_core::snapshot::replay::ReplayTrack;
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
     use tape_crypto::Hash;
     use tape_crypto::tx::Txid;
@@ -66,7 +66,6 @@ mod tests {
                 key: Hash::new_unique(),
                 kind: TrackKind::Inline as u64,
                 state: TrackState::Registered as u64,
-                visibility: TrackVisibility::Public as u64,
                 size: StorageUnits::from_bytes(1),
                 group: GroupIndex::from(0),
                 value_hash: Hash::new_unique(),

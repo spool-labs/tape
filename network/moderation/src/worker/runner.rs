@@ -404,7 +404,7 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::{json, Value};
     use tape_core::prelude::{GroupIndex, StorageUnits, TrackNumber};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_crypto::Hash;
     use tape_protocol::api::{
         ListTracksByTapeRequest, ListTracksByTapeResponse, TrackResponse, TAPE_TRACK_LIST_PATH,
@@ -616,7 +616,6 @@ mod tests {
             key: Hash::default(),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits(size),
             group: GroupIndex(0),
             value_hash: Hash::default(),

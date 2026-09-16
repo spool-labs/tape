@@ -62,10 +62,6 @@ pub struct StakedPeer {
 #[derive(Clone, Copy, Debug)]
 pub struct MaybeStakedPeer(pub Option<StakedPeer>);
 
-/// Optional committee-peer capability.
-#[derive(Clone, Copy, Debug)]
-pub struct MaybeActivePeer(pub Option<ActivePeer>);
-
 /// A request caller authenticated as a configured atlas observer via mTLS.
 ///
 /// Observers are operator-configured identities (the atlas collector), not
@@ -148,20 +144,6 @@ where
         _state: &S,
     ) -> Result<Self, Self::Rejection> {
         Ok(Self(parts.extensions.get::<StakedPeer>().copied()))
-    }
-}
-
-impl<S> axum::extract::FromRequestParts<S> for MaybeActivePeer
-where
-    S: Send + Sync,
-{
-    type Rejection = std::convert::Infallible;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(Self(parts.extensions.get::<ActivePeer>().copied()))
     }
 }
 

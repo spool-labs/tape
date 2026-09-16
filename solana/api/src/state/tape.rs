@@ -38,9 +38,6 @@ pub struct Tape {
     /// The epoch when this cassette expires.
     pub expiry_epoch: EpochNumber,
 
-    /// Bumped to invalidate every read grant outstanding on this tape.
-    pub grant_generation: u64,
-
     /// A merkle tree of compressed tracks that store the tape data
     pub tracks: TrackArchive,
 }
@@ -148,15 +145,6 @@ impl Tape {
                 .checked_sub(proof.state.size)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
         }
-
-        Ok(())
-    }
-
-    pub fn bump_grant_generation(&mut self) -> ProgramResult {
-        self.grant_generation = self
-            .grant_generation
-            .checked_add(1)
-            .ok_or(ProgramError::ArithmeticOverflow)?;
 
         Ok(())
     }

@@ -86,7 +86,7 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -110,9 +110,6 @@ mod tests {
                     flags: 0,
                     end_epoch,
                     next_track_number: TrackNumber(1),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    grant_generation: 0,
                 },
             )
             .expect("put tape");
@@ -125,7 +122,6 @@ mod tests {
                     track_number: TrackNumber(0),
                     kind: TrackKind::Coded as u64,
                     state: TrackState::Certified as u64,
-                    visibility: TrackVisibility::Public as u64,
                     size: StorageUnits::from_bytes(1024),
                     group: GroupIndex(1),
                     value_hash: Hash::new_unique(),

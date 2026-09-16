@@ -274,7 +274,6 @@ mod tests {
     use tape_core::track::blob::BlobEncoding;
     use tape_core::types::coin::TAPE;
     use tape_core::track::data::{BlobData, BlobInfo};
-    use tape_core::track::types::TrackVisibility;
     use tape_core::types::{EpochNumber, SpoolIndex, StorageUnits, StripeCount};
     use tape_crypto::address::Address;
     use tape_crypto::hash::hash;
@@ -358,7 +357,6 @@ mod tests {
         let tx1 = ParsedTransaction {
             tx_id: None,
             raw_instructions: vec![RawInstruction::TrackWrite {
-                visibility: 0,
                 authority: Address::new_unique(),
                 key: Hash::default(),
                 object: None,
@@ -386,7 +384,6 @@ mod tests {
         let tx2 = ParsedTransaction {
             tx_id: None,
             raw_instructions: vec![RawInstruction::TrackWrite {
-                visibility: 0,
                 authority: Address::new_unique(),
                 key: Hash::default(),
                 object: None,
@@ -552,7 +549,6 @@ mod tests {
                 object: None,
                 data: BlobData::Inline(inner_data.to_vec()),
             },
-            TrackVisibility::Public,
         )
         .expect("valid inner track write instruction");
         let outer_ix = build_track_write_ix(
@@ -563,7 +559,6 @@ mod tests {
                 object: None,
                 data: BlobData::Inline(outer_data.to_vec()),
             },
-            TrackVisibility::Public,
         )
         .expect("valid outer track write instruction");
 
@@ -718,7 +713,6 @@ mod tests {
                 object: None,
                 data: BlobData::Inline(inner_data.to_vec()),
             },
-            TrackVisibility::Public,
         )
         .expect("valid inner track write instruction");
 

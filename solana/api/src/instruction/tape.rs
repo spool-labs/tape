@@ -36,10 +36,6 @@ pub struct SetTapeDelegate {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct RevokeTapeDelegate {}
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct BumpGrantGeneration {}
-
 pub fn build_reserve_tape_ix(
     fee_payer: Address,
     authority: Address,
@@ -163,21 +159,5 @@ pub fn build_revoke_tape_delegate_ix(
             AccountMeta::new(tape.into(), false),
         ],
         data: RevokeTapeDelegate {}.to_bytes(),
-    }
-}
-
-pub fn build_bump_grant_generation_ix(
-    fee_payer: Address,
-    signer: Address,
-    tape: Address,
-) -> Instruction {
-    Instruction {
-        program_id: tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new_readonly(signer.into(), true),
-            AccountMeta::new(tape.into(), false),
-        ],
-        data: BumpGrantGeneration {}.to_bytes(),
     }
 }

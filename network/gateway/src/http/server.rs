@@ -16,6 +16,7 @@ use tape_node::config::http::HttpConfig;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_protocol::Api;
+use tape_crypto::address::Address;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower::limit::ConcurrencyLimitLayer;
@@ -40,7 +41,6 @@ use crate::http::handlers::s3::{
 };
 use crate::http::handlers::{health, object, site, track};
 use crate::meter::GatewayMeter;
-use crate::grants::GrantStore;
 use crate::staging::StagingStore;
 
 pub struct GatewayHttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
@@ -83,13 +83,11 @@ where
     }
 
     fn build_router(&self) -> Router {
-        // No route on this listener writes. The delegate is here so a tape that
-        // delegates to this gateway can have its restricted reads served on a
-        // grant the gateway signs itself.
-        let write_ctx = load_delegate(&self.context.config.gateway.s3);
+        // The native read listener never writes, so it carries no delegate
+        // signing context and its accounting and admission state are never
+        // exercised.
         let state = AppState {
-            s3_delegate: write_ctx.as_ref().map(|ctx| ctx.delegate_address()),
-            write_ctx,
+            s3_delegate: s3_delegate_address(&self.context.config.gateway.s3),
             site_hosts: SiteHostBindings::from_config(self.context.config.gateway.site.txt_domains),
             ..AppState::reader(
                 self.context.clone(),
@@ -323,7 +321,6 @@ where
             // The S3 listener never serves site hosts.
             site_hosts: None,
             staging: self.staging.clone(),
-            grants: Arc::new(GrantStore::from_config(&self.context.config.gateway.grants)),
             blacklists: self.blacklists.clone(),
         };
 
@@ -527,4 +524,11 @@ async fn count_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     #[cfg(not(feature = "metrics"))]
     next.run(req).await
+}
+
+/// The S3 delegate address from the configured key, for a listener that does
+/// not sign writes itself.
+fn s3_delegate_address(s3_config: &S3Config) -> Option<Address> {
+    let path = s3_config.delegate_key.as_deref()?;
+    S3WriteContext::load(path).ok().map(|ctx| ctx.delegate_address())
 }

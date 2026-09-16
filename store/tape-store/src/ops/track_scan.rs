@@ -92,7 +92,6 @@ mod tests {
             track_number: TrackNumber(number),
             kind: 0,
             state: 1,
-            visibility: 0,
             size: StorageUnits::from_bytes(PAYLOAD.len() as u64),
             group: GroupIndex(0),
             value_hash: Hash::new_unique(),

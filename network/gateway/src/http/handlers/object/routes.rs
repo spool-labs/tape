@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use axum::Extension;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, Method, StatusCode, Uri};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use rpc::Rpc;
 use store::Store;
@@ -17,9 +17,7 @@ use super::response::{
     ByteRange, ObjectResponseMetadata, object_response_metadata, object_response_ranged,
     range_header, resolve_range,
 };
-use crate::grants::with_grant;
 use crate::http::error::RouteError;
-use crate::http::handlers::grant::authorize_reader;
 use crate::http::handlers::track::{ensure_readable, parse_address, track_with_pending};
 use crate::http::state::AppState;
 use crate::meter::{GatewayMeterDecision, MeterCaller, rate_limited_response};
@@ -35,8 +33,6 @@ pub async fn get_object<
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(caller): Extension<MeterCaller>,
     Path(track_id): Path<String>,
-    method: Method,
-    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Response, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
@@ -46,21 +42,16 @@ pub async fn get_object<
         return Err(RouteError::BadRequest("track is not certified".into()));
     }
 
-    let grant = authorize_reader(&state, &headers, &method, uri.path(), &track)?;
-
     let metadata = object_response_metadata(&state, track_addr)?;
-    with_grant(
-        grant,
-        read_object_response(
-            state,
-            track_addr,
-            track,
-            metadata,
-            StatusCode::OK,
-            &caller,
-            range_header(&headers).map(str::to_string),
-            rate_limited_response,
-        ),
+    read_object_response(
+        state,
+        track_addr,
+        track,
+        metadata,
+        StatusCode::OK,
+        &caller,
+        range_header(&headers).map(str::to_string),
+        rate_limited_response,
     )
     .await
 }
@@ -154,8 +145,6 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(caller): Extension<MeterCaller>,
     Path(track_id): Path<String>,
-    method: Method,
-    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Response, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
@@ -164,8 +153,6 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
     if !track.is_certified() {
         return Err(RouteError::BadRequest("track is not certified".into()));
     }
-
-    let grant = authorize_reader(&state, &headers, &method, uri.path(), &track)?;
 
     match state
         .meter
@@ -178,7 +165,7 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     let metadata = object_response_metadata(&state, track_addr)?;
-    let decoded = with_grant(grant, decode_track_bytes(&state, track_addr, track)).await?;
+    let decoded = decode_track_bytes(&state, track_addr, track).await?;
     state
         .context
         .metrics

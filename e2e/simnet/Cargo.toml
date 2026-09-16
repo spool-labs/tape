@@ -50,8 +50,6 @@ tape-crypto.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
-tape-privacy.workspace = true
-ed25519-dalek.workspace = true
 async-trait.workspace = true
 bytemuck.workspace = true
 spl-token.workspace = true

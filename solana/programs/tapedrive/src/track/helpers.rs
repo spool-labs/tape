@@ -2,7 +2,7 @@ use tape_api::program::prelude::*;
 use tape_api::event::{TrackDeleted, TrackWritten};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::data::TrackMeta;
-use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackVisibility};
+use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::hash::hashv;
 use tape_crypto::Hash;
 
@@ -13,7 +13,6 @@ pub fn append_track(
     tape_address: Address,
     key: Hash,
     meta: TrackMeta,
-    visibility: TrackVisibility,
 ) -> ProgramResult {
     let curr = current_epoch(system);
     if curr < tape.active_epoch || tape.expiry_epoch <= curr {
@@ -39,7 +38,6 @@ pub fn append_track(
         key,
         kind: meta.kind as u64,
         state: meta.state as u64,
-        visibility: visibility as u64,
         size: meta.size,
         group,
         value_hash: meta.value_hash,

@@ -25,7 +25,6 @@ tape-protocol = { workspace = true }
 peer-manager = { workspace = true }
 tape-retry = { workspace = true }
 peer-http = { workspace = true }
-peer-tls = { workspace = true }
 rpc.workspace = true
 rpc-solana.workspace = true
 rpc-client = { workspace = true }

@@ -19,7 +19,7 @@ mod tests {
     use crate::encoding::EncodingProfile;
     use crate::erasure::GROUP_SIZE;
     use crate::spooler::GroupIndex;
-    use crate::track::types::{TrackKind, TrackState, TrackVisibility};
+    use crate::track::types::{TrackKind, TrackState};
     use crate::types::{StorageUnits, StripeCount};
     use tape_crypto::address::Address;
 
@@ -30,7 +30,6 @@ mod tests {
             key: Hash::from([2u8; 32]),
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(17),
             group: GroupIndex::from(0),
             value_hash,

@@ -11,8 +11,6 @@ use arc_swap::ArcSwap;
 use rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
-use tape_core::grant::ReadGrant;
-use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::{Keypair, Pubkey};
@@ -67,28 +65,6 @@ impl S3WriteContext {
                 "delegate keypair reconstruction failed: {error}"
             ))
         })
-    }
-
-    /// Sign a read grant as the tape's delegate, for one reader on one track.
-    ///
-    /// Only tapes that delegate to this key accept it; the caller checks that
-    /// before asking.
-    pub fn issue_read_grant(
-        &self,
-        tape: Address,
-        key: Hash,
-        reader: NetworkTlsPubkey,
-        grant_generation: u64,
-        expiry: i64,
-    ) -> Result<ReadGrant, TapedriveError> {
-        Ok(ReadGrant::issue(
-            &self.delegate_keypair()?,
-            tape,
-            key,
-            reader,
-            grant_generation,
-            expiry,
-        ))
     }
 
     /// Build an SDK `Tapedrive`` write client over the gateway's shared node

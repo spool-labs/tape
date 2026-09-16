@@ -731,18 +731,13 @@ impl Api for HttpApi {
     }
 }
 
-/// Stamp the in-scope correlation id and read grant on an outbound request, so
-/// the node's logs for this call tie back to the originating gateway request and
-/// a restricted track serves. A no-op for calls made outside a request scope
-/// (background sync, repair, votes), so it is safe on any send site.
+/// Stamp the in-scope correlation id on an outbound request, so the node's
+/// logs for this call tie back to the originating gateway request. A no-op
+/// for calls made outside a request scope (background sync, repair, votes),
+/// so it is safe on any send site.
 fn stamp_request_id(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    let request = match current_request_id() {
+    match current_request_id() {
         Some(id) => request.header(REQUEST_ID_HEADER, id),
-        None => request,
-    };
-
-    match current_read_grant() {
-        Some(grant) => request.header(READ_GRANT_HEADER, grant),
         None => request,
     }
 }

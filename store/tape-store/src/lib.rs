@@ -228,7 +228,7 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::types::{EpochNumber, SlotNumber, GroupIndex, SpoolIndex, TapeNumber, TrackNumber};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -244,7 +244,6 @@ mod tests {
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(1024 * 1024),
             group: GroupIndex(3),
             value_hash: Hash::new_unique(),
@@ -265,9 +264,6 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(200),
             next_track_number: TrackNumber(0),
-            authority: Address::default(),
-            delegate: Address::default(),
-            grant_generation: 0,
         };
 
         store.put_tape(address, info.clone()).unwrap();
@@ -385,7 +381,6 @@ mod tests {
                 track_number: TrackNumber(0),
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
                 size: StorageUnits::from_bytes(1024),
                 group: GroupIndex(3),
                 value_hash: Hash::new_unique(),
@@ -425,7 +420,6 @@ mod tests {
                 track_number: TrackNumber(0),
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
                 size: StorageUnits::from_bytes(512),
                 group: GroupIndex(0),
                 value_hash: Hash::new_unique(),
@@ -457,7 +451,6 @@ mod tests {
             track_number: TrackNumber(number),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(1024),
             group: GroupIndex(3),
             value_hash: Hash::new_unique(),
@@ -485,9 +478,6 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(60),
                     next_track_number: TrackNumber(5),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    grant_generation: 0,
                 },
             )
             .unwrap();
@@ -620,9 +610,6 @@ mod tests {
                         flags: 0,
                         end_epoch: EpochNumber(20),
                         next_track_number: TrackNumber(4),
-                        authority: Address::default(),
-                        delegate: Address::default(),
-                        grant_generation: 0,
                     },
                 )
                 .unwrap();

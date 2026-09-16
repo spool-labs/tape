@@ -13,7 +13,7 @@
 use axum::Extension;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::uri::PathAndQuery;
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use rpc::Rpc;
@@ -32,8 +32,6 @@ use crate::http::handlers::object::{
 };
 use crate::http::handlers::object::response::object_response_ranged;
 use crate::http::handlers::resolve::{Readable, resolve_readable_with_pending};
-use crate::grants::with_grant;
-use crate::http::handlers::grant::authorize_reader;
 use crate::http::handlers::store_error;
 use crate::http::handlers::track::{ensure_readable, parse_address, track_with_pending};
 use crate::http::state::AppState;
@@ -70,16 +68,10 @@ pub async fn get_site_index<
     Extension(policy): Extension<TapeSitePolicy>,
     Path(tape): Path<String>,
     Query(query): Query<SiteQuery>,
-    method: Method,
-    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Response, RouteError> {
     let tape = parse_address(&tape, "tape address")?;
-    let call = SiteCall {
-        method,
-        path: uri.path().to_string(),
-    };
-    serve_site(state, caller, &policy, tape, "", query.download.as_deref(), &call, &headers).await
+    serve_site(state, caller, &policy, tape, "", query.download.as_deref(), &headers).await
 }
 
 pub async fn get_site_object<
@@ -92,17 +84,10 @@ pub async fn get_site_object<
     Extension(policy): Extension<TapeSitePolicy>,
     Path((tape, path)): Path<(String, String)>,
     Query(query): Query<SiteQuery>,
-    method: Method,
-    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Response, RouteError> {
     let tape = parse_address(&tape, "tape address")?;
-    let call = SiteCall {
-        method,
-        path: uri.path().to_string(),
-    };
-    serve_site(state, caller, &policy, tape, &path, query.download.as_deref(), &call, &headers)
-        .await
+    serve_site(state, caller, &policy, tape, &path, query.download.as_deref(), &headers).await
 }
 
 /// Rewrite site-host requests into the site route before routing: when the
@@ -226,7 +211,6 @@ async fn serve_site<
     tape: Address,
     path: &str,
     download: Option<&str>,
-    call: &SiteCall,
     headers: &HeaderMap,
 ) -> Result<Response, RouteError> {
     // An unlisted tape serves no site at all.
@@ -293,29 +277,18 @@ async fn serve_site<
     if !track.is_certified() {
         return Err(RouteError::NotFound);
     }
-    let grant = authorize_reader(&state, headers, &call.method, &call.path, &track)?;
 
-    with_grant(
-        grant,
-        read_object_response(
-            state,
-            resolved.track_address,
-            track,
-            metadata,
-            status,
-            &caller,
-            range_header(headers).map(str::to_string),
-            rate_limited_response,
-        ),
+    read_object_response(
+        state,
+        resolved.track_address,
+        track,
+        metadata,
+        status,
+        &caller,
+        range_header(headers).map(str::to_string),
+        rate_limited_response,
     )
     .await
-}
-
-/// The call a site request signs, which a host-served request signs in its
-/// rewritten `/site/{tape}/...` form because that is the path routing sees.
-struct SiteCall {
-    method: Method,
-    path: String,
 }
 
 /// A redirect to the slash form when `path` names a directory with an index page.

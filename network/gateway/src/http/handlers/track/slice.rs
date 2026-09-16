@@ -1,5 +1,5 @@
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
+use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
@@ -12,26 +12,16 @@ use tracing::debug;
 
 use super::{parse_address, track_data_with_pending, track_with_pending};
 use crate::cache::{CacheRead, CacheSource};
-use crate::grants::with_grant;
 use crate::http::error::RouteError;
-use crate::http::handlers::grant::authorize_reader;
 use crate::http::state::AppState;
 
 pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
 ) -> Result<impl IntoResponse, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
     let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
-
-    // Authorization runs ahead of the identity-blind slice cache: the decision
-    // is per request, the bytes are not.
-    let grant = authorize_reader(&state, &headers, &method, uri.path(), &track)?;
-
-    let read = with_grant(grant, read_cached_slice(&state, track_addr, track.tape, spool_id)).await?;
+    let read = read_cached_slice(&state, track_addr, track.tape, spool_id).await?;
     let data = read.data;
     state.context.metrics.add_downloaded(data.len() as u64);
     if read.source == CacheSource::Hit {

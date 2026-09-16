@@ -102,7 +102,6 @@ pub enum RawInstruction {
     TrackWrite {
         authority: Address,
         key: Hash,
-        visibility: u8,
         object: Option<ReplayTrackObject>,
         value: BlobData,
     },
@@ -122,13 +121,6 @@ pub enum RawInstruction {
     },
     ExtendTape {
         payer: Address,
-        tape: Address,
-    },
-    SetTapeDelegate {
-        tape: Address,
-        delegate: Address,
-    },
-    BumpGrantGeneration {
         tape: Address,
     },
     RegisterNode {
@@ -269,7 +261,6 @@ pub enum ParsedInstruction {
         authority: Address,
         track: Address,
         key: Hash,
-        visibility: u8,
         object: Option<ReplayTrackObject>,
         value: BlobData,
         event: TrackWritten,
@@ -298,13 +289,6 @@ pub enum ParsedInstruction {
         payer: Address,
         tape: Address,
         event: TapeExtended,
-    },
-    SetTapeDelegate {
-        tape: Address,
-        delegate: Address,
-    },
-    BumpGrantGeneration {
-        tape: Address,
     },
 
     // Node management
@@ -514,7 +498,7 @@ pub fn parse_raw_instruction(
 
         TapeInstruction::TrackWrite => {
             let authority = get_account(1)?;
-            let (header, blob) = ix::parse_track_write(&ix_data[1..])
+            let (_header, blob) = ix::parse_track_write(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
             let key = track_key(blob.name(), &blob.data);
             let object = blob.object.map(|object| ReplayTrackObject {
@@ -529,7 +513,6 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::TrackWrite {
                 authority,
                 key,
-                visibility: header.visibility,
                 object,
                 value,
             }))
@@ -567,29 +550,6 @@ pub fn parse_raw_instruction(
             let payer = get_account(1)?;
             let tape = get_account(3)?;
             Ok(Some(RawInstruction::ExtendTape { payer, tape }))
-        }
-
-        TapeInstruction::SetTapeDelegate => {
-            let args = ix::SetTapeDelegate::try_from_bytes(&ix_data[1..])
-                .map_err(|e| ParseError::Deserialization(format!("set_tape_delegate: {e:?}")))?;
-            let tape = get_account(2)?;
-            Ok(Some(RawInstruction::SetTapeDelegate {
-                tape,
-                delegate: args.delegate,
-            }))
-        }
-
-        TapeInstruction::RevokeTapeDelegate => {
-            let tape = get_account(2)?;
-            Ok(Some(RawInstruction::SetTapeDelegate {
-                tape,
-                delegate: Address::default(),
-            }))
-        }
-
-        TapeInstruction::BumpGrantGeneration => {
-            let tape = get_account(2)?;
-            Ok(Some(RawInstruction::BumpGrantGeneration { tape }))
         }
 
         TapeInstruction::RegisterNode => {
@@ -728,7 +688,9 @@ pub fn parse_raw_instruction(
         | TapeInstruction::SetSpoolGroups
         | TapeInstruction::SetEpochDuration
         | TapeInstruction::SplitPoolStake
-        | TapeInstruction::MergePoolStake => Ok(None),
+        | TapeInstruction::MergePoolStake
+        | TapeInstruction::SetTapeDelegate
+        | TapeInstruction::RevokeTapeDelegate => Ok(None),
     }
 }
 
@@ -986,4 +948,3 @@ mod tests {
         }
     }
 }
-

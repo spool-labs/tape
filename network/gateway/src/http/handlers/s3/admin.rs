@@ -209,7 +209,6 @@ where
         can_put: request.caps.can_put,
         can_delete: request.caps.can_delete,
         can_multipart: request.caps.can_multipart,
-        can_read: request.caps.can_read,
     };
     if let Some(grade) = request.grade.as_deref() {
         require_known_grade(&state, grade)?;
@@ -786,8 +785,6 @@ struct CapsSpec {
     can_delete: bool,
     #[serde(default)]
     can_multipart: bool,
-    #[serde(default)]
-    can_read: bool,
 }
 
 #[derive(Serialize)]
@@ -806,7 +803,6 @@ struct CapsView {
     can_put: bool,
     can_delete: bool,
     can_multipart: bool,
-    can_read: bool,
 }
 
 #[derive(Serialize)]
@@ -842,7 +838,6 @@ enum PolicyActionSpec {
     Put,
     Delete,
     Multipart,
-    Read,
 }
 
 impl From<PolicyActionSpec> for PolicyAction {
@@ -852,7 +847,6 @@ impl From<PolicyActionSpec> for PolicyAction {
             PolicyActionSpec::Put => PolicyAction::Put,
             PolicyActionSpec::Delete => PolicyAction::Delete,
             PolicyActionSpec::Multipart => PolicyAction::Multipart,
-            PolicyActionSpec::Read => PolicyAction::Read,
         }
     }
 }
@@ -1013,7 +1007,6 @@ fn summarize_credential(access_key_id: &str, credential: &Credential) -> Credent
             can_put: credential.caps.can_put,
             can_delete: credential.caps.can_delete,
             can_multipart: credential.caps.can_multipart,
-            can_read: credential.caps.can_read,
         },
         scope,
         not_after: credential.not_after,
@@ -1033,7 +1026,6 @@ fn view_policy_rule(key: PolicyRuleKey, rule: &PolicyRule) -> PolicyRuleView {
             PolicyAction::Put => "put",
             PolicyAction::Delete => "delete",
             PolicyAction::Multipart => "multipart",
-            PolicyAction::Read => "read",
         }
         .to_string(),
         effect: match rule.effect {

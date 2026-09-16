@@ -200,17 +200,6 @@ pub enum ReplayableEvent {
         total_groups: u64,
         signers: [u8; 8],
     },
-
-    /// Tape delegate was set, or cleared when the address is the default.
-    SetTapeDelegate {
-        tape: Address,
-        delegate: Address,
-    },
-
-    /// Tape's read grants were revoked by bumping its generation counter.
-    BumpGrantGeneration {
-        tape: Address,
-    },
 }
 
 /// Replayable track metadata for the track-write flow.
@@ -368,7 +357,7 @@ impl SnapshotLog {
 mod tests {
     use bytemuck::Zeroable;
     use crate::spooler::GroupIndex;
-    use crate::track::types::{TrackKind, TrackState, TrackVisibility};
+    use crate::track::types::{TrackKind, TrackState};
     use tape_crypto::hash::Hash;
     #[cfg(feature = "wincode")]
     use crate::encoding::EncodingProfile;
@@ -386,7 +375,6 @@ mod tests {
                 track_number: 0u64.into(),
                 kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
                 size: 1u64.into(),
                 group: GroupIndex::from(0),
                 value_hash: Hash::default(),
@@ -414,7 +402,6 @@ mod tests {
                 track_number: 1u64.into(),
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Registered as u64,
-                visibility: TrackVisibility::Public as u64,
                 size: 1024u64.into(),
                 group: GroupIndex::from(1),
                 value_hash: Hash::from([4u8; 32]),

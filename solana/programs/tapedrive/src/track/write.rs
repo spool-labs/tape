@@ -6,8 +6,7 @@ use crate::tape::helpers::{authorize_tape_operator, verified_tape_address};
 use crate::track::helpers::append_track;
 
 pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let (header, blob) = parse_track_write(data)?;
-    let visibility = header.visibility()?;
+    let (_, blob) = parse_track_write(data)?;
     let [
         fee_payer_info,
         authority_info,
@@ -53,8 +52,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         slot_hashes_info,
         tape_address,
         key,
-        meta,
-        visibility,
+        meta
     )?;
 
     Ok(())
@@ -68,7 +66,7 @@ mod tests {
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::{BlobData, BlobInfo};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::types::ContentType;
     use tape_crypto::hash::{hash, hashv};
@@ -126,7 +124,6 @@ mod tests {
                 }),
                 data: BlobData::Coded(blob),
             },
-            TrackVisibility::Public,
         )
         .expect("valid blob write instruction");
 
@@ -178,7 +175,6 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
-            visibility: TrackVisibility::Public as u64,
             size: storage_units,
             group,
             value_hash: blob.get_hash(),

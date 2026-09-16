@@ -201,7 +201,6 @@ pub fn merge(
             RawInstruction::TrackWrite {
                 authority,
                 key,
-                visibility,
                 object,
                 value,
             } => {
@@ -217,7 +216,6 @@ pub fn merge(
                     authority,
                     track: event.track,
                     key,
-                    visibility,
                     object,
                     value,
                     event,
@@ -323,14 +321,6 @@ pub fn merge(
                     preferences,
                     event,
                 }
-            }
-
-            RawInstruction::SetTapeDelegate { tape, delegate } => {
-                ParsedInstruction::SetTapeDelegate { tape, delegate }
-            }
-
-            RawInstruction::BumpGrantGeneration { tape } => {
-                ParsedInstruction::BumpGrantGeneration { tape }
             }
 
             // The metadata setters emit no events; the parsed args are the payload.
@@ -882,7 +872,6 @@ mod tests {
         let instructions = vec![
             RawInstruction::AdvanceEpoch,
             RawInstruction::TrackWrite {
-                visibility: 0,
                 authority: owner,
                 key: Hash::default(),
                 object: None,
@@ -943,7 +932,6 @@ mod tests {
     fn required_events_missing_cases() -> Vec<RawInstruction> {
         vec![
             RawInstruction::TrackWrite {
-                visibility: 0,
                 authority: Address::new_unique(),
                 key: Hash::default(),
                 object: None,
@@ -1006,7 +994,6 @@ mod tests {
         vec![
             (
                 RawInstruction::TrackWrite {
-                    visibility: 0,
                     authority: Address::new_unique(),
                     key: Hash::default(),
                     object: None,

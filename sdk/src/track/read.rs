@@ -14,14 +14,10 @@ use crate::error::{ClientError, TapedriveError};
 use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
 use crate::track::bootstrap_network_state;
-use crate::track::grant::with_grant;
 use crate::transfer::downloader::ParallelDownloader;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
-    /// Read a track's data by address.
-    ///
-    /// A public track needs nothing; a restricted one needs the grant on the
-    /// client's read options.
+    /// Read a track's data by address. No key needed, reads are public.
     pub async fn read(&self, track: &Address) -> Result<Vec<u8>, TapedriveError> {
         self.read_as(track, Operation::ReadTrack).await
     }
@@ -31,7 +27,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         track: &Address,
         operation: Operation,
     ) -> Result<Vec<u8>, TapedriveError> {
-        with_grant(self.read_options.grant, read_track(self, track, operation)).await
+        read_track(self, track, operation).await
     }
 
     /// Verify that `data` matches the on-chain commitment for a track.

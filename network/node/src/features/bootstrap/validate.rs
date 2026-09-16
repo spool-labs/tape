@@ -180,7 +180,7 @@ mod tests {
     use tape_api::program::tapedrive::track_pda;
     use tape_core::spooler::GroupIndex;
     use tape_core::tape::{snapshot_tape_number, user_tape_number};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::{Address, Hash};
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
@@ -202,7 +202,6 @@ mod tests {
                 key: Hash::default(),
                 kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
                 size: StorageUnits(1),
                 group: GroupIndex::from(0),
                 value_hash: Hash::default(),
@@ -216,9 +215,6 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(10),
             next_track_number: TrackNumber(0),
-            authority: Address::default(),
-            delegate: Address::default(),
-            grant_generation: 0,
         }
     }
 
@@ -284,9 +280,6 @@ mod tests {
                     flags: TapeFlags::SYSTEM,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(0),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    grant_generation: 0,
                 },
             )
             .unwrap();

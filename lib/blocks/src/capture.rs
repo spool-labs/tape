@@ -6,7 +6,7 @@ use tape_api::program::tapedrive::track_pda;
 use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayTrackObject, ReplayableEvent};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::data::BlobDataSlice;
-use tape_core::track::types::{CompressedTrack, TrackVisibility};
+use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
@@ -243,7 +243,6 @@ fn capture_instruction(
         },
         ParsedInstruction::TrackWrite {
             key,
-            visibility,
             object,
             value,
             event,
@@ -254,7 +253,6 @@ fn capture_instruction(
             actor,
             event,
             *key,
-            *visibility,
             object.clone(),
             value.as_slice(),
         )?,
@@ -291,27 +289,6 @@ fn capture_instruction(
         ParsedInstruction::ExtendTape { event, .. } => {
             capture_extend(*current_epoch, tx_id, actor, event)
         }
-        ParsedInstruction::SetTapeDelegate { tape, delegate } => Captured {
-            event: captured_event(
-                *current_epoch,
-                tx_id,
-                actor,
-                ReplayableEvent::SetTapeDelegate {
-                    tape: (*tape),
-                    delegate: (*delegate),
-                },
-            ),
-            raw_track: None,
-        },
-        ParsedInstruction::BumpGrantGeneration { tape } => Captured {
-            event: captured_event(
-                *current_epoch,
-                tx_id,
-                actor,
-                ReplayableEvent::BumpGrantGeneration { tape: (*tape) },
-            ),
-            raw_track: None,
-        },
         ParsedInstruction::RegisterNode { authority, event, .. } => Captured {
             event: captured_event(
                 *current_epoch,
@@ -358,7 +335,6 @@ fn capture_instruction(
             actor,
             event,
             entry.key(),
-            TrackVisibility::Public as u8,
             None,
             BlobDataSlice::Inline(bytes_of(entry)),
         )?,
@@ -371,7 +347,6 @@ fn capture_instruction(
             actor,
             track_event,
             span.key(),
-            TrackVisibility::Public as u8,
             None,
             BlobDataSlice::Inline(bytes_of(span)),
         )?,
@@ -411,7 +386,6 @@ fn capture_track(
     actor: Option<Address>,
     event: &TrackWritten,
     key: Hash,
-    visibility: u8,
     object: Option<ReplayTrackObject>,
     data: BlobDataSlice<'_>,
 ) -> Result<Captured, ParseError> {
@@ -425,7 +399,6 @@ fn capture_track(
         track_number: event.track_number,
         kind: meta.kind as u64,
         state: meta.state as u64,
-        visibility: visibility as u64,
         size: meta.size,
         group: event.group,
         value_hash: meta.value_hash,
@@ -576,8 +549,6 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::SetNetworkAddress { .. }
         | ParsedInstruction::SetNetworkTls { .. }
         | ParsedInstruction::SetBlsPubkey { .. }
-        | ParsedInstruction::SetTapeDelegate { .. }
-        | ParsedInstruction::BumpGrantGeneration { .. }
         | ParsedInstruction::StartNetwork => None,
     }
 }
@@ -597,7 +568,7 @@ mod tests {
     use tape_core::system::{BlacklistEntry, NodePreferences};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
@@ -637,7 +608,6 @@ mod tests {
         track_number: TrackNumber,
         group: GroupIndex,
         epoch: EpochNumber,
-        visibility: TrackVisibility,
     ) -> TrackWritten {
         let meta = value.meta().unwrap();
         let state = CompressedTrack {
@@ -646,7 +616,6 @@ mod tests {
             track_number,
             kind: meta.kind as u64,
             state: meta.state as u64,
-            visibility: visibility as u64,
             size: meta.size,
             group,
             value_hash: meta.value_hash,
@@ -666,10 +635,9 @@ mod tests {
     fn blob_track_write_instruction(_track: Address, tape: Address, epoch: EpochNumber) -> ParsedInstruction {
         let value = BlobData::Coded(default_blob());
         let key = Hash::new_unique();
-        let event = track_written_event(tape, key, &value, TrackNumber(7), GroupIndex(3), epoch, TrackVisibility::Public);
+        let event = track_written_event(tape, key, &value, TrackNumber(7), GroupIndex(3), epoch);
 
         ParsedInstruction::TrackWrite {
-            visibility: 0,
             authority: Address::new_unique(),
             track: event.track,
             key,
@@ -694,10 +662,9 @@ mod tests {
     fn raw_track_write_instruction(_track: Address, tape: Address, epoch: EpochNumber) -> ParsedInstruction {
         let value = BlobData::Inline(vec![0xAB; 4 * 1024]);
         let key = Hash::new_unique();
-        let event = track_written_event(tape, key, &value, TrackNumber(8), GroupIndex(4), epoch, TrackVisibility::Public);
+        let event = track_written_event(tape, key, &value, TrackNumber(8), GroupIndex(4), epoch);
 
         ParsedInstruction::TrackWrite {
-            visibility: 0,
             authority: Address::new_unique(),
             track: event.track,
             key,
@@ -715,7 +682,7 @@ mod tests {
         epoch: EpochNumber,
     ) -> ParsedInstruction {
         let value = BlobData::Inline(bytes_of(&entry).to_vec());
-        let event = track_written_event(tape, entry.key(), &value, TrackNumber(9), GroupIndex(6), epoch, TrackVisibility::Public);
+        let event = track_written_event(tape, entry.key(), &value, TrackNumber(9), GroupIndex(6), epoch);
 
         ParsedInstruction::AddToBlacklist { node, entry, event }
     }
