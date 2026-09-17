@@ -46,12 +46,12 @@ use crate::track::{bootstrap_network_state, query};
 use crate::transfer::certify::{CertificationCollector, CollectedSignatures};
 use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
 
-// The program accepts up to 10 KiB for raw TrackWrite payloads; this bound is
-// about the transaction, not the program: the largest payload whose one-call
-// write still fits the 1232-byte raw transaction. Measured live on devnet
-// 2026-08-24 — at 825 the boundary transaction came out 4 bytes over. The
-// visibility byte grew the header by one, so the limit drops to 820.
-pub const SDK_INLINE_RAW_MAX_BYTES: usize = 820;
+// The program accepts up to 10 KiB for raw TrackWrite payloads. This bound
+// comes from the transaction: a v1 transaction holds 4,096 bytes, and an
+// unnamed write with a separate payer and tape signer spends 384 of them
+// outside the payload. 8 bytes stay free so a priority fee can be added without
+// moving the boundary, which decides an object's ETag.
+pub const SDK_INLINE_RAW_MAX_BYTES: usize = 3704;
 
 /// Poll cadence for visibility and certification waits.
 const POLL_INTERVAL_MS: u64 = 400;
@@ -1575,9 +1575,15 @@ pub(crate) async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
     match result {
         Ok(track) => Ok(track),
         Err(TrackCompletionError::Client(err)) => Err(err),
-        Err(TrackCompletionError::NotCertifiedYet) => Err(TapedriveError::Upload(
-            UploadError::Network("track never became visible as certified".into()),
-        )),
+        // Nodes can trail the chain; the track account is the last word.
+        Err(TrackCompletionError::NotCertifiedYet) => {
+            match client.get_track(&track_pda(*tape, track_number).0).await {
+                Ok(track) if track.is_certified() => Ok(track),
+                _ => Err(TapedriveError::Upload(UploadError::Network(
+                    "track never became visible as certified".into(),
+                ))),
+            }
+        }
     }
 }
 
@@ -1907,7 +1913,7 @@ pub(crate) async fn certify_submit_with_retry<Blockchain: Rpc, Cluster: Api>(
 
 /// True when a rejection invalidates the collected signatures themselves,
 /// rather than the proof or the transaction attempt.
-fn needs_fresh_signatures(err: &TapedriveError) -> bool {
+pub(crate) fn needs_fresh_signatures(err: &TapedriveError) -> bool {
     match err {
         TapedriveError::Rpc(rpc) => matches!(
             parse_tape_error(rpc),
@@ -1993,14 +1999,33 @@ mod tests {
     use crate::error::TapedriveError;
 
     use super::{
-        check_plan_matches, content_etag, content_etag_named, ensure_expected_track_position, hash,
-        inline_write_fits, prepare_plan, should_retry_certification, TrackNumber,
-        SDK_INLINE_RAW_MAX_BYTES,
+        check_plan_matches, content_etag, content_etag_named, ensure_expected_track_position,
+        hash, inline_write_fits, needs_fresh_signatures, prepare_plan,
+        should_retry_certification, RpcError, TapeError, TrackNumber, SDK_INLINE_RAW_MAX_BYTES,
     };
-    use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
+    use solana_program::hash::Hash as SolanaHash;
+    use tape_api::compute::TRACK_WRITE_CU;
+    use tape_api::instruction::{build_track_write_ix, TRACK_WRITE_MAX_BYTES};
+    use tape_core::track::data::{BlobData, BlobInfo};
+    use tape_core::track::types::TrackVisibility;
+    use tape_crypto::ed25519::{Keypair, SecretKey};
+    use tape_crypto::prelude::Address;
+    use tape_rpc_client::{sign_transaction, transaction_len, MAX_TRANSACTION_SIZE};
+
+    // Size of the priority fee field in a v1 transaction config.
+    const PRIORITY_FEE_BYTES: usize = 8;
 
     fn blob(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i * 31 + 7) as u8).collect()
+    }
+
+    fn rejected(error: TapeError) -> TapedriveError {
+        let code = u32::from(error);
+        TapedriveError::Rpc(RpcError::Transaction {
+            err: None,
+            message: format!("custom program error: {code:#x}"),
+            simulated: false,
+        })
     }
 
     // a reused plan writes exactly what a fresh encode would have
@@ -2049,7 +2074,7 @@ mod tests {
     // The SDK inline write limit must always remain below the program limit.
     #[test]
     fn sdk_inline_raw_limit_is_below_program_limit() {
-        assert_eq!(SDK_INLINE_RAW_MAX_BYTES, 820);
+        assert_eq!(SDK_INLINE_RAW_MAX_BYTES, 3704);
         assert!(SDK_INLINE_RAW_MAX_BYTES < TRACK_WRITE_MAX_BYTES);
     }
 
@@ -2067,6 +2092,51 @@ mod tests {
         let named = content_etag_named(name, &data).await.expect("etag");
         let plan = named.plan.expect("coded plan");
         assert_eq!(named.etag, plan.commitment_hash);
+    }
+
+    // Wire size of the signed transaction for an unnamed inline write with a
+    // separate payer and tape signer, the largest shape the SDK sends.
+    fn inline_write_transaction_len(payload_len: usize) -> Result<usize, RpcError> {
+        let payer = Keypair::from_secret(SecretKey::from_bytes([1; 32]));
+        let tape_key = Keypair::from_secret(SecretKey::from_bytes([2; 32]));
+        let write_ix = build_track_write_ix(
+            payer.address(),
+            tape_key.address(),
+            Address::from([3; 32]),
+            BlobInfo {
+                object: None,
+                data: BlobData::Inline(blob(payload_len)),
+            },
+            TrackVisibility::Public,
+        )
+        .expect("track write instruction");
+
+        let transaction = sign_transaction(
+            &payer,
+            &[&tape_key],
+            TRACK_WRITE_CU,
+            &[write_ix],
+            SolanaHash::default(),
+        )?;
+        transaction_len(&transaction)
+    }
+
+    // The limit plus the priority fee reserve fills a v1 transaction exactly.
+    #[test]
+    fn inline_limit_fills_transaction() {
+        let len = inline_write_transaction_len(SDK_INLINE_RAW_MAX_BYTES).expect("signs");
+        assert_eq!(len + PRIORITY_FEE_BYTES, MAX_TRANSACTION_SIZE);
+    }
+
+    // One byte past the reserve is refused before it reaches the chain.
+    #[test]
+    fn oversized_write_refused() {
+        let largest = SDK_INLINE_RAW_MAX_BYTES + PRIORITY_FEE_BYTES;
+        assert_eq!(
+            inline_write_transaction_len(largest).expect("signs"),
+            MAX_TRANSACTION_SIZE
+        );
+        assert!(inline_write_transaction_len(largest + 1).is_err());
     }
 
     #[test]
@@ -2120,11 +2190,25 @@ mod tests {
     // certify_with_retry must recollect from peers, not just resubmit.
     #[test]
     fn epoch_change() {
-        let err = TapedriveError::Rpc(tape_rpc::RpcError::Transaction {
-            err: None,
-            message: "custom program error: 0x34".to_string(),
-            simulated: false,
-        });
-        assert!(should_retry_certification(&err));
+        assert!(should_retry_certification(&rejected(TapeError::EpochChanged)));
+    }
+
+    // Rejections of the signatures themselves are retryable only with a fresh collection.
+    #[test]
+    fn dead_signatures() {
+        for error in [TapeError::BadSignature, TapeError::EpochChanged] {
+            assert!(needs_fresh_signatures(&rejected(error)));
+            assert!(should_retry_certification(&rejected(error)));
+        }
+    }
+
+    // A stale proof and transport failures leave the collected signatures usable.
+    #[test]
+    fn live_signatures() {
+        assert!(!needs_fresh_signatures(&rejected(TapeError::BadProof)));
+        assert!(!needs_fresh_signatures(&TapedriveError::NotFound));
+        assert!(!needs_fresh_signatures(&TapedriveError::Peer(
+            ApiError::StaleTrackProof,
+        )));
     }
 }

@@ -182,6 +182,60 @@ impl ChainFixture {
 
         Ok(sig.into())
     }
+
+    pub async fn send_capped_and_advance(
+        &self,
+        payer: &SolanaKeypair,
+        compute_unit_limit: u32,
+        instructions: Vec<Instruction>,
+        slot_advance_per_tx: u64,
+    ) -> Result<Signature> {
+        self.send_capped_with_signers_and_advance(
+            payer,
+            compute_unit_limit,
+            instructions,
+            &[],
+            slot_advance_per_tx,
+        )
+        .await
+    }
+
+    pub async fn send_capped_with_signers_and_advance(
+        &self,
+        payer: &SolanaKeypair,
+        compute_unit_limit: u32,
+        instructions: Vec<Instruction>,
+        signers: &[&SolanaKeypair],
+        slot_advance_per_tx: u64,
+    ) -> Result<Signature> {
+        let client = RpcClient::from_rpc(self.rpc.clone());
+        let payer = crypto_keypair(payer).context("payer keypair")?;
+        let signers = signers
+            .iter()
+            .map(|signer| crypto_keypair(signer).context("instruction signer"))
+            .collect::<Result<Vec<_>>>()?;
+        let signer_refs = signers
+            .iter()
+            .map(|signer| signer as &dyn TapeSigner)
+            .collect::<Vec<_>>();
+        let sig = client
+            .send_instructions_with_signers_and_compute_unit_limit(
+                &payer,
+                compute_unit_limit,
+                instructions,
+                &signer_refs,
+                self.rpc.commitment(),
+                true,
+            )
+            .await
+            .context("send_instructions_with_signers_and_compute_unit_limit")?;
+
+        if slot_advance_per_tx > 0 {
+            let _ = self.advance_slots(slot_advance_per_tx).await?;
+        }
+
+        Ok(sig.into())
+    }
 }
 
 impl Default for ChainFixture {

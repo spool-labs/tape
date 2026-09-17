@@ -1,12 +1,11 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tape_rpc::{CommitmentLevel, RpcError};
+use tape_rpc::{CommitmentLevel, Rpc, RpcError};
 use tape_rpc_client::RpcClient;
 use tape_rpc_solana::{RpcConfig, SolanaRpc};
 use solana_client::nonblocking::rpc_client::RpcClient as SolRpcClient;
 use solana_commitment_config::CommitmentConfig;
-use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
@@ -202,7 +201,7 @@ impl ChainManager {
         let authority_signer = CryptoKeypair::from_solana_keypair(authority_keypair)
             .context("convert authority keypair")?;
 
-        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(MAX_COMPUTE_UNIT_LIMIT)];
+        let mut ixs = Vec::new();
 
         let payer_is_authority = self.admin.pubkey() == authority;
         if !payer_is_authority {
@@ -226,7 +225,14 @@ impl ChainManager {
         }
 
         self.rpc
-            .send_instructions_with_signers(&self.admin_signer, ixs, &[&authority_signer])
+            .send_instructions_with_signers_and_compute_unit_limit(
+                &self.admin_signer,
+                MAX_COMPUTE_UNIT_LIMIT,
+                ixs,
+                &[&authority_signer],
+                self.rpc.rpc().commitment(),
+                true,
+            )
             .await
             .context("stake_node")?;
 
@@ -277,11 +283,10 @@ impl ChainManager {
             node_address,
             current_epoch,
         );
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
 
         let result = self
             .rpc
-            .send_instructions(&self.admin_signer, vec![cu_ix, ix])
+            .send_instructions_with_compute_unit_limit(&self.admin_signer, CU_MED, vec![ix])
             .await;
 
         match result {
@@ -379,16 +384,18 @@ impl ChainManager {
             node_address,
             current_epoch,
         );
-        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(CU_MED);
         let authority_signer = CryptoKeypair::from_solana_keypair(authority_keypair)
             .context("convert authority keypair")?;
 
         let result = self
             .rpc
-            .send_instructions_with_signers(
+            .send_instructions_with_signers_and_compute_unit_limit(
                 &self.admin_signer,
-                vec![cu_ix, ix],
+                CU_MED,
+                vec![ix],
                 &[&authority_signer],
+                self.rpc.rpc().commitment(),
+                true,
             )
             .await;
 

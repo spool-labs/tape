@@ -16,6 +16,7 @@ use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::helpers::load_solana_keypair;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
+use tape_sdk::track::write::SDK_INLINE_RAW_MAX_BYTES;
 use tokio::spawn;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
@@ -26,7 +27,7 @@ use crate::view::UploadView;
 /// window of the last few.
 const MAX_UPLOAD_HISTORY: usize = 4096;
 const DEFAULT_UPLOAD_EPOCHS: u64 = 100;
-const MAX_RAW_UPLOAD_BYTES: usize = 825;
+const MAX_RAW_UPLOAD_BYTES: usize = SDK_INLINE_RAW_MAX_BYTES;
 const MIN_RAW_UPLOAD_BYTES: usize = 64;
 const MIN_BLOB_UPLOAD_BYTES: usize = 1024 * 1024;
 const MAX_BLOB_UPLOAD_BYTES: usize = 64 * 1024 * 1024;

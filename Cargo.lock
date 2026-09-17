@@ -10099,7 +10099,6 @@ dependencies = [
  "serde_json",
  "solana-client",
  "solana-commitment-config",
- "solana-compute-budget-interface",
  "solana-instruction",
  "solana-keypair",
  "solana-pubkey 4.2.1",
@@ -10137,7 +10136,6 @@ dependencies = [
  "reqwest",
  "rpc-litesvm",
  "sha2 0.10.9",
- "solana-compute-budget-interface",
  "solana-instruction",
  "solana-keypair",
  "solana-program-pack",
@@ -10614,10 +10612,10 @@ dependencies = [
  "solana-account-decoder",
  "solana-client",
  "solana-commitment-config",
- "solana-compute-budget-interface",
  "solana-hash",
  "solana-instruction",
  "solana-keypair",
+ "solana-message",
  "solana-pubkey 4.2.1",
  "solana-signature",
  "solana-signer",
@@ -10634,6 +10632,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "wincode 0.5.5",
 ]
 
 [[package]]

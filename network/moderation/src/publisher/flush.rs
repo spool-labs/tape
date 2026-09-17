@@ -610,7 +610,7 @@ mod tests {
     #[tokio::test]
     async fn batching() {
         let setup = setup().await;
-        let bytes: Vec<u8> = (1..=30).collect();
+        let bytes: Vec<u8> = (1..=200).collect();
         for byte in &bytes {
             queue(&setup, *byte, 0).await;
         }
@@ -647,7 +647,7 @@ mod tests {
     #[tokio::test]
     async fn full_batch() {
         let setup = setup().await;
-        for byte in 1..=20 {
+        for byte in 1..=100 {
             queue(&setup, byte, 0).await;
         }
 
@@ -656,7 +656,7 @@ mod tests {
         assert_eq!(report, FlushReport { written: 1, deleted: 0, outcome: FlushOutcome::Waiting });
         let tracks = setup.chain.tracks(setup.tape);
         let first = parse_entries(tracks[1].1.as_bytes()).expect("parse").len() as u64;
-        assert_eq!(count(&setup, "SELECT COUNT(*) FROM decisions WHERE track IS NULL"), 20 - first);
+        assert_eq!(count(&setup, "SELECT COUNT(*) FROM decisions WHERE track IS NULL"), 100 - first);
     }
 
     // tracks hold only entries: no report, reason, note or score
@@ -872,7 +872,7 @@ mod tests {
             .insert_tape(pending, TapeRole::Blacklist, PathBuf::from("pending.json"), Timestamp(0))
             .await
             .expect("pending tape");
-        for byte in 1..=30 {
+        for byte in 1..=200 {
             queue(&setup, byte, 0).await;
         }
 

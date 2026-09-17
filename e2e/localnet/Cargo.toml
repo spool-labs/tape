@@ -23,7 +23,6 @@ anyhow.workspace = true
 tokio.workspace = true
 solana-client.workspace = true
 solana-commitment-config.workspace = true
-solana-compute-budget-interface.workspace = true
 solana-instruction.workspace = true
 solana-keypair.workspace = true
 solana-pubkey.workspace = true

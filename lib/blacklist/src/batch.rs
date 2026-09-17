@@ -200,10 +200,10 @@ mod tests {
     #[test]
     fn packed_tracks() {
         let mut entries = Vec::new();
-        for byte in 1..=30 {
+        for byte in 1..=200 {
             entries.push(Entry::remove(address(byte)));
         }
-        let max_bytes = 821;
+        let max_bytes = 3704;
 
         let tracks = render_tracks(&entries, max_bytes).expect("render tracks");
 

@@ -2,7 +2,6 @@ use std::time::{Duration, Instant};
 
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
-use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_signer::Signer;
 use tape_api::compute::INVALIDATE_TRACK_CU;
 use tape_api::instruction::build_invalidate_track_ix;
@@ -217,13 +216,13 @@ async fn submit_invalidate(
 
     let admin: Address = harness.admin().pubkey().into();
     let ix = build_invalidate_track_ix(admin, *proof, epoch, bitmap, signature);
-    let budget = ComputeBudgetInstruction::set_compute_unit_limit(INVALIDATE_TRACK_CU);
 
     harness
         .chain()
-        .send_instructions_and_advance(
+        .send_capped_and_advance(
             harness.admin(),
-            vec![budget, ix],
+            INVALIDATE_TRACK_CU,
+            vec![ix],
             harness.config().slot_advance_per_tx,
         )
         .await?;
