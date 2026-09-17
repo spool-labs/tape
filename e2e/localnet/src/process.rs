@@ -170,7 +170,9 @@ impl ProcessSupervisor {
         let port = self.base_port + id as u16;
         let plaintext_port = port + PLAINTEXT_PORT_OFFSET;
         let node_dir = self.data_root.join(format!("node-{id}"));
-        if node_dir.exists() {
+        // An operator may point node-N at a drive with an empty directory or a link to one
+        let taken = std::fs::read_dir(&node_dir).map_or(false, |mut entries| entries.next().is_some());
+        if taken {
             anyhow::bail!(
                 "node directory already exists for node {id}: {}",
                 node_dir.display()
