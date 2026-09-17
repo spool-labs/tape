@@ -6,7 +6,8 @@ use axum::extract::{Request, State};
 use axum::http::{Method, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use tape_crypto::hash::{hash, hashv};
+use hmac::{Hmac, Mac};
+use sha2::{Digest, Sha256};
 
 use tape_node::config::gateway::S3Config;
 
@@ -49,14 +50,7 @@ const MAX_PRESIGNED_EXPIRY_SECS: i64 = 604_800;
 
 use super::clock::{SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, days_from_civil};
 
-/// Bytes in one SHA-256 input block, which is the width an HMAC key is padded to
-const HMAC_BLOCK_BYTES: usize = 64;
-
-/// The byte XORed over the padded key for the inner hash, per RFC 2104
-const HMAC_INNER_PAD: u8 = 0x36;
-
-/// The byte XORed over the padded key for the outer hash, per RFC 2104
-const HMAC_OUTER_PAD: u8 = 0x5c;
+type HmacSha256 = Hmac<Sha256>;
 
 /// A SigV4 credential the gateway accepts on signed requests
 #[derive(Clone)]
@@ -153,8 +147,8 @@ impl SigV4Verifier {
         );
 
         let signing_key =
-            derive_signing_key(&credential.secret_access_key, date_stamp, region, service);
-        let expected = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes()));
+            derive_signing_key(&credential.secret_access_key, date_stamp, region, service)?;
+        let expected = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
 
         if !constant_time_eq(expected.as_bytes(), presented.signature.as_bytes()) {
             return Err(S3Error::SignatureDoesNotMatch);
@@ -573,42 +567,32 @@ fn is_read_method(method: &Method) -> bool {
 }
 
 /// Derive the SigV4 signing key for the given scope
-pub(super) fn derive_signing_key(
+fn derive_signing_key(
     secret: &str,
     date_stamp: &str,
     region: &str,
     service: &str,
-) -> [u8; 32] {
+) -> Result<[u8; 32], S3Error> {
     let signing_key_secret = format!("AWS4{secret}");
-    let signing_key_date = hmac_sha256(signing_key_secret.as_bytes(), date_stamp.as_bytes());
-    let signing_key_region = hmac_sha256(&signing_key_date, region.as_bytes());
-    let signing_key_service = hmac_sha256(&signing_key_region, service.as_bytes());
+    let signing_key_date = hmac_sha256(signing_key_secret.as_bytes(), date_stamp.as_bytes())?;
+    let signing_key_region = hmac_sha256(&signing_key_date, region.as_bytes())?;
+    let signing_key_service = hmac_sha256(&signing_key_region, service.as_bytes())?;
     hmac_sha256(&signing_key_service, AWS4_REQUEST.as_bytes())
 }
 
-/// `HMAC-SHA256(key, data)` per RFC 2104, two tape-sha256 digests over a block-padded key
-pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
-    let mut padded = [0u8; HMAC_BLOCK_BYTES];
-    if key.len() > HMAC_BLOCK_BYTES {
-        padded[..32].copy_from_slice(hash(key).as_ref());
-    } else {
-        padded[..key.len()].copy_from_slice(key);
-    }
-
-    let mut inner_key = [0u8; HMAC_BLOCK_BYTES];
-    let mut outer_key = [0u8; HMAC_BLOCK_BYTES];
-    for (index, byte) in padded.iter().enumerate() {
-        inner_key[index] = byte ^ HMAC_INNER_PAD;
-        outer_key[index] = byte ^ HMAC_OUTER_PAD;
-    }
-
-    let inner = hashv(&[&inner_key, data]);
-    hashv(&[&outer_key, inner.as_ref()]).to_bytes()
+/// Compute `HMAC-SHA256(key, data)`.
+pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; 32], S3Error> {
+    let mut mac = HmacSha256::new_from_slice(key)
+        .map_err(|error| S3Error::Internal(format!("hmac key init: {error}")))?;
+    mac.update(data);
+    Ok(mac.finalize().into_bytes().into())
 }
 
 /// Compute the lowercase hex `SHA-256(data)`
-pub fn sha256_hex(data: &[u8]) -> String {
-    hex::encode(hash(data).as_ref())
+pub(super) fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hex::encode(hasher.finalize())
 }
 
 /// Trim leading/trailing whitespace and collapse internal runs of spaces to a
@@ -827,8 +811,8 @@ mod tests {
             "{ALGORITHM}\n{date}\n{scope}\n{}",
             sha256_hex(canonical_request.as_bytes())
         );
-        let key = derive_signing_key(secret, parts[0], parts[1], parts[2]);
-        hex::encode(hmac_sha256(&key, string_to_sign.as_bytes()))
+        let key = derive_signing_key(secret, parts[0], parts[1], parts[2]).expect("derive signing key");
+        hex::encode(hmac_sha256(&key, string_to_sign.as_bytes()).expect("hmac"))
     }
 
     fn verifier() -> Arc<SigV4Verifier> {
@@ -1334,25 +1318,4 @@ mod tests {
             Err(S3Error::AccessDenied(_))
         ));
     }
-
-    // RFC 4231 test cases 1, 2 and 6: a short key, the "Jefe" key, and a key past one block
-    #[test]
-    fn hmac_matches_rfc_4231() {
-        assert_eq!(
-            hex::encode(hmac_sha256(&[0x0b; 20], b"Hi There")),
-            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
-        );
-        assert_eq!(
-            hex::encode(hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
-            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
-        );
-        assert_eq!(
-            hex::encode(hmac_sha256(
-                &[0xaa; 131],
-                b"Test Using Larger Than Block-Size Key - Hash Key First"
-            )),
-            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
-        );
-    }
-
 }

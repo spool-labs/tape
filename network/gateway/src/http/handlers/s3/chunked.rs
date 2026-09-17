@@ -224,7 +224,9 @@ fn chunk_signature(
         scope = chain.scope,
         payload = sha256_hex(chunk),
     );
-    Ok(hex::encode(hmac_sha256(&chain.signing_key, string_to_sign.as_bytes())))
+    let signature = hmac_sha256(&chain.signing_key, string_to_sign.as_bytes())
+        .map_err(|_| io::Error::other("chunk signature hmac"))?;
+    Ok(hex::encode(signature))
 }
 
 /// Parse the hex chunk size from an `aws-chunked` header line
@@ -309,10 +311,9 @@ mod tests {
         ]
         .join("\n");
 
-        let expected = hex::encode(hmac_sha256(
-            &chain.signing_key,
-            expected_string_to_sign.as_bytes(),
-        ));
+        let expected = hex::encode(
+            hmac_sha256(&chain.signing_key, expected_string_to_sign.as_bytes()).expect("hmac"),
+        );
 
         assert_eq!(
             chunk_signature(&chain, &chain.seed_signature, chunk).expect("sign"),
