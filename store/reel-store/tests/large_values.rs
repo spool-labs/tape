@@ -1,7 +1,7 @@
 //! Values wider than an allocation chunk read back whole
 
 use reel::sync::tension::block_on;
-use reel_store::open_harness_store;
+use tape_reel_store::open_harness_store;
 use tape_core::types::ContentType;
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -139,7 +139,7 @@ fn concurrent_size_sweep() {
 #[ignore = "reel corrupts multi-MiB values written concurrently; red until the engine race is fixed"]
 fn concurrent_parts_posix() {
     use reel::IoBackend;
-    use reel_store::{node_config, NodeStoreOptions, ReelStore, Reserve, TAPE_COLUMNS};
+    use tape_reel_store::{node_config, NodeStoreOptions, ReelStore, Reserve, TAPE_COLUMNS};
     use tape_store::TapeStore;
 
     let dir = TempDir::new().expect("temp dir");

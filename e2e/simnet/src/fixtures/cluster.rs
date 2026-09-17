@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use peer_manager::PeerManager;
+use tape_peer_manager::PeerManager;
 use anyhow::{bail, Context, Result};
 use tape_core::types::BasisPoints;
 use tracing::trace;

@@ -33,7 +33,7 @@ const LATENCY_BUCKETS: &[f64] = &[
 /// # Example
 ///
 /// ```ignore
-/// use rpc_client::metrics::ClientMetrics;
+/// use tape_rpc_client::metrics::ClientMetrics;
 /// use tape_metrics::MetricsRegistry;
 ///
 /// let registry = MetricsRegistry::init();

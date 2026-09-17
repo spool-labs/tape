@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use rpc::Rpc;
-use rpc_client::RpcClient;
+use tape_rpc::Rpc;
+use tape_rpc_client::RpcClient;
 use solana_keypair::Keypair;
 use solana_program_pack::Pack;
 use solana_pubkey::Pubkey;
@@ -637,7 +637,7 @@ async fn owner_token_balance(harness: &SimnetHarness, owner: Address) -> TAPE {
 async fn token_account_balance(harness: &SimnetHarness, address: Address) -> TAPE {
     let account = match harness.chain().rpc().get_account(&address).await {
         Ok(account) => account,
-        Err(rpc::RpcError::AccountNotFound(_)) => return TAPE::zero(),
+        Err(tape_rpc::RpcError::AccountNotFound(_)) => return TAPE::zero(),
         Err(error) => panic!("read token account {address}: {error}"),
     };
     let account = spl_token::state::Account::unpack(&account.data)

@@ -24,7 +24,7 @@ fn atlas_feed() {
 }
 
 async fn atlas_feed_inner() {
-    peer_tls::install_default_provider();
+    tape_peer_tls::install_default_provider();
 
     let node_count = GROUP_SIZE;
     let mut harness = SimnetBuilder::new()
@@ -107,7 +107,7 @@ async fn atlas_feed_inner() {
     // anonymous callers and unknown identities never see the feed
     let anon = {
         let builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
-        peer_tls::apply_pinned_tls(builder, pin)
+        tape_peer_tls::apply_pinned_tls(builder, pin)
             .expect("anon tls")
             .build()
             .expect("anon build")
@@ -118,7 +118,7 @@ async fn atlas_feed_inner() {
     let impostor_key = EdKeypair::new(&mut thread_rng());
     let impostor = {
         let builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
-        peer_tls::apply_pinned_tls_with_identity(builder, pin, &impostor_key)
+        tape_peer_tls::apply_pinned_tls_with_identity(builder, pin, &impostor_key)
             .expect("impostor tls")
             .build()
             .expect("impostor build")
@@ -129,7 +129,7 @@ async fn atlas_feed_inner() {
     // even a real committee peer is not an observer
     let peer = {
         let builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
-        peer_tls::apply_pinned_tls_with_identity(
+        tape_peer_tls::apply_pinned_tls_with_identity(
             builder,
             pin,
             harness.node(2).expect("node 2").tls_keypair(),
@@ -144,7 +144,7 @@ async fn atlas_feed_inner() {
     // the configured observer reads the feed
     let observer = {
         let builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
-        peer_tls::apply_pinned_tls_with_identity(builder, pin, &observer_key)
+        tape_peer_tls::apply_pinned_tls_with_identity(builder, pin, &observer_key)
             .expect("observer tls")
             .build()
             .expect("observer build")

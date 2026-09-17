@@ -1,5 +1,5 @@
 use crate::client::RpcClient;
-use rpc::{CommitmentLevel, Rpc, RpcError};
+use tape_rpc::{CommitmentLevel, Rpc, RpcError};
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_hash::Hash;
 use solana_instruction::Instruction;
@@ -546,7 +546,7 @@ impl<R: Rpc> RpcClient<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rpc_solana::RpcConfig;
+    use tape_rpc_solana::RpcConfig;
     use solana_keypair::Keypair as SolanaKeypair;
     use solana_pubkey::Pubkey;
     use solana_system_interface::instruction as system_instruction;

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use rpc::Rpc;
-use rpc_client::parse_tape_error;
+use tape_rpc::Rpc;
+use tape_rpc_client::parse_tape_error;
 use tape_api::errors::TapeError;
 use tape_api::instruction::build_delete_track_ix;
 use tape_crypto::address::Address;

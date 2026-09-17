@@ -3,7 +3,7 @@ use core::mem::size_of;
 use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
-use rpc::{Rpc, RpcError};
+use tape_rpc::{Rpc, RpcError};
 
 use tape_api::dynamic::DynamicState;
 use tape_api::state::{

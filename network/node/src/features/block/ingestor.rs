@@ -6,8 +6,8 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use rpc::skip::slots_to_fetch;
-use rpc::{Rpc, RpcError};
+use tape_rpc::skip::slots_to_fetch;
+use tape_rpc::{Rpc, RpcError};
 use store::Store;
 use tape_blocks::ParsedInstruction;
 use tape_core::types::SlotNumber;

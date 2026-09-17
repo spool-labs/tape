@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::features::challenge::attest_queue::BatchKey;
 use futures::future::join_all;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::cert::challenge::{ChallengeAttestMessage, ChallengeRespondMessage};
 use tape_core::bls::BlsPubkey;

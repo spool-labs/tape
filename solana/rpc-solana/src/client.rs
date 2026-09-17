@@ -18,7 +18,7 @@ use solana_transaction_status::{
 };
 use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use rpc::{Rpc, RpcError, SimulationResult};
+use tape_rpc::{Rpc, RpcError, SimulationResult};
 use tape_crypto::address::Address;
 use tape_blocks::wire::Block;
 use tape_crypto::tx::Txid;
@@ -32,8 +32,8 @@ use tape_crypto::tx::Txid;
 /// # Example
 ///
 /// ```ignore
-/// use rpc_solana::{SolanaRpc, RpcConfig};
-/// use rpc::Rpc;
+/// use tape_rpc_solana::{SolanaRpc, RpcConfig};
+/// use tape_rpc::Rpc;
 ///
 /// let config = RpcConfig {
 ///     endpoints: vec!["https://api.mainnet-beta.solana.com".to_string()],

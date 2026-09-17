@@ -2,8 +2,8 @@
 
 use std::ops::Range;
 
-use rpc::{Rpc, RpcError};
-use rpc_client::RpcClient;
+use tape_rpc::{Rpc, RpcError};
+use tape_rpc_client::RpcClient;
 use solana_program::program_pack::Pack;
 use solana_program::rent::Rent;
 use solana_program::sysvar::rent::ID as RENT_SYSVAR;

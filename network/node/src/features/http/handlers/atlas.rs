@@ -3,7 +3,7 @@
 
 use axum::extract::{Query, State};
 use axum::Json;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use serde::Deserialize;
 use store::Store;
 use tape_observe_api::AtlasRecent;

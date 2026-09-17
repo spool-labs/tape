@@ -1,5 +1,5 @@
-use rpc::{Rpc, RpcError};
-use rpc_client::RpcClient;
+use tape_rpc::{Rpc, RpcError};
+use tape_rpc_client::RpcClient;
 use tape_api::instruction::build_set_network_tls_ix;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::address::Address;

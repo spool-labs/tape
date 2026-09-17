@@ -13,7 +13,7 @@ use block::{RecordedTransaction, SlotData};
 use convert::{tx_result_to_status_result, tx_result_to_transaction_status};
 use litesvm::types::TransactionResult;
 use litesvm::LiteSVM;
-use rpc::{Rpc, RpcError, SimulationResult};
+use tape_rpc::{Rpc, RpcError, SimulationResult};
 use solana_account::{Account, ReadableAccount as SvmReadableAccount};
 use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_client::rpc_filter::RpcFilterType;

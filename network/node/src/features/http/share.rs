@@ -2,7 +2,7 @@
 
 use axum::http::HeaderMap;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::share::{unix_now, ShareContext};
 use tape_core::track::types::CompressedTrack;

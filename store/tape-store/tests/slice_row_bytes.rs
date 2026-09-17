@@ -20,9 +20,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use reel_store::fill::{markdown, random};
-use reel_store::written::Written;
-use reel_store::{scaled, BenchArm, IndexReport, ReelStore};
+use tape_reel_store::fill::{markdown, random};
+use tape_reel_store::written::Written;
+use tape_reel_store::{scaled, BenchArm, IndexReport, ReelStore};
 use store_rocks::SplitStore;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;

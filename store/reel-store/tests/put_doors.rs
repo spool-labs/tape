@@ -10,7 +10,7 @@
 use std::time::{Duration, Instant};
 
 use reel::{ColumnId, KeyBytes, RecordKey, SEGMENT_SUFFIX};
-use reel_store::{bench_config, ReelStore, TAPE_COLUMNS};
+use tape_reel_store::{bench_config, ReelStore, TAPE_COLUMNS};
 use store::{Column, Store, WriteBatch};
 use tape_store::columns::SliceCol;
 use tempfile::TempDir;

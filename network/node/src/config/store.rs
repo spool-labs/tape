@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use reel::{IoBackend, Preallocate};
-use reel_store::{default_backend, Reserve, DEFAULT_SYNC_BYTES};
+use tape_reel_store::{default_backend, Reserve, DEFAULT_SYNC_BYTES};
 use serde::Deserialize;
 
 use super::helpers::deserialize_pathbuf;

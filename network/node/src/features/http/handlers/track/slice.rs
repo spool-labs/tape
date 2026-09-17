@@ -5,7 +5,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::cert::track::TrackWriteMessage;
 use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};

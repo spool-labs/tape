@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::types::SlotNumber;
 use tape_crypto::Hash;

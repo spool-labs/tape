@@ -1,4 +1,4 @@
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use rpc_litesvm::LiteSvmRpc;
 use solana_hash::Hash as SolanaHash;
 use solana_keypair::Keypair;

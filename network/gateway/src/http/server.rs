@@ -9,7 +9,7 @@ use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_node::config::gateway::S3Config;
 use tape_node::config::http::HttpConfig;

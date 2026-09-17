@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::blacklist_pda;
 use tape_blocks::ParsedInstruction;

@@ -3,7 +3,7 @@
 //! The epoch-advance gate guarantees that at any point in time, the snapshot
 //! for either `current - 1` or `current - 2` is `Finalized` on-chain.
 
-use rpc::{Rpc, RpcError};
+use tape_rpc::{Rpc, RpcError};
 use store::Store;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;

@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use peer_manager::PeerNode;
-use rpc::Rpc;
+use tape_peer_manager::PeerNode;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_observe_api::{LinkStatus, NodeStats, StatsSource};
 use tape_protocol::api::GetStatsReq;

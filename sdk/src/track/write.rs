@@ -3,8 +3,8 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-use rpc::{CommitmentLevel, EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError};
-use rpc_client::parse_tape_error;
+use tape_rpc::{CommitmentLevel, EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError};
+use tape_rpc_client::parse_tape_error;
 use tape_api::compute::{CERTIFY_TRACK_CU, TRACK_WRITE_CU};
 use tape_api::errors::TapeError;
 use tape_api::event::TrackWritten;
@@ -2120,7 +2120,7 @@ mod tests {
     // certify_with_retry must recollect from peers, not just resubmit.
     #[test]
     fn epoch_change() {
-        let err = TapedriveError::Rpc(rpc::RpcError::Transaction {
+        let err = TapedriveError::Rpc(tape_rpc::RpcError::Transaction {
             err: None,
             message: "custom program error: 0x34".to_string(),
             simulated: false,

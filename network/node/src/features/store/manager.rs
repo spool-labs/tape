@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent};

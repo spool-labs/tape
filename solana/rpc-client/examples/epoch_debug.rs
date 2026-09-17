@@ -1,8 +1,8 @@
 //! One-off debug dump for the epoch 81 stall (2026-07-07).
 //! Usage: cargo run --release -p tape-rpc-client --example epoch_debug
 
-use rpc_client::RpcClient;
-use rpc_solana::RpcConfig;
+use tape_rpc_client::RpcClient;
+use tape_rpc_solana::RpcConfig;
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 

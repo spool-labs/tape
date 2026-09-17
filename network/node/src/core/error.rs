@@ -1,6 +1,6 @@
 use std::error::Error as StdError;
 
-use rpc::RpcError;
+use tape_rpc::RpcError;
 use tape_blocks::ParseError;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_retry::Retryable;
@@ -41,7 +41,7 @@ pub enum NodeError {
     Rpc(#[from] RpcError),
 
     #[error("peer HTTP client error: {0}")]
-    PeerHttp(#[from] peer_tls::TlsError),
+    PeerHttp(#[from] tape_peer_tls::TlsError),
 
     #[error("block parse error: {0}")]
     BlockParse(#[from] ParseError),

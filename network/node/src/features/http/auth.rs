@@ -27,7 +27,7 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::tls::NetworkTlsPubkey;

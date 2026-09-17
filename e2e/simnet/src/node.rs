@@ -3,14 +3,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use peer_http::{HttpApi, PeerTransfer};
-use peer_manager::PeerManager;
-use rpc_client::RpcClient;
+use tape_peer_http::{HttpApi, PeerTransfer};
+use tape_peer_manager::PeerManager;
+use tape_rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use reel_store::ReelStore;
+use tape_reel_store::ReelStore;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -221,7 +221,7 @@ impl TestNode {
     }
 
     async fn build_context(&self) -> Result<TestNodeContext> {
-        let store = reel_store::open_harness_store(self.store_dir.path())
+        let store = tape_reel_store::open_harness_store(self.store_dir.path())
             .context("open node store")?;
         let rpc = RpcClient::from_rpc(self.rpc.clone());
         let peer_manager = Arc::new(PeerManager::new());
@@ -234,7 +234,7 @@ impl TestNode {
         let atlas = Arc::new(AtlasBuffer::new(observers));
 
         let mut api_builder =
-            peer_http::HttpApiBuilder::new().local_identity(tls_identity.clone());
+            tape_peer_http::HttpApiBuilder::new().local_identity(tls_identity.clone());
         if atlas.enabled() {
             let sink = atlas.clone();
             api_builder = api_builder.transfer_sink(Arc::new(move |transfer: PeerTransfer| {

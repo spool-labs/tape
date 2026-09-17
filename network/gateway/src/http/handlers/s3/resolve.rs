@@ -1,6 +1,6 @@
 //! S3 `(bucket, key)` to backing object-track resolution, with errors mapped into the S3 domain
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_crypto::address::Address;
 use tape_protocol::Api;

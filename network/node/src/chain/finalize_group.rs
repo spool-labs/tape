@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rpc::{Rpc, RpcError};
+use tape_rpc::{Rpc, RpcError};
 use store::Store;
 use tape_api::instruction::build_finalize_group_ix;
 use tape_core::cert::{ASSIGNMENT_TREE_HEIGHT, AssignmentGroupPayload};

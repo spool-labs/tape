@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use rand::RngCore;
-use rpc_solana::RpcConfig;
+use tape_rpc_solana::RpcConfig;
 use tape_api::compute::INVALIDATE_TRACK_CU;
 use tape_api::instruction::build_invalidate_track_ix;
 use tape_api::program::tapedrive::track_pda;
@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
 
     let admin = load_solana_keypair(&cli.admin_keypair)
         .with_context(|| format!("load admin keypair: {}", cli.admin_keypair.display()))?;
-    let rpc = rpc_solana::SolanaRpc::new(RpcConfig {
+    let rpc = tape_rpc_solana::SolanaRpc::new(RpcConfig {
         endpoints: vec![cli.rpc_url.clone()],
         ..Default::default()
     })
@@ -193,7 +193,7 @@ async fn wait_track_proof<Blockchain, Cluster>(
     accept: impl Fn(&CompressedTrackProof) -> bool,
 ) -> Result<CompressedTrackProof>
 where
-    Blockchain: rpc::Rpc,
+    Blockchain: tape_rpc::Rpc,
     Cluster: tape_protocol::Api,
 {
     let start = Instant::now();

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_api::instruction::build_advance_share_nonce_ix;
 use tape_core::share::{unix_now, ShareToken};
 use tape_core::types::tls::NetworkTlsPubkey;

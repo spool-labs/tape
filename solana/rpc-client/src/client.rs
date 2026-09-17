@@ -1,5 +1,5 @@
-use rpc_solana::{RpcConfig, SolanaRpc};
-use rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError};
+use tape_rpc_solana::{RpcConfig, SolanaRpc};
+use tape_rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError};
 use tape_blocks::wire::Block;
 use tape_crypto::tx::Txid;
 

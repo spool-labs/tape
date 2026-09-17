@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use reel_store::{scaled, BenchArm, ReelStore};
+use tape_reel_store::{scaled, BenchArm, ReelStore};
 use store_rocks::SplitStore;
 use tape_core::track::data::BlobData;
 use tape_crypto::address::Address;

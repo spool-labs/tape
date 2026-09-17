@@ -11,7 +11,7 @@ readme.workspace = true
 
 [dependencies]
 # Core trait
-rpc.workspace = true
+tape-rpc.workspace = true
 
 # Solana dependencies
 solana-client.workspace = true

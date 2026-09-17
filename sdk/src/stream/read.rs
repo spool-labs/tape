@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::StorageUnits;

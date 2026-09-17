@@ -8,7 +8,7 @@ use nix::sys::signal::Signal;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use reel_store::Reserve;
+use tape_reel_store::Reserve;
 use store::{Column, Store};
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::EpochNumber;
@@ -434,11 +434,11 @@ fn clone_keypair(keypair: &Keypair) -> Keypair {
 fn lose_slices(store_path: &std::path::Path, one_in: usize) -> Result<usize> {
     // The stopped node's own volume, opened the way the node opens it, down to
     // the reservation the generated config gives it.
-    let store = reel_store::open_node_store(
+    let store = tape_reel_store::open_node_store(
         store_path,
-        reel_store::NodeStoreOptions {
+        tape_reel_store::NodeStoreOptions {
             reserve: Reserve::Small,
-            ..reel_store::NodeStoreOptions::default()
+            ..tape_reel_store::NodeStoreOptions::default()
         },
     )
     .context("open stopped node store")?;

@@ -6,7 +6,7 @@ use axum::body::Bytes;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};

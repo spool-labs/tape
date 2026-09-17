@@ -22,13 +22,13 @@ tape-crypto = { workspace = true, features = ["wincode"] }
 tape-slicer = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 tape-protocol = { workspace = true }
-peer-manager = { workspace = true }
+tape-peer-manager = { workspace = true }
 tape-retry = { workspace = true }
-peer-http = { workspace = true }
-peer-tls = { workspace = true }
-rpc.workspace = true
-rpc-solana.workspace = true
-rpc-client = { workspace = true }
+tape-peer-http = { workspace = true }
+tape-peer-tls = { workspace = true }
+tape-rpc.workspace = true
+tape-rpc-solana.workspace = true
+tape-rpc-client = { workspace = true }
 spl-token = { workspace = true }
 solana-program = { workspace = true }
 

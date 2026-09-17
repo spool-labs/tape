@@ -38,7 +38,7 @@ fn site_serving() {
 }
 
 async fn site_serving_inner() {
-    peer_tls::install_default_provider();
+    tape_peer_tls::install_default_provider();
 
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)

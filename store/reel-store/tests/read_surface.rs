@@ -5,7 +5,7 @@
 //! to answer differently, so each case asks both and compares.
 
 use reel::sync::tension::block_on;
-use reel_store::{bench_config, ReelStore, TAPE_COLUMNS};
+use tape_reel_store::{bench_config, ReelStore, TAPE_COLUMNS};
 use store::{Store, Value};
 use tempfile::TempDir;
 
@@ -197,7 +197,7 @@ fn sweep_covers() {
 #[cfg(feature = "rocks")]
 mod rocks {
     use super::*;
-    use reel_store::MetaBulkStore;
+    use tape_reel_store::MetaBulkStore;
 
     /// A metadata family, which declares no key width
     const META_CF: &str = "tape";

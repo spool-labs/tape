@@ -31,7 +31,7 @@ fn hidden_gateway() {
 }
 
 async fn hidden_gateway_inner() {
-    peer_tls::install_default_provider();
+    tape_peer_tls::install_default_provider();
 
     let node_count = GROUP_SIZE;
     let mut harness = SimnetBuilder::new()

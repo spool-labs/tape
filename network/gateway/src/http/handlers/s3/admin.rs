@@ -11,7 +11,7 @@ use axum::routing::{delete, get, post, put};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_crypto::address::Address;
 use tape_node::context::NodeContext;

@@ -16,7 +16,7 @@
 
 use std::time::{Duration, Instant};
 
-use reel_store::{scaled, BenchArm, MetaBulkStore, ReelStore};
+use tape_reel_store::{scaled, BenchArm, MetaBulkStore, ReelStore};
 use store::{Column, Direction};
 use store_rocks::SplitStore;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};

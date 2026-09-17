@@ -8,13 +8,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::watch::Receiver;
 use tokio_util::sync::CancellationToken;
 
-use peer_manager::{PeerManager, PeerManagerError};
-use peer_http::HttpApi;
-use rpc::Rpc;
-use rpc_client::RpcClient;
-use rpc_solana::SolanaRpc;
+use tape_peer_manager::{PeerManager, PeerManagerError};
+use tape_peer_http::HttpApi;
+use tape_rpc::Rpc;
+use tape_rpc_client::RpcClient;
+use tape_rpc_solana::SolanaRpc;
 #[cfg(not(feature = "rocks"))]
-use reel_store::ReelStore;
+use tape_reel_store::ReelStore;
 use store::{DiskVolume, Store};
 #[cfg(feature = "rocks")]
 use store_rocks::SplitStore;
@@ -550,9 +550,9 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use peer_manager::PeerManager;
+    use tape_peer_manager::PeerManager;
     use peer_memory::MemoryApi;
-    use rpc_client::RpcClient;
+    use tape_rpc_client::RpcClient;
     use store_memory::MemoryStore;
     use tape_chain_harness::ChainHarness;
     use tape_core::types::{EpochNumber, SlotNumber};

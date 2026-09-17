@@ -5,7 +5,7 @@ use axum::extract::State;
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::system::BlacklistEntry;
 use tape_crypto::address::Address;

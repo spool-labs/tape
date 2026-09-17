@@ -16,7 +16,7 @@ use axum::http::uri::PathAndQuery;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use serde::Deserialize;
 use store::Store;
 use tape_core::types::ContentType;

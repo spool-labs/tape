@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::prelude::NodeStatus;
 use tape_metrics::prometheus::core::{Collector, Desc};

@@ -2,7 +2,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
 use serde::Serialize;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::{DiskVolume, Store, StoreVolume};
 use tape_node::features::http::handlers::health::{HealthResponse, HealthStatus};
 use tape_protocol::Api;

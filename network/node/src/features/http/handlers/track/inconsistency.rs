@@ -5,7 +5,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::bft::is_supermajority;
 use tape_core::cert::track::TrackInvalidateMessage;

@@ -118,7 +118,7 @@ fn read_write() {
 }
 
 async fn read_write_inner() {
-    peer_tls::install_default_provider();
+    tape_peer_tls::install_default_provider();
 
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)

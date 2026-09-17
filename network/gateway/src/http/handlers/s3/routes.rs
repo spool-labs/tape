@@ -21,7 +21,7 @@ use tokio::io::AsyncReadExt;
 use tokio::join;
 use tokio::task::JoinError;
 
-use rpc::{Rpc, RpcError};
+use tape_rpc::{Rpc, RpcError};
 use store::Store;
 use tape_api::instruction::MAX_NAME_LEN;
 use tape_api::program::tapedrive::tape_pda;

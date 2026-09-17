@@ -11,8 +11,8 @@ use std::path::Path;
 use thiserror::Error;
 
 use tape_api::state::Group;
-use rpc_client::RpcClient;
-use rpc_solana::{RpcConfig, SolanaRpc};
+use tape_rpc_client::RpcClient;
+use tape_rpc_solana::{RpcConfig, SolanaRpc};
 use tape_core::bls::BlsPrivateKey;
 use tape_core::system::Member;
 use tape_core::types::SpoolIndex;

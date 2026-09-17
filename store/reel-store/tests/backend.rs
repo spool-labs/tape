@@ -62,11 +62,11 @@ fn ring_holds() {
     let warnings = Warnings::default();
 
     let store = with_default(tracing_subscriber::registry().with(warnings.clone()), || {
-        reel_store::open_node_store(
+        tape_reel_store::open_node_store(
             dir.path().join("volume"),
-            reel_store::NodeStoreOptions {
+            tape_reel_store::NodeStoreOptions {
                 backend: reel::IoBackend::Uring,
-                ..reel_store::NodeStoreOptions::default()
+                ..tape_reel_store::NodeStoreOptions::default()
             },
         )
         .expect("open the node store")

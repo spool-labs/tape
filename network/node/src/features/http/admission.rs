@@ -8,7 +8,7 @@ use axum::extract::{Request, State};
 use axum::http::{Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_crypto::Address;
 use tape_protocol::Api;

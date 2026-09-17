@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use rpc::{Rpc, RpcError};
-use rpc_client::RpcClient;
+use tape_rpc::{Rpc, RpcError};
+use tape_rpc_client::RpcClient;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_core::types::coin::{Coin, TAPE};

@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::tape::TapeFlags;
@@ -478,7 +478,7 @@ fn store_error(error: impl core::fmt::Display) -> RouteError {
 #[cfg(test)]
 mod tests {
     use bytemuck::Zeroable;
-    use peer_manager::PeerNode;
+    use tape_peer_manager::PeerNode;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
     use tape_core::types::coin::TAPE;

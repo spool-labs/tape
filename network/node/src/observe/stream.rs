@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::{Stream, StreamExt};
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tokio::select;
 use tokio::sync::broadcast;

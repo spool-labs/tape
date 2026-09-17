@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 
 use axum_server::accept::Accept;
 use axum_server::tls_rustls::RustlsAcceptor;
-use peer_tls::decode_ed25519_spki;
+use tape_peer_tls::decode_ed25519_spki;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::server::TlsStream;

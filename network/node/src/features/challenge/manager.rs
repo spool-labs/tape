@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::challenge::schedule::{
     HANDOVER_GRACE_ROUNDS, MAX_PENDING_ROUNDS, SETTLE_DEADLINE_SLOTS, round_width_slots,

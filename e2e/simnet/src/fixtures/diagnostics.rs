@@ -3,7 +3,7 @@ use std::fmt::{self, Write as _};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use peer_tls::{apply_pinned_tls, install_default_provider};
+use tape_peer_tls::{apply_pinned_tls, install_default_provider};
 use tape_core::tape::{tape_namespace, TapeFlags};
 use tape_core::system::{NodeStatus, SpoolState};
 use tape_core::track::types::CompressedTrack;

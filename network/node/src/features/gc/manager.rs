@@ -7,7 +7,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
 use tape_protocol::Api;

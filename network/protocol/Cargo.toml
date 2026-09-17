@@ -15,8 +15,8 @@ tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-observe-api = { workspace = true }
 tape-snapshot = { workspace = true }
-rpc.workspace = true
-rpc-client.workspace = true
+tape-rpc.workspace = true
+tape-rpc-client.workspace = true
 tape-retry.workspace = true
 arc-swap.workspace = true
 base64.workspace = true

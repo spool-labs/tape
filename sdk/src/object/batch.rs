@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use futures::stream::{self, StreamExt, TryStreamExt};
 use tokio::sync::Mutex;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_core::track::mirror::ArchiveMirror;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::prelude::Address;

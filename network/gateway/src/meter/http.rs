@@ -5,7 +5,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_forwarded::caller::resolve_caller_ip;
 use tape_forwarded::cidr::CidrBlock;

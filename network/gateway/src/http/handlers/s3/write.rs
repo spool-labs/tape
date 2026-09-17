@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::share::ShareToken;

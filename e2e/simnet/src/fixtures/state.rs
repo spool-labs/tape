@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use rpc_client::RpcClient;
+use tape_rpc_client::RpcClient;
 use tape_api::prelude::{Archive, Epoch, Group, Node, System};
 use tape_core::spooler::GroupIndex;
 use tape_core::system::Member;
@@ -128,7 +128,7 @@ impl SimnetScenario<'_> {
         let client = RpcClient::from_rpc(self.harness.chain().rpc().clone());
         match client.get_committee(epoch).await {
             Ok(members) => Ok(members.len()),
-            Err(rpc::RpcError::AccountNotFound(_)) => Ok(0),
+            Err(tape_rpc::RpcError::AccountNotFound(_)) => Ok(0),
             Err(error) => Err(error).context("read committee"),
         }
     }

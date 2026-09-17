@@ -5,10 +5,10 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use peer_http::GatewayApi;
-use peer_manager::PeerManager;
-use rpc::Rpc;
-use rpc_client::RpcClient;
+use tape_peer_http::GatewayApi;
+use tape_peer_manager::PeerManager;
+use tape_rpc::Rpc;
+use tape_rpc_client::RpcClient;
 use tape_api::program::tapedrive::track_pda;
 use tape_crypto::hash::hash;
 use tape_crypto::prelude::Address;

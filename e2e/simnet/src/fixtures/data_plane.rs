@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use peer_http::HttpApi;
+use tape_peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
 use solana_keypair::Keypair;
 use tape_api::program::tapedrive::track_pda;

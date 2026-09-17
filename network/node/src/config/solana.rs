@@ -1,4 +1,4 @@
-use rpc_solana::{redact_url_query, EndpointStrategy};
+use tape_rpc_solana::{redact_url_query, EndpointStrategy};
 use serde::Deserialize;
 use tape_core::types::SlotNumber;
 

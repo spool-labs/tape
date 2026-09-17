@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_crypto::address::Address;
 use tape_node::config::gateway::WriteDefault;

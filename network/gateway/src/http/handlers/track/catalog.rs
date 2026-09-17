@@ -4,7 +4,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method, Uri};
 use axum::response::IntoResponse;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::track::TRACK_TREE_HEIGHT;

@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use reel_store::{scaled, BenchArm, MetaBulkStore, ReelStore};
+use tape_reel_store::{scaled, BenchArm, MetaBulkStore, ReelStore};
 use store::Column;
 use store_rocks::SplitStore;
 use tape_core::types::SpoolIndex;

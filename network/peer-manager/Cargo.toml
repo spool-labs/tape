@@ -13,8 +13,8 @@ readme.workspace = true
 tape-protocol = { workspace = true }
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
-rpc.workspace = true
-rpc-client.workspace = true
+tape-rpc.workspace = true
+tape-rpc-client.workspace = true
 arc-swap.workspace = true
 dashmap = { workspace = true }
 thiserror.workspace = true

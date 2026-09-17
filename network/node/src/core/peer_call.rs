@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use peer_manager::PeerManager;
+use tape_peer_manager::PeerManager;
 use tape_crypto::Address;
 use tape_protocol::api::ApiError;
 use tape_retry::{retry_if, RetryConfig, Retryable};

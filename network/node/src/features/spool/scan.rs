@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;

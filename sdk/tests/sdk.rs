@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use bytemuck::Zeroable;
-use peer_manager::{PeerManager, PeerNode};
+use tape_peer_manager::{PeerManager, PeerNode};
 use peer_memory::MemoryApi;
-use rpc_client::RpcClient;
+use tape_rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use tape_api::program::tapedrive::{self, tape_pda, track_pda};
 use tape_api::state::{Group, Tape};

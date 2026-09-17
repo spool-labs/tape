@@ -1,5 +1,5 @@
 use futures::stream::{FuturesUnordered, StreamExt};
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::object::object_etag;

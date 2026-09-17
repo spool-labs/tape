@@ -1,4 +1,4 @@
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_crypto::prelude::Address;
 use tape_protocol::Api;
 use tokio::io::{AsyncWrite, AsyncWriteExt};

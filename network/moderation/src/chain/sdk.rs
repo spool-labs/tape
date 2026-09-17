@@ -1,8 +1,8 @@
 //! The chain through `tape-sdk`: inline writes and deletes, reservations and extensions
 
-use peer_http::HttpApi;
-use rpc::RpcError;
-use rpc_solana::{RpcConfig, SolanaRpc};
+use tape_peer_http::HttpApi;
+use tape_rpc::RpcError;
+use tape_rpc_solana::{RpcConfig, SolanaRpc};
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;

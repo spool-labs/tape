@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rpc::{Rpc, RpcError};
+use tape_rpc::{Rpc, RpcError};
 use store::Store;
 use tape_api::compute::ADVANCE_EPOCH_CU;
 use tape_api::instruction::build_advance_epoch_ix;
@@ -24,7 +24,7 @@ pub async fn submit_advance_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 #[cfg(test)]
 mod tests {
-    use rpc::Rpc;
+    use tape_rpc::Rpc;
     use tape_api::errors::TapeError;
     use tape_core::system::EpochPhase;
     use tape_core::types::EpochNumber;

@@ -129,9 +129,9 @@ tape-core = { version = "0.4.0", path = "./lib/core" }
 tape-crypto = { version = "0.4.0", path = "./lib/crypto" }
 tape-solana = { version = "0.4.0", path = "./solana/framework" }
 
-rpc = { package = "tape-rpc", version = "0.4.0", path = "./solana/rpc" }
-rpc-solana = { package = "tape-rpc-solana", version = "0.4.0", path = "./solana/rpc-solana" }
-rpc-client = { package = "tape-rpc-client", version = "0.4.0", path = "./solana/rpc-client" }
+tape-rpc = { version = "0.4.0", path = "./solana/rpc" }
+tape-rpc-solana = { version = "0.4.0", path = "./solana/rpc-solana" }
+tape-rpc-client = { version = "0.4.0", path = "./solana/rpc-client" }
 rpc-litesvm = { version = "0.4.0", path = "./solana/rpc-litesvm" }
 
 tape-store = { version = "0.4.0", path = "./store/tape-store" }
@@ -141,7 +141,7 @@ tape-snapshot = { version = "0.4.0", path = "./lib/snapshot" }
 store = { version = "0.4.0", path = "./store/store" }
 store-memory = { version = "0.4.0", path = "./store/store-memory" }
 store-rocks = { version = "0.4.0", path = "./store/store-rocks" }
-reel-store = { package = "tape-reel-store", version = "0.4.0", path = "./store/reel-store" }
+tape-reel-store = { version = "0.4.0", path = "./store/reel-store" }
 reel = { package = "tape-reel", version = "0.2.0", features = ["serde"] }
 reel-core = { package = "tape-reel-core", version = "0.2.0" }
 tape-sdk = { version = "0.4.0", path = "./sdk" }
@@ -152,10 +152,10 @@ tape-observe-api = { version = "0.4.0", path = "./network/observe-api" }
 tape-atlas = { version = "0.4.0", path = "./monitoring/atlas" }
 tape-gateway = { version = "0.4.0", path = "./network/gateway" }
 tape-node = { version = "0.4.0", path = "./network/node" }
-peer-manager = { package = "tape-peer-manager", version = "0.4.0", path = "./network/peer-manager" }
+tape-peer-manager = { version = "0.4.0", path = "./network/peer-manager" }
 peer-memory = { version = "0.4.0", path = "./network/peer-memory" }
-peer-http = { package = "tape-peer-http", version = "0.4.0", path = "./network/peer-http" }
-peer-tls = { package = "tape-peer-tls", version = "0.4.0", path = "./network/peer-tls" }
+tape-peer-http = { version = "0.4.0", path = "./network/peer-http" }
+tape-peer-tls = { version = "0.4.0", path = "./network/peer-tls" }
 tape-protocol = { version = "0.4.0", path = "./network/protocol" }
 tape-retry = { version = "0.4.0", path = "./lib/retry" }
 dashmap = "6"

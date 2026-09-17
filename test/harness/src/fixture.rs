@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
-use rpc::Rpc;
-use rpc_client::RpcClient;
+use tape_rpc::Rpc;
+use tape_rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair as SolanaKeypair;

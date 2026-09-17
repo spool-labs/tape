@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use peer_http::HttpApi;
+use tape_peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::program::tapedrive::{history_pda, track_pda};
@@ -149,7 +149,7 @@ async fn run() {
     assert!(
         matches!(
             sdk.rpc().get_stake(&stake_key.pubkey().into()).await,
-            Err(rpc::RpcError::AccountNotFound(_))
+            Err(tape_rpc::RpcError::AccountNotFound(_))
         ),
         "stake account should be closed"
     );

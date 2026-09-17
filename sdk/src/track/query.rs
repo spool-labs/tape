@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use futures::stream::{FuturesUnordered, StreamExt};
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tokio::time::{Instant as TokioInstant, sleep};
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::address::Address;

@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use rpc_solana::RpcConfig;
+use tape_rpc_solana::RpcConfig;
 use tape_core::types::StorageUnits;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_sdk::keys::helpers::load_solana_keypair;
@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
 
     let admin = load_solana_keypair(&cli.admin_keypair)
         .with_context(|| format!("load admin keypair: {}", cli.admin_keypair.display()))?;
-    let rpc = rpc_solana::SolanaRpc::new(RpcConfig {
+    let rpc = tape_rpc_solana::SolanaRpc::new(RpcConfig {
         endpoints: vec![cli.rpc_url.clone()],
         ..Default::default()
     })

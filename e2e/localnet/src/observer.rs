@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures::future::join_all;
-use rpc::RpcError;
-use rpc_client::RpcClient;
-use rpc_solana::{RpcConfig, SolanaRpc};
+use tape_rpc::RpcError;
+use tape_rpc_client::RpcClient;
+use tape_rpc_solana::{RpcConfig, SolanaRpc};
 use solana_pubkey::Pubkey;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::challenge::record::MIN_OPPORTUNITIES;

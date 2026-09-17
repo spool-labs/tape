@@ -2,11 +2,11 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
-use peer_http::HttpApi;
-use peer_manager::PeerManager;
-use rpc::{Rpc, RpcError};
-use rpc_client::RpcClient;
-use rpc_solana::{RpcConfig, SolanaRpc};
+use tape_peer_http::HttpApi;
+use tape_peer_manager::PeerManager;
+use tape_rpc::{Rpc, RpcError};
+use tape_rpc_client::RpcClient;
+use tape_rpc_solana::{RpcConfig, SolanaRpc};
 use tape_api::program::tapedrive::node_pda;
 use tape_api::state::Node;
 use tape_api::utils::to_name;
@@ -41,9 +41,9 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, N
     );
     let opened_at = Instant::now();
 
-    let store = reel_store::open_node_store(
+    let store = tape_reel_store::open_node_store(
         root,
-        reel_store::NodeStoreOptions {
+        tape_reel_store::NodeStoreOptions {
             compaction_mbps: config.store.compaction_mb_per_sec,
             sync_bytes: config.store.sync_bytes,
             backend: config.store.io_backend,
@@ -160,9 +160,9 @@ fn build_peer_api(
     tls_identity: Arc<Keypair>,
     atlas: Arc<AtlasBuffer>,
 ) -> Result<Arc<HttpApi>, NodeError> {
-    let mut builder = peer_http::HttpApiBuilder::new().local_identity(tls_identity);
+    let mut builder = tape_peer_http::HttpApiBuilder::new().local_identity(tls_identity);
     if atlas.enabled() {
-        builder = builder.transfer_sink(Arc::new(move |transfer: peer_http::PeerTransfer| {
+        builder = builder.transfer_sink(Arc::new(move |transfer: tape_peer_http::PeerTransfer| {
             atlas.push_transfer(transfer.node, transfer.op, transfer.sent, transfer.bytes);
         }));
     }
@@ -171,7 +171,7 @@ fn build_peer_api(
     if config.metrics.enabled {
         if let Some(registry) = tape_metrics::MetricsRegistry::get() {
             let metrics = Arc::new(
-                peer_http::ApiMetrics::new(registry.prometheus_registry()),
+                tape_peer_http::ApiMetrics::new(registry.prometheus_registry()),
             );
             let api = builder.metrics(metrics).build(peer_manager)?;
             return Ok(Arc::new(api));
@@ -420,7 +420,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::path::PathBuf;
 
-    use rpc_client::RpcClient;
+    use tape_rpc_client::RpcClient;
     use tape_api::genesis::GenesisConfig;
     use tape_api::utils::to_name;
     use tape_core::bls::BlsPrivateKey;

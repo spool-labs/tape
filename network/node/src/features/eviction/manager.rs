@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::challenge::record::{NodeVerdict, PeerRecord, node_verdict};
 use tape_core::types::EpochNumber;

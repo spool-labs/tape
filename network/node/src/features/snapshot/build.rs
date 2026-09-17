@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use bytemuck::bytes_of;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
 use tape_api::state::Tape;

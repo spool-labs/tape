@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_api::program::tapedrive;
 use tape_crypto::hash::Hash;
 use tape_protocol::fetch::{EpochGuess, fetch_state_current, fetch_state_speculative};

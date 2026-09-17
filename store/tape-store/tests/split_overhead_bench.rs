@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use reel_store::{
+use tape_reel_store::{
     bench_cache, bench_db_options, bench_store_configs, scaled, BenchArm, MetaBulkStore, ReelStore,
 };
 use store::Store;

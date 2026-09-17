@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;

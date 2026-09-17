@@ -15,9 +15,9 @@ use axum::{BoxError, Router};
 
 use axum_server::Handle;
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
-use peer_tls::{build_server_config_with_peer_auth, cert_san_ips, install_default_provider};
+use tape_peer_tls::{build_server_config_with_peer_auth, cert_san_ips, install_default_provider};
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_protocol::Api;
 use tape_protocol::api::routes as api_routes;

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use rpc_solana::RpcConfig;
+use tape_rpc_solana::RpcConfig;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::StorageUnits;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
     let admin = load_solana_keypair(&cli.admin_keypair)
         .with_context(|| format!("load admin keypair: {}", cli.admin_keypair.display()))?;
     let admin = CryptoKeypair::from_solana_keypair(&admin).context("convert admin keypair")?;
-    let rpc = rpc_solana::SolanaRpc::new(RpcConfig {
+    let rpc = tape_rpc_solana::SolanaRpc::new(RpcConfig {
         endpoints: vec![cli.rpc_url.clone()],
         ..Default::default()
     })

@@ -1,4 +1,4 @@
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::prelude::CompressedTrack;
 use tape_crypto::hash::hash;

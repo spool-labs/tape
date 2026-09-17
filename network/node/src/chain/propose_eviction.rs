@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rpc::{Rpc, RpcError};
+use tape_rpc::{Rpc, RpcError};
 use store::Store;
 use tape_api::compute::PROPOSE_EVICTION_CU;
 use tape_api::instruction::build_propose_eviction_ix;

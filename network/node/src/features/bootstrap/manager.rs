@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use rpc::{CommitmentLevel, Rpc};
+use tape_rpc::{CommitmentLevel, Rpc};
 use store::Store;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::Hash;

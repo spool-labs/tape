@@ -5,10 +5,10 @@ use std::time::Duration;
 use tape_core::types::{SpoolIndex, StorageUnits, TrackNumber};
 use tape_protocol::ApiError;
 use thiserror::Error;
-use rpc::RpcError;
+use tape_rpc::RpcError;
 
 use crate::transfer::certify::CertificationError;
-use peer_manager::PeerManagerError;
+use tape_peer_manager::PeerManagerError;
 
 /// Errors that can occur during client operations.
 #[derive(Debug, Error)]

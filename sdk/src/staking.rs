@@ -1,7 +1,7 @@
 //! Staking operations for the Tapedrive network.
 
-use rpc::Rpc;
-use rpc_client::parse_tape_error;
+use tape_rpc::Rpc;
+use tape_rpc_client::parse_tape_error;
 use tape_api::compute::{
     ADVANCE_POOL_CU, REQUEST_STAKE_UNLOCK_CU, STAKE_WITH_POOL_CU, UNSTAKE_FROM_POOL_CU,
 };

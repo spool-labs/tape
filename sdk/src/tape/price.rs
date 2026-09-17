@@ -1,4 +1,4 @@
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use solana_program::program_pack::Pack;
 use tape_api::state::Tape;
 use tape_core::tape::{remaining_tape_epochs, tape_reservation_cost};

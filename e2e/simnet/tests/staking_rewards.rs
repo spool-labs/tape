@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use solana_program_pack::Pack;
 use solana_signer::Signer;
 use tape_api::helpers::build_authority_with_tokens_ix;
@@ -286,7 +286,7 @@ async fn run() {
     assert!(
         matches!(
             sdk.rpc().get_stake(&stake_key.pubkey().into()).await,
-            Err(rpc::RpcError::AccountNotFound(_))
+            Err(tape_rpc::RpcError::AccountNotFound(_))
         ),
         "stake account should be closed"
     );
@@ -515,7 +515,7 @@ async fn token_balance(harness: &SimnetHarness, owner: Address) -> TAPE {
     let token_account = ata(&owner);
     let account = match harness.chain().rpc().get_account(&token_account).await {
         Ok(account) => account,
-        Err(rpc::RpcError::AccountNotFound(_)) => return TAPE::zero(),
+        Err(tape_rpc::RpcError::AccountNotFound(_)) => return TAPE::zero(),
         Err(error) => panic!("read token account: {error}"),
     };
     let account = spl_token::state::Account::unpack(&account.data)

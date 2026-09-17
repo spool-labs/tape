@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rand::RngCore;
-use rpc_solana::{RpcConfig, SolanaRpc};
+use tape_rpc_solana::{RpcConfig, SolanaRpc};
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::StorageUnits;
 use tape_crypto::address::Address;

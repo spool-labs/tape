@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::{Column, Store, StoreVolume};
 use tape_core::bft::has_honest_signer;
 use tape_core::challenge::schedule::{

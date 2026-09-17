@@ -13,8 +13,8 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 bytemuck.workspace = true
-rpc.workspace = true
-rpc-client.workspace = true
+tape-rpc.workspace = true
+tape-rpc-client.workspace = true
 rpc-litesvm.workspace = true
 solana-instruction.workspace = true
 solana-keypair.workspace = true

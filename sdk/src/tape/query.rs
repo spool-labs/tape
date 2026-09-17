@@ -1,4 +1,4 @@
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_api::state::Tape;
 use tape_crypto::address::Address;
 use tape_protocol::Api;

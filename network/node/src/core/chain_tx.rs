@@ -4,8 +4,8 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use rpc::{InstructionError, RpcError, looks_like_transaction_error};
-use rpc_client::parse_tape_error;
+use tape_rpc::{InstructionError, RpcError, looks_like_transaction_error};
+use tape_rpc_client::parse_tape_error;
 use tape_api::errors::{TapeError, is_account_state_pending_error};
 use tape_crypto::tx::Txid;
 use tape_retry::{Backoff, backoff_or_cancel};
@@ -277,7 +277,7 @@ fn lifecycle_tx_counter() -> Option<&'static tape_metrics::IntCounterVec> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rpc::TransactionError;
+    use tape_rpc::TransactionError;
     use solana_signature::Signature;
     use std::time::Duration;
 

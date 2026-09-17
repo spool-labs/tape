@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt, TryStreamExt};
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_blacklist::blacklists::Changes;
 use tape_blacklist::expiry::is_near_expiry;

@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rpc::{CommitmentLevel, RpcError};
-use rpc_client::RpcClient;
-use rpc_solana::{RpcConfig, SolanaRpc};
+use tape_rpc::{CommitmentLevel, RpcError};
+use tape_rpc_client::RpcClient;
+use tape_rpc_solana::{RpcConfig, SolanaRpc};
 use solana_client::nonblocking::rpc_client::RpcClient as SolRpcClient;
 use solana_commitment_config::CommitmentConfig;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
@@ -405,11 +405,11 @@ impl ChainManager {
     }
 }
 
-fn program_error(error: &rpc::RpcError) -> Option<ProgramError> {
+fn program_error(error: &tape_rpc::RpcError) -> Option<ProgramError> {
     ProgramError::from_error_string(&error.to_string())
 }
 
-fn is_already_advanced(error: &rpc::RpcError) -> bool {
+fn is_already_advanced(error: &tape_rpc::RpcError) -> bool {
     matches!(
         program_error(error),
         Some(ProgramError::Tape(
@@ -418,7 +418,7 @@ fn is_already_advanced(error: &rpc::RpcError) -> bool {
     )
 }
 
-fn is_join_done(error: &rpc::RpcError) -> bool {
+fn is_join_done(error: &tape_rpc::RpcError) -> bool {
     matches!(
         program_error(error),
         Some(ProgramError::Tape(
@@ -427,14 +427,14 @@ fn is_join_done(error: &rpc::RpcError) -> bool {
     )
 }
 
-fn is_bad_epoch_state(error: &rpc::RpcError) -> bool {
+fn is_bad_epoch_state(error: &tape_rpc::RpcError) -> bool {
     matches!(
         program_error(error),
         Some(ProgramError::Tape(TapeError::BadEpochState))
     )
 }
 
-fn is_already_initialized(error: &rpc::RpcError) -> bool {
+fn is_already_initialized(error: &tape_rpc::RpcError) -> bool {
     if matches!(
         program_error(error),
         Some(ProgramError::Tape(TapeError::UnexpectedState))

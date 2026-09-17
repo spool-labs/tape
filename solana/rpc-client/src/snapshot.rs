@@ -1,5 +1,5 @@
 use crate::client::RpcClient;
-use rpc::{Rpc, RpcError};
+use tape_rpc::{Rpc, RpcError};
 use solana_commitment_config::CommitmentLevel;
 use tape_api::program::tapedrive::snapshot_tape_pda;
 use tape_api::state::Tape;
@@ -48,7 +48,7 @@ impl<R: Rpc> RpcClient<R> {
 #[cfg(test)]
 mod tests {
     use crate::RpcClient;
-    use rpc::RpcError;
+    use tape_rpc::RpcError;
     use rpc_litesvm::LiteSvmRpc;
     use tape_api::program::tapedrive::{self, snapshot_tape_pda};
     use tape_api::state::Tape;

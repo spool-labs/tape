@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use serde::Serialize;
 use store::Store;
 use tape_protocol::Api;

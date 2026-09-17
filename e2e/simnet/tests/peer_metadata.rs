@@ -29,7 +29,7 @@ fn peer_metadata_propagates_from_events() {
 }
 
 async fn peer_metadata_propagates_from_events_inner() {
-    peer_tls::install_default_provider();
+    tape_peer_tls::install_default_provider();
 
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
@@ -154,7 +154,7 @@ async fn wait_gateway(
     gateway_node: Address,
     timeout: Duration,
     what: &str,
-    check: impl Fn(&peer_manager::PeerNode) -> bool + Copy,
+    check: impl Fn(&tape_peer_manager::PeerNode) -> bool + Copy,
 ) {
     harness
         .wait_peers(timeout, what, |peers| {

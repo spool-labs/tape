@@ -1,4 +1,4 @@
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::prelude::Address;

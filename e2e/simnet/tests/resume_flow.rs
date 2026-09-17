@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_api::program::tapedrive::track_pda;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;

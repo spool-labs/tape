@@ -1,6 +1,6 @@
 //! Expired-tape sweep for a gateway's store, run from its maintenance tick
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_node::config::store::GcConfig;

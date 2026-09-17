@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_core::erasure::group_start;
 use tape_core::prelude::{GroupIndex, SpoolIndex, BlobData};
 use tape_crypto::prelude::{Address, Hash};

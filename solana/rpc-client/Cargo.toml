@@ -11,8 +11,8 @@ readme.workspace = true
 
 [dependencies]
 # RPC trait and production implementation
-rpc.workspace = true
-rpc-solana.workspace = true
+tape-rpc.workspace = true
+tape-rpc-solana.workspace = true
 
 # Tape crates
 tape-api.workspace = true
@@ -54,7 +54,7 @@ tracing = "0.1"
 
 [features]
 default = []
-metrics = ["tape-metrics/metrics", "rpc-solana/metrics"]
+metrics = ["tape-metrics/metrics", "tape-rpc-solana/metrics"]
 
 [dev-dependencies]
 rpc-litesvm = { path = "../rpc-litesvm" }

@@ -11,11 +11,11 @@ readme.workspace = true
 
 [dependencies]
 tape-protocol = { workspace = true }
-peer-manager = { workspace = true }
+tape-peer-manager = { workspace = true }
 tape-api = { workspace = true }
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
-peer-tls = { workspace = true }
+tape-peer-tls = { workspace = true }
 async-trait.workspace = true
 reqwest = { workspace = true }
 wincode = { workspace = true }

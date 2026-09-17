@@ -4,7 +4,7 @@ use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::Response;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::address::Address;

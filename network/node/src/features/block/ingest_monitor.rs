@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_protocol::Api;
 use tokio::time::interval;

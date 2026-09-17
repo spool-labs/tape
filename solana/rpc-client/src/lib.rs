@@ -49,7 +49,7 @@
 //! ## Testing with a Custom Backend
 //!
 //! ```ignore
-//! use rpc_client::RpcClient;
+//! use tape_rpc_client::RpcClient;
 //! use rpc_litesvm::LiteSvmRpc;
 //!
 //! #[tokio::test]
@@ -65,7 +65,7 @@
 //! ## Submitting Transactions
 //!
 //! ```ignore
-//! use rpc_client::RpcClient;
+//! use tape_rpc_client::RpcClient;
 //! use solana_keypair::Keypair;
 //! use solana_signer::Signer;
 //! use solana_system_interface::instruction as system_instruction;
@@ -91,7 +91,7 @@ mod client;
 mod snapshot;
 mod transactions;
 
-use rpc::{RpcError, looks_like_transaction_error};
+use tape_rpc::{RpcError, looks_like_transaction_error};
 use tape_api::errors::{ProgramError, TapeError};
 
 /// Try to decode a typed `TapeError` from an RPC transaction error.
@@ -125,7 +125,7 @@ pub use client::RpcClient;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rpc::{InstructionError, RpcError, TransactionError};
+    use tape_rpc::{InstructionError, RpcError, TransactionError};
     use tape_api::errors::TapeError;
 
     fn program_error(code: u32) -> RpcError {

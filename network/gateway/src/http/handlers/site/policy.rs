@@ -4,7 +4,7 @@
 //! at the tape root. Absent fields fall back to the gateway-wide config,
 //! and the operator can disable tenant policy entirely.
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use serde::Deserialize;
 use store::Store;
 use tape_core::track::data::BlobData;

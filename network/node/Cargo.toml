@@ -22,14 +22,14 @@ tape-spooler = { workspace = true }
 store = { workspace = true }
 store-rocks = { workspace = true, optional = true }
 reel = { workspace = true }
-reel-store = { workspace = true }
+tape-reel-store = { workspace = true }
 tape-protocol = { workspace = true }
-peer-manager = { workspace = true }
-peer-http = { workspace = true }
-peer-tls = { workspace = true }
-rpc = { workspace = true }
-rpc-client = { workspace = true }
-rpc-solana = { workspace = true }
+tape-peer-manager = { workspace = true }
+tape-peer-http = { workspace = true }
+tape-peer-tls = { workspace = true }
+tape-rpc = { workspace = true }
+tape-rpc-client = { workspace = true }
+tape-rpc-solana = { workspace = true }
 tape-retry = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 tape-observe-api = { workspace = true }
@@ -92,7 +92,7 @@ rocks = ["dep:store-rocks", "tape-store/rocks"]
 metrics = [
     "tape-metrics/metrics",
     "dep:memory-stats",
-    "rpc-client/metrics",
+    "tape-rpc-client/metrics",
     "store/metrics",
-    "reel-store/metrics",
+    "tape-reel-store/metrics",
 ]

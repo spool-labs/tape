@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use bytemuck::Zeroable;
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_api::event::{
     AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochCreated, NodeEvicted,
@@ -9,7 +9,7 @@ use tape_api::event::{
     SpoolSynced, VoteRecorded,
 };
 use tape_api::state::Epoch;
-use peer_manager::PeerNode;
+use tape_peer_manager::PeerNode;
 use tape_core::bls::BlsPubkey;
 use tape_core::system::{EpochPhase, NodePreferences, VoteKind};
 use tape_core::types::network::NetworkAddress;

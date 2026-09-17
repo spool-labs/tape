@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashMap;
-use peer_manager::PeerManager;
+use tape_peer_manager::PeerManager;
 use tape_crypto::ed25519::Keypair;
 
 use crate::client::TransferSink;
@@ -74,8 +74,8 @@ impl HttpApiBuilder {
         self
     }
 
-    pub fn build(self, peer_manager: Arc<PeerManager>) -> Result<HttpApi, peer_tls::TlsError> {
-        peer_tls::install_default_provider();
+    pub fn build(self, peer_manager: Arc<PeerManager>) -> Result<HttpApi, tape_peer_tls::TlsError> {
+        tape_peer_tls::install_default_provider();
         Ok(HttpApi {
             peer_manager,
             clients: Arc::new(DashMap::new()),

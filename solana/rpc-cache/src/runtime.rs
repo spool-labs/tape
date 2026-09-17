@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use moka::future::Cache as MokaCache;
-use rpc::skip::{TRUSTED_SKIP_RUN, slots_to_fetch, trusted_skip};
+use tape_rpc::skip::{TRUSTED_SKIP_RUN, slots_to_fetch, trusted_skip};
 use serde_json::{Value, json};
 use solana_client::rpc_config::RpcBlockConfig;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};

@@ -2,7 +2,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_protocol::Api;
 use tape_retry::RetryConfig;

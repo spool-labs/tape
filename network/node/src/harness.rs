@@ -2,10 +2,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use peer_manager::PeerManager;
+use tape_peer_manager::PeerManager;
 use peer_memory::MemoryApi;
-use rpc_client::RpcClient;
-use rpc::Rpc;
+use tape_rpc_client::RpcClient;
+use tape_rpc::Rpc;
 use rpc_litesvm::LiteSvmRpc;
 use tape_crypto::Hash;
 use store_memory::MemoryStore;

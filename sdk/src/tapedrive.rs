@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use peer_http::{HttpApi, HttpApiBuilder};
-use peer_manager::PeerManager;
-use rpc::Rpc;
-use rpc_client::RpcClient;
+use tape_peer_http::{HttpApi, HttpApiBuilder};
+use tape_peer_manager::PeerManager;
+use tape_rpc::Rpc;
+use tape_rpc_client::RpcClient;
 use tape_api::program::tapedrive;
 use tape_core::prelude::{CompressedTrack, StorageUnits};
 use tape_core::types::coin::{SOL, TAPE};
@@ -61,7 +61,7 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, HttpApi> {
     pub fn new_with_identity(
         rpc: Blockchain,
         identity: Arc<Keypair>,
-    ) -> Result<Self, peer_tls::TlsError> {
+    ) -> Result<Self, tape_peer_tls::TlsError> {
         let rpc_client = Arc::new(RpcClient::from_rpc(rpc));
         let peer_manager = Arc::new(PeerManager::new());
         let api = Arc::new(

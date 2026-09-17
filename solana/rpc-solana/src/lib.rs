@@ -3,7 +3,7 @@
 //! Production Solana RPC client with retry and failover capabilities.
 //!
 //! This crate provides `SolanaRpc`, a production-ready implementation of the
-//! `rpc::Rpc` trait with:
+//! `tape_rpc::Rpc` trait with:
 //!
 //! - Automatic retry with exponential backoff
 //! - Endpoint failover across multiple RPC endpoints

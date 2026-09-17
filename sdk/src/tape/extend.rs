@@ -1,4 +1,4 @@
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_api::instruction::{build_extend_tape_capacity_ix, build_extend_tape_expiry_ix};
 use tape_api::state::Tape;
 use tape_core::types::{EpochNumber, StorageUnits};

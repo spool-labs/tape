@@ -21,7 +21,7 @@ tape-protocol = { workspace = true }
 tape-sdk = { workspace = true }
 tape-store = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
-rpc = { workspace = true }
+tape-rpc = { workspace = true }
 store = { workspace = true }
 
 async-trait = { workspace = true }

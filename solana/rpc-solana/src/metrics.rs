@@ -34,7 +34,7 @@ const LATENCY_BUCKETS: &[f64] = &[
 ///
 /// ```ignore
 /// use tape_metrics::MetricsRegistry;
-/// use rpc_solana::metrics::RpcMetrics;
+/// use tape_rpc_solana::metrics::RpcMetrics;
 ///
 /// let registry = MetricsRegistry::init();
 /// let metrics = RpcMetrics::new(registry.prometheus_registry());

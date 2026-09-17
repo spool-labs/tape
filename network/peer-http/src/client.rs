@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use peer_manager::{PeerManager, PeerNode};
+use tape_peer_manager::{PeerManager, PeerNode};
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -96,10 +96,10 @@ impl HttpApi {
             .timeout(self.request_timeout);
         let builder = match &self.local_identity {
             Some(identity) => {
-                peer_tls::apply_pinned_tls_with_identity(builder, tls_pubkey, identity.as_ref())
+                tape_peer_tls::apply_pinned_tls_with_identity(builder, tls_pubkey, identity.as_ref())
                     .map_err(|e| ApiError::Other(format!("tls build: {e}")))?
             }
-            None => peer_tls::apply_pinned_tls(builder, tls_pubkey)
+            None => tape_peer_tls::apply_pinned_tls(builder, tls_pubkey)
                 .map_err(|e| ApiError::Other(format!("tls build: {e}")))?,
         };
         builder
@@ -812,8 +812,8 @@ mod tests {
     use axum::routing::post;
     use axum::Router;
     use axum_server::tls_rustls::RustlsConfig;
-    use peer_manager::PeerNode;
-    use peer_tls::{build_server_config, install_default_provider};
+    use tape_peer_manager::PeerNode;
+    use tape_peer_tls::{build_server_config, install_default_provider};
     use rand::thread_rng;
     use tape_core::bls::{BlsPrivateKey, BlsPubkey};
     use tape_core::spooler::GroupIndex;

@@ -1,4 +1,4 @@
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_api::compute::TRACK_WRITE_CU;
 use tape_api::instruction::build_delete_track_ix;
 use tape_protocol::Api;

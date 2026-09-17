@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use peer_http::HttpApi;
+use tape_peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::GROUP_SIZE;

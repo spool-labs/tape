@@ -34,7 +34,7 @@ fn peer_only_routes_reject_non_peers() {
 }
 
 async fn peer_only_routes_reject_non_peers_inner() {
-    peer_tls::install_default_provider();
+    tape_peer_tls::install_default_provider();
 
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
@@ -92,7 +92,7 @@ async fn peer_only_routes_reject_non_peers_inner() {
     // --- Anonymous client: no client cert presented ---
     let anon = {
         let builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
-        let builder = peer_tls::apply_pinned_tls(builder, pin).expect("anon tls");
+        let builder = tape_peer_tls::apply_pinned_tls(builder, pin).expect("anon tls");
         builder.build().expect("anon build")
     };
 
@@ -150,7 +150,7 @@ async fn peer_only_routes_reject_non_peers_inner() {
     let impostor_key = EdKeypair::new(&mut thread_rng());
     let impostor = {
         let builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
-        let builder = peer_tls::apply_pinned_tls_with_identity(builder, pin, &impostor_key)
+        let builder = tape_peer_tls::apply_pinned_tls_with_identity(builder, pin, &impostor_key)
             .expect("impostor tls");
         builder.build().expect("impostor build")
     };
@@ -197,7 +197,7 @@ async fn peer_only_routes_reject_non_peers_inner() {
     // --- Real peer: registered TLS key and current committee membership ---
     let peer = {
         let builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
-        let builder = peer_tls::apply_pinned_tls_with_identity(builder, pin, source.tls_keypair())
+        let builder = tape_peer_tls::apply_pinned_tls_with_identity(builder, pin, source.tls_keypair())
             .expect("peer tls");
         builder.build().expect("peer build")
     };

@@ -279,7 +279,7 @@ fn batch_phase_count(metrics: &InMemory, phase: Phase) -> u64 {
 }
 
 async fn wait_for_certified_track(
-    sdk: &tape_sdk::tapedrive::Tapedrive<rpc_litesvm::LiteSvmRpc, peer_http::HttpApi>,
+    sdk: &tape_sdk::tapedrive::Tapedrive<rpc_litesvm::LiteSvmRpc, tape_peer_http::HttpApi>,
     track: &tape_crypto::Address,
     timeout: Duration,
 ) -> tape_core::prelude::CompressedTrack {
@@ -294,7 +294,7 @@ async fn wait_for_certified_track(
 }
 
 async fn wait_for_objects(
-    sdk: &tape_sdk::tapedrive::Tapedrive<rpc_litesvm::LiteSvmRpc, peer_http::HttpApi>,
+    sdk: &tape_sdk::tapedrive::Tapedrive<rpc_litesvm::LiteSvmRpc, tape_peer_http::HttpApi>,
     bucket: &tape_crypto::Address,
     prefix: &str,
     expected: &[&str],

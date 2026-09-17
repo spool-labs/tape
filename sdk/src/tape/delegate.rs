@@ -1,4 +1,4 @@
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use tape_api::instruction::{build_revoke_tape_delegate_ix, build_set_tape_delegate_ix};
 use tape_crypto::Address;
 use tape_protocol::Api;

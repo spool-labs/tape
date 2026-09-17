@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use peer_http::HttpApi;
-use rpc_client::RpcClient;
+use tape_peer_http::HttpApi;
+use tape_rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
-use reel_store::ReelStore;
+use tape_reel_store::ReelStore;
 use store::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;

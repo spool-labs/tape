@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant};
 
-use peer_http::HttpApi;
+use tape_peer_http::HttpApi;
 use reqwest::header::{HOST, IF_NONE_MATCH, RANGE};
 use reqwest::redirect::Policy;
 use reqwest::{Client, RequestBuilder, StatusCode};
@@ -50,7 +50,7 @@ fn followed_blacklists() {
 }
 
 async fn followed_blacklists_inner() {
-    peer_tls::install_default_provider();
+    tape_peer_tls::install_default_provider();
 
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)

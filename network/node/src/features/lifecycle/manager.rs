@@ -95,7 +95,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rpc::Rpc;
+use tape_rpc::Rpc;
 use store::Store;
 use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;

@@ -28,7 +28,7 @@ fn staked_gateway() {
 }
 
 async fn staked_gateway_inner() {
-    peer_tls::install_default_provider();
+    tape_peer_tls::install_default_provider();
 
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
@@ -769,7 +769,7 @@ async fn assert_direct_slice_forbidden(
     let spool = group.spool_at(position);
 
     let builder = reqwest::Client::builder().timeout(Duration::from_secs(5));
-    let builder = peer_tls::apply_pinned_tls(builder, owner_node.tls_pubkey())
+    let builder = tape_peer_tls::apply_pinned_tls(builder, owner_node.tls_pubkey())
         .expect("anonymous pinned tls");
     let client = builder.build().expect("anonymous client build");
     let response = client

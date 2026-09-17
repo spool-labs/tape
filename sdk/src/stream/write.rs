@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::sleep;
 use tracing::debug;
 
-use rpc::{CommitmentLevel, Rpc};
+use tape_rpc::{CommitmentLevel, Rpc};
 use tape_api::program::tapedrive::track_pda;
 use tape_api::state::Tape;
 use tape_core::prelude::CompressedTrack;

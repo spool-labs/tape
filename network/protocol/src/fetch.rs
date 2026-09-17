@@ -1,5 +1,5 @@
-use rpc::{CommitmentLevel, Rpc, RpcError};
-use rpc_client::{EpochBatch, RpcClient};
+use tape_rpc::{CommitmentLevel, Rpc, RpcError};
+use tape_rpc_client::{EpochBatch, RpcClient};
 use tape_api::state::Epoch;
 use tape_core::types::EpochNumber;
 

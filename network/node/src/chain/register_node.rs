@@ -1,5 +1,5 @@
-use rpc::{Rpc, RpcError};
-use rpc_client::RpcClient;
+use tape_rpc::{Rpc, RpcError};
+use tape_rpc_client::RpcClient;
 use tape_api::consts::NAME_LENGTH;
 use tape_api::instruction::build_register_node_ix;
 use tape_core::bls::{BlsPubkey, BlsSignature};
@@ -40,7 +40,7 @@ pub async fn submit_register_node<Blockchain: Rpc>(
 
 #[cfg(test)]
 mod tests {
-    use rpc_client::RpcClient;
+    use tape_rpc_client::RpcClient;
     use tape_api::genesis::GenesisConfig;
     use tape_api::utils::to_name;
     use tape_core::bls::BlsPrivateKey;

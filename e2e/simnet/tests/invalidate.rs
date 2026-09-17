@@ -239,7 +239,7 @@ async fn wait_track_proof<Blockchain, Cluster>(
     accept: impl Fn(&CompressedTrackProof) -> bool,
 ) -> CompressedTrackProof
 where
-    Blockchain: rpc::Rpc,
+    Blockchain: tape_rpc::Rpc,
     Cluster: tape_protocol::Api,
 {
     let start = Instant::now();

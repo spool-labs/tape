@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use peer_tls::{apply_pinned_tls, install_default_provider};
+use tape_peer_tls::{apply_pinned_tls, install_default_provider};
 use rand::RngCore;
 use reqwest::Client;
 use rpc_litesvm::LiteSvmRpc;
