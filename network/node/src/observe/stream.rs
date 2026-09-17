@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::{Stream, StreamExt};
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tokio::select;
 use tokio::sync::broadcast;
 use tokio::time::{interval, MissedTickBehavior};

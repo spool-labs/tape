@@ -7,7 +7,7 @@
 //! in the order the log was built (which mirrors block processing order).
 
 use tape_core::snapshot::replay::SnapshotLog;
-use store::Store;
+use tape_store_api::Store;
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -26,7 +26,7 @@ pub fn apply_snapshot_log<Db: Store>(
 mod tests {
     use std::collections::BTreeMap;
 
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;

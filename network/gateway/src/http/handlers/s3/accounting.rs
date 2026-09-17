@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use tape_node::context::NodeContext;

@@ -1,4 +1,4 @@
-use store::{Column, Store};
+use tape_store_api::{Column, Store};
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SlotNumber;
 use tape_crypto::address::Address;
@@ -140,7 +140,7 @@ impl<S: Store> SampleOps for TapeStore<S> {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::challenge::sample::EntryKind;
     use tape_core::types::StorageUnits;
     use tape_crypto::Hash;

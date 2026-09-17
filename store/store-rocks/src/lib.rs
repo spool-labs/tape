@@ -13,8 +13,8 @@
 //! # Example
 //!
 //! ```no_run
-//! use store::{Store, TypedStore};
-//! use store_rocks::RocksStore;
+//! use tape_store_api::{Store, TypedStore};
+//! use tape_store_rocks::RocksStore;
 //!
 //! // Open a database
 //! let rocks = RocksStore::open("/tmp/mydb", &["users", "posts"]).unwrap();
@@ -26,7 +26,7 @@
 //! # Advanced Configuration
 //!
 //! ```no_run
-//! use store_rocks::{Cache, RocksStore, ColumnFamilyConfig};
+//! use tape_store_rocks::{Cache, RocksStore, ColumnFamilyConfig};
 //! use rocksdb::Options;
 //!
 //! let mut db_opts = Options::default();

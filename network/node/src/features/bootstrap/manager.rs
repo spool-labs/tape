@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use tape_rpc::{CommitmentLevel, Rpc};
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::Hash;
 use tape_protocol::{fetch::fetch_state_with_commitment, Api, ProtocolState};

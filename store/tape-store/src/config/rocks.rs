@@ -9,7 +9,7 @@
 //!   CFs that need total-order iteration get none
 
 use super::BULK_COLUMN_FAMILIES;
-use store_rocks::{Cache, ColumnFamilyConfig, ColumnFamilyDescriptor, Options};
+use tape_store_rocks::{Cache, ColumnFamilyConfig, ColumnFamilyDescriptor, Options};
 
 // Re-export rocksdb types needed for configuration
 use rocksdb;

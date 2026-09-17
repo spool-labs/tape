@@ -8,7 +8,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::tape::TapeFlags;
 use tape_core::track::TRACK_TREE_HEIGHT;

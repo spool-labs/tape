@@ -1,6 +1,6 @@
 use futures::stream::{FuturesUnordered, StreamExt};
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::object::object_etag;
 use tape_core::track::blob::BlobEncoding;

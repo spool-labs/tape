@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::http::{HeaderMap, Method};
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::share::{unix_now, ReadRequest, ShareContext, ShareError, ShareToken, ALL_TRACKS};
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::ed25519::Signature;

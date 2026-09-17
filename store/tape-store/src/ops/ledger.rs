@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use store::{Column, Direction, Store, WriteBatch};
+use tape_store_api::{Column, Direction, Store, WriteBatch};
 use tape_crypto::address::Address;
 
 use crate::columns::{LedgerCol, LedgerReservationCol};
@@ -369,7 +369,7 @@ fn max_option(left: Option<u64>, right: Option<u64>) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
 
     use super::*;
 

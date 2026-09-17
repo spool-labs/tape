@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tape_peer_manager::PeerManager;
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;

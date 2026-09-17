@@ -9,7 +9,7 @@ use axum::http::{Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_crypto::Address;
 use tape_protocol::Api;
 use tracing::{debug, warn};

@@ -382,7 +382,7 @@ fn store_error(error: impl std::fmt::Display) -> S3Error {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_store::types::MULTIPART_CHUNK_BYTES;
     use tape_store::TapeStore;
 

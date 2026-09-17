@@ -1,5 +1,5 @@
 [package]
-name = "store-memory"
+name = "tape-store-memory"
 version.workspace = true
 edition.workspace = true
 description = "In-memory backend for the store trait - useful for testing and as a template for custom backends"
@@ -9,6 +9,6 @@ default = []
 metrics = ["tape-metrics/metrics"]
 
 [dependencies]
-store.workspace = true
+tape-store-api.workspace = true
 thiserror.workspace = true
 tape-metrics = { workspace = true, optional = true }

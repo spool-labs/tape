@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use store::{Column, Store};
+use tape_store_api::{Column, Store};
 use tape_core::challenge::PeerRecord;
 use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex};
 use tape_crypto::address::Address;
@@ -179,7 +179,7 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
         let round_key = ChallengeRoundKey::new(peer, spool, epoch, round);
         let record_key = PeerRecordKey::new(peer, spool);
 
-        let mut batch = store::WriteBatch::new();
+        let mut batch = tape_store_api::WriteBatch::new();
         batch.put_owned(
             ChallengeRoundCol::CF_NAME,
             wincode::serialize(&round_key)
@@ -266,7 +266,7 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
 
     fn prune_rounds_before(&self, epoch: EpochNumber) -> Result<usize> {
         let raw = self.inner().inner();
-        let mut batch = store::WriteBatch::new();
+        let mut batch = tape_store_api::WriteBatch::new();
         let mut dropped = 0usize;
 
         for key_bytes in raw.iter_keys_prefix(ChallengeRoundCol::CF_NAME, &[])? {
@@ -287,7 +287,7 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
 
     use super::*;
 

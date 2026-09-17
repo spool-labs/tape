@@ -13,8 +13,8 @@
 
 use std::time::Instant;
 
-use tape_reel_store::{scaled, BenchArm, MetaBulkStore, ReelStore};
-use store_rocks::SplitStore;
+use tape_store_reel::{scaled, BenchArm, MetaBulkStore, ReelStore};
+use tape_store_rocks::SplitStore;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_store::ops::SliceOps;

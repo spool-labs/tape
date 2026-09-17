@@ -25,8 +25,8 @@
 //! # Example
 //!
 //! ```
-//! use store_memory::MemoryStore;
-//! use store::Store;
+//! use tape_store_memory::MemoryStore;
+//! use tape_store_api::Store;
 //!
 //! let store = MemoryStore::new();
 //!

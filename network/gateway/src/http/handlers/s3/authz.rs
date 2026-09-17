@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_crypto::address::Address;
 use tape_node::config::gateway::WriteDefault;
 use tape_protocol::Api;
@@ -776,7 +776,7 @@ fn decide_hidden_read<Reads: AuthzReads>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_store::types::{
         CredentialScope, CredentialStatus, PolicyEffect, PolicyRule, PolicyRuleKey,
     };

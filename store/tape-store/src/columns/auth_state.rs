@@ -1,6 +1,6 @@
 //! Write-authorization control-state column family (singleton).
 
-use store::Column;
+use tape_store_api::Column;
 
 use crate::types::{AuthState, UnitKey};
 

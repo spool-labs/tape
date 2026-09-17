@@ -1,6 +1,6 @@
 //! Tests for TypedStore with MemoryStore backend.
 
-use store::{Column, TypedStore};
+use tape_store_api::{Column, TypedStore};
 
 use crate::MemoryStore;
 

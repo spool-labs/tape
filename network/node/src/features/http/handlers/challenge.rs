@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
 use tape_core::erasure::{GROUP_SIZE, group_for_spool};

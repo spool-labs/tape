@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_node::config::gateway::S3Config;
 use tape_node::config::http::HttpConfig;
 use tape_node::context::NodeContext;

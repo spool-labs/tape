@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::share::ShareToken;
 use tape_core::types::tls::NetworkTlsPubkey;

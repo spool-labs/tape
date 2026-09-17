@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::SpoolIndex;
 use tape_core::system::{EpochPhase, SpoolStatus};
 use tape_core::types::EpochNumber;

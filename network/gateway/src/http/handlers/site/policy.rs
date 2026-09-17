@@ -6,7 +6,7 @@
 
 use tape_rpc::Rpc;
 use serde::Deserialize;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::track::data::BlobData;
 use tape_crypto::address::Address;
 use tape_node::config::gateway::{is_valid_origin, is_valid_policy};
@@ -147,7 +147,7 @@ fn sanitized(mut policy: TapeSitePolicy) -> TapeSitePolicy {
 mod tests {
     use std::sync::Arc;
 
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::types::ContentType;
     use tape_crypto::Hash;
 

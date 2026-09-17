@@ -7,7 +7,7 @@
 //!
 //! Run with: cargo run --example in_memory
 
-use store_memory::MemoryStore;
+use tape_store_memory::MemoryStore;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{SpoolState, SpoolStatus};
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};

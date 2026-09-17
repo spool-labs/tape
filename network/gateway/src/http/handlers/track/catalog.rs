@@ -5,7 +5,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method, Uri};
 use axum::response::IntoResponse;
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::track::TRACK_TREE_HEIGHT;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};

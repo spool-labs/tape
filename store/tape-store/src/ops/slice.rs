@@ -1,6 +1,6 @@
 //! Slice data operations (merged primary + recovery)
 
-use store::{Column, Store};
+use tape_store_api::{Column, Store};
 use tape_core::types::{SpoolIndex, StorageUnits};
 use tape_crypto::address::Address;
 
@@ -208,7 +208,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         let iter = self
             .inner()
             .inner()
-            .iter_from(SliceCol::CF_NAME, &start_key, store::Direction::Asc)?;
+            .iter_from(SliceCol::CF_NAME, &start_key, tape_store_api::Direction::Asc)?;
 
         let mut results = Vec::new();
         for (key_bytes, value_bytes) in iter {
@@ -339,7 +339,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
                 // The max spool prefix has no exclusive successor; fall back to
                 // collecting keys and batch-deleting them.
                 let keys = raw.iter_keys_prefix(SliceCol::CF_NAME, &start)?;
-                let mut batch = store::WriteBatch::new();
+                let mut batch = tape_store_api::WriteBatch::new();
                 for key in keys {
                     batch.delete_owned(SliceCol::CF_NAME, key);
                 }
@@ -358,7 +358,7 @@ fn serialize_slice_key(key: &SliceKey) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::erasure::{slice_root, slice_sidecar, SAMPLE_WINDOW_BYTES};
 
     fn test_store() -> TapeStore<MemoryStore> {

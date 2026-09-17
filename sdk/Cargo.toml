@@ -68,7 +68,7 @@ bytemuck = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tape-store = { path = "../store/tape-store" }
 tape-metrics = { workspace = true }
-store-memory = { path = "../store/store-memory" }
+tape-store-memory = { path = "../store/store-memory" }
 rpc-litesvm = { path = "../solana/rpc-litesvm" }
 peer-memory = { path = "../network/peer-memory" }
 axum = { workspace = true }

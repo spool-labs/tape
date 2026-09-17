@@ -1,4 +1,4 @@
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::challenge::schedule::{
     SAMPLE_LOOKBACK_SLOTS, SETTLE_DEADLINE_SLOTS, SPAN_SLOTS, round_width_slots,
@@ -218,7 +218,7 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::Hash;

@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures::Stream;
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::share::ShareToken;
 use tape_core::track::types::CompressedTrack;

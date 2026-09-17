@@ -5,7 +5,7 @@
 //! - SpoolPendingRecoveryCol: (spool_id, track_address) -> ()
 //! - SpoolSyncCursorCol: spool_id -> the peer's opaque sweep mark
 
-use store::Column;
+use tape_store_api::Column;
 use tape_core::system::SpoolState;
 
 use crate::types::{SliceKey, SpoolIndexKey};

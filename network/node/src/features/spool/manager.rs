@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::prelude::{EpochNumber, GroupIndex, SpoolIndex, SpoolState, SpoolStatus};
 use tape_protocol::Api;

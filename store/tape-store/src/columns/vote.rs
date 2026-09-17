@@ -1,6 +1,6 @@
 //! Generic vote coordination columns.
 
-use store::Column;
+use tape_store_api::Column;
 use tape_core::bls::BlsSignature;
 
 use crate::types::VoteSigKey;

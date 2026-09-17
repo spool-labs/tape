@@ -4,8 +4,8 @@
 
 #[cfg(feature = "metrics")]
 fn main() {
-    use store::{get_metrics, init_metrics, Store, WriteBatch};
-    use store_memory::MemoryStore;
+    use tape_store_api::{get_metrics, init_metrics, Store, WriteBatch};
+    use tape_store_memory::MemoryStore;
     use tape_metrics::prometheus::{Encoder, TextEncoder};
     use tape_metrics::MetricsRegistry;
 

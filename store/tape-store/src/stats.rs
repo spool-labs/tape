@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use store::{Column, DiskVolume, Result, Store, StoreVolume};
+use tape_store_api::{Column, DiskVolume, Result, Store, StoreVolume};
 
 use crate::columns::{ObjectInfoCol, SliceCol, TapeCol, TrackCol};
 use crate::config::BULK_COLUMN_FAMILIES;

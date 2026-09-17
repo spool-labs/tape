@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::challenge::schedule::{
     HANDOVER_GRACE_ROUNDS, MAX_PENDING_ROUNDS, SETTLE_DEADLINE_SLOTS, round_width_slots,
 };
@@ -658,7 +658,7 @@ mod tests {
     }
 
     fn manager_for(ctx: &TestContext) -> ChallengeManager<
-        store_memory::MemoryStore,
+        tape_store_memory::MemoryStore,
         peer_memory::MemoryApi,
         rpc_litesvm::LiteSvmRpc,
     > {

@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::EpochNumber;
 use tape_protocol::{Api, ProtocolState, fetch::fetch_state};
 use tape_retry::{RetryConfig, retry_if};

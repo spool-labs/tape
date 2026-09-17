@@ -11,8 +11,8 @@ use crate::{Column, Error, Result, Store};
 /// # Example
 ///
 /// ```ignore
-/// use store::{Column, TypedStore};
-/// use store_memory::MemoryStore;
+/// use tape_store_api::{Column, TypedStore};
+/// use tape_store_memory::MemoryStore;
 ///
 /// // Define a column with primitive types
 /// struct Users;

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use store::{Column, Store};
+use tape_store_api::{Column, Store};
 use tape_core::challenge::PeerRecord;
 use tape_core::erasure::{GROUP_SIZE, group_for_spool};
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};

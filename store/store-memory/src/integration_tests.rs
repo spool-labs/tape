@@ -1,5 +1,5 @@
-use store::Value;
-use store::{Store, WriteBatch};
+use tape_store_api::Value;
+use tape_store_api::{Store, WriteBatch};
 
 use crate::MemoryStore;
 

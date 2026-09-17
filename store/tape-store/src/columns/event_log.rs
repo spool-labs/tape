@@ -1,7 +1,7 @@
 //! Event log column family for epoch snapshot event storage
 
 use crate::types::keys::EventLogKey;
-use store::Column;
+use tape_store_api::Column;
 
 /// Event log indexed by compound key (epoch, slot, seq)
 ///

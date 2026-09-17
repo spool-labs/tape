@@ -9,7 +9,7 @@
 //! Pointing both instances at the same device gives the old single-device
 //! layout, so a one-drive box needs no special handling.
 
-use store::{
+use tape_store_api::{
     BatchOp, CfDiskUsage, DiskVolume, Direction, Result, Store, StoreIter, StoreVolume, WriteBatch, Value};
 
 use crate::RocksStore;

@@ -1,12 +1,12 @@
 [package]
-name = "tape-reel-store"
+name = "tape-store-reel"
 version.workspace = true
 edition.workspace = true
 description = "The node's store: tapedrive's columns on the reel engine"
 
 [dependencies]
-store.workspace = true
-store-rocks = { workspace = true, optional = true }
+tape-store-api.workspace = true
+tape-store-rocks = { workspace = true, optional = true }
 tape-store.workspace = true
 tape-metrics = { workspace = true, optional = true }
 reel.workspace = true
@@ -19,11 +19,11 @@ tracing = "0.1"
 # A node that wants RocksDB builds tape-node with its own `rocks` feature and
 # never touches this one. Tests opt in with
 # `cargo test -p tape-reel-store --features rocks`.
-rocks = ["dep:store-rocks", "tape-store/rocks"]
+rocks = ["dep:tape-store-rocks", "tape-store/rocks"]
 
 # Emit the shared store counters the node's board reads. Off by default so a
 # bench or a test opens the reel without a metrics registry behind it.
-metrics = ["dep:tape-metrics", "store/metrics"]
+metrics = ["dep:tape-metrics", "tape-store-api/metrics"]
 
 [dev-dependencies]
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }

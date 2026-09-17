@@ -2,7 +2,7 @@ use core::mem::size_of;
 use std::collections::HashSet;
 
 use bytemuck::try_from_bytes;
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::tapedrive::blacklist_pda;
 use tape_core::system::BlacklistEntry;
 use tape_core::track::data::BlobData;

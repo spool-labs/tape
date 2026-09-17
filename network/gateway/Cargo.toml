@@ -22,7 +22,7 @@ tape-sdk = { workspace = true }
 tape-store = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 tape-rpc = { workspace = true }
-store = { workspace = true }
+tape-store-api = { workspace = true }
 
 async-trait = { workspace = true }
 axum = { workspace = true }
@@ -55,7 +55,7 @@ moka = { workspace = true }
 openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
-store-memory = { workspace = true }
+tape-store-memory = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 
 [features]

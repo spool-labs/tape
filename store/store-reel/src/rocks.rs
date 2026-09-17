@@ -14,8 +14,8 @@
 use std::path::Path;
 
 use crate::arm::track_data_codec;
-use store::Result as StoreResult;
-use store_rocks::{
+use tape_store_api::Result as StoreResult;
+use tape_store_rocks::{
     BlockBasedOptions, Cache, ColumnFamilyConfig, ColumnFamilyDescriptor, DBCompressionType,
     Options, RocksStore, SplitStore,
 };

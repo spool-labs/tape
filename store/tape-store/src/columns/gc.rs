@@ -1,7 +1,7 @@
 //! Garbage collection tracking column family
 
 use tape_core::types::EpochNumber;
-use store::Column;
+use tape_store_api::Column;
 
 /// GC progress tracking
 ///

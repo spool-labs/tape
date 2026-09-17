@@ -12,8 +12,8 @@ tape-e2e-simnet = { path = "../simnet" }
 tape-core.workspace = true
 tape-crypto.workspace = true
 tape-store.workspace = true
-tape-reel-store.workspace = true
-store.workspace = true
+tape-store-reel.workspace = true
+tape-store-api.workspace = true
 tape-protocol.workspace = true
 tape-peer-http.workspace = true
 tape-peer-tls.workspace = true

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use axum::body::Bytes;
 use tape_rpc::Rpc;
 use serde::Serialize;
-use store::Store;
+use tape_store_api::Store;
 use tape_protocol::Api;
 
 use super::board;

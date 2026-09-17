@@ -1,7 +1,7 @@
 //! Canonical compressed-track catalog operations.
 
 use tape_core::track::types::{CompressedTrack, PackedTrack};
-use store::{Column, Store};
+use tape_store_api::{Column, Store};
 use tape_crypto::address::Address;
 use tape_core::types::TrackNumber;
 
@@ -133,7 +133,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
         let iter = self
             .inner()
             .inner()
-            .iter_from(TrackCol::CF_NAME, &start_key, store::Direction::Asc)?;
+            .iter_from(TrackCol::CF_NAME, &start_key, tape_store_api::Direction::Asc)?;
 
         let mut results = Vec::new();
         for (key_bytes, value_bytes) in iter {
@@ -202,7 +202,7 @@ pub fn tape_track_numbers<S: Store>(
     let iter = tape_store
         .inner()
         .inner()
-        .iter_from(TrackLookupCol::CF_NAME, &start_key, store::Direction::Asc)?;
+        .iter_from(TrackLookupCol::CF_NAME, &start_key, tape_store_api::Direction::Asc)?;
 
     let mut numbers = Vec::new();
     for (key_bytes, _value_bytes) in iter {
@@ -239,7 +239,7 @@ mod tests {
     use tape_core::types::StorageUnits;
     use tape_core::spooler::GroupIndex;
     use tape_crypto::Hash;
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())

@@ -1,6 +1,6 @@
 //! Write-authorization control-state operations.
 
-use store::Store;
+use tape_store_api::Store;
 
 use crate::columns::AuthStateCol;
 use crate::error::Result;
@@ -59,7 +59,7 @@ impl<Backend: Store> AuthStateOps for TapeStore<Backend> {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
 
     use super::*;
 

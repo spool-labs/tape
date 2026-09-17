@@ -14,10 +14,10 @@ use tape_rpc::Rpc;
 use tape_rpc_client::RpcClient;
 use tape_rpc_solana::SolanaRpc;
 #[cfg(not(feature = "rocks"))]
-use tape_reel_store::ReelStore;
-use store::{DiskVolume, Store};
+use tape_store_reel::ReelStore;
+use tape_store_api::{DiskVolume, Store};
 #[cfg(feature = "rocks")]
-use store_rocks::SplitStore;
+use tape_store_rocks::SplitStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::challenge::schedule::MAX_PENDING_ROUNDS;
@@ -553,7 +553,7 @@ mod tests {
     use tape_peer_manager::PeerManager;
     use peer_memory::MemoryApi;
     use tape_rpc_client::RpcClient;
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_chain_harness::ChainHarness;
     use tape_core::types::{EpochNumber, SlotNumber};
     use tape_crypto::ed25519::Keypair;
@@ -562,7 +562,7 @@ mod tests {
 
     use super::{volume_below_threshold, NodeConfig, NodeContextBuilder};
     use crate::core::atlas::AtlasBuffer;
-    use store::{DiskVolume, StoreVolume};
+    use tape_store_api::{DiskVolume, StoreVolume};
 
     fn volume(role: StoreVolume, free: Option<u64>) -> DiskVolume {
         DiskVolume { volume: role, used_bytes: 0, free_bytes: free }

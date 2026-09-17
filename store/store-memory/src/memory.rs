@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use store::{batch::BatchOp, Direction, Result, Store, StoreIter, WriteBatch, Value};
+use tape_store_api::{batch::BatchOp, Direction, Result, Store, StoreIter, WriteBatch, Value};
 
 #[cfg(feature = "metrics")]
 use tape_metrics::{get_metrics, OperationTimer};

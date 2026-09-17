@@ -1,4 +1,4 @@
-use store::Column;
+use tape_store_api::Column;
 
 use crate::types::ChallengeRoundKey;
 

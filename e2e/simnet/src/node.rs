@@ -10,7 +10,7 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use tape_reel_store::ReelStore;
+use tape_store_reel::ReelStore;
 use tape_core::bls::BlsPrivateKey;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -221,7 +221,7 @@ impl TestNode {
     }
 
     async fn build_context(&self) -> Result<TestNodeContext> {
-        let store = tape_reel_store::open_harness_store(self.store_dir.path())
+        let store = tape_store_reel::open_harness_store(self.store_dir.path())
             .context("open node store")?;
         let rpc = RpcClient::from_rpc(self.rpc.clone());
         let peer_manager = Arc::new(PeerManager::new());

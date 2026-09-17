@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::ContentType;
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
@@ -327,7 +327,7 @@ impl<Db: Store> StagingStore<Db> {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_store::types::PENDING_WRITE_CHUNK_BYTES;
 
     use crate::http::handlers::resolve::resolve_readable;

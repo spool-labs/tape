@@ -1,4 +1,4 @@
-use store::Store;
+use tape_store_api::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_store::ops::SpoolOps;

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_api::errors::TapeError;
 use tape_core::bft::has_honest_signer;
 use tape_core::bls::BlsSignature;

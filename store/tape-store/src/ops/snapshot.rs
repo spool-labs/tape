@@ -4,7 +4,7 @@
 //! artifacts are local build products retained until the canonical snapshot
 //! tape can be finalized.
 
-use store::{Column, Store};
+use tape_store_api::{Column, Store};
 use tape_core::spooler::GroupIndex;
 use tape_core::types::{ChunkNumber, EpochNumber};
 
@@ -157,7 +157,7 @@ fn delete_except_epoch<S: Store>(store: &TapeStore<S>, cf: &str, keep: u64) -> R
 mod tests {
     use super::*;
     use crate::types::SnapshotArtifact;
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::track::blob::BlobEncoding;

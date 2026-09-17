@@ -3,7 +3,7 @@
 //! Key structure: (spool_id, track_address) - enables efficient iteration by spool
 
 use crate::types::SliceKey;
-use store::Column;
+use tape_store_api::Column;
 
 /// Slice data storage (large values, uses BlobDB)
 ///

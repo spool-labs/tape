@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::bls::BlsPubkey;
 use tape_core::cert::{AssignmentVoteMessage, NodeEvictMessage, SnapshotSignMessage, eviction_vote_node};
 use tape_core::system::{VoteCandidate, VoteKind};

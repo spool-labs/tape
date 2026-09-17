@@ -1,4 +1,4 @@
-use store::Store;
+use tape_store_api::Store;
 use tape_blocks::capture_block;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::types::EpochNumber;

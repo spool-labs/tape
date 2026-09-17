@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::coin::SOL;
 use tape_observe_api::LOW_BALANCE_LAMPORTS;
 use tape_protocol::Api;

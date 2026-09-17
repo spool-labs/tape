@@ -17,11 +17,11 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tape_reel_store::{
+use tape_store_reel::{
     bench_cache, bench_db_options, bench_store_configs, scaled, BenchArm, MetaBulkStore, ReelStore,
 };
-use store::Store;
-use store_rocks::{RocksStore, SplitStore};
+use tape_store_api::Store;
+use tape_store_rocks::{RocksStore, SplitStore};
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
 use tape_core::types::{GroupIndex, SpoolIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;

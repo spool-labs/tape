@@ -7,7 +7,7 @@ use std::sync::Arc;
 use futures::stream::{self, Stream, StreamExt};
 use tape_rpc::skip::{TRUSTED_SKIP_RUN, trusted_skip};
 use tape_rpc::{Rpc, RpcError};
-use store::Store;
+use tape_store_api::Store;
 use tape_blocks::parse_and_merge_with_sources;
 use tape_blocks::wire::Block as WireBlock;
 use tape_core::types::SlotNumber;

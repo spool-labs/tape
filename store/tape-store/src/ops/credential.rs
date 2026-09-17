@@ -2,7 +2,7 @@
 //!
 //! Credentials are keyed by access key id. Secrets are never stored.
 
-use store::Store;
+use tape_store_api::Store;
 
 use crate::columns::CredentialCol;
 use crate::error::Result;
@@ -55,7 +55,7 @@ impl<Backend: Store> CredentialOps for TapeStore<Backend> {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_crypto::address::Address;
 
     use crate::types::{CredentialCaps, CredentialScope};

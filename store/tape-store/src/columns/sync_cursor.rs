@@ -1,7 +1,7 @@
 //! Sync cursor column family for tracking the last processed slot
 
 use crate::types::UnitKey;
-use store::Column;
+use tape_store_api::Column;
 use tape_core::types::SlotNumber;
 use tape_crypto::Hash;
 use wincode_derive::{SchemaRead, SchemaWrite};

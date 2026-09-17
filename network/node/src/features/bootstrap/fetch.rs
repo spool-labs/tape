@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
 use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::track::data::BlobData;
@@ -147,7 +147,7 @@ fn store_err(error: impl std::fmt::Display) -> NodeError {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;

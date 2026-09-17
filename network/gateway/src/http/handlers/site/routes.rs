@@ -18,7 +18,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use tape_rpc::Rpc;
 use serde::Deserialize;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::ContentType;
 use tape_crypto::address::Address;
 use tape_node::config::gateway::GatewaySiteConfig;

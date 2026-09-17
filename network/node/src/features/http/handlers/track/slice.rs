@@ -6,7 +6,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::cert::track::TrackWriteMessage;
 use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
 use tape_core::track::data::BlobData;

@@ -8,8 +8,8 @@
 //!
 //! Run with: `cargo test -p tape-reel-store --features rocks --test arm_smoke`.
 
-use tape_reel_store::{BenchArm, MetaBulkStore, ReelStore};
-use store_rocks::SplitStore;
+use tape_store_reel::{BenchArm, MetaBulkStore, ReelStore};
+use tape_store_rocks::SplitStore;
 use tape_core::erasure::{
     sample_window, sample_window_range, slice_sidecar, SAMPLE_WINDOW_BYTES, SAMPLE_WINDOW_LEAVES,
     SUB_LEAF_BYTES,
@@ -109,7 +109,7 @@ fn slice_and_track_traffic<A: BenchArm>() {
 
 /// A slice big enough to hold several sample windows, in bytes a codec shrinks
 fn windowed_slice() -> Vec<u8> {
-    tape_reel_store::fill::markdown(3, 3 * SAMPLE_WINDOW_BYTES + 777)
+    tape_store_reel::fill::markdown(3, 3 * SAMPLE_WINDOW_BYTES + 777)
 }
 
 /// A challenge answers the same bytes whatever the column did with them

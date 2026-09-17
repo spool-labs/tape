@@ -3,7 +3,7 @@
 use tape_core::system::SpoolState;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
-use store::{Column, Store};
+use tape_store_api::{Column, Store};
 
 use crate::columns::{
     SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
@@ -197,7 +197,7 @@ fn clear_all_pending_by_spool<S: Store>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::types::EpochNumber;
     use tape_core::system::SpoolStatus;
 

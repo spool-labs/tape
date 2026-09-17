@@ -16,7 +16,7 @@ use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use axum_server::Handle;
 use tape_peer_tls::{build_server_config_with_peer_auth, cert_san_ips};
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_observe_api::AtlasRecent;
 use tape_protocol::api::OBSERVE_ATLAS_PATH;
 use tape_protocol::Api;

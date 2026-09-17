@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::bft::has_honest_signer;
 use tape_core::erasure::GROUP_SIZE;
 use tape_protocol::api::VoteReq;

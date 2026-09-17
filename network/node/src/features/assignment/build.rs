@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::MIN_COMMITTEE_SIZE;
 use tape_core::cert::{
     AssignmentGroupPayload, ASSIGNMENT_TREE_HEIGHT, hash_assignment_group_payload,
@@ -319,7 +319,7 @@ mod tests {
     use core::mem::size_of;
 
     use bytemuck::{Zeroable, bytes_of};
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::{blacklist_pda, track_pda};
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};

@@ -1,6 +1,6 @@
 //! S3 multipart upload column families.
 
-use store::Column;
+use tape_store_api::Column;
 
 use crate::types::{
     MultipartPart, MultipartPartChunk, MultipartPartChunkKey, MultipartPartKey, MultipartUpload,

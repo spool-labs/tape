@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_node::core::types::ChannelName;
@@ -102,7 +102,7 @@ pub fn persist_batch<Db: Store>(
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::data::BlobData;
     use tape_core::types::SlotNumber;

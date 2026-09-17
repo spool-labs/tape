@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use store::Store;
+use tape_store_api::Store;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::TrackNumber;
@@ -74,7 +74,7 @@ impl TapeTrackScan {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::spooler::GroupIndex;
     use tape_core::types::StorageUnits;

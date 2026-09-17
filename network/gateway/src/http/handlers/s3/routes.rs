@@ -22,7 +22,7 @@ use tokio::join;
 use tokio::task::JoinError;
 
 use tape_rpc::{Rpc, RpcError};
-use store::Store;
+use tape_store_api::Store;
 use tape_api::instruction::MAX_NAME_LEN;
 use tape_api::program::tapedrive::tape_pda;
 use tape_core::types::{ContentType, StorageUnits};

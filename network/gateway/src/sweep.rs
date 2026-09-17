@@ -1,7 +1,7 @@
 //! Expired-tape sweep for a gateway's store, run from its maintenance tick
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_node::config::store::GcConfig;
 use tape_node::context::NodeContext;
@@ -83,7 +83,7 @@ impl ExpiredTapeSweep {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};

@@ -1,6 +1,6 @@
 //! Track-data operations for locally stored payloads.
 
-use store::Store;
+use tape_store_api::Store;
 use tape_crypto::address::Address;
 use tape_core::track::data::BlobData;
 

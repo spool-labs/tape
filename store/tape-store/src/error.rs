@@ -9,7 +9,7 @@ use thiserror::Error;
 pub enum TapeStoreError {
     /// Underlying store error
     #[error("Store error: {0}")]
-    Store(#[from] store::Error),
+    Store(#[from] tape_store_api::Error),
 
     /// Tape info not found
     #[error("Tape info not found: {0:?}")]

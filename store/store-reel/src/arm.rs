@@ -6,8 +6,8 @@
 
 use std::path::Path;
 
-use store::Store;
-use store_rocks::SplitStore;
+use tape_store_api::Store;
+use tape_store_rocks::SplitStore;
 use tape_store::TapeStore;
 
 use crate::{

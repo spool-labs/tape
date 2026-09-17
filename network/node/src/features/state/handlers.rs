@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytemuck::Zeroable;
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_api::event::{
     AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochCreated, NodeEvicted,
     NodeJoinedCommittee, NodeRegistered, PeerSetResized, PoolAdvanced, SnapshotFinalized,

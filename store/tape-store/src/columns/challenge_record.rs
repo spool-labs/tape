@@ -1,4 +1,4 @@
-use store::Column;
+use tape_store_api::Column;
 use tape_core::challenge::PeerRecord;
 
 use crate::types::PeerRecordKey;

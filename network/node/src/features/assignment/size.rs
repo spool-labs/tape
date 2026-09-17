@@ -6,7 +6,7 @@
 
 use thiserror::Error;
 
-use store::Store;
+use tape_store_api::Store;
 use tape_core::encoding::EncodingType;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobEncoding;
@@ -292,7 +292,7 @@ fn invalid_track(track: Address, reason: impl Into<String>) -> AssignmentSizeErr
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};

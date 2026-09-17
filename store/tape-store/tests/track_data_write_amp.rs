@@ -18,10 +18,10 @@
 
 use std::path::{Path, PathBuf};
 
-use tape_reel_store::fill::{markdown, random};
-use tape_reel_store::written::Written;
-use tape_reel_store::{scaled, track_data_codec, BenchArm, ReelStore};
-use store_rocks::SplitStore;
+use tape_store_reel::fill::{markdown, random};
+use tape_store_reel::written::Written;
+use tape_store_reel::{scaled, track_data_codec, BenchArm, ReelStore};
+use tape_store_rocks::SplitStore;
 use tape_core::track::data::BlobData;
 use tape_crypto::address::Address;
 use tape_store::ops::TrackDataOps;

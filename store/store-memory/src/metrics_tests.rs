@@ -2,7 +2,7 @@
 //!
 //! These tests verify that metrics are properly recorded for all Store operations.
 
-use store::{get_metrics, init_metrics, Store, WriteBatch};
+use tape_store_api::{get_metrics, init_metrics, Store, WriteBatch};
 
 use crate::MemoryStore;
 use tape_metrics::MetricsRegistry;
@@ -236,7 +236,7 @@ fn test_bytes_tracking() {
 
 #[test]
 fn test_operation_timer() {
-    use store::OperationTimer;
+    use tape_store_api::OperationTimer;
 
     let timer = OperationTimer::new();
     std::thread::sleep(std::time::Duration::from_millis(10));

@@ -1,6 +1,6 @@
 //! Accounting-ledger column families for the S3 write-authorization subsystem.
 
-use store::Column;
+use tape_store_api::Column;
 use tape_crypto::address::Address;
 
 use crate::types::{LedgerEntry, LedgerReservation, LedgerReservationKey};

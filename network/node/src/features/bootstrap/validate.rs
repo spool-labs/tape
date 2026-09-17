@@ -1,6 +1,6 @@
 //! Bootstrap store validation that must pass before live services start.
 
-use store::Store;
+use tape_store_api::Store;
 use tape_core::tape::{tape_index, tape_namespace, TapeFlags, TapeNamespace};
 use tape_core::types::{EpochNumber, TapeNumber};
 use tape_crypto::Address;
@@ -176,7 +176,7 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::spooler::GroupIndex;
     use tape_core::tape::{snapshot_tape_number, user_tape_number};

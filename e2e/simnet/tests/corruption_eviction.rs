@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use store::{Column, Store};
+use tape_store_api::{Column, Store};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::erasure::{GROUP_SIZE, group_for_spool};
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};

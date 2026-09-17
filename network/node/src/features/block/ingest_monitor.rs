@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_protocol::Api;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;

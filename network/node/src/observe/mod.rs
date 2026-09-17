@@ -13,7 +13,7 @@ mod peers;
 use std::sync::Arc;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_metrics::MetricsRegistry;
 use tape_protocol::Api;
 use tape_store::ops::MetaOps;

@@ -1,4 +1,4 @@
-use store::Store;
+use tape_store_api::Store;
 use tape_core::challenge::sample::EntryKind;
 use tape_core::track::data::BlobData;
 use tape_core::types::{SlotNumber, StorageUnits};

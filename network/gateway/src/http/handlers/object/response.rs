@@ -2,7 +2,7 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::ContentType;
 use tape_crypto::Hash;
 use tape_crypto::address::Address;

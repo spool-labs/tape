@@ -9,11 +9,11 @@ use rocksdb::{
     WriteBatch as RocksWriteBatch,
 };
 
-use store::{
+use tape_store_api::{
     BatchOp, CfDiskUsage, Direction, Error, Result, Store, StoreIter, StoreVolume, WriteBatch, Value};
 
 #[cfg(feature = "metrics")]
-use store::get_metrics;
+use tape_store_api::get_metrics;
 #[cfg(feature = "metrics")]
 use tape_metrics::OperationTimer;
 

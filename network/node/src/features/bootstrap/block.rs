@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::SlotNumber;
 use tape_crypto::Hash;
 use tape_protocol::Api;

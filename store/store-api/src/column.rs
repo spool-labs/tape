@@ -14,7 +14,7 @@ use wincode::{SchemaRead, SchemaWrite};
 /// # Example
 ///
 /// ```
-/// use store::Column;
+/// use tape_store_api::Column;
 ///
 /// // Column with primitive types
 /// struct Users;

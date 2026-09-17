@@ -1,6 +1,6 @@
 //! Append-only write-authorization audit log column family.
 
-use store::Column;
+use tape_store_api::Column;
 
 use crate::types::{AuditEntry, AuditKey};
 

@@ -15,9 +15,9 @@
 
 use std::time::{Duration, Instant};
 
-use tape_reel_store::{scaled, BenchArm, MetaBulkStore, ReelStore};
-use store::Column;
-use store_rocks::SplitStore;
+use tape_store_reel::{scaled, BenchArm, MetaBulkStore, ReelStore};
+use tape_store_api::Column;
+use tape_store_rocks::SplitStore;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_store::columns::SliceCol;

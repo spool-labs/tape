@@ -14,8 +14,8 @@
 //! # Low-level Example
 //!
 //! ```ignore
-//! use store::{Store, WriteBatch};
-//! use store_memory::MemoryStore;
+//! use tape_store_api::{Store, WriteBatch};
+//! use tape_store_memory::MemoryStore;
 //!
 //! let store = MemoryStore::new();
 //!
@@ -35,8 +35,8 @@
 //! # Typed Column Example
 //!
 //! ```ignore
-//! use store::{Column, TypedStore};
-//! use store_memory::MemoryStore;
+//! use tape_store_api::{Column, TypedStore};
+//! use tape_store_memory::MemoryStore;
 //!
 //! // Define a column with primitive types (u64 key, String value)
 //! struct Users;

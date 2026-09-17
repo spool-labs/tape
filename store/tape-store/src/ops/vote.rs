@@ -1,6 +1,6 @@
 //! Generic vote signature operations.
 
-use store::{Column, Store};
+use tape_store_api::{Column, Store};
 use tape_core::bls::BlsSignature;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::VoteCandidate;
@@ -122,7 +122,7 @@ fn delete_except_epoch<S: Store>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::system::VoteKind;
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
     use tape_crypto::Hash;

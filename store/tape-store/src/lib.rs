@@ -42,9 +42,9 @@ pub mod types;
 #[cfg(feature = "rocks")]
 use std::path::Path;
 
-use store::{Store, TypedStore};
+use tape_store_api::{Store, TypedStore};
 #[cfg(feature = "rocks")]
-use store_rocks::{RocksStore, SplitStore};
+use tape_store_rocks::{RocksStore, SplitStore};
 
 
 /// Wrapper around TypedStore providing tape-specific storage operations
@@ -107,7 +107,7 @@ impl TapeStore<SplitStore> {
     /// The metadata store lives in a meta subdirectory and the bulk store in a
     /// bulk subdirectory, so a single-device box needs only one path. Use the
     /// split variant to place the bulk store on a separate device.
-    pub fn open_primary<P: AsRef<Path>>(root: P) -> Result<Self, store::Error> {
+    pub fn open_primary<P: AsRef<Path>>(root: P) -> Result<Self, tape_store_api::Error> {
         let root = root.as_ref();
         Self::open_primary_split(
             root.join(config::META_SUBDIR),
@@ -125,7 +125,7 @@ impl TapeStore<SplitStore> {
         bulk_dir: P,
         meta_compaction_mb_per_sec: u64,
         bulk_compaction_mb_per_sec: u64,
-    ) -> Result<Self, store::Error> {
+    ) -> Result<Self, tape_store_api::Error> {
         std::fs::create_dir_all(meta_dir.as_ref())?;
         std::fs::create_dir_all(bulk_dir.as_ref())?;
 
@@ -147,7 +147,7 @@ impl TapeStore<SplitStore> {
     /// Passes the full column-family configs per volume: opening by column-family
     /// name alone uses default table options, which cannot read families written
     /// under a different table format.
-    pub fn open_read_only<P: AsRef<Path>>(root: P) -> Result<Self, store::Error> {
+    pub fn open_read_only<P: AsRef<Path>>(root: P) -> Result<Self, tape_store_api::Error> {
         let root = root.as_ref();
         Self::open_read_only_split(root.join(config::META_SUBDIR), root.join(config::BULK_SUBDIR))
     }
@@ -156,15 +156,15 @@ impl TapeStore<SplitStore> {
     pub fn open_read_only_split<P: AsRef<Path>>(
         meta_dir: P,
         bulk_dir: P,
-    ) -> Result<Self, store::Error> {
+    ) -> Result<Self, tape_store_api::Error> {
         let meta = RocksStore::open_read_only_with_cf_config(
             meta_dir.as_ref(),
-            store_rocks::Options::default(),
+            tape_store_rocks::Options::default(),
             config::create_metadata_store_configs(),
         )?;
         let bulk = RocksStore::open_read_only_with_cf_config(
             bulk_dir.as_ref(),
-            store_rocks::Options::default(),
+            tape_store_rocks::Options::default(),
             config::create_bulk_store_configs(),
         )?;
         Ok(Self::new(split_store(meta, bulk)))
@@ -177,7 +177,7 @@ impl TapeStore<SplitStore> {
     pub fn open_secondary<P: AsRef<Path>>(
         primary_root: P,
         secondary_root: P,
-    ) -> Result<Self, store::Error> {
+    ) -> Result<Self, tape_store_api::Error> {
         let primary_root = primary_root.as_ref();
         let secondary_root = secondary_root.as_ref();
         Self::open_secondary_split(
@@ -195,7 +195,7 @@ impl TapeStore<SplitStore> {
         meta_secondary: P,
         bulk_primary: P,
         bulk_secondary: P,
-    ) -> Result<Self, store::Error> {
+    ) -> Result<Self, tape_store_api::Error> {
         std::fs::create_dir_all(meta_secondary.as_ref())?;
         std::fs::create_dir_all(bulk_secondary.as_ref())?;
 
@@ -215,7 +215,7 @@ impl TapeStore<SplitStore> {
     }
 
     /// Sync both secondary instances with their primaries
-    pub fn catch_up_with_primary(&self) -> Result<(), store::Error> {
+    pub fn catch_up_with_primary(&self) -> Result<(), tape_store_api::Error> {
         self.inner.inner().catch_up_with_primary()
     }
 }
@@ -225,7 +225,7 @@ mod tests {
     use super::*;
     use crate::ops::*;
     use crate::types::{ObjectInfo, TapeInfo};
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::types::{EpochNumber, SlotNumber, GroupIndex, SpoolIndex, TapeNumber, TrackNumber};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
@@ -607,7 +607,7 @@ mod tests {
         use std::collections::HashMap;
         use tempfile::tempdir;
 
-        fn seed<S: store::Store>(
+        fn seed<S: tape_store_api::Store>(
             store: &TapeStore<S>,
             tape: Address,
             tracks: &[(Address, CompressedTrack)],
@@ -631,7 +631,7 @@ mod tests {
             }
         }
 
-        fn observe<S: store::Store>(
+        fn observe<S: tape_store_api::Store>(
             store: &TapeStore<S>,
         ) -> (usize, HashMap<Address, CompressedTrack>, HashMap<Address, TapeInfo>) {
             (

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tape_rpc::{Rpc, RpcError};
-use store::Store;
+use tape_store_api::Store;
 use tape_api::compute::PROPOSE_SNAPSHOT_CU;
 use tape_api::instruction::build_propose_snapshot_ix;
 use tape_core::types::EpochNumber;

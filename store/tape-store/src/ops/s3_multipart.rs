@@ -1,6 +1,6 @@
 //! Durable S3 multipart upload operations.
 
-use store::{Column, Store, WriteBatch};
+use tape_store_api::{Column, Store, WriteBatch};
 use tape_crypto::hash::{hash, Hash};
 
 use crate::columns::{S3MultipartPartCol, S3MultipartPartDataCol, S3MultipartUploadCol};
@@ -203,7 +203,7 @@ impl<Backend: Store> MultipartOps for TapeStore<Backend> {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::types::ContentType;
     use tape_crypto::address::Address;
     use tape_crypto::hash::hash;

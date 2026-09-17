@@ -20,9 +20,9 @@ required-features = ["rocks"]
 tape-api = { workspace = true, features = ["wincode"] }
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
-store.workspace = true
-store-memory.workspace = true
-store-rocks = { workspace = true, optional = true }
+tape-store-api.workspace = true
+tape-store-memory.workspace = true
+tape-store-rocks = { workspace = true, optional = true }
 rocksdb = { workspace = true, optional = true }
 wincode = "0.1"
 wincode-derive = "0.1"
@@ -31,7 +31,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 bytemuck.workspace = true
-tape-reel-store.workspace = true
+tape-store-reel.workspace = true
 tempfile = "3.10"
 # The durable enqueue op is awaited, so its tests need a runtime.
 tokio = { workspace = true, features = ["macros", "rt"] }
@@ -39,4 +39,4 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 [features]
 # RocksDB constructors and comparison tests. Opt in explicitly with
 # `cargo test -p tape-store --features rocks`.
-rocks = ["dep:store-rocks", "dep:rocksdb", "tape-reel-store/rocks"]
+rocks = ["dep:tape-store-rocks", "dep:rocksdb", "tape-store-reel/rocks"]

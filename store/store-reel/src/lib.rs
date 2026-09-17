@@ -30,8 +30,8 @@ use reel_core::Store as EngineStoreTrait;
 use serde::Deserialize;
 use tape_store::TapeStore;
 #[cfg(feature = "metrics")]
-use store::get_metrics;
-use store::{
+use tape_store_api::get_metrics;
+use tape_store_api::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
     StoreIter, StoreVolume, Value, WriteBatch,
 };
@@ -565,11 +565,11 @@ fn batch_weight(staged: &WriteBatch) -> (String, usize) {
     let mut written = 0usize;
     for op in staged.iter() {
         match op {
-            store::BatchOp::Put { cf: name, key, value } => {
+            tape_store_api::BatchOp::Put { cf: name, key, value } => {
                 cf = Some(name);
                 written += key.len() + value.len();
             }
-            store::BatchOp::Delete { cf: name, .. } => cf = Some(name),
+            tape_store_api::BatchOp::Delete { cf: name, .. } => cf = Some(name),
         }
     }
     (cf.unwrap_or("default").to_string(), written)
@@ -579,8 +579,8 @@ fn batch(batch: WriteBatch) -> reel_core::WriteBatch {
     let mut crossed = reel_core::WriteBatch::new();
     for op in batch {
         match op {
-            store::BatchOp::Put { cf, key, value } => crossed.put_named(cf.into(), key, value),
-            store::BatchOp::Delete { cf, key } => crossed.delete_named(cf.into(), key),
+            tape_store_api::BatchOp::Put { cf, key, value } => crossed.put_named(cf.into(), key, value),
+            tape_store_api::BatchOp::Delete { cf, key } => crossed.delete_named(cf.into(), key),
         }
     }
     crossed
@@ -792,7 +792,7 @@ impl Store for ReelStore {
         prefix: &[u8],
         from: Option<&[u8]>,
         limit: usize,
-    ) -> StoreResult<(Vec<store::KeyValue>, Option<Vec<u8>>)> {
+    ) -> StoreResult<(Vec<tape_store_api::KeyValue>, Option<Vec<u8>>)> {
         let (rows, next) =
             EngineStoreTrait::sweep_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)?;
         let mut owned = Vec::with_capacity(rows.len());
@@ -807,7 +807,7 @@ impl Store for ReelStore {
         cf: &str,
         from: Option<&[u8]>,
         limit: usize,
-    ) -> StoreResult<(Vec<store::KeyValue>, Option<Vec<u8>>)> {
+    ) -> StoreResult<(Vec<tape_store_api::KeyValue>, Option<Vec<u8>>)> {
         let (rows, next) = EngineStoreTrait::sweep(&self.inner, cf, from, limit).map_err(crossed)?;
         let mut owned = Vec::with_capacity(rows.len());
         for (key, value) in rows {

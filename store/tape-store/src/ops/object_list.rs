@@ -1,6 +1,6 @@
 //! Per-bucket object listing index for S3-style `ListObjects`.
 
-use store::{Column, Direction, Store};
+use tape_store_api::{Column, Direction, Store};
 use tape_api::program::tapedrive::track_pda;
 use tape_crypto::address::Address;
 
@@ -206,7 +206,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::types::{ContentType, EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::Hash;

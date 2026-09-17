@@ -1,6 +1,6 @@
 //! S3 write-authorization credential column family.
 
-use store::Column;
+use tape_store_api::Column;
 
 use crate::types::Credential;
 

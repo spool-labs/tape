@@ -1,6 +1,6 @@
 //! Per-bucket object listing index column family.
 
-use store::Column;
+use tape_store_api::Column;
 
 use crate::types::{ObjectListEntry, ObjectListKey};
 

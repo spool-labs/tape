@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tape_rpc::{Rpc, RpcError};
-use store::Store;
+use tape_store_api::Store;
 use tape_api::instruction::build_finalize_group_ix;
 use tape_core::cert::{ASSIGNMENT_TREE_HEIGHT, AssignmentGroupPayload};
 use tape_core::types::EpochNumber;

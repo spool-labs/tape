@@ -41,9 +41,9 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, N
     );
     let opened_at = Instant::now();
 
-    let store = tape_reel_store::open_node_store(
+    let store = tape_store_reel::open_node_store(
         root,
-        tape_reel_store::NodeStoreOptions {
+        tape_store_reel::NodeStoreOptions {
             compaction_mbps: config.store.compaction_mb_per_sec,
             sync_bytes: config.store.sync_bytes,
             backend: config.store.io_backend,
@@ -186,7 +186,7 @@ fn init_metrics(config: &NodeConfig) {
     #[cfg(feature = "metrics")]
     if config.metrics.enabled {
         tape_metrics::MetricsRegistry::init();
-        store::metrics::init_metrics();
+        tape_store_api::metrics::init_metrics();
         info!("prometheus metrics initialized");
         return;
     }

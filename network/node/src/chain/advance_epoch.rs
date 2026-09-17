@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tape_rpc::{Rpc, RpcError};
-use store::Store;
+use tape_store_api::Store;
 use tape_api::compute::ADVANCE_EPOCH_CU;
 use tape_api::instruction::build_advance_epoch_ix;
 use tape_crypto::tx::Txid;

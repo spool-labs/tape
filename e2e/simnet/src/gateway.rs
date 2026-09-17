@@ -11,7 +11,7 @@ use rpc_litesvm::LiteSvmRpc;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use tape_reel_store::ReelStore;
+use tape_store_reel::ReelStore;
 use tape_blacklist::subscription::Subscription;
 use tape_core::bls::BlsPrivateKey;
 use tape_gateway::admission::{AdmitAll, Admission};
@@ -374,7 +374,7 @@ impl TestGateway {
     }
 
     async fn build_context(&self) -> Result<TestGatewayContext> {
-        let store = tape_reel_store::open_harness_store(self.store_dir.path())
+        let store = tape_store_reel::open_harness_store(self.store_dir.path())
             .context("open gateway store")?;
         let rpc = RpcClient::from_rpc(self.rpc.clone());
         let peer_manager = Arc::new(PeerManager::new());

@@ -1,4 +1,4 @@
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::tapedrive::{blacklist_pda, history_pda, track_pda, SYSTEM_ADDRESS};
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::object::object_etag;
@@ -524,7 +524,7 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;

@@ -2,7 +2,7 @@
 
 use std::fmt::Display;
 
-use store::Store;
+use tape_store_api::Store;
 use tape_blacklist::blacklists::Changes;
 use tape_crypto::address::Address;
 use tape_store::TapeStore;
@@ -66,7 +66,7 @@ fn store_error(error: impl Display) -> GatewayCacheError {
 mod tests {
     use std::sync::Arc;
 
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::BlacklistEntry;

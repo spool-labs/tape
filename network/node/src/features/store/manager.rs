@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent};
 use tape_core::track::data::BlobData;
@@ -33,7 +33,7 @@ use crate::features::store::util::is_responsible_for_group;
 const MAINTAIN_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A maintenance pass running on the blocking pool
-pub type MaintenancePass = JoinHandle<store::Result<()>>;
+pub type MaintenancePass = JoinHandle<tape_store_api::Result<()>>;
 
 /// The timer a store manager drives its maintenance from
 ///
@@ -80,7 +80,7 @@ pub async fn settle_maintenance(pass: Option<MaintenancePass>) {
 }
 
 /// Space is best effort: a failed pass is retried on the next tick and kills nothing
-fn settle(joined: Result<store::Result<()>, JoinError>) {
+fn settle(joined: Result<tape_store_api::Result<()>, JoinError>) {
     match joined {
         Ok(Ok(())) => {}
         Ok(Err(error)) => warn!(%error, "store maintenance pass failed"),
@@ -229,7 +229,7 @@ fn persist_raw_tracks<Db: Store>(
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
     use tape_core::spooler::GroupIndex;
     use tape_core::track::data::BlobData;

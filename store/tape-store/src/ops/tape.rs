@@ -1,6 +1,6 @@
 //! TapeInfo operations for tape metadata
 
-use store::Store;
+use tape_store_api::Store;
 use tape_crypto::address::Address;
 
 use crate::columns::TapeCol;
@@ -54,7 +54,7 @@ impl<S: Store> TapeOps for TapeStore<S> {
 mod tests {
     use super::*;
     use tape_core::types::{EpochNumber, TapeNumber, TrackNumber};
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_crypto::Hash;
 
     fn test_store() -> TapeStore<MemoryStore> {

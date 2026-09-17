@@ -1,6 +1,6 @@
 //! Track column family for canonical compressed-track metadata.
 
-use store::Column;
+use tape_store_api::Column;
 use tape_crypto::address::Address;
 use tape_core::track::types::PackedTrack;
 

@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use store::{Column, Direction, Store, WriteBatch};
+use tape_store_api::{Column, Direction, Store, WriteBatch};
 use tape_crypto::address::Address;
 
 use crate::columns::{S3PendingWriteCol, S3PendingWriteDataCol};
@@ -294,7 +294,7 @@ impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::types::ContentType;
     use tape_crypto::hash::hash;
 

@@ -1,6 +1,6 @@
 //! Object metadata operations for named object reverse lookup.
 
-use store::Store;
+use tape_store_api::Store;
 use tape_crypto::address::Address;
 
 use crate::columns::ObjectMetadataCol;
@@ -38,7 +38,7 @@ impl<S: Store> ObjectMetadataOps for TapeStore<S> {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::types::ContentType;
 
     use super::*;

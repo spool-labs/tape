@@ -18,7 +18,7 @@ use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use tape_peer_tls::{build_server_config_with_peer_auth, cert_san_ips, install_default_provider};
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_protocol::Api;
 use tape_protocol::api::routes as api_routes;
 use tape_protocol::api::{REQUEST_ID_HEADER, sanitize_request_id};

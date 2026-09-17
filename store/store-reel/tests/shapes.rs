@@ -5,7 +5,7 @@
 //! the name of the shape it asked for, which is worse than no number at all.
 
 use reel::MapShape;
-use tape_reel_store::{bench_config, ReelStore, TAPE_COLUMNS};
+use tape_store_reel::{bench_config, ReelStore, TAPE_COLUMNS};
 use tempfile::TempDir;
 
 /// The segment size a bench arm opens with
@@ -47,12 +47,12 @@ fn track_data_is_open() {
 #[test]
 fn node_opens() {
     let dir = TempDir::new().expect("dir");
-    let store = tape_reel_store::open_node_store(
+    let store = tape_store_reel::open_node_store(
         dir.path().join("volume"),
-        tape_reel_store::NodeStoreOptions {
+        tape_store_reel::NodeStoreOptions {
             sync_bytes: 8 * 1024 * 1024,
             backend: reel::IoBackend::Posix,
-            ..tape_reel_store::NodeStoreOptions::default()
+            ..tape_store_reel::NodeStoreOptions::default()
         },
     )
     .expect("open the node store");
@@ -77,7 +77,7 @@ fn node_opens() {
 // a node gets the shipped sync, backend and mapping knobs unasked
 #[test]
 fn shipped_defaults() {
-    let config = tape_reel_store::node_config(tape_reel_store::NodeStoreOptions::default());
+    let config = tape_store_reel::node_config(tape_store_reel::NodeStoreOptions::default());
 
     assert_eq!(
         config.sync,
@@ -109,9 +109,9 @@ fn probe_follows() {
         (reel::IoBackend::Uring, reel::PointReads::Probed),
         (reel::IoBackend::UringDirect, reel::PointReads::Queued),
     ] {
-        let config = tape_reel_store::node_config(tape_reel_store::NodeStoreOptions {
+        let config = tape_store_reel::node_config(tape_store_reel::NodeStoreOptions {
             backend,
-            ..tape_reel_store::NodeStoreOptions::default()
+            ..tape_store_reel::NodeStoreOptions::default()
         });
         assert_eq!(config.point_reads, wanted, "{backend:?}");
     }
@@ -121,10 +121,10 @@ fn probe_follows() {
 // leave a gibibyte on disk before the first slice
 #[test]
 fn small_reservation() {
-    let fleet = tape_reel_store::node_config(tape_reel_store::NodeStoreOptions::default());
-    let small = tape_reel_store::node_config(tape_reel_store::NodeStoreOptions {
-        reserve: tape_reel_store::Reserve::Small,
-        ..tape_reel_store::NodeStoreOptions::default()
+    let fleet = tape_store_reel::node_config(tape_store_reel::NodeStoreOptions::default());
+    let small = tape_store_reel::node_config(tape_store_reel::NodeStoreOptions {
+        reserve: tape_store_reel::Reserve::Small,
+        ..tape_store_reel::NodeStoreOptions::default()
     });
 
     assert_eq!(fleet.preallocate, reel::Preallocate::Full);
@@ -156,7 +156,7 @@ fn small_claims_little() {
 
     let dir = TempDir::new().expect("dir");
     let root = dir.path().join("volume");
-    let store = tape_reel_store::open_harness_store(&root).expect("open the harness store");
+    let store = tape_store_reel::open_harness_store(&root).expect("open the harness store");
     drop(store);
 
     let mut claimed = 0u64;

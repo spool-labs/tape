@@ -1,6 +1,6 @@
 //! ObjectInfo operations for tracked object metadata
 
-use store::Store;
+use tape_store_api::Store;
 use tape_crypto::address::Address;
 
 use crate::columns::ObjectInfoCol;
@@ -55,7 +55,7 @@ mod tests {
     use super::*;
     use crate::types::SystemObjectKind;
     use tape_core::types::{EpochNumber, SlotNumber};
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())

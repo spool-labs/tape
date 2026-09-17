@@ -1,6 +1,6 @@
 //! Write-authorization policy ruleset column family.
 
-use store::Column;
+use tape_store_api::Column;
 
 use crate::types::{PolicyRule, PolicyRuleKey};
 

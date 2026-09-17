@@ -1,6 +1,6 @@
 //! Track-data column family for locally stored track payloads.
 
-use store::Column;
+use tape_store_api::Column;
 use tape_crypto::address::Address;
 use tape_core::track::data::BlobData;
 

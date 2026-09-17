@@ -1,6 +1,6 @@
 //! Append-only write-authorization audit log operations.
 
-use store::{Column, Direction, Store};
+use tape_store_api::{Column, Direction, Store};
 
 use crate::columns::AuditLogCol;
 use crate::error::{Result, TapeStoreError};
@@ -90,7 +90,7 @@ impl<Backend: Store> AuditOps for TapeStore<Backend> {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_crypto::address::Address;
 
     use super::*;

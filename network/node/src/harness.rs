@@ -8,7 +8,7 @@ use tape_rpc_client::RpcClient;
 use tape_rpc::Rpc;
 use rpc_litesvm::LiteSvmRpc;
 use tape_crypto::Hash;
-use store_memory::MemoryStore;
+use tape_store_memory::MemoryStore;
 use tape_chain_harness::{
     ChainHarness, ChainHarnessBuilder, HarnessNode, HarnessNodeSpec, IntoEpochNumber,
 };

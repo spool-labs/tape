@@ -3,7 +3,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::spooler::GroupIndex;

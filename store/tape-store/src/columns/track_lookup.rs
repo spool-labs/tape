@@ -1,7 +1,7 @@
 //! Track lookup index for tape-local ordered scans.
 
 use crate::types::{TrackLookupKey, UnitKey};
-use store::Column;
+use tape_store_api::Column;
 
 /// Tape-local ordered track lookup index.
 ///

@@ -4,7 +4,7 @@
 //! plus the confirmed pending overlay to the track the decode/read path consumes.
 //! Shared by the S3 listener and the site route.
 
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::ContentType;
 use tape_crypto::Hash;
@@ -207,7 +207,7 @@ fn resolve_readable_or<Db: Store>(
 mod tests {
     use std::sync::Arc;
 
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::track::types::TrackKind;
     use tape_core::types::{SlotNumber, StorageUnits, TrackNumber};
     use tape_store::types::ObjectListEntry;

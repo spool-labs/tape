@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use tokio::task::yield_now;
 
-use store::Store;
+use tape_store_api::Store;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
@@ -412,7 +412,7 @@ impl From<CleanupStats> for GcSweepStats {
 mod tests {
     use std::collections::HashSet;
 
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};

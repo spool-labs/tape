@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tape_rpc::Rpc;
-use store::{Column, Store, StoreVolume};
+use tape_store_api::{Column, Store, StoreVolume};
 use tape_core::bft::has_honest_signer;
 use tape_core::challenge::schedule::{
     ATTESTATION_WINDOW_SLOTS, CONFIRMATION_SLOTS, PROOF_DEADLINE_SLOTS, SAMPLE_LOOKBACK_SLOTS,

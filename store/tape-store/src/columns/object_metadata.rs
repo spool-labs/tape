@@ -1,6 +1,6 @@
 //! Object metadata reverse lookup column family.
 
-use store::Column;
+use tape_store_api::Column;
 use tape_crypto::address::Address;
 
 use crate::types::ObjectMetadata;

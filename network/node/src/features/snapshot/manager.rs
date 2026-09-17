@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
 use tape_blocks::ParsedInstruction;
 use tape_core::system::{EpochPhase, VoteKind};

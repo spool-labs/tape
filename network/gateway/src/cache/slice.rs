@@ -3,7 +3,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use store::{Column, Direction, Store};
+use tape_store_api::{Column, Direction, Store};
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
@@ -297,7 +297,7 @@ fn store_error(error: impl Display) -> GatewayCacheError {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use std::convert::Infallible;
 
     use tape_blacklist::batch::{render, render_first};

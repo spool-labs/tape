@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_forwarded::caller::resolve_caller_ip;
 use tape_forwarded::cidr::CidrBlock;
 use tape_node::features::http::forwarded::peer_ip;

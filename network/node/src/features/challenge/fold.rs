@@ -1,4 +1,4 @@
-use store::Store;
+use tape_store_api::Store;
 use tape_core::challenge::record::RECENT_ROUNDS;
 use tape_core::challenge::{Fold, PeerRecord};
 use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex};
@@ -78,7 +78,7 @@ pub fn holds_spool(state: &ProtocolState, peer: Address, spool: SpoolIndex) -> b
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_store::TapeStore;
 
     use super::*;

@@ -22,7 +22,7 @@ use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, Options, SliceTr
 /// # Examples
 ///
 /// ```
-/// use store_rocks::{Cache, ColumnFamilyConfig};
+/// use tape_store_rocks::{Cache, ColumnFamilyConfig};
 ///
 /// // Large values with BlobDB
 /// let config = ColumnFamilyConfig::new("blobs")
@@ -49,7 +49,7 @@ impl ColumnFamilyConfig {
     ///
     /// # Example
     /// ```
-    /// use store_rocks::ColumnFamilyConfig;
+    /// use tape_store_rocks::ColumnFamilyConfig;
     ///
     /// let config = ColumnFamilyConfig::new("my_column");
     /// ```
@@ -85,7 +85,7 @@ impl ColumnFamilyConfig {
     ///
     /// # Example
     /// ```
-    /// use store_rocks::{Cache, ColumnFamilyConfig};
+    /// use tape_store_rocks::{Cache, ColumnFamilyConfig};
     ///
     /// let cache = Cache::new_lru_cache(64 * 1024 * 1024);
     /// let config = ColumnFamilyConfig::new("metadata")
@@ -124,7 +124,7 @@ impl ColumnFamilyConfig {
     ///
     /// # Example
     /// ```
-    /// use store_rocks::ColumnFamilyConfig;
+    /// use tape_store_rocks::ColumnFamilyConfig;
     ///
     /// // Store values larger than 1 MiB in blob files
     /// let config = ColumnFamilyConfig::new("large_blobs")
@@ -154,7 +154,7 @@ impl ColumnFamilyConfig {
     ///
     /// # Example
     /// ```
-    /// use store_rocks::ColumnFamilyConfig;
+    /// use tape_store_rocks::ColumnFamilyConfig;
     ///
     /// // Keys are (user_id: u64, timestamp: u64)
     /// // Use 8-byte prefix for range queries by user_id
@@ -177,7 +177,7 @@ impl ColumnFamilyConfig {
     ///
     /// # Example
     /// ```
-    /// use store_rocks::ColumnFamilyConfig;
+    /// use tape_store_rocks::ColumnFamilyConfig;
     ///
     /// let config = ColumnFamilyConfig::new("custom")
     ///     .with_options(|opts| {
@@ -201,7 +201,7 @@ impl ColumnFamilyConfig {
     ///
     /// # Example
     /// ```
-    /// use store_rocks::{Cache, ColumnFamilyConfig};
+    /// use tape_store_rocks::{Cache, ColumnFamilyConfig};
     ///
     /// let cache = Cache::new_lru_cache(64 * 1024 * 1024);
     /// let descriptor = ColumnFamilyConfig::new("my_column")

@@ -1,6 +1,6 @@
 //! Write-authorization policy-engine operations
 
-use store::Store;
+use tape_store_api::Store;
 use tape_crypto::address::Address;
 
 use crate::columns::PolicyRuleCol;
@@ -109,7 +109,7 @@ impl<Backend: Store> PolicyOps for TapeStore<Backend> {
 
 #[cfg(test)]
 mod tests {
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
 
     use super::*;
 

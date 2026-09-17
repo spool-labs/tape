@@ -1,6 +1,6 @@
 //! Queued S3 write column families.
 
-use store::Column;
+use tape_store_api::Column;
 
 use crate::types::{PendingWrite, PendingWriteChunk, PendingWriteChunkKey, PendingWriteKey};
 

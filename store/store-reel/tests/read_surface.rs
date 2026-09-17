@@ -5,8 +5,8 @@
 //! to answer differently, so each case asks both and compares.
 
 use reel::sync::tension::block_on;
-use tape_reel_store::{bench_config, ReelStore, TAPE_COLUMNS};
-use store::{Store, Value};
+use tape_store_reel::{bench_config, ReelStore, TAPE_COLUMNS};
+use tape_store_api::{Store, Value};
 use tempfile::TempDir;
 
 /// Values as plain vectors, so an expectation can be written as bytes
@@ -197,7 +197,7 @@ fn sweep_covers() {
 #[cfg(feature = "rocks")]
 mod rocks {
     use super::*;
-    use tape_reel_store::MetaBulkStore;
+    use tape_store_reel::MetaBulkStore;
 
     /// A metadata family, which declares no key width
     const META_CF: &str = "tape";
@@ -230,7 +230,7 @@ mod rocks {
             Some(payload(1)),
         );
 
-        let mut batch = store::WriteBatch::new();
+        let mut batch = tape_store_api::WriteBatch::new();
         let second = bulk_key(2);
         batch.put(BULK_CF, &second, &payload(2));
         batch.put(META_CF, &meta_key(2), &payload(2));

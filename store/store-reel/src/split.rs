@@ -5,11 +5,11 @@
 
 use std::path::Path;
 
-use store::{
+use tape_store_api::{
     BatchOp, CfDiskUsage, Direction, DiskVolume, Result, Store, StoreIter, StoreVolume, Value,
     WriteBatch,
 };
-use store_rocks::RocksStore;
+use tape_store_rocks::RocksStore;
 use tape_store::config::{BULK_COLUMN_FAMILIES, META_SUBDIR};
 
 use crate::{bench_cache, bench_db_options, bench_metadata_configs, ReelStore};
@@ -168,7 +168,7 @@ impl Store for MetaBulkStore {
         cf: &str,
         from: Option<&[u8]>,
         limit: usize,
-    ) -> Result<(Vec<store::KeyValue>, Option<Vec<u8>>)> {
+    ) -> Result<(Vec<tape_store_api::KeyValue>, Option<Vec<u8>>)> {
         self.route(cf).sweep(cf, from, limit)
     }
 
@@ -178,7 +178,7 @@ impl Store for MetaBulkStore {
         prefix: &[u8],
         from: Option<&[u8]>,
         limit: usize,
-    ) -> Result<(Vec<store::KeyValue>, Option<Vec<u8>>)> {
+    ) -> Result<(Vec<tape_store_api::KeyValue>, Option<Vec<u8>>)> {
         self.route(cf).sweep_prefix(cf, prefix, from, limit)
     }
 

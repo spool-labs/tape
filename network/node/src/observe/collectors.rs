@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::prelude::NodeStatus;
 use tape_metrics::prometheus::core::{Collector, Desc};
 use tape_metrics::prometheus::proto::MetricFamily;

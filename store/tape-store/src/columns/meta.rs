@@ -6,7 +6,7 @@
 //! - chain_epoch: EpochNumber
 //! - node_address: Address
 
-use store::Column;
+use tape_store_api::Column;
 
 /// Column family for node metadata
 ///

@@ -5,7 +5,7 @@ use axum::extract::{Query, State};
 use axum::Json;
 use tape_rpc::Rpc;
 use serde::Deserialize;
-use store::Store;
+use tape_store_api::Store;
 use tape_observe_api::AtlasRecent;
 use tape_protocol::Api;
 

@@ -1,6 +1,6 @@
 //! Snapshot coordination columns.
 
-use store::Column;
+use tape_store_api::Column;
 
 use crate::types::{SnapshotArtifact, SnapshotArtifactKey};
 

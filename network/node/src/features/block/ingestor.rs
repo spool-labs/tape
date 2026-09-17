@@ -8,7 +8,7 @@ use tracing::{debug, error, info, warn};
 
 use tape_rpc::skip::slots_to_fetch;
 use tape_rpc::{Rpc, RpcError};
-use store::Store;
+use tape_store_api::Store;
 use tape_blocks::ParsedInstruction;
 use tape_core::types::SlotNumber;
 use tape_crypto::Hash;

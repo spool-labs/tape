@@ -7,7 +7,7 @@ use axum::Json;
 use tracing::debug;
 
 use tape_rpc::Rpc;
-use store::{DiskVolume, Store, StoreVolume};
+use tape_store_api::{DiskVolume, Store, StoreVolume};
 use tape_protocol::{Api, api::{NodeStats, VolumeStats}};
 use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 

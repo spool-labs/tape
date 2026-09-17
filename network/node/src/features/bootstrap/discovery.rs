@@ -4,7 +4,7 @@
 //! for either `current - 1` or `current - 2` is `Finalized` on-chain.
 
 use tape_rpc::{Rpc, RpcError};
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
 use tape_store::ops::MetaOps;

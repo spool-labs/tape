@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
 use tape_protocol::Api;
 use tape_crypto::Address;
@@ -270,7 +270,7 @@ fn prune_handed_off_records<Db: Store, Cluster: Api, Blockchain: Rpc>(
 mod tests {
     use std::time::Duration;
 
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::types::EpochNumber;
     use tape_store::{TapeStore, ops::MetaOps};
     use tokio_util::sync::CancellationToken;

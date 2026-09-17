@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use futures::future::join_all;
 use tape_rpc::{Rpc, RpcError};
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::ContentType;
 use tape_crypto::address::Address;
 use tape_node::context::NodeContext;

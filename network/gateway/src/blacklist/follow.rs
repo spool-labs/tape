@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt, TryStreamExt};
 use tape_rpc::Rpc;
-use store::Store;
+use tape_store_api::Store;
 use tape_blacklist::blacklists::Changes;
 use tape_blacklist::expiry::is_near_expiry;
 use tape_blacklist::extract::{Change, change};

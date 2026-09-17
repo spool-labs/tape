@@ -6,7 +6,7 @@ use crate::columns::EventLogCol;
 use crate::error::{Result, TapeStoreError};
 use crate::types::keys::EventLogKey;
 use crate::TapeStore;
-use store::{Column, Store};
+use tape_store_api::{Column, Store};
 use serde::{Deserialize, Serialize};
 use tape_core::snapshot::replay::{ReplayRecord, SnapshotEntry};
 use tape_core::types::{EpochNumber, SlotNumber};
@@ -157,7 +157,7 @@ mod tests {
     use tape_core::system::NodePreferences;
     use tape_core::types::coin::TAPE;
     use tape_core::types::NodeId;
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
     use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};

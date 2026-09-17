@@ -1,5 +1,5 @@
 [package]
-name = "store"
+name = "tape-store-api"
 version.workspace = true
 edition.workspace = true
 description = "A thin typed key-value store abstraction"
@@ -19,4 +19,4 @@ wincode = "0.1"
 tape-metrics = { workspace = true, optional = true }
 
 [dev-dependencies]
-store-memory = { path = "../store-memory" }
+tape-store-memory = { path = "../store-memory" }

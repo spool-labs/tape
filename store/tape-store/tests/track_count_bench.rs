@@ -16,9 +16,9 @@
 
 use std::time::{Duration, Instant};
 
-use tape_reel_store::{scaled, BenchArm, MetaBulkStore, ReelStore};
-use store::{Column, Direction};
-use store_rocks::SplitStore;
+use tape_store_reel::{scaled, BenchArm, MetaBulkStore, ReelStore};
+use tape_store_api::{Column, Direction};
+use tape_store_rocks::SplitStore;
 use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
 use tape_core::types::{GroupIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;

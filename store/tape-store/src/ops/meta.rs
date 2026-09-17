@@ -11,7 +11,7 @@
 use crate::columns::{GcCol, MetaCol, SyncCursor, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
 use crate::TapeStore;
-use store::Store;
+use tape_store_api::Store;
 use tape_core::types::{EpochNumber, NodeId, SlotNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -308,7 +308,7 @@ impl<S: Store> MetaOps for TapeStore<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use store_memory::MemoryStore;
+    use tape_store_memory::MemoryStore;
     use tape_core::bls::BlsSignature;
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
 

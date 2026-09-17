@@ -8,8 +8,8 @@ use nix::sys::signal::Signal;
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use tape_reel_store::Reserve;
-use store::{Column, Store};
+use tape_store_reel::Reserve;
+use tape_store_api::{Column, Store};
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::EpochNumber;
 use tape_sdk::keys::helpers::load_solana_keypair;
@@ -434,17 +434,17 @@ fn clone_keypair(keypair: &Keypair) -> Keypair {
 fn lose_slices(store_path: &std::path::Path, one_in: usize) -> Result<usize> {
     // The stopped node's own volume, opened the way the node opens it, down to
     // the reservation the generated config gives it.
-    let store = tape_reel_store::open_node_store(
+    let store = tape_store_reel::open_node_store(
         store_path,
-        tape_reel_store::NodeStoreOptions {
+        tape_store_reel::NodeStoreOptions {
             reserve: Reserve::Small,
-            ..tape_reel_store::NodeStoreOptions::default()
+            ..tape_store_reel::NodeStoreOptions::default()
         },
     )
     .context("open stopped node store")?;
     let raw = store.inner().inner();
 
-    let mut batch = store::WriteBatch::new();
+    let mut batch = tape_store_api::WriteBatch::new();
     let mut dropped = 0usize;
     for (index, key) in raw.iter_keys_prefix(SliceCol::CF_NAME, &[])?.into_iter().enumerate() {
         if index % one_in != 0 {

@@ -7,8 +7,8 @@
 //! the footprint assertion below fails.
 
 use reel::{ByteCount, CompactRate, IoBackend, Preallocate, ReelConfig, SyncPolicy, ThreadBudget};
-use tape_reel_store::{ReelStore, TAPE_COLUMNS};
-use store::{Column, Store};
+use tape_store_reel::{ReelStore, TAPE_COLUMNS};
+use tape_store_api::{Column, Store};
 use tape_store::columns::SliceCol;
 use tempfile::TempDir;
 
