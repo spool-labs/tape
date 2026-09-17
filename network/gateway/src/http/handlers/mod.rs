@@ -10,7 +10,6 @@ pub(crate) mod health;
 pub(crate) mod object;
 pub(crate) mod resolve;
 pub(crate) mod s3;
-pub(crate) mod share;
 pub(crate) mod site;
 pub(crate) mod track;
 

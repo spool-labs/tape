@@ -36,8 +36,7 @@ impl<T> SampleSets<T> {
         self.backdated.load(Ordering::Acquire)
     }
 
-    /// Called when a row lands below the tip, which is the only write that can
-    /// join a set already built.
+    /// Called after a backdated row lands; bumping first would stamp a stale set fresh
     pub fn backdated_write(&self) {
         self.backdated.fetch_add(1, Ordering::Release);
     }
@@ -54,5 +53,40 @@ impl<T> SampleSets<T> {
             }
         }
         held.insert(key, (built_at, set));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key() -> Key {
+        (EpochNumber(3), RoundNumber(1), GroupIndex(0))
+    }
+
+    // a set stamped before a backdated row lands is not served once it has
+    #[test]
+    fn backdated_row_invalidates() {
+        let sets: SampleSets<u64> = SampleSets::default();
+
+        let built_at = sets.generation();
+        sets.put(key(), built_at, Arc::new(7));
+        assert_eq!(sets.get(&key()).as_deref(), Some(&7));
+
+        sets.backdated_write();
+
+        assert!(sets.get(&key()).is_none());
+    }
+
+    // a set built after the row landed stands, because the scan already saw it
+    #[test]
+    fn later_set_stands() {
+        let sets: SampleSets<u64> = SampleSets::default();
+        sets.backdated_write();
+
+        let built_at = sets.generation();
+        sets.put(key(), built_at, Arc::new(7));
+
+        assert_eq!(sets.get(&key()).as_deref(), Some(&7));
     }
 }

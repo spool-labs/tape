@@ -3,7 +3,7 @@ use tape_api::event::{
     AssignmentFinalized, CommissionClaimed, CommitteeCreated, CommitteeResized,
     EpochAdvanced, EpochCommitted, EpochCreated, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
-    ShareNonceAdvanced, StakeUnlockRequested, StakeWithdrawn, TapeExtended, TapeReserved,
+    StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeExtended, TapeReserved,
     TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
@@ -14,7 +14,7 @@ use tape_core::staking::RateSpan;
 use tape_core::bls::BlsPubkey;
 use tape_core::system::{BlacklistEntry, NodePreferences};
 use tape_core::track::data::{track_key, BlobData};
-use tape_core::track::types::{CompressedTrackProof, TrackVisibility};
+use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -102,7 +102,6 @@ pub enum RawInstruction {
     TrackWrite {
         authority: Address,
         key: Hash,
-        visibility: TrackVisibility,
         object: Option<ReplayTrackObject>,
         value: BlobData,
     },
@@ -120,15 +119,12 @@ pub enum RawInstruction {
         owner: Address,
         tape: Address,
     },
+    DestroyTape {
+        owner: Address,
+        tape: Address,
+    },
     ExtendTape {
         payer: Address,
-        tape: Address,
-    },
-    SetTapeDelegate {
-        tape: Address,
-        delegate: Address,
-    },
-    AdvanceShareNonce {
         tape: Address,
     },
     RegisterNode {
@@ -269,7 +265,6 @@ pub enum ParsedInstruction {
         authority: Address,
         track: Address,
         key: Hash,
-        visibility: TrackVisibility,
         object: Option<ReplayTrackObject>,
         value: BlobData,
         event: TrackWritten,
@@ -294,18 +289,15 @@ pub enum ParsedInstruction {
         tape: Address,
         event: TapeReserved,
     },
+    DestroyTape {
+        owner: Address,
+        tape: Address,
+        event: TapeDestroyed,
+    },
     ExtendTape {
         payer: Address,
         tape: Address,
         event: TapeExtended,
-    },
-    SetTapeDelegate {
-        tape: Address,
-        delegate: Address,
-    },
-    AdvanceShareNonce {
-        tape: Address,
-        event: ShareNonceAdvanced,
     },
 
     // Node management
@@ -515,10 +507,7 @@ pub fn parse_raw_instruction(
 
         TapeInstruction::TrackWrite => {
             let authority = get_account(1)?;
-            let (header, blob) = ix::parse_track_write(&ix_data[1..])
-                .map_err(|e| ParseError::Deserialization(e.to_string()))?;
-            let visibility = header
-                .visibility()
+            let (_header, blob) = ix::parse_track_write(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
             let key = track_key(blob.name(), &blob.data);
             let object = blob.object.map(|object| ReplayTrackObject {
@@ -533,7 +522,6 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::TrackWrite {
                 authority,
                 key,
-                visibility,
                 object,
                 value,
             }))
@@ -567,33 +555,16 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::ReserveTape { owner, tape }))
         }
 
+        TapeInstruction::DestroyTape => {
+            let owner = get_account(0)?;
+            let tape = get_account(2)?;
+            Ok(Some(RawInstruction::DestroyTape { owner, tape }))
+        }
+
         TapeInstruction::ExtendTapeCapacity | TapeInstruction::ExtendTapeExpiry => {
             let payer = get_account(1)?;
             let tape = get_account(3)?;
             Ok(Some(RawInstruction::ExtendTape { payer, tape }))
-        }
-
-        TapeInstruction::SetTapeDelegate => {
-            let args = ix::SetTapeDelegate::try_from_bytes(&ix_data[1..])
-                .map_err(|e| ParseError::Deserialization(format!("set_tape_delegate: {e:?}")))?;
-            let tape = get_account(2)?;
-            Ok(Some(RawInstruction::SetTapeDelegate {
-                tape,
-                delegate: args.delegate,
-            }))
-        }
-
-        TapeInstruction::RevokeTapeDelegate => {
-            let tape = get_account(2)?;
-            Ok(Some(RawInstruction::SetTapeDelegate {
-                tape,
-                delegate: Address::default(),
-            }))
-        }
-
-        TapeInstruction::AdvanceShareNonce => {
-            let tape = get_account(2)?;
-            Ok(Some(RawInstruction::AdvanceShareNonce { tape }))
         }
 
         TapeInstruction::RegisterNode => {
@@ -732,7 +703,9 @@ pub fn parse_raw_instruction(
         | TapeInstruction::SetSpoolGroups
         | TapeInstruction::SetEpochDuration
         | TapeInstruction::SplitPoolStake
-        | TapeInstruction::MergePoolStake => Ok(None),
+        | TapeInstruction::MergePoolStake
+        | TapeInstruction::SetTapeDelegate
+        | TapeInstruction::RevokeTapeDelegate => Ok(None),
     }
 }
 
@@ -990,4 +963,3 @@ mod tests {
         }
     }
 }
-

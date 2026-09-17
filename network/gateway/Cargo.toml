@@ -9,10 +9,6 @@ name = "tape-gateway"
 path = "src/bin/gateway/main.rs"
 
 [dependencies]
-tape-blacklist = { workspace = true }
-tape-rack = { workspace = true }
-tape-retry = { workspace = true }
-tape-forwarded = { workspace = true }
 tape-core = { workspace = true, features = ["wincode"] }
 tape-api = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true }

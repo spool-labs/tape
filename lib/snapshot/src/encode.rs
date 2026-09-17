@@ -6,7 +6,7 @@ use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobEncoding;
-use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
 use tape_core::types::{ChunkNumber, EpochNumber, StorageUnits, StripeCount, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
@@ -88,7 +88,6 @@ pub fn encode_snapshot(
                 key: snapshot_chunk_key(epoch, group, chunk),
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
                 size: built.blob.size,
                 group,
                 value_hash: built.blob.get_hash(),

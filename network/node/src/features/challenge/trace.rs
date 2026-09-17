@@ -151,7 +151,17 @@ impl TraceRing {
         block: Hash,
     ) {
         let mut traces = self.traces.lock().expect("trace ring");
-        if traces.iter().any(|trace| trace.matches(epoch, round, group)) {
+        if let Some(trace) = traces.iter_mut().find(|trace| trace.matches(epoch, round, group)) {
+            // Only a round whose block rolled re-opens, on the block that replaced
+            // it: the draw moved with the block, so the trace starts over on it.
+            if trace.close == TraceClose::Unconfirmed && trace.block != block {
+                trace.block = block;
+                trace.anchor_slot = anchor_slot;
+                trace.opened_ms = now_ms();
+                trace.close = TraceClose::Open;
+                trace.nodes.clear();
+                trace.marks.clear();
+            }
             return;
         }
 
@@ -260,6 +270,22 @@ impl TraceRing {
             // push holds a partial trace, and this is where it is made good.
             push(Some(&*trace), 0, 0);
         }
+    }
+
+    /// The entropy block this node has a round open on, and nothing for a round
+    /// it never opened, has already closed, or has dropped.
+    pub fn block_for(
+        &self,
+        epoch: EpochNumber,
+        round: RoundNumber,
+        group: GroupIndex,
+    ) -> Option<Hash> {
+        let traces = self.traces.lock().ok()?;
+        traces
+            .iter()
+            .find(|trace| trace.matches(epoch, round, group))
+            .filter(|trace| trace.close == TraceClose::Open)
+            .map(|trace| trace.block)
     }
 
     /// Every trace held, oldest first.
@@ -496,5 +522,26 @@ mod tests {
         ring.close(EpochNumber(1), RoundNumber(1), GroupIndex(0), TraceClose::Unconfirmed);
 
         assert_eq!(ring.snapshot()[0].close, TraceClose::Unconfirmed);
+    }
+
+    // only a round whose block rolled starts over on the replacement
+    #[test]
+    fn block_follows_only_a_rolled_round() {
+        let ring = TraceRing::default();
+        let (epoch, round, group) = (EpochNumber(2), RoundNumber(5), GroupIndex(0));
+        let first = Hash([1; 32]);
+        let later = Hash([2; 32]);
+
+        ring.open(epoch, round, group, SlotNumber(100), first);
+        ring.open(epoch, round, group, SlotNumber(101), later);
+        assert_eq!(ring.block_for(epoch, round, group), Some(first));
+
+        ring.close(epoch, round, group, TraceClose::Unconfirmed);
+        assert_eq!(ring.block_for(epoch, round, group), None);
+        ring.open(epoch, round, group, SlotNumber(102), later);
+        assert_eq!(ring.block_for(epoch, round, group), Some(later));
+
+        ring.close(epoch, round, group, TraceClose::Settled);
+        assert_eq!(ring.block_for(epoch, round, group), None);
     }
 }

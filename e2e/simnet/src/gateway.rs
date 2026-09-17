@@ -12,7 +12,6 @@ use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use reel_store::ReelStore;
-use tape_blacklist::subscription::Subscription;
 use tape_core::bls::BlsPrivateKey;
 use tape_gateway::admission::{AdmitAll, Admission};
 use tape_core::types::network::NetworkAddress;
@@ -28,7 +27,6 @@ use tempfile::TempDir;
 use crate::node_volume;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
-use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::tls;
@@ -50,7 +48,6 @@ pub struct TestGateway {
     admission: Option<Arc<dyn Admission>>,
     context: Option<TestGatewayContext>,
     runtime: Option<JoinHandle<Result<(), NodeError>>>,
-    cancel: Option<CancellationToken>,
 
     // The volume outlives every context built over it.
     store_dir: TempDir,
@@ -83,7 +80,6 @@ impl TestGateway {
             admission: None,
             context: None,
             runtime: None,
-            cancel: None,
             store_dir: node_volume(&format!("gateway-{id}"))?,
         })
     }
@@ -273,19 +269,9 @@ impl TestGateway {
         format!("http://{}:{}", self.public_host, self.public_port)
     }
 
-    /// Set the share tokens this gateway presents when fetching hidden tracks, before the runtime starts
-    pub fn set_share_tokens(&mut self, share_tokens: Vec<String>) {
-        self.app_config.gateway.share_tokens = share_tokens;
-    }
-
     /// Site serving knobs, settable before the runtime starts.
     pub fn site_config_mut(&mut self) -> &mut GatewaySiteConfig {
         &mut self.app_config.gateway.site
-    }
-
-    /// Blacklist subscriptions, settable while the runtime is stopped.
-    pub fn blacklists_mut(&mut self) -> &mut Vec<Subscription> {
-        &mut self.app_config.gateway.blacklists
     }
 
     /// Poll the gateway's native health endpoint until it reports ready.
@@ -337,39 +323,19 @@ impl TestGateway {
             None => Arc::new(AdmitAll),
         };
         let id = self.id;
-        let cancel = CancellationToken::new();
-        let runtime_cancel = cancel.clone();
         let task = tokio::spawn(
-            async move {
-                tape_gateway::runtime::run_with_cancel(
-                    context,
-                    config,
-                    admission,
-                    runtime_cancel,
-                )
-                .await
-            }
+            async move { tape_gateway::runtime::run_with_context(context, config, admission).await }
                 .instrument(tracing::info_span!("gateway", id)),
         );
         self.runtime = Some(task);
-        self.cancel = Some(cancel);
         Ok(())
     }
 
     pub async fn stop(&mut self) -> Result<()> {
-        if let Some(cancel) = self.cancel.take() {
-            cancel.cancel();
+        if let Some(runtime) = self.runtime.take() {
+            runtime.abort();
+            let _ = tokio::time::timeout(Duration::from_secs(5), runtime).await;
         }
-        if let Some(mut runtime) = self.runtime.take() {
-            if tokio::time::timeout(Duration::from_secs(5), &mut runtime)
-                .await
-                .is_err()
-            {
-                runtime.abort();
-                let _ = runtime.await;
-            }
-        }
-        self.context = None;
         Ok(())
     }
 

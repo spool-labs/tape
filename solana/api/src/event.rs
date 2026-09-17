@@ -24,8 +24,8 @@ pub enum EventType {
 
     // Tape
     TapeReserved = 0x20,
+    TapeDestroyed = 0x21,
     TapeExtended = 0x22,
-    ShareNonceAdvanced = 0x23,
 
     // Node
     NodeRegistered = 0x30,
@@ -80,7 +80,7 @@ pub struct TrackCertified {
 
 tape_solana::event!(EventType, TrackCertified);
 
-/// Emitted when a track is deleted from its tape.
+/// Emitted when a track is hard-deleted (account closed).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TrackDeleted {
@@ -174,6 +174,19 @@ pub struct TapeReserved {
 
 tape_solana::event!(EventType, TapeReserved);
 
+/// Emitted when a tape is closed.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct TapeDestroyed {
+    /// Tape account address
+    pub tape: Address,
+
+    /// Owner who destroyed
+    pub authority: Address,
+}
+
+tape_solana::event!(EventType, TapeDestroyed);
+
 /// Emitted when a tape's capacity or expiry is extended.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -204,19 +217,6 @@ pub struct TapeExtended {
 }
 
 tape_solana::event!(EventType, TapeExtended);
-
-/// Emitted when a tape's share nonce advances, revoking every outstanding share token.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct ShareNonceAdvanced {
-    /// Tape account address
-    pub tape: Address,
-
-    /// Share nonce after the advance
-    pub nonce: Hash,
-}
-
-tape_solana::event!(EventType, ShareNonceAdvanced);
 
 /// Emitted when a storage node registers.
 #[repr(C)]
@@ -609,7 +609,6 @@ mod tests {
         assert_eq!(EventType::TrackCertified as u8, 0x13);
         assert_eq!(EventType::TapeReserved as u8, 0x20);
         assert_eq!(EventType::TapeExtended as u8, 0x22);
-        assert_eq!(EventType::ShareNonceAdvanced as u8, 0x23);
         assert_eq!(EventType::NodeRegistered as u8, 0x30);
         assert_eq!(EventType::EpochCommitted as u8, 0x40);
         assert_eq!(EventType::EpochAdvanced as u8, 0x41);
@@ -628,7 +627,6 @@ mod tests {
         assert!(TrackDeleted::size_of() < 1024);
         assert!(TapeReserved::size_of() < 1024);
         assert!(TapeExtended::size_of() < 1024);
-        assert!(ShareNonceAdvanced::size_of() < 1024);
         assert!(EpochCommitted::size_of() < 1024);
         assert!(EpochAdvanced::size_of() < 1024);
         assert!(SpoolSynced::size_of() < 1024);

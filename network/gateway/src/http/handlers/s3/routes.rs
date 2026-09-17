@@ -29,7 +29,7 @@ use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
-use tape_protocol::api::{with_share_token, ApiError};
+use tape_protocol::api::ApiError;
 use tape_sdk::error::{TapedriveError, UploadError};
 use tape_sdk::track::write::content_etag;
 use tape_store::ops::{CredentialOps, ObjectListOps, ObjectListPage, TapeOps};
@@ -44,10 +44,7 @@ use crate::http::handlers::object::response::object_response_ranged;
 use crate::http::handlers::s3::response::head_response_parts;
 use crate::meter::{GatewayMeterDecision, MeterCaller};
 use super::accounting;
-use super::authz::{
-    Auth, WriteOp, WritePermit, authorize_hidden_read, authorize_multipart_read, authorize_write,
-};
-use crate::http::handlers::share::{node_share_token, tape_for_track};
+use super::authz::{Auth, WriteOp, WritePermit, authorize_multipart_read, authorize_write};
 use super::chunked::object_reader;
 use super::clock::now_unix;
 use super::conditional::{Preconditions, ReadCondition, check_read, check_write};
@@ -710,7 +707,7 @@ where
 async fn delete_bucket(Path(bucket): Path<String>) -> Result<Response, S3Error> {
     parse_bucket(&bucket)?;
     Err(S3Error::NotImplemented(
-        "DeleteBucket: a bucket is a tape, and tapes are never closed".to_string(),
+        "DeleteBucket: a bucket is a tape, destroyed on chain".to_string(),
     ))
 }
 
@@ -721,9 +718,6 @@ fn resolve_readable<Db: Store, Cluster: Api, Blockchain: Rpc>(
     key: &str,
 ) -> Result<Readable, S3Error> {
     let bucket = parse_bucket(bucket_label)?;
-    if state.blacklists.is_unlisted(bucket) {
-        return Err(S3Error::Removed);
-    }
     let readable = resolve::resolve_readable_with_pending(
         state.context.store.as_ref(),
         state.staging.as_ref(),
@@ -748,10 +742,6 @@ fn readable_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let track = track_with_pending(state, resolved.track_address)
         .map_err(S3Error::from)?
         .ok_or(S3Error::NoSuchKey)?;
-    // Checked here so HEAD and conditional reads, which never decode, answer gone too.
-    if state.blacklists.denies(resolved.track_address, track.tape) {
-        return Err(S3Error::Removed);
-    }
     if !track.is_certified() {
         return Err(S3Error::NoSuchKey);
     }
@@ -822,12 +812,11 @@ where
     let range = range_header(&headers).map(str::to_string);
     let preconditions = Preconditions::from_headers(&headers);
     let caller = meter_caller(&state, &headers, remote, &auth);
-    get_object_impl(state, &auth, caller, bucket, key, range, &preconditions).await
+    get_object_impl(state, caller, bucket, key, range, &preconditions).await
 }
 
 async fn get_object_impl<Db, Cluster, Blockchain>(
     state: AppState<Db, Cluster, Blockchain>,
-    auth: &Auth,
     caller: MeterCaller,
     bucket: String,
     key: String,
@@ -865,29 +854,18 @@ where
     };
     let block_time = resolved.block_time;
 
-    // Authorize ahead of the slice cache, whose entries are shared across callers.
-    let token = if track.is_hidden() {
-        authorize_hidden_read(&state, auth, tape)?;
-        node_share_token(&state, &track, &tape_for_track(&state, &track)?)
-    } else {
-        None
-    };
-
     // `Range` is honored for every object: single-track objects slice the
     // decoded bytes, multi-track streams decode only the chunks the range
     // touches; see docs/s3-gateway-status.md (Range).
-    let mut response = with_share_token(
-        token,
-        read_object_response(
-            state,
-            resolved.track_address,
-            track,
-            metadata,
-            StatusCode::OK,
-            &caller,
-            range,
-            |retry_after| S3Error::slow_down(retry_after).into_response(),
-        ),
+    let mut response = read_object_response(
+        state,
+        resolved.track_address,
+        track,
+        metadata,
+        StatusCode::OK,
+        &caller,
+        range,
+        |retry_after| S3Error::slow_down(retry_after).into_response(),
     )
     .await
     .map_err(S3Error::from)?;
@@ -916,12 +894,11 @@ where
 {
     let caller = meter_caller(&state, &headers, remote, &auth);
     let preconditions = Preconditions::from_headers(&headers);
-    head_object_impl(&state, &auth, &caller, &bucket, &key, range_header(&headers), &preconditions)
+    head_object_impl(&state, &caller, &bucket, &key, range_header(&headers), &preconditions)
 }
 
 fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
-    auth: &Auth,
     caller: &MeterCaller,
     bucket: &str,
     key: &str,
@@ -941,13 +918,7 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
             Some(object.block_time),
             range,
         ),
-        Readable::Track(resolved) => {
-            let track = track_with_pending(state, resolved.track_address)?.ok_or(S3Error::NoSuchKey)?;
-            if track.is_hidden() {
-                authorize_hidden_read(state, auth, parse_bucket(bucket)?)?;
-            }
-            head_response(&resolved, range)
-        }
+        Readable::Track(resolved) => head_response(&resolved, range),
     }
 }
 

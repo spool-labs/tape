@@ -560,7 +560,7 @@ mod tests {
     use tape_core::system::SpoolStatus;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -601,7 +601,6 @@ mod tests {
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(size),
             group: GroupIndex::containing(SPOOL),
             value_hash: blob.get_hash(),

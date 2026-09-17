@@ -16,7 +16,7 @@ use tape_core::system::{Member, NodePreferences, Spool};
 use tape_core::track::data::{track_key, BlobData, BlobDataSlice};
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{
-    CompressedTrack, CompressedTrackProof, TrackKind, TrackState, TrackVisibility,
+    CompressedTrack, CompressedTrackProof, TrackKind, TrackState,
 };
 use tape_core::types::coin::TAPE;
 use tape_core::types::network::NetworkAddress;
@@ -346,7 +346,6 @@ fn make_raw_track(
         track_number: TrackNumber(track_number),
         kind: TrackKind::Inline as u64,
         state: TrackState::Certified as u64,
-        visibility: TrackVisibility::Public as u64,
         size: StorageUnits::from_bytes(bytes.len() as u64),
         group: GroupIndex(0),
         value_hash: hash::hash(&bytes),

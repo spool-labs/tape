@@ -650,7 +650,7 @@ mod tests {
     use super::*;
 
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{TrackKind, TrackState};
     use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::Hash;
 
@@ -660,9 +660,6 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(9),
             next_track_number: TrackNumber(1),
-            authority: Address::default(),
-            delegate: Address::default(),
-            share_nonce: Hash::default(),
         }
     }
 
@@ -674,7 +671,6 @@ mod tests {
                 track_number: TrackNumber(0),
                 kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
                 size: StorageUnits::from_bytes(64),
                 group: GroupIndex::from(0),
                 value_hash: Hash::new_unique(),

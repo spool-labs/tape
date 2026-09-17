@@ -16,6 +16,10 @@ pub struct ReserveTape {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct DestroyTape {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ExtendTapeCapacity {
     pub units: StorageUnits,
 }
@@ -35,10 +39,6 @@ pub struct SetTapeDelegate {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct RevokeTapeDelegate {}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct AdvanceShareNonce {}
 
 pub fn build_reserve_tape_ix(
     fee_payer: Address,
@@ -133,6 +133,28 @@ fn extend_tape_accounts(
     ]
 }
 
+pub fn build_destroy_tape_ix(
+    fee_payer: Address,
+    authority: Address,
+) -> Instruction {
+    let (tape_address, _) = tape_pda(authority);
+    let (system_address, _) = system_pda();
+
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+
+            AccountMeta::new(tape_address.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
+
+            AccountMeta::new_readonly(system_program::ID, false),
+        ],
+        data: DestroyTape {}.to_bytes(),
+    }
+}
+
 pub fn build_set_tape_delegate_ix(
     fee_payer: Address,
     authority: Address,
@@ -163,22 +185,5 @@ pub fn build_revoke_tape_delegate_ix(
             AccountMeta::new(tape.into(), false),
         ],
         data: RevokeTapeDelegate {}.to_bytes(),
-    }
-}
-
-pub fn build_advance_share_nonce_ix(
-    fee_payer: Address,
-    signer: Address,
-    tape: Address,
-) -> Instruction {
-    Instruction {
-        program_id: tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new_readonly(signer.into(), true),
-            AccountMeta::new(tape.into(), false),
-            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
-        ],
-        data: AdvanceShareNonce {}.to_bytes(),
     }
 }

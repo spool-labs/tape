@@ -3,7 +3,7 @@ use tape_api::program::prelude::*;
 use tape_api::event::PoolAdvanced;
 use bytemuck::bytes_of;
 use tape_core::track::data::TrackMeta;
-use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
+use tape_core::track::types::{TrackKind, TrackState};
 
 use crate::track::helpers::append_track;
 
@@ -111,7 +111,6 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         history_address,
         closing_span.key(),
         meta,
-        TrackVisibility::Public,
     )?;
 
     node.pool.advance_epoch(curr, claim)

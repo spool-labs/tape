@@ -34,20 +34,6 @@ impl PeerIdentity {
     }
 }
 
-impl<S> axum::extract::FromRequestParts<S> for PeerIdentity
-where
-    S: Send + Sync,
-{
-    type Rejection = std::convert::Infallible;
-
-    async fn from_request_parts(
-        parts: &mut axum::http::request::Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(parts.extensions.get::<PeerIdentity>().copied().unwrap_or_default())
-    }
-}
-
 fn identity_from_certs(
     certs: Option<&[rustls::pki_types::CertificateDer<'_>]>,
 ) -> PeerIdentity {

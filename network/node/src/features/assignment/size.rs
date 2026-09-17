@@ -294,7 +294,7 @@ fn invalid_track(track: Address, reason: impl Into<String>) -> AssignmentSizeErr
 mod tests {
     use store_memory::MemoryStore;
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::Hash;
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
@@ -312,9 +312,6 @@ mod tests {
             flags: 0,
             end_epoch,
             next_track_number: TrackNumber(0),
-            authority: Address::default(),
-            delegate: Address::default(),
-            share_nonce: Hash::default(),
         }
     }
 
@@ -325,7 +322,6 @@ mod tests {
             key: Hash::new_unique(),
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size,
             group,
             value_hash: Hash::new_unique(),

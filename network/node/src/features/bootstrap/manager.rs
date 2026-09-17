@@ -34,13 +34,6 @@ pub struct LiveStart {
     pub parent: Option<Hash>,
 }
 
-impl LiveStart {
-    /// A start with no block to chain from
-    pub fn at(slot: SlotNumber) -> Self {
-        Self { slot, parent: None }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootstrapReplayPhase {
     BlockReplay {
@@ -135,7 +128,7 @@ where
     Blockchain: Rpc + 'static,
 {
     if let Some(start_slot) = config.solana.start_slot {
-        return Ok(LiveStart::at(start_slot));
+        return Ok(LiveStart { slot: start_slot, parent: None });
     }
 
     let cursor = context
@@ -182,7 +175,7 @@ where
 
     let current_epoch = checkpoint.state.epoch();
     if current_epoch <= FIRST_LIVE_EPOCH {
-        replay_base_epochs_to_checkpoint(
+        let parent = replay_base_epochs_to_checkpoint(
             context, 
             &mut replay, 
             current_epoch, 
@@ -191,7 +184,7 @@ where
             persist,
         ).await?;
 
-        return Ok(LiveStart::at(checkpoint.slot.next()));
+        return Ok(LiveStart { slot: checkpoint.slot.next(), parent });
     }
 
     let snapshot_epochs =
@@ -200,11 +193,12 @@ where
     let replay_epoch_zero_from_snapshot =
         snapshot_epochs.first().copied() == Some(BOOTSTRAP_EPOCH);
 
-    if replay_epoch_zero_from_snapshot {
+    let base = if replay_epoch_zero_from_snapshot {
         debug!("bootstrap: epoch-zero snapshot available; skipping base block replay");
+        None
     } else {
-        replay_epoch_zero_base(context, &mut replay, cancel, persist).await?;
-    }
+        replay_epoch_zero_base(context, &mut replay, cancel, persist).await?
+    };
 
     let mut last_snapshot: Option<(EpochNumber, SlotNumber)> = None;
     for epoch in snapshot_epochs {
@@ -217,7 +211,7 @@ where
         .await?);
     }
 
-    match last_snapshot {
+    let parent = match last_snapshot {
         Some((epoch, end_slot)) => {
             execute_block_phase(
                 context,
@@ -231,7 +225,7 @@ where
                 cancel,
                 persist,
             )
-            .await?;
+            .await?
         }
         None => {
             let epoch = context
@@ -247,16 +241,17 @@ where
                     end_slot: checkpoint.slot,
                     start_epoch: FIRST_LIVE_EPOCH,
                 },
-                None,
+                base,
                 cancel,
                 persist,
-            ).await?;
+            ).await?
         }
-    }
+    };
 
-    Ok(LiveStart::at(checkpoint.slot.next()))
+    Ok(LiveStart { slot: checkpoint.slot.next(), parent })
 }
 
+/// Replays epochs zero and one up to the checkpoint, returning the last block applied
 async fn replay_base_epochs_to_checkpoint<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     replay: &mut ReplayEngine<'_, Db>,
@@ -264,7 +259,7 @@ async fn replay_base_epochs_to_checkpoint<Db, Cluster, Blockchain>(
     checkpoint_slot: SlotNumber,
     cancel: &CancellationToken,
     persist: ReplayPersistFn<Db>,
-) -> Result<(), NodeError>
+) -> Result<Option<Hash>, NodeError>
 where
     Db: Store,
     Cluster: Api,
@@ -276,7 +271,7 @@ where
             .get_epoch_with_commitment(BOOTSTRAP_EPOCH, CommitmentLevel::Finalized)
             .await?;
 
-        execute_block_phase(
+        return execute_block_phase(
             context,
             replay,
             BootstrapReplayPhase::BlockReplay {
@@ -287,12 +282,10 @@ where
             None,
             cancel,
             persist,
-        ).await?;
-
-        return Ok(());
+        ).await;
     }
 
-    replay_epoch_zero_base(context, replay, cancel, persist).await?;
+    let base = replay_epoch_zero_base(context, replay, cancel, persist).await?;
 
     let epoch = context
         .rpc
@@ -307,20 +300,20 @@ where
             end_slot: checkpoint_slot,
             start_epoch: FIRST_LIVE_EPOCH,
         },
-        None,
+        base,
         cancel,
         persist,
     )
     .await
-    .map(|_| ())
 }
 
+/// Replays epoch zero up to the first live epoch, returning the last block applied
 async fn replay_epoch_zero_base<Db, Cluster, Blockchain>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     replay: &mut ReplayEngine<'_, Db>,
     cancel: &CancellationToken,
     persist: ReplayPersistFn<Db>,
-) -> Result<(), NodeError>
+) -> Result<Option<Hash>, NodeError>
 where
     Db: Store,
     Cluster: Api,
@@ -337,7 +330,7 @@ where
         .await?;
 
     let Some(end_slot) = epoch1.start_slot.checked_prev() else {
-        return Ok(());
+        return Ok(None);
     };
 
     execute_block_phase(
@@ -353,7 +346,6 @@ where
         persist,
     )
     .await
-    .map(|_| ())
 }
 
 /// Replays one block phase from `parent`, returning the last block applied or `parent` itself
@@ -582,7 +574,7 @@ mod tests {
             .expect("bootstrap completed in time")
             .expect("bootstrap returned ok");
 
-        assert_eq!(start, LiveStart::at(SlotNumber(42)));
+        assert_eq!(start, LiveStart { slot: SlotNumber(42), parent: None });
     }
 
     #[tokio::test]
@@ -598,7 +590,7 @@ mod tests {
             .expect("bootstrap completed in time")
             .expect("bootstrap returned ok");
 
-        assert_eq!(start, LiveStart::at(SlotNumber(1000)));
+        assert_eq!(start, LiveStart { slot: SlotNumber(1000), parent: None });
     }
 
     #[tokio::test]
@@ -616,6 +608,45 @@ mod tests {
         assert_eq!(start.slot, checkpoint.next());
         assert_eq!(context.store.get_sync_cursor().unwrap(), Some(checkpoint));
         // Live ingest chains from whatever the replay applied last, if anything.
+        assert_eq!(start.parent, context.store.get_sync_parent().unwrap());
+    }
+
+    // a fresh boot that replayed a block hands live ingest that block to chain from
+    #[tokio::test]
+    async fn fresh_boot_anchors() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(FIRST_LIVE_EPOCH)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let context = harness.ctx_for(0);
+        let config = NodeConfig::default();
+        let cancel = CancellationToken::new();
+
+        // A recorded block inside the replay range, so the fresh path has one to end on
+        let tip = context.rpc.get_slot().await.expect("tip");
+        let _ = submit_set_network_tls(
+            &context.rpc,
+            context.signer(),
+            context.node_address(),
+            context.tls_pubkey(),
+        )
+        .await;
+        harness.rpc().warp_to_slot(tip + 1).expect("close the block");
+        let produced = harness.produced_slot(&[tip, tip + 1]).await.expect("a block");
+        harness.rpc().set_finalized_tip(produced.0).expect("finalize");
+
+        assert!(context.store.get_sync_cursor().unwrap().is_none(), "a fresh store");
+
+        let start = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
+            .await
+            .expect("bootstrap completed in time")
+            .expect("bootstrap returned ok");
+
+        assert_eq!(start.slot, produced.next());
+        assert_eq!(start.parent, Some(harness.block_hash(produced).await));
         assert_eq!(start.parent, context.store.get_sync_parent().unwrap());
     }
 

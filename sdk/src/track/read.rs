@@ -5,7 +5,7 @@ use tape_core::erasure::group_start;
 use tape_core::prelude::{GroupIndex, SpoolIndex, BlobData};
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::hash::hash;
-use tape_protocol::api::{with_share_token, ApiError, GetTrackDataReq};
+use tape_protocol::api::{ApiError, GetTrackDataReq};
 use tape_protocol::Api;
 
 use crate::codec::decoder::BlobDecoder;
@@ -17,9 +17,7 @@ use crate::track::bootstrap_network_state;
 use crate::transfer::downloader::ParallelDownloader;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
-    /// Read a track's data by address.
-    ///
-    /// A hidden track needs a share token on the client's read options.
+    /// Read a track's data by address. No key needed, reads are public.
     pub async fn read(&self, track: &Address) -> Result<Vec<u8>, TapedriveError> {
         self.read_as(track, Operation::ReadTrack).await
     }
@@ -29,7 +27,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         track: &Address,
         operation: Operation,
     ) -> Result<Vec<u8>, TapedriveError> {
-        with_share_token(self.read_options.share_token, read_track(self, track, operation)).await
+        read_track(self, track, operation).await
     }
 
     /// Verify that `data` matches the on-chain commitment for a track.

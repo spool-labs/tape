@@ -24,10 +24,12 @@ pub enum RefusalReason {
     BadSignature,
     /// The answer arrived after the round's deadline.
     Late,
+    /// The round named is one this node will never settle.
+    OutOfWindow,
 }
 
 impl RefusalReason {
-    pub const COUNT: usize = 9;
+    pub const COUNT: usize = 10;
 
     pub const ALL: [RefusalReason; Self::COUNT] = [
         RefusalReason::NoLocalQuestion,
@@ -39,6 +41,7 @@ impl RefusalReason {
         RefusalReason::BadProof,
         RefusalReason::BadSignature,
         RefusalReason::Late,
+        RefusalReason::OutOfWindow,
     ];
 
     /// Stable name for logs, counters and the refusal body
@@ -53,6 +56,7 @@ impl RefusalReason {
             RefusalReason::BadProof => "bad_proof",
             RefusalReason::BadSignature => "bad_signature",
             RefusalReason::Late => "late",
+            RefusalReason::OutOfWindow => "out_of_window",
         }
     }
 
@@ -68,6 +72,7 @@ impl RefusalReason {
             RefusalReason::BadProof => 6,
             RefusalReason::BadSignature => 7,
             RefusalReason::Late => 8,
+            RefusalReason::OutOfWindow => 9,
         }
     }
 }

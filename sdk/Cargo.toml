@@ -7,7 +7,6 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 keywords.workspace = true
-readme.workspace = true
 
 [features]
 default = []
@@ -15,8 +14,8 @@ metrics = ["tape-metrics/metrics"]
 
 [dependencies]
 # Internal crates
-tape-api = { workspace = true }
-tape-blocks = { workspace = true }
+tape-api = { path = "../solana/api" }
+tape-blocks = { path = "../lib/blocks" }
 tape-core = { workspace = true }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-slicer = { workspace = true }
@@ -24,11 +23,10 @@ tape-metrics = { workspace = true, optional = true }
 tape-protocol = { workspace = true }
 peer-manager = { workspace = true }
 tape-retry = { workspace = true }
-peer-http = { workspace = true }
-peer-tls = { workspace = true }
+peer-http = { path = "../network/peer-http" }
 rpc.workspace = true
 rpc-solana.workspace = true
-rpc-client = { workspace = true }
+rpc-client = { path = "../solana/rpc-client" }
 spl-token = { workspace = true }
 solana-program = { workspace = true }
 

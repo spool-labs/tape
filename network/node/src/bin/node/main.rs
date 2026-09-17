@@ -11,11 +11,7 @@ use tape_node::runtime::{build_runtime, init_tracing, run_application};
 use tracing::info;
 
 #[derive(Parser)]
-#[command(
-    name = "tape-node",
-    about = "Tapedrive storage node runtime",
-    version = VERSION
-)]
+#[command(name = "tape-node", about = "Tapedrive storage node runtime v2")]
 struct Cli {
     #[arg(short, long, default_value_t = default_config_path().to_string_lossy().into_owned(), global = true)]
     config: String,

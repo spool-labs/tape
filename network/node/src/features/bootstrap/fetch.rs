@@ -7,12 +7,10 @@ use std::sync::Arc;
 
 use rpc::Rpc;
 use store::Store;
-use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
+use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
 use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::track::data::BlobData;
 use tape_core::types::{EpochNumber, TrackNumber};
-use tape_crypto::address::Address;
-use tape_crypto::Hash;
 use tape_protocol::{read_snapshot_epoch, Api, DecodedSnapshot};
 use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
 use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
@@ -79,8 +77,9 @@ where
     Blockchain: Rpc,
 {
     // Snapshot rows are stamped at slot zero, under every live round's cutoff.
+    let written = persist_snapshot_metadata_to_store(context.store.as_ref(), epoch, decoded);
     context.sample_sets.backdated_write();
-    persist_snapshot_metadata_to_store(context.store.as_ref(), epoch, decoded)
+    written
 }
 
 pub fn persist_snapshot_metadata_to_store<Db: Store>(
@@ -98,9 +97,6 @@ pub fn persist_snapshot_metadata_to_store<Db: Store>(
                 flags: TapeFlags::SYSTEM,
                 end_epoch: EpochNumber(u64::MAX),
                 next_track_number: TrackNumber(decoded.tracks.len() as u64),
-                authority: SYSTEM_ADDRESS,
-                delegate: Address::default(),
-                share_nonce: Hash::default(),
             },
         )
         .map_err(store_err)?;
@@ -147,18 +143,17 @@ fn store_err(error: impl std::fmt::Display) -> NodeError {
 #[cfg(test)]
 mod tests {
     use store_memory::MemoryStore;
-    use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
+    use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::GROUP_SIZE;
     use tape_core::snapshot::replay::SnapshotLog;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
-    use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_protocol::{DecodedSnapshot, DecodedSnapshotTrack};
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
@@ -196,7 +191,6 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: blob.size,
             group: GroupIndex::from(0),
             value_hash: blob.get_hash(),
@@ -220,9 +214,6 @@ mod tests {
                 flags: tape_core::tape::TapeFlags::SYSTEM,
                 end_epoch: EpochNumber(u64::MAX),
                 next_track_number: TrackNumber(1),
-                authority: SYSTEM_ADDRESS,
-                delegate: Address::default(),
-                share_nonce: Hash::default(),
             })
         );
         assert_eq!(store.get_track(track_address).unwrap(), Some(track));

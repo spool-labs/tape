@@ -7,9 +7,6 @@ members = [
   "lib/crypto",
   "solana/framework",
   "lib/blocks",
-  "lib/blacklist",
-  "lib/rack",
-  "lib/forwarded",
   "test/harness",
   "solana/programs/exchange",
   "solana/programs/staking",
@@ -42,7 +39,6 @@ members = [
   "network/peer-http",
   "network/peer-tls",
   "network/protocol",
-  "network/moderation",
   "lib/retry",
   "e2e/simnet",
   "e2e/devnet",
@@ -69,9 +65,6 @@ default-members = [
   "lib/crypto",
   "solana/framework",
   "lib/blocks",
-  "lib/blacklist",
-  "lib/rack",
-  "lib/forwarded",
   "lib/slicer",
   "lib/spooler",
   "lib/snapshot",
@@ -88,7 +81,6 @@ default-members = [
   "network/peer-http",
   "network/peer-tls",
   "network/protocol",
-  "network/moderation",
   "lib/retry",
   "tools/tape-admin",
   "tools/tape-grind",
@@ -105,25 +97,22 @@ default-members = [
 version = "0.4.0"
 edition = "2021"
 license = "Apache-2.0"
-homepage = "https://tape.network"
-description = "A decentralized object store using Solana."
-repository = "https://github.com/spool-labs/tape"
+homepage = "https://tapedrive.io"
+description = "A decentralized blob store using Solana."
+repository = "https://github.com/tapedrive-io/tape"
 readme = "./README.md"
-keywords = ["object", "storage", "solana"]
+keywords = ["solana", "crypto", "storage"]
 
 [workspace.dependencies]
 tape-api = { version = "0.4.0", path = "./solana/api" }
 tape-blocks = { version = "0.4.0", path = "./lib/blocks" }
-tape-blacklist = { version = "0.4.0", path = "./lib/blacklist" }
-tape-rack = { version = "0.4.0", path = "./lib/rack" }
-tape-forwarded = { version = "0.4.0", path = "./lib/forwarded" }
 tape-core = { version = "0.4.0", path = "./lib/core" }
 tape-crypto = { version = "0.4.0", path = "./lib/crypto" }
 tape-solana = { version = "0.4.0", path = "./solana/framework" }
 
-rpc = { package = "tape-rpc", version = "0.4.0", path = "./solana/rpc" }
-rpc-solana = { package = "tape-rpc-solana", version = "0.4.0", path = "./solana/rpc-solana" }
-rpc-client = { package = "tape-rpc-client", version = "0.4.0", path = "./solana/rpc-client" }
+rpc = { version = "0.4.0", path = "./solana/rpc" }
+rpc-solana = { version = "0.4.0", path = "./solana/rpc-solana" }
+rpc-client = { version = "0.4.0", path = "./solana/rpc-client" }
 rpc-litesvm = { version = "0.4.0", path = "./solana/rpc-litesvm" }
 
 tape-store = { version = "0.4.0", path = "./store/tape-store" }
@@ -133,9 +122,18 @@ tape-snapshot = { version = "0.4.0", path = "./lib/snapshot" }
 store = { version = "0.4.0", path = "./store/store" }
 store-memory = { version = "0.4.0", path = "./store/store-memory" }
 store-rocks = { version = "0.4.0", path = "./store/store-rocks" }
-reel-store = { package = "tape-reel-store", version = "0.4.0", path = "./store/reel-store" }
-reel = { package = "tape-reel", version = "0.2.0", features = ["serde"] }
-reel-core = { package = "tape-reel-core", version = "0.2.0" }
+reel-store = { version = "0.4.0", path = "./store/reel-store" }
+
+# The reel engine, pinned to one commit. Moving it is an edit to the rev here
+# followed by `cargo update -p reel -p reel-core`. To work against a local
+# checkout instead, patch it in .cargo/config.toml, which is ignored:
+#
+#   [patch."https://github.com/spool-labs/reel.git"]
+#   reel = { path = "/abs/path/to/reel/crates/reel" }
+#   reel-core = { path = "/abs/path/to/reel/crates/reel-core" }
+#
+reel = { git = "https://github.com/spool-labs/reel.git", rev = "5d6ae27", features = ["serde"] }
+reel-core = { git = "https://github.com/spool-labs/reel.git", rev = "5d6ae27" }
 tape-sdk = { version = "0.4.0", path = "./sdk" }
 tape-test = { version = "0.4.0", path = "./test" }
 tape-chain-harness = { version = "0.4.0", path = "./test/harness" }
@@ -144,10 +142,10 @@ tape-observe-api = { version = "0.4.0", path = "./network/observe-api" }
 tape-atlas = { version = "0.4.0", path = "./monitoring/atlas" }
 tape-gateway = { version = "0.4.0", path = "./network/gateway" }
 tape-node = { version = "0.4.0", path = "./network/node" }
-peer-manager = { package = "tape-peer-manager", version = "0.4.0", path = "./network/peer-manager" }
+peer-manager = { version = "0.4.0", path = "./network/peer-manager" }
 peer-memory = { version = "0.4.0", path = "./network/peer-memory" }
-peer-http = { package = "tape-peer-http", version = "0.4.0", path = "./network/peer-http" }
-peer-tls = { package = "tape-peer-tls", version = "0.4.0", path = "./network/peer-tls" }
+peer-http = { version = "0.4.0", path = "./network/peer-http" }
+peer-tls = { version = "0.4.0", path = "./network/peer-tls" }
 tape-protocol = { version = "0.4.0", path = "./network/protocol" }
 tape-retry = { version = "0.4.0", path = "./lib/retry" }
 dashmap = "6"
@@ -249,10 +247,9 @@ futures = "0.3"
 rocksdb = {version = "0.23.0", features = ["multi-threaded-cf"]}
 tempdir = "0.3"
 axum = "0.8.4"
-http = "1"
 num_cpus = "1.17.0"
 tar = "0.4.44"
-prometheus = "0.14.0"
+prometheus = { version = "0.14.0", features = ["push"] }
 hyper = { version = "1.6.0", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 lazy_static = "1.5.0"

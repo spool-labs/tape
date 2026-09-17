@@ -6,7 +6,7 @@ license = "MIT"
 
 [dependencies]
 tape-blocks = { path = "../../lib/blocks" }
-rpc.workspace = true
+rpc = { path = "../rpc" }
 async-trait = "0.1"
 solana-client.workspace = true
 solana-transaction-status.workspace = true
@@ -27,7 +27,7 @@ tape-crypto.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1.37", features = ["macros", "rt-multi-thread"] }
-rpc-client.workspace = true
+rpc-client = { path = "../rpc-client" }
 solana-keypair.workspace = true
 solana-signer.workspace = true
 solana-system-interface.workspace = true

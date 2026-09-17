@@ -15,16 +15,9 @@ use tape_store::TapeStore;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::blacklist::denials::GatewayBlacklists;
-use crate::blacklist::follow::BlacklistFollow;
-use crate::cache::GatewaySliceCache;
-use crate::sweep::ExpiredTapeSweep;
-
 pub struct GatewayStoreManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     rx: mpsc::Receiver<ReplayBatch>,
-    follow: BlacklistFollow<Db, Cluster, Blockchain>,
-    sweep: ExpiredTapeSweep,
     cancel: CancellationToken,
 }
 
@@ -32,16 +25,11 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
     pub fn new(
         context: Arc<NodeContext<Db, Cluster, Blockchain>>,
         rx: mpsc::Receiver<ReplayBatch>,
-        slice_cache: Arc<GatewaySliceCache<Db>>,
-        blacklists: Arc<GatewayBlacklists>,
         cancel: CancellationToken,
     ) -> Self {
-        let follow = BlacklistFollow::new(context.clone(), slice_cache, blacklists);
         Self {
             context,
             rx,
-            follow,
-            sweep: ExpiredTapeSweep::default(),
             cancel,
         }
     }
@@ -54,10 +42,6 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
     }
 
     async fn drive(&mut self, pass: &mut Option<MaintenancePass>) -> Result<(), NodeError> {
-        // Live blocks wait in the channel until the batches already in the store
-        // are applied, so every list applies its batches in order.
-        self.follow.catch_up(&self.cancel).await?;
-
         // The same read-write volume a node opens, through the same
         // `build_context` and ingesting the same blocks. The gateway runs no GC
         // manager, so without this nothing here drives maintenance at all.
@@ -77,16 +61,11 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
                     };
 
                     persist_batch(self.context.store.as_ref(), &batch)?;
-                    self.follow.apply_block(&batch, &self.cancel).await?;
 
                     self.context.pending.drop_slot(batch.slot);
                 }
 
-                _ = ticker.tick() => {
-                    tick_maintenance(&self.context.store, pass).await;
-                    self.sweep.tick(&self.context).await;
-                    self.follow.report();
-                }
+                _ = ticker.tick() => tick_maintenance(&self.context.store, pass).await,
             }
         }
     }

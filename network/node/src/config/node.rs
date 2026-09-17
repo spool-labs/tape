@@ -13,7 +13,7 @@ use crate::core::error::NodeError;
 use super::challenge::ChallengeConfig;
 use super::eviction::EvictionConfig;
 use super::{
-    gateway::{GatewayConfig, is_valid_origin, is_valid_policy},
+    gateway::{GatewayConfig, is_valid_origin},
     helpers::{deserialize_pathbuf, expand_path},
     http::{HttpConfig, NetworkConfig},
     https::HttpsConfig,
@@ -217,27 +217,18 @@ impl NodeConfig {
             )));
         }
 
-        for origin in &self.gateway.site.cors_origins {
+        let site_origins = self
+            .gateway
+            .site
+            .connect_origins
+            .iter()
+            .chain(self.gateway.site.cors_origins.iter());
+        for origin in site_origins {
             if !is_valid_origin(origin) {
                 return Err(ConfigError::Invalid(format!(
                     "gateway.site origin `{origin}` is not a valid origin"
                 )));
             }
-        }
-
-        if let Some(policy) = self.gateway.site.content_security_policy.as_deref() {
-            if !is_valid_policy(policy) {
-                return Err(ConfigError::Invalid(
-                    "gateway.site.content_security_policy must be non-empty printable ascii"
-                        .into(),
-                ));
-            }
-        }
-
-        if self.gateway.site.subdomain_redirect && self.gateway.site.subdomain_suffix.is_none() {
-            return Err(ConfigError::Invalid(
-                "gateway.site.subdomain_redirect needs gateway.site.subdomain_suffix".into(),
-            ));
         }
 
         if self.gateway.metering.over_budget_penalty_secs == 0 {
@@ -251,8 +242,6 @@ impl NodeConfig {
                 "gateway.metering.stale_entry_secs must be greater than zero".into(),
             ));
         }
-
-        self.gateway.validate_blacklists().map_err(ConfigError::Invalid)?;
 
         if self.http.admission.anonymous_write_per_sec == 0 {
             return Err(ConfigError::Invalid(
@@ -444,8 +433,7 @@ mod tests {
     use tape_core::types::{BasisPoints, SlotNumber};
 
     use super::{NodeConfig, default_config_path};
-    use tape_crypto::address::Address;
-    use tape_forwarded::cidr::CidrBlock;
+    use crate::config::cidr::CidrBlock;
     use crate::config::logs::LoggingFormat;
 
     const EXAMPLE_CONFIG: &str = r#"
@@ -689,53 +677,6 @@ node:
         assert_eq!(config.network.host, None);
         assert_eq!(config.network.port, 3430);
         assert!(config.metrics.enabled);
-    }
-
-    // a site policy that could end the header early is refused at load
-    #[test]
-    fn rejects_policy_control_bytes() {
-        let result = NodeConfig::from_yaml_str(
-            "gateway:\n  site:\n    content_security_policy: \"default-src 'self'\\nx: y\"\n",
-        );
-
-        assert!(result.is_err());
-    }
-
-    // retiring the path form needs a subdomain to send sites to
-    #[test]
-    fn rejects_redirect_without_suffix() {
-        let result = NodeConfig::from_yaml_str(
-            "gateway:\n  site:\n    subdomain_redirect: true\n",
-        );
-
-        assert!(result.is_err());
-    }
-
-    // a well-formed site policy loads as written
-    #[test]
-    fn parses_site_policy() {
-        let config = NodeConfig::from_yaml_str(
-            "gateway:\n  site:\n    content_security_policy: \"default-src 'self'\"\n",
-        )
-        .unwrap();
-
-        assert_eq!(
-            config.gateway.site.content_security_policy.as_deref(),
-            Some("default-src 'self'")
-        );
-    }
-
-    // blacklist subscriptions load, and a tape subscribed twice is refused
-    #[test]
-    fn blacklist_subscriptions() {
-        let tape = Address::new([7u8; 32]);
-        let one = format!("gateway:\n  blacklists:\n    - name: a\n      tape: {tape}\n      actions: [remove]\n");
-        let twice = format!("{one}    - name: b\n      tape: {tape}\n      actions: [unlist]\n");
-
-        let config = NodeConfig::from_yaml_str(&one).expect("parse config");
-
-        assert_eq!(config.gateway.blacklists.len(), 1);
-        assert!(NodeConfig::from_yaml_str(&twice).is_err());
     }
 
     #[test]

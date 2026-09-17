@@ -233,7 +233,7 @@ mod tests {
     use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
     use tape_core::spooler::GroupIndex;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_crypto::address::Address;
@@ -287,7 +287,6 @@ mod tests {
                     track_number: TrackNumber(0),
                     kind: TrackKind::Inline as u64,
                     state: TrackState::Certified as u64,
-                    visibility: TrackVisibility::Public as u64,
                     size: StorageUnits(1),
                     group: GroupIndex::from(0),
                     value_hash: Hash::default(),

@@ -1,7 +1,7 @@
 //! RPC error types
 //!
 //! This module provides error types for RPC operations that are
-//! implementation-agnostic. Specific implementations (like `tape-rpc-solana`)
+//! implementation-agnostic. Specific implementations (like `rpc-solana`)
 //! convert their internal errors into these types.
 
 use std::time::Duration;
@@ -67,6 +67,11 @@ pub enum RpcError {
     #[error("slot skipped")]
     SlotSkipped,
 
+    /// This endpoint's long-term storage has no block at the slot and did not
+    /// call the slot skipped either, so another endpoint may still hold it
+    #[error("block missing from this endpoint's history")]
+    BlockPruned,
+
     /// Internal error (configuration, setup, etc.)
     #[error("Internal error: {0}")]
     Internal(String),
@@ -79,6 +84,7 @@ impl RpcError {
             // Retriable errors
             RpcError::Timeout(_) => true,
             RpcError::BlockNotAvailable => true,
+            RpcError::BlockPruned => true,
             RpcError::BlockhashExpired => true,
             RpcError::Request(msg) => is_retriable_message(msg),
             RpcError::SlotSkipped => false,
@@ -98,6 +104,9 @@ impl RpcError {
         match self {
             RpcError::Timeout(_) => true,
             RpcError::BlockNotAvailable => false,
+            // Answered for every skipped slot in deep history too, so it says
+            // nothing about the endpoint; the fetch loop settles it on the chain.
+            RpcError::BlockPruned => false,
             RpcError::SlotSkipped => false,
             RpcError::Request(msg) => is_endpoint_error_message(msg),
             RpcError::AccountNotFound(_) => false,
@@ -115,6 +124,7 @@ impl RpcError {
         match self {
             RpcError::Timeout(_) => "timeout",
             RpcError::BlockNotAvailable => "block_not_available",
+            RpcError::BlockPruned => "block_pruned",
             RpcError::SlotSkipped => "slot_skipped",
             RpcError::Request(_) => "rpc_error",
             RpcError::AccountNotFound(_) => "not_found",
@@ -344,6 +354,15 @@ mod tests {
         assert_eq!(unstructured.transaction_error(), None);
 
         assert!(!RpcError::BlockhashExpired.is_compute_budget_exceeded());
+    }
+
+    // a pruned block is retried in place, since a skipped slot answers the same way
+    #[test]
+    fn pruned_block() {
+        assert!(RpcError::BlockPruned.is_retriable());
+        assert!(!RpcError::BlockPruned.should_failover());
+        assert!(!RpcError::BlockPruned.is_skipped_slot());
+        assert_eq!(RpcError::BlockPruned.category(), "block_pruned");
     }
 
     // a skip is a typed answer, never retried and never a failover

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use bytemuck::bytes_of;
 use rpc::Rpc;
 use store::Store;
-use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
+use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
 use tape_api::state::Tape;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::tape::{snapshot_tape_number, TapeFlags};
@@ -19,7 +19,6 @@ use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ChunkNumber, EpochNumber, SlotNumber};
-use tape_crypto::address::Address;
 use tape_crypto::hash::hash as hash_bytes;
 use tape_crypto::hash::Hash;
 use tape_protocol::{Api, ProtocolState};
@@ -195,9 +194,6 @@ where
                 flags: TapeFlags::SYSTEM,
                 end_epoch: EpochNumber(u64::MAX),
                 next_track_number: candidate.tape.tracks.next_number(),
-                authority: SYSTEM_ADDRESS,
-                delegate: Address::default(),
-                share_nonce: Hash::default(),
             },
         )
         .map_err(store_err("put_tape"))?;
@@ -210,7 +206,6 @@ where
         ctx.store
             .put_track_data(track_address, BlobData::Coded(track.blob))
             .map_err(store_err("put_track_data"))?;
-        ctx.sample_sets.backdated_write();
         put_sample(
             &ctx.store,
             track.track.group,
@@ -219,6 +214,7 @@ where
             track.track.value_hash,
             SNAPSHOT_REGISTERED_SLOT,
         )?;
+        ctx.sample_sets.backdated_write();
         ctx.store
             .put_object_info(
                 track_address,

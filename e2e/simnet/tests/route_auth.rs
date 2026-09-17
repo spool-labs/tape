@@ -1,7 +1,7 @@
 //! Verifies that peer-only routes reject unauthenticated and non-peer
 //! clients, while public routes remain open.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytemuck::Zeroable;
 use rand::thread_rng;
@@ -11,11 +11,22 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, GroupIndex, RoundNumber};
 use tape_crypto::ed25519::Keypair as EdKeypair;
 use tape_crypto::hash::Hash;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, TestNode, run_simnet_test};
+use tape_node::features::challenge::trace::RoundTrace;
 use tape_node::features::vote::member_groups;
 use tape_protocol::api::{AttestationPayload, CHALLENGE_ATTEST_PATH, SpoolAttestation, VOTE_PATH};
 
 const NODE_COUNT: usize = GROUP_SIZE;
+
+/// Rounds fire on a grid the node lays over the span the previous epoch
+/// realized, so nothing challenges until an epoch has turned.
+const EPOCH_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// How long to wait for the target to open a round the source shares.
+const ROUND_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// A round far enough past the target's own for no window to hold it.
+const DISTANT_ROUND: u64 = 1_000_000;
 
 #[test]
 fn peer_only_routes_reject_non_peers() {
@@ -60,6 +71,12 @@ async fn peer_only_routes_reject_non_peers_inner() {
         .wait_nodes_active(&all, Duration::from_secs(20))
         .await
         .expect("all nodes active");
+    // An epoch has to turn before any node lays a grid, and nothing opens a
+    // round until one is laid.
+    scenario
+        .self_advance_epoch(EPOCH_TIMEOUT)
+        .await
+        .expect("turn an epoch so the grids are laid");
 
     let target = harness
         .nodes()
@@ -213,7 +230,6 @@ async fn peer_only_routes_reject_non_peers_inner() {
     let source_address = source.context().node_address();
     let state = source.context().state();
     let held = member_groups(&state.member_spools(source_address));
-    let mine = *held.first().expect("source holds a spool");
     // A group the source has no position in, or one past the roster if it
     // holds a position in every group.
     let foreign = (0..=state.current.groups.len() as u64)
@@ -221,13 +237,15 @@ async fn peer_only_routes_reject_non_peers_inner() {
         .find(|group| !held.contains(group))
         .expect("a group outside the source");
 
-    // The roster is the round's epoch's, so the payload names the epoch the
-    // node is in.
+    // A round the target opened, so admission passes through to the auth checks
+    let open = shared_round(target, &held, ROUND_TIMEOUT).await;
+    assert!(held.contains(&open.group), "the source shares the round's group");
+
     let forged = AttestationPayload {
-        epoch: state.epoch(),
-        group: mine,
-        round: RoundNumber(0),
-        block: Hash([0; 32]),
+        epoch: open.epoch,
+        group: open.group,
+        round: open.round,
+        block: open.block,
         signer: target.context().node_address(),
         digest: Hash::default(),
         digest_signature: BlsSignature::zeroed(),
@@ -286,6 +304,27 @@ async fn peer_only_routes_reject_non_peers_inner() {
         "a batch must not carry a spool outside the group it names"
     );
 
+    // A round nobody is settling: the buffer would otherwise take a key for
+    // every round an admitted peer cared to name.
+    let distant = AttestationPayload {
+        signer: source_address,
+        round: RoundNumber(open.round.as_u64() + DISTANT_ROUND),
+        ..forged.clone()
+    };
+    let peer_distant_attest = peer
+        .post(format!("{base}{CHALLENGE_ATTEST_PATH}"))
+        .body(wincode::serialize(&distant).expect("serialize attestation"))
+        .send()
+        .await
+        .expect("peer distant attest");
+    assert_eq!(
+        peer_distant_attest.status(),
+        StatusCode::BAD_REQUEST,
+        "a round outside the window this node settles must not open a buffer entry"
+    );
+    let refusal = peer_distant_attest.text().await.expect("refusal body");
+    assert!(refusal.contains("out_of_window"), "{refusal}");
+
     let own = AttestationPayload {
         signer: source_address,
         ..forged
@@ -303,4 +342,24 @@ async fn peer_only_routes_reject_non_peers_inner() {
     );
 
     harness.stop_all().await.expect("stop runtimes");
+}
+
+/// A round the target opened for a group the caller also holds a spool in.
+async fn shared_round(target: &TestNode, held: &[GroupIndex], within: Duration) -> RoundTrace {
+    let deadline = Instant::now() + within;
+    loop {
+        let traces = target.context().round_traces.snapshot();
+        let shared = traces
+            .into_iter()
+            .rev()
+            .find(|trace| held.contains(&trace.group));
+        if let Some(trace) = shared {
+            return trace;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the target opened no round in a group the source holds"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }

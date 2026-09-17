@@ -322,7 +322,7 @@ mod tests {
     use store_memory::MemoryStore;
     use tape_api::program::tapedrive::{blacklist_pda, track_pda};
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::{TapeNumber, TrackNumber};
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
@@ -368,9 +368,6 @@ mod tests {
                     flags: 0,
                     end_epoch,
                     next_track_number: TrackNumber(0),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    share_nonce: Hash::default(),
                 },
             )
             .unwrap();
@@ -393,7 +390,6 @@ mod tests {
             track_number,
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
             group: GroupIndex(0),
             value_hash: entry_hash,
@@ -542,7 +538,6 @@ mod tests {
             track_number,
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
             group: GroupIndex(0),
             value_hash: entry.key(),

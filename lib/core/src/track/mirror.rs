@@ -140,11 +140,6 @@ impl ArchiveMirror {
         self.next_number
     }
 
-    /// True when nothing has been appended, so the mirror proves no track
-    pub fn is_empty(&self) -> bool {
-        self.base_number == self.next_number
-    }
-
     fn offset_of(&self, track_number: TrackNumber) -> Result<usize, MerkleError> {
         if track_number < self.base_number || track_number >= self.next_number {
             return Err(MerkleError::InvalidIndex);
@@ -209,7 +204,7 @@ mod tests {
     use tape_crypto::hash::hashv;
 
     use crate::spooler::GroupIndex;
-    use crate::track::types::{TrackKind, TrackState, TrackVisibility};
+    use crate::track::types::{TrackKind, TrackState};
     use crate::types::StorageUnits;
 
     use super::*;
@@ -225,7 +220,6 @@ mod tests {
             key: hashv(&[b"key", &track_number.pack()]),
             kind: TrackKind::Coded.into(),
             state: TrackState::Registered.into(),
-            visibility: TrackVisibility::Public as u64,
             size: StorageUnits(1024),
             group: GroupIndex(3),
             value_hash: hashv(&[b"registered", &track_number.pack()]),
@@ -373,24 +367,6 @@ mod tests {
         let result = mirror.append(&registered(TrackNumber(1)));
 
         assert_eq!(result, Err(MerkleError::InvalidIndex));
-    }
-
-    // a mirror proves nothing until a track is appended through it
-    #[test]
-    fn empty_mirror() {
-        let mut archive = TrackArchive::zeroed();
-        archive
-            .append(&registered(TrackNumber(0)))
-            .expect("pre-seed append");
-        let mut mirror = ArchiveMirror::new(&archive);
-
-        assert!(mirror.is_empty());
-
-        mirror
-            .append(&registered(TrackNumber(1)))
-            .expect("mirror append");
-
-        assert!(!mirror.is_empty());
     }
 
     // certify with a different track identity is rejected

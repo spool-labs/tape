@@ -1,10 +1,10 @@
 pub mod create;
 pub mod delegate;
+pub mod destroy;
 pub mod extend;
 pub mod helpers;
-pub mod share;
 
 pub use create::*;
 pub use delegate::*;
+pub use destroy::*;
 pub use extend::*;
-pub use share::*;

@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 
 use rpc::Rpc;
@@ -20,19 +20,14 @@ use tape_store::types::SliceWrite;
 use tracing::{debug, trace};
 
 use crate::features::blacklist::refuses_object;
-use crate::features::http::auth::{local_access_threshold, MaybeActivePeer, MaybeStakedPeer};
+use crate::features::http::auth::{MaybeStakedPeer, local_access_threshold};
 use crate::features::http::error::RouteError;
-use crate::features::http::share::check_share_token;
-use crate::features::http::peer_identity::PeerIdentity;
 use crate::features::http::state::{AppState, current_epoch};
 
 pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     MaybeStakedPeer(staked_peer): MaybeStakedPeer,
-    MaybeActivePeer(active_peer): MaybeActivePeer,
-    identity: PeerIdentity,
     Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
-    headers: HeaderMap,
 ) -> Result<impl IntoResponse, RouteError> {
     trace!(track_id = %track_id, spool_id = %spool_id, "http get_slice start");
 
@@ -78,8 +73,6 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     {
         return Err(RouteError::BlacklistedObject);
     }
-
-    check_share_token(&state, &track, identity, active_peer, &headers)?;
 
     let data = state
         .context
@@ -255,18 +248,14 @@ mod tests {
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber,
         TrackNumber,
     };
-    use tape_core::share::{unix_now, ShareToken};
-    use tape_core::types::tls::NetworkTlsPubkey;
-    use tape_crypto::ed25519::{Keypair, SecretKey};
     use tape_crypto::Hash;
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, root_from_leaf_hashes};
-    use tape_protocol::api::{encode_share_token, SHARE_TOKEN_HEADER};
     use tape_store::ops::{ObjectInfoOps, SpoolOps, TapeOps, TrackDataOps};
     use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 
@@ -314,9 +303,6 @@ mod tests {
                     flags: TapeFlags::SYSTEM,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(track_number.0 + 1),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    share_nonce: Hash::default(),
                 },
             )
             .expect("seed snapshot tape");
@@ -327,7 +313,6 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
             size: blob.size,
             group,
             value_hash: blob.get_hash(),
@@ -368,251 +353,6 @@ mod tests {
         (track_address, owned_spool, slice_bytes)
     }
 
-
-    const HIDDEN_SLICE: &[u8] = &[0xCD; 96];
-
-    fn signing_key() -> Keypair {
-        Keypair::from_secret(SecretKey::from_bytes([0x31; 32]))
-    }
-
-    fn reader_identity() -> NetworkTlsPubkey {
-        NetworkTlsPubkey::new([0x5B; 32])
-    }
-
-    fn staked_caller(ctx: &TestContext) -> MaybeStakedPeer {
-        MaybeStakedPeer(Some(crate::features::http::auth::StakedPeer {
-            node: ctx.node_address(),
-            tls_pubkey: ctx.tls_pubkey(),
-            stake: TAPE(1),
-        }))
-    }
-
-    fn seed_hidden_track(ctx: &TestContext, authority: Address) -> (Address, SpoolIndex, Address, Hash) {
-        let group = GroupIndex(2);
-        let track_number = TrackNumber(3);
-        let owned_spool = group.spool_at(4);
-        let tape = Address::new_unique();
-        let track_address = track_pda(tape, track_number).0;
-        let key = Hash::from([0x6C; 32]);
-
-        ctx.store
-            .put_tape(
-                tape,
-                TapeInfo {
-                    id: TapeNumber(11),
-                    flags: 0,
-                    end_epoch: EpochNumber(u64::MAX),
-                    next_track_number: TrackNumber(track_number.0 + 1),
-                    authority,
-                    delegate: Address::default(),
-                    share_nonce: Hash::default(),
-                },
-            )
-            .expect("seed tape");
-
-        let leaves = [Hash::from([0x44; 32]); GROUP_SIZE];
-        let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
-        let blob = BlobEncoding {
-            size: StorageUnits::from_bytes(1_537),
-            commitment,
-            profile: EncodingProfile::basic_default(),
-            stripe_size: StorageUnits::from_bytes(512),
-            stripe_count: StripeCount(4),
-            leaves,
-        };
-
-        let track = CompressedTrack {
-            tape,
-            key,
-            track_number,
-            kind: TrackKind::Coded as u64,
-            state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Hidden as u64,
-            size: blob.size,
-            group,
-            value_hash: blob.get_hash(),
-        };
-
-        ctx.store
-            .put_track(track_address, track)
-            .expect("seed track");
-        ctx.store
-            .put_track_data(track_address, BlobData::Coded(blob))
-            .expect("seed track data");
-        ctx.store
-            .put_slice(owned_spool, track_address, HIDDEN_SLICE.to_vec())
-            .expect("seed slice");
-        ctx.store
-            .set_spool_state(
-                owned_spool,
-                SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
-            )
-            .expect("set spool state");
-
-        (track_address, owned_spool, tape, key)
-    }
-
-    fn token_headers(token: &ShareToken) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            SHARE_TOKEN_HEADER,
-            encode_share_token(token).parse().expect("header value"),
-        );
-
-        headers
-    }
-
-    async fn hidden_read(
-        ctx: &TestContext,
-        track_address: Address,
-        spool: SpoolIndex,
-        identity: PeerIdentity,
-        headers: HeaderMap,
-    ) -> Result<axum::response::Response, RouteError> {
-        get_slice(
-            State(AppState {
-                context: ctx.clone(),
-            }),
-            staked_caller(ctx),
-            MaybeActivePeer(None),
-            identity,
-            Path((track_address.to_string(), spool)),
-            headers,
-        )
-        .await
-        .map(IntoResponse::into_response)
-    }
-
-    // a hidden track is refused when the caller presents no share token
-    #[tokio::test]
-    async fn needs_token() {
-        let ctx = test_context().await;
-        let (track_address, spool, _tape, _key) =
-            seed_hidden_track(&ctx, signing_key().pubkey().address());
-
-        let result = hidden_read(
-            &ctx,
-            track_address,
-            spool,
-            PeerIdentity::authenticated(reader_identity()),
-            HeaderMap::new(),
-        )
-        .await;
-
-        assert!(matches!(result, Err(RouteError::Forbidden(_))));
-    }
-
-    // a hidden track serves to the reader of an unexpired share token
-    #[tokio::test]
-    async fn valid_token() {
-        let ctx = test_context().await;
-        let signer = signing_key();
-        let (track_address, spool, tape, key) = seed_hidden_track(&ctx, signer.pubkey().address());
-        let token = ShareToken::issue(
-            &signer,
-            tape,
-            key,
-            reader_identity(),
-            Hash::default(),
-            unix_now() + 3_600,
-        );
-
-        let response = hidden_read(
-            &ctx,
-            track_address,
-            spool,
-            PeerIdentity::authenticated(reader_identity()),
-            token_headers(&token),
-        )
-        .await
-        .expect("shared read");
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("read response body");
-        assert_eq!(body.as_ref(), HIDDEN_SLICE);
-    }
-
-    // an expired share token is refused
-    #[tokio::test]
-    async fn expired_token() {
-        let ctx = test_context().await;
-        let signer = signing_key();
-        let (track_address, spool, tape, key) = seed_hidden_track(&ctx, signer.pubkey().address());
-        let token = ShareToken::issue(&signer, tape, key, reader_identity(), Hash::default(), 1);
-
-        let result = hidden_read(
-            &ctx,
-            track_address,
-            spool,
-            PeerIdentity::authenticated(reader_identity()),
-            token_headers(&token),
-        )
-        .await;
-
-        assert!(matches!(result, Err(RouteError::Forbidden(_))));
-    }
-
-    // advancing the tape's share nonce revokes a token already issued
-    #[tokio::test]
-    async fn revoked_token() {
-        let ctx = test_context().await;
-        let signer = signing_key();
-        let (track_address, spool, tape, key) = seed_hidden_track(&ctx, signer.pubkey().address());
-        let token = ShareToken::issue(
-            &signer,
-            tape,
-            key,
-            reader_identity(),
-            Hash::default(),
-            unix_now() + 3_600,
-        );
-
-        let mut info = ctx.store.get_tape(tape).expect("tape").expect("tape");
-        info.share_nonce = Hash::new_unique();
-        ctx.store.put_tape(tape, info).expect("advance share nonce");
-
-        let result = hidden_read(
-            &ctx,
-            track_address,
-            spool,
-            PeerIdentity::authenticated(reader_identity()),
-            token_headers(&token),
-        )
-        .await;
-
-        assert!(matches!(result, Err(RouteError::Forbidden(_))));
-    }
-
-    // a share token is refused for any other reader
-    #[tokio::test]
-    async fn wrong_reader() {
-        let ctx = test_context().await;
-        let signer = signing_key();
-        let (track_address, spool, tape, key) = seed_hidden_track(&ctx, signer.pubkey().address());
-        let token = ShareToken::issue(
-            &signer,
-            tape,
-            key,
-            reader_identity(),
-            Hash::default(),
-            unix_now() + 3_600,
-        );
-
-        let result = hidden_read(
-            &ctx,
-            track_address,
-            spool,
-            PeerIdentity::authenticated(NetworkTlsPubkey::new([0x77; 32])),
-            token_headers(&token),
-        )
-        .await;
-
-        assert!(matches!(result, Err(RouteError::Forbidden(_))));
-    }
-
     #[tokio::test]
     async fn serves_slice() {
         let ctx = test_context().await;
@@ -627,10 +367,7 @@ mod tests {
                 tls_pubkey: ctx.tls_pubkey(),
                 stake: TAPE(1),
             })),
-            MaybeActivePeer(None),
-            PeerIdentity::anonymous(),
             Path((track_address.to_string(), owned_spool)),
-            HeaderMap::new(),
         )
         .await;
         let response = match result {
@@ -665,7 +402,6 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
-            visibility: TrackVisibility::Public as u64,
             size: blob.size,
             group,
             value_hash: blob.get_hash(),
@@ -707,10 +443,7 @@ mod tests {
                 tls_pubkey: ctx.tls_pubkey(),
                 stake: TAPE(1),
             })),
-            MaybeActivePeer(None),
-            PeerIdentity::anonymous(),
             Path((track_address.to_string(), owned_spool)),
-            HeaderMap::new(),
         )
         .await;
         let response = match result {
@@ -765,9 +498,6 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(track_number.0 + 1),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    share_nonce: Hash::default(),
                 },
             )
             .expect("seed tape");
@@ -781,7 +511,6 @@ mod tests {
                     track_number,
                     kind: TrackKind::Coded as u64,
                     state: TrackState::Registered as u64,
-                    visibility: TrackVisibility::Public as u64,
                     size: blob.size,
                     group,
                     value_hash: blob.get_hash(),

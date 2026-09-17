@@ -15,7 +15,6 @@ path = "src/bin/rpc-cache/main.rs"
 [dependencies]
 # Workspace crates
 tape-cli-common = { path = "../../tools/tape-cli-common" }
-rpc = { workspace = true }
 tape-api = { workspace = true }
 tape-core = { workspace = true }
 tape-crypto = { workspace = true }

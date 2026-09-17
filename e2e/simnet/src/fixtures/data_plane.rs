@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
 use peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
@@ -23,16 +21,6 @@ impl SimnetScenario<'_> {
         let payer = CryptoKeypair::from_solana_keypair(keypair)
             .expect("convert simnet payer to crypto keypair");
         Tapedrive::new(rpc, payer)
-    }
-
-    /// Create an SDK client that presents a reader identity over mTLS
-    pub fn reader_sdk(
-        &self,
-        identity: Arc<CryptoKeypair>,
-    ) -> Result<Tapedrive<LiteSvmRpc, HttpApi>> {
-        let rpc = self.harness.chain().rpc().clone();
-
-        Tapedrive::new_with_identity(rpc, identity).context("build reader sdk")
     }
 
     /// Upload a content-addressed blob: reserve tape, register track, upload slices, certify.
