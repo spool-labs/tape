@@ -6,6 +6,7 @@ use tape_core::tape::{
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackState};
 use tape_crypto::address::Address;
+use tape_crypto::hash::{hashv, Hash};
 
 use crate::errors::TapeError;
 use crate::program::tapedrive::SYSTEM_ADDRESS;
@@ -37,6 +38,9 @@ pub struct Tape {
 
     /// The epoch when this cassette expires.
     pub expiry_epoch: EpochNumber,
+
+    /// Every shared token on this tape uses this nonce; advancing it revokes them all.
+    pub share_nonce: Hash,
 
     /// A merkle tree of compressed tracks that store the tape data
     pub tracks: TrackArchive,
@@ -147,6 +151,10 @@ impl Tape {
         }
 
         Ok(())
+    }
+
+    pub fn advance_share_nonce(&mut self, slot_hash: Hash) {
+        self.share_nonce = hashv(&[&self.share_nonce.to_bytes(), &slot_hash.to_bytes()]);
     }
 
     pub fn invalidate_track(&mut self, proof: &CompressedTrackProof) -> ProgramResult {

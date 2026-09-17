@@ -472,7 +472,20 @@ where
         // block seeded one.
         let before: usize = self.open_rounds.values().map(VecDeque::len).sum();
         for pending in self.open_rounds.values_mut() {
-            pending.retain(|open| !hashes.contains(&open.round.block));
+            pending.retain(|open| {
+                if !hashes.contains(&open.round.block) {
+                    return true;
+                }
+                // The trace closes with the block it opened on and re-opens on
+                // whatever the chain puts in that block's place.
+                self.context.round_traces.close(
+                    open.round.epoch,
+                    open.round.round,
+                    open.round.group,
+                    TraceClose::Unconfirmed,
+                );
+                false
+            });
         }
         let after: usize = self.open_rounds.values().map(VecDeque::len).sum();
         let dropped = before - after;

@@ -54,7 +54,13 @@ mod tests {
     use tape_core::system::BlacklistEntry;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
-    use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackKind, TrackState};
+    use tape_core::track::types::{
+        CompressedTrack,
+        CompressedTrackProof,
+        TrackKind,
+        TrackState,
+        TrackVisibility,
+    };
     use tape_crypto::hash::hash;
     use tape_crypto::merkle::{MerkleTree, create_proof_from_leaf_hashes};
     use tape_test::*;
@@ -75,6 +81,7 @@ mod tests {
             track_number,
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(entry_size),
             group: GroupIndex(7),
             value_hash: hash(bytemuck::bytes_of(&entry)),

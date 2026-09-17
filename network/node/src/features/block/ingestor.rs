@@ -509,7 +509,7 @@ mod tests {
 
         let mut ingestor = BlockIngestor::new(
             ctx.clone(),
-            LiveStart::at(join_slot),
+            LiveStart { slot: join_slot, parent: None },
             senders,
             CancellationToken::new(),
         );
@@ -604,7 +604,7 @@ mod tests {
 
         let mut ingestor = BlockIngestor::new(
             ctx.clone(),
-            LiveStart::at(join_slot),
+            LiveStart { slot: join_slot, parent: None },
             senders,
             CancellationToken::new(),
         );

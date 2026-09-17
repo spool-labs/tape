@@ -21,7 +21,6 @@ members = [
   "sdk",
   "store/store",
   "store/store-memory",
-  "store/store-rocks",
   "store/reel-store",
   "store/tape-store",
   "solana/rpc",
@@ -57,6 +56,15 @@ members = [
   "tools/tape-cue",
   "tools/tape-measure",
 ]
+
+# store-rocks compiles RocksDB from scratch, about 20 minutes, and nothing in a
+# normal build needs it: it backs the node's store only under tape-node's
+# `rocks` feature. Leaving it out of default-members below is not enough to keep
+# `cargo check --workspace` off it, because --workspace overrides default-members
+# and a path dependency inside the workspace directory is a member by default.
+# Build it with `-p tape-node --features rocks`, with --all-features, or from
+# store/store-rocks itself.
+exclude = ["store/store-rocks"]
 
 # Programs and test crates excluded from default cargo build/check:
 # - programs/*: require cargo build-sbf

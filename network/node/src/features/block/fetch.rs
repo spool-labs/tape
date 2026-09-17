@@ -15,7 +15,7 @@ use tape_crypto::Hash;
 use tape_protocol::Api;
 use tape_retry::{Backoff, RetryConfig, backoff_or_cancel, retry_if};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
@@ -84,11 +84,17 @@ where
             debug!(slot = slot.0, "slot skipped");
             return Ok(None);
         }
-        if matches!(error, RpcError::BlockNotAvailable)
+        // A pruned slot answers the same way here: the endpoint has no block, and
+        // the confirmed chain is what says whether one was ever produced.
+        if matches!(error, RpcError::BlockNotAvailable | RpcError::BlockPruned)
             && skipped_on_confirmed_chain(&context, &cancel, slot).await?
         {
             debug!(slot = slot.0, "slot skipped on the confirmed chain");
             return Ok(None);
+        }
+        // The chain lists a block this endpoint has lost, and only a retry reaches it
+        if matches!(error, RpcError::BlockPruned) {
+            warn!(slot = slot.0, "block fetch: endpoint has no block the confirmed chain lists, retrying");
         }
         if !error.is_retriable() || backoff_or_cancel(&mut backoff, &cancel).await {
             error!(slot = slot.0, error = %error, "block fetch failed: {}", error);

@@ -2,7 +2,7 @@ use tape_api::program::prelude::*;
 use tape_api::event::{TrackDeleted, TrackWritten};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::data::TrackMeta;
-use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
+use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackVisibility};
 use tape_crypto::hash::hashv;
 use tape_crypto::Hash;
 
@@ -13,6 +13,7 @@ pub fn append_track(
     tape_address: Address,
     key: Hash,
     meta: TrackMeta,
+    visibility: TrackVisibility,
 ) -> ProgramResult {
     let curr = current_epoch(system);
     if curr < tape.active_epoch || tape.expiry_epoch <= curr {
@@ -38,6 +39,7 @@ pub fn append_track(
         key,
         kind: meta.kind as u64,
         state: meta.state as u64,
+        visibility: visibility as u64,
         size: meta.size,
         group,
         value_hash: meta.value_hash,
@@ -106,7 +108,7 @@ fn select_group(
     Ok(GroupIndex(mixed % spool_groups))
 }
 
-fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {
+pub fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {
     slot_hashes_info.is_sysvar(&sysvar::slot_hashes::ID)?;
     let slot_hashes_data = slot_hashes_info.try_borrow_data()?;
     let seed = Hash(

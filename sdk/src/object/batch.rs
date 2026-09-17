@@ -285,6 +285,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                         StorageUnits::from_bytes(bytes_written),
                         &data,
                         Operation::WriteBatch,
+                        self.write_options.visibility,
                     )
                     .await?;
                     sent.push(SentItem::Inline {
@@ -309,6 +310,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                         StorageUnits::from_bytes(bytes_written),
                         *plan,
                         Operation::WriteBatch,
+                        self.write_options.visibility,
                     )
                     .await?;
                     sent.push(SentItem::Coded {

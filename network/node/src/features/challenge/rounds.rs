@@ -421,7 +421,7 @@ mod protocol_tests {
 
     use crate::features::challenge::fold::holds_spool;
     use crate::features::challenge::audit::{
-        Round, accept_answer, attest_message, expected_sample,
+        Round, accept_answer, admits_round, attest_message, expected_sample,
     };
     use crate::features::challenge::refusal::RefusalReason;
     use crate::features::challenge::certify::agreement_threshold;
@@ -545,6 +545,64 @@ mod protocol_tests {
         if let Some(peer) = state.peers.iter_mut().find(|peer| peer.node == node) {
             peer.bls_pubkey = pubkey;
         }
+    }
+
+    // a key naming a round this node will never settle is turned away, so an
+    // admitted peer cannot grow the buffer by naming rounds at will
+    #[tokio::test]
+    async fn outside_the_window() {
+        let fixture = fixture().await;
+        let schedule = fixture.schedule();
+        let round = fixture.round();
+
+        // Where the node sits on the grid, which is what the window is drawn round
+        fixture
+            .ctx
+            .ingest
+            .progress()
+            .record_dispatched(schedule.base_slot(round.round).as_u64());
+
+        assert_eq!(admits_round(&fixture.ctx, &round), Ok(()));
+
+        let mut far = round;
+        far.round = RoundNumber(round.round.as_u64() + schedule.settling_rounds() + 1);
+        assert_eq!(admits_round(&fixture.ctx, &far), Err(RefusalReason::OutOfWindow));
+
+        let mut unknown = round;
+        unknown.epoch = EpochNumber(fixture.state.epoch().as_u64() + 5);
+        assert_eq!(
+            admits_round(&fixture.ctx, &unknown),
+            Err(RefusalReason::NoLocalQuestion)
+        );
+    }
+
+    // the entropy block seeds the draw, so a round opened on another block asks a
+    // different question and its evidence has nowhere here to land
+    #[tokio::test]
+    async fn another_block_for_the_round() {
+        let fixture = fixture().await;
+        let round = fixture.round();
+        fixture
+            .ctx
+            .ingest
+            .progress()
+            .record_dispatched(fixture.schedule().base_slot(round.round).as_u64());
+        fixture.ctx.round_traces.open(
+            round.epoch,
+            round.round,
+            round.group,
+            SlotNumber(0),
+            round.block,
+        );
+
+        assert_eq!(admits_round(&fixture.ctx, &round), Ok(()));
+
+        let mut forked = round;
+        forked.block = Hash([0x11; 32]);
+        assert_eq!(
+            admits_round(&fixture.ctx, &forked),
+            Err(RefusalReason::NoLocalQuestion)
+        );
     }
 
     // a spool that changes hands leaves the old owner's history behind, and judging

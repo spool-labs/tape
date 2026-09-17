@@ -687,6 +687,92 @@ where
     }
 }
 
+/// Admit a hidden object read for a caller the operator's policy maps to the bucket
+///
+/// A read check, so it neither reserves budget nor consults the write kill switch.
+pub fn authorize_hidden_read<Db, Cluster, Blockchain>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    auth: &Auth,
+    bucket: Address,
+) -> Result<(), S3Error>
+where
+    Db: Store,
+    Cluster: Api,
+    Blockchain: Rpc,
+{
+    decide_hidden_read(
+        state.context.store.as_ref(),
+        bootstrap_access_key_id(state),
+        auth,
+        bucket,
+    )
+}
+
+/// The hidden-read decision over the durable reads
+fn decide_hidden_read<Reads: AuthzReads>(
+    reads: &Reads,
+    bootstrap_id: Option<&str>,
+    auth: &Auth,
+    bucket: Address,
+) -> Result<(), S3Error> {
+    let access_key_id = match auth {
+        Auth::Verified(principal) => principal.access_key_id.as_str(),
+        Auth::Anonymous => {
+            return Err(S3Error::AccessDenied(
+                "this object is hidden and requires authentication".to_string(),
+            ));
+        }
+    };
+
+    let principal = match reads.get_credential(access_key_id) {
+        Ok(Some(credential)) => {
+            if !credential.is_usable(now_unix()) {
+                return Err(S3Error::AccessDenied(
+                    "credential is revoked or expired".to_string(),
+                ));
+            }
+            if !credential.caps.can_read {
+                return Err(S3Error::AccessDenied(
+                    "credential is not permitted to read hidden objects".to_string(),
+                ));
+            }
+            if !credential.allows_bucket(&bucket) {
+                return Err(S3Error::AccessDenied(
+                    "credential scope does not include this bucket".to_string(),
+                ));
+            }
+            credential.principal
+        }
+        // The bootstrap credential carries no owner of its own, so it resolves
+        // to the default principal and leaves the decision to policy. Resolving
+        // it to the bucket instead would make it every bucket's owner, and one
+        // dev key would open every hidden object on the gateway.
+        Ok(None) => match bootstrap_id {
+            Some(bootstrap) if bootstrap == access_key_id => Address::default(),
+            Some(_) | None => {
+                return Err(S3Error::AccessDenied(
+                    "no active credential for this access key id".to_string(),
+                ));
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "s3 hidden read authz: credential store unavailable");
+            return Err(S3Error::Internal(
+                "credential store is unavailable".to_string(),
+            ));
+        }
+    };
+
+    match reads.evaluate_policy(&principal, &bucket, PolicyAction::Read, true) {
+        Ok(decision) if decision.is_allowed => Ok(()),
+        Ok(decision) => Err(S3Error::AccessDenied(decision.reason)),
+        Err(error) => {
+            tracing::warn!(%error, "s3 hidden read authz: policy store unavailable");
+            Err(S3Error::Internal("policy store is unavailable".to_string()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,6 +876,7 @@ mod tests {
             can_put: true,
             can_delete: false,
             can_multipart: false,
+            can_read: false,
         };
         assert!(WriteOp::Put.permitted_by(&only_put));
         assert!(!WriteOp::Delete.permitted_by(&only_put));

@@ -9,6 +9,7 @@ use crate::admission::{AdmitAll, Admission};
 use crate::blacklist::denials::GatewayBlacklists;
 use crate::staging::StagingStore;
 use crate::cache::GatewaySliceCache;
+use crate::share_tokens::ConfiguredShareTokens;
 use crate::http::handlers::s3::accounting::Accounting;
 use crate::http::handlers::s3::write::S3WriteContext;
 use crate::http::handlers::site::hosts::SiteHostBindings;
@@ -36,6 +37,8 @@ pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub site_hosts: Option<Arc<SiteHostBindings>>,
     /// Writes acknowledged to the client but not yet applied on chain; reads serve from here first.
     pub staging: Arc<StagingStore<Db>>,
+    /// Operator-configured share tokens, presented when fetching a hidden track's slices
+    pub share_tokens: Arc<ConfiguredShareTokens>,
     /// Blacklists this gateway follows; reads of what they deny are refused.
     pub blacklists: Arc<GatewayBlacklists>,
 }
@@ -49,6 +52,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> AppState<Db, Cluster, Blockchain>
         staging: Arc<StagingStore<Db>>,
         blacklists: Arc<GatewayBlacklists>,
     ) -> Self {
+        let share_tokens = Arc::new(ConfiguredShareTokens::from_config(&context.config.gateway.share_tokens));
         Self {
             context,
             slice_cache,
@@ -59,6 +63,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> AppState<Db, Cluster, Blockchain>
             admission: Arc::new(AdmitAll),
             site_hosts: None,
             staging,
+            share_tokens,
             blacklists,
         }
     }
@@ -76,6 +81,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, B
             admission: self.admission.clone(),
             site_hosts: self.site_hosts.clone(),
             staging: self.staging.clone(),
+            share_tokens: self.share_tokens.clone(),
             blacklists: self.blacklists.clone(),
         }
     }

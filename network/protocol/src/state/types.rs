@@ -307,6 +307,12 @@ impl ProtocolState {
         Some(group_member_count_inner(group_inner(groups, group)))
     }
 
+    /// Which node owned this spool as of `epoch`, current or previous
+    pub fn spool_owner_at(&self, epoch: EpochNumber, spool: SpoolIndex) -> Option<Address> {
+        let groups = self.groups_at(epoch)?;
+        assigned_node(spool_inner(groups, spool)?.node)
+    }
+
     /// Whether a node held a spool in a group as of `epoch`
     pub fn is_member_at(&self, epoch: EpochNumber, group: GroupIndex, node: Address) -> bool {
         self.groups_at(epoch)
@@ -556,6 +562,27 @@ mod tests {
 
         assert_eq!(state.spool_owner_prev(SpoolIndex(0)), Some(prev_owner));
         assert_eq!(state.group_member_count_prev(GroupIndex(0)), 1);
+    }
+
+    // a spool that changed hands answers with whoever held it in the round's epoch
+    #[test]
+    fn owner_at_the_turn() {
+        let previous = EpochNumber(4);
+        let held_before = address(8);
+        let mut state = state_with_groups();
+        state.previous = Some(EpochBundle {
+            epoch: Epoch {
+                id: previous,
+                ..Epoch::zeroed()
+            },
+            committee: vec![member(held_before, 10)],
+            groups: vec![group(previous, GroupIndex(0), &[held_before])],
+        });
+
+        assert_eq!(state.spool_owner_at(EpochNumber(5), SpoolIndex(0)), Some(address(1)));
+        assert_eq!(state.spool_owner_at(previous, SpoolIndex(0)), Some(held_before));
+        assert_eq!(state.spool_owner_at(EpochNumber(3), SpoolIndex(0)), None);
+        assert_eq!(state.spool_owner_at(EpochNumber(6), SpoolIndex(0)), None);
     }
 
     #[test]

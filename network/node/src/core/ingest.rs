@@ -155,6 +155,14 @@ impl IngestProgress {
         self.last_known_tip.load(Ordering::Relaxed)
     }
 
+    /// The tip once one has been recorded
+    pub fn known_tip(&self) -> Option<u64> {
+        match self.last_known_tip() {
+            u64::MAX => None,
+            tip => Some(tip),
+        }
+    }
+
     /// Tip, dispatched slot, and lag, treating the unset tip sentinel as zero.
     pub fn tip_and_lag(&self) -> (u64, u64, u64) {
         let tip = self.last_known_tip();

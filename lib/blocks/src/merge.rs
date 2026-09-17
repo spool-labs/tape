@@ -201,6 +201,7 @@ pub fn merge(
             RawInstruction::TrackWrite {
                 authority,
                 key,
+                visibility,
                 object,
                 value,
             } => {
@@ -216,6 +217,7 @@ pub fn merge(
                     authority,
                     track: event.track,
                     key,
+                    visibility,
                     object,
                     value,
                     event,
@@ -321,6 +323,25 @@ pub fn merge(
                     preferences,
                     event,
                 }
+            }
+
+            RawInstruction::SetTapeDelegate { tape, delegate } => {
+                ParsedInstruction::SetTapeDelegate { tape, delegate }
+            }
+
+            RawInstruction::AdvanceShareNonce { tape } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::ShareNonceAdvanced(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected ShareNonceAdvanced event",
+                        ))
+                    }
+                };
+                if event.tape != tape {
+                    return Err(ParseError::EventMismatch("unexpected ShareNonceAdvanced event"));
+                }
+                ParsedInstruction::AdvanceShareNonce { tape, event }
             }
 
             // The metadata setters emit no events; the parsed args are the payload.
@@ -493,7 +514,7 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::event::{
         AssignmentFinalized, EpochAdvanced, EpochCommitted, NodeEvicted, NodeJoinedCommittee,
-        NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSynced, TapeExtended, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated,
+        NodeRegistered, PoolAdvanced, ShareNonceAdvanced, SnapshotFinalized, SpoolSynced, TapeExtended, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated,
         TrackWritten, VoteProposed, VoteRecorded,
     };
     use tape_core::bls::BlsPubkey;
@@ -503,6 +524,7 @@ mod tests {
     use tape_core::staking::RateSpan;
     use tape_core::system::{EpochPhase, ExchangeRate, NodePreferences, VoteKind};
     use tape_core::track::data::BlobData;
+    use tape_core::track::types::TrackVisibility;
     use tape_core::types::coin::TAPE;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::tls::NetworkTlsPubkey;
@@ -872,6 +894,7 @@ mod tests {
         let instructions = vec![
             RawInstruction::AdvanceEpoch,
             RawInstruction::TrackWrite {
+                visibility: TrackVisibility::Public,
                 authority: owner,
                 key: Hash::default(),
                 object: None,
@@ -932,6 +955,7 @@ mod tests {
     fn required_events_missing_cases() -> Vec<RawInstruction> {
         vec![
             RawInstruction::TrackWrite {
+                visibility: TrackVisibility::Public,
                 authority: Address::new_unique(),
                 key: Hash::default(),
                 object: None,
@@ -943,6 +967,9 @@ mod tests {
                     stripe_count: StripeCount(1),
                     leaves: [Hash::default(); GROUP_SIZE],
                 }),
+            },
+            RawInstruction::AdvanceShareNonce {
+                tape: Address::new_unique(),
             },
             RawInstruction::DeleteTrack {
                 owner: Address::new_unique(),
@@ -994,6 +1021,7 @@ mod tests {
         vec![
             (
                 RawInstruction::TrackWrite {
+                    visibility: TrackVisibility::Public,
                     authority: Address::new_unique(),
                     key: Hash::default(),
                     object: None,
@@ -1121,6 +1149,30 @@ mod tests {
             cost: TAPE(11),
             burned: TAPE(1),
             scheduled: TAPE(10),
+        }
+    }
+
+    // Pairing a share nonce advance with its event keeps the new nonce.
+    #[test]
+    fn merge_share_nonce() {
+        let tape = Address::new_unique();
+        let event = ShareNonceAdvanced {
+            tape,
+            nonce: Hash::new_unique(),
+        };
+
+        let merged = merge(
+            vec![RawInstruction::AdvanceShareNonce { tape }],
+            vec![TapedriveEvent::ShareNonceAdvanced(event)],
+        )
+        .expect("merge succeeds");
+
+        match &merged[..] {
+            [ParsedInstruction::AdvanceShareNonce { tape: t, event: e }] => {
+                assert_eq!(*t, tape);
+                assert_eq!(e.nonce, event.nonce);
+            }
+            _ => panic!("Expected AdvanceShareNonce"),
         }
     }
 
