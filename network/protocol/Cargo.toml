@@ -19,6 +19,7 @@ rpc.workspace = true
 rpc-client.workspace = true
 tape-retry.workspace = true
 arc-swap.workspace = true
+base64.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true

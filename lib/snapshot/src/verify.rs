@@ -46,7 +46,7 @@ mod tests {
     use super::*;
 
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{TrackKind, TrackState};
+    use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -58,6 +58,7 @@ mod tests {
             track_number: TrackNumber(n),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(64),
             group: GroupIndex(n),
             value_hash: Hash::default(),

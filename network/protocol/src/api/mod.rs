@@ -4,12 +4,14 @@ pub mod error;
 pub mod ops;
 pub mod request_id;
 pub mod routes;
+pub mod share;
 pub mod types;
 
 pub use error::ApiError;
 pub use ops::*;
 pub use request_id::*;
 pub use routes::*;
+pub use share::*;
 pub use types::*;
 
 use async_trait::async_trait;

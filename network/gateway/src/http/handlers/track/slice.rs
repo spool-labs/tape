@@ -60,7 +60,7 @@ async fn fetch_slice_from_owner<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .position_of(spool_id)
         .ok_or_else(|| RouteError::BadRequest("spool is not in track group".into()))?;
 
-    let data = track_data_with_pending(state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
+    let data = track_data_with_pending(state, track_addr, &track)?.ok_or(RouteError::NotFound)?;
     let BlobData::Coded(blob) = data else {
         return Err(RouteError::BadRequest(
             "track data is not blob metadata".into(),

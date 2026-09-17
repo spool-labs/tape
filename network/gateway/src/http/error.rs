@@ -9,6 +9,7 @@ use crate::cache::GatewayCacheError;
 pub enum RouteError {
     NotFound,
     BadRequest(String),
+    Forbidden(String),
     /// A syntactically valid Range that cannot be satisfied; carries the
     /// object size for the `Content-Range: bytes */{size}` answer.
     RangeNotSatisfiable(u64),
@@ -23,6 +24,7 @@ impl IntoResponse for RouteError {
         match self {
             Self::NotFound => (StatusCode::NOT_FOUND, "not found").into_response(),
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+            Self::Forbidden(message) => (StatusCode::FORBIDDEN, message).into_response(),
             Self::RangeNotSatisfiable(total) => (
                 StatusCode::RANGE_NOT_SATISFIABLE,
                 [(header::CONTENT_RANGE, format!("bytes */{total}"))],
@@ -46,6 +48,7 @@ impl Display for RouteError {
         match self {
             Self::NotFound => f.write_str("not found"),
             Self::BadRequest(message) => write!(f, "bad request: {message}"),
+            Self::Forbidden(message) => write!(f, "forbidden: {message}"),
             Self::RangeNotSatisfiable(total) => {
                 write!(f, "range not satisfiable for object of {total} bytes")
             }

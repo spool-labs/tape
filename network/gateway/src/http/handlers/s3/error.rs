@@ -183,6 +183,7 @@ impl From<RouteError> for S3Error {
             RouteError::Gone => Self::Removed,
             RouteError::RangeNotSatisfiable(total) => Self::InvalidRange(total),
             RouteError::BadRequest(message) => Self::InvalidRequest(message),
+            RouteError::Forbidden(message) => Self::AccessDenied(message),
             RouteError::BadGateway(message) | RouteError::Internal(message) => {
                 Self::Internal(message)
             }

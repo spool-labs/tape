@@ -1288,7 +1288,6 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
- "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -9787,7 +9786,6 @@ name = "tape"
 version = "0.4.0"
 dependencies = [
  "anyhow",
- "chrono",
  "clap",
  "dirs",
  "hex",
@@ -9804,6 +9802,7 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-peer-http",
+ "tape-protocol",
  "tape-rpc",
  "tape-rpc-client",
  "tape-rpc-solana",
@@ -10002,6 +10001,7 @@ version = "0.4.0"
 dependencies = [
  "bytemuck",
  "num_enum",
+ "rand 0.8.5",
  "serde",
  "solana-keypair",
  "tape-base58",
@@ -10512,6 +10512,7 @@ version = "0.4.0"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "base64 0.13.1",
  "bytemuck",
  "peer-memory",
  "serde",
@@ -10740,6 +10741,7 @@ dependencies = [
  "tape-metrics",
  "tape-peer-http",
  "tape-peer-manager",
+ "tape-peer-tls",
  "tape-protocol",
  "tape-retry",
  "tape-rpc",

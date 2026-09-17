@@ -4,7 +4,7 @@ use tape_api::event::{
     AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
     EpochCreated, EventType, CommissionClaimed, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
-    StakeUnlockRequested, StakeWithdrawn, TapeExtended, TapeReserved,
+    ShareNonceAdvanced, StakeUnlockRequested, StakeWithdrawn, TapeExtended, TapeReserved,
     TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 
@@ -33,6 +33,7 @@ pub enum TapedriveEvent {
     TrackWritten(TrackWritten),
     TapeReserved(TapeReserved),
     TapeExtended(TapeExtended),
+    ShareNonceAdvanced(ShareNonceAdvanced),
     NodeRegistered(NodeRegistered),
     NodeJoinedCommittee(NodeJoinedCommittee),
     NodeEvicted(NodeEvicted),
@@ -147,6 +148,11 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
             let event = bytemuck::try_from_bytes::<TapeExtended>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::TapeExtended(*event)))
+        }
+        EventType::ShareNonceAdvanced => {
+            let event = bytemuck::try_from_bytes::<ShareNonceAdvanced>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::ShareNonceAdvanced(*event)))
         }
         EventType::NodeRegistered => {
             let event = bytemuck::try_from_bytes::<NodeRegistered>(event_data)

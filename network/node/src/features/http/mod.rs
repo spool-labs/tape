@@ -6,4 +6,5 @@ pub mod forwarded;
 pub mod handlers;
 pub mod peer_identity;
 pub mod server;
+pub mod share;
 mod state;

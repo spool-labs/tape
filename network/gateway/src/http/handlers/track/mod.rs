@@ -37,13 +37,16 @@ pub fn ensure_readable<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 }
 
-/// A track's stored content, refused once reads of the track are denied
+/// A track's stored content, refused for hidden tracks and once reads of the track are denied
 pub fn track_data_with_pending<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
-    tape: Address,
+    track: &CompressedTrack,
 ) -> Result<Option<BlobData>, RouteError> {
-    ensure_readable(state, track_addr, tape)?;
+    if track.is_hidden() {
+        return Err(RouteError::Forbidden("the gateway does not serve hidden tracks".into()));
+    }
+    ensure_readable(state, track_addr, track.tape)?;
     match state.context.pending.track_data(track_addr) {
         Some(data) => Ok(Some(data)),
         None => state

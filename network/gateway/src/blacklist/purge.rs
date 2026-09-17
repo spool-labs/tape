@@ -87,6 +87,7 @@ mod tests {
             key: Hash::new_unique(),
             kind: 0,
             state: 1,
+            visibility: 0,
             size: StorageUnits::from_bytes(3),
             group: GroupIndex(0),
             value_hash: Hash::new_unique(),

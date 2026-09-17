@@ -198,7 +198,7 @@ impl Api for HttpApi {
         let url = format!("{base}{}", slice_url(&track_id, req.spool));
 
         let start = Instant::now();
-        let resp = stamp_request_id(client.get(&url).timeout(self.get_slice_timeout))
+        let resp = stamp_request_scope(client.get(&url).timeout(self.get_slice_timeout))
             .send()
             .await
             .map_err(map_reqwest)?;
@@ -394,7 +394,7 @@ impl Api for HttpApi {
         let url = format!("{base}{}", track_data_url(&track_id));
 
         let start = Instant::now();
-        let resp = stamp_request_id(client.get(&url))
+        let resp = stamp_request_scope(client.get(&url))
             .send()
             .await
             .map_err(map_reqwest)?;
@@ -731,13 +731,17 @@ impl Api for HttpApi {
     }
 }
 
-/// Stamp the in-scope correlation id on an outbound request, so the node's
-/// logs for this call tie back to the originating gateway request. A no-op
-/// for calls made outside a request scope (background sync, repair, votes),
-/// so it is safe on any send site.
-fn stamp_request_id(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    match current_request_id() {
+/// Stamp the in-scope correlation id and share token on an outbound request, so
+/// the node's logs tie back to the originating request and a hidden track serves.
+/// A no-op outside a request scope (background sync, repair, votes).
+fn stamp_request_scope(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    let request = match current_request_id() {
         Some(id) => request.header(REQUEST_ID_HEADER, id),
+        None => request,
+    };
+
+    match current_share_token() {
+        Some(token) => request.header(SHARE_TOKEN_HEADER, token),
         None => request,
     }
 }

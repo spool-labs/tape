@@ -90,6 +90,15 @@ pub struct TapeInfo {
 
     /// Next monotonic track number expected for this tape
     pub next_track_number: TrackNumber,
+
+    /// Authority that owns the tape
+    pub authority: Address,
+
+    /// Delegate allowed to operate on the tape, default when none is set
+    pub delegate: Address,
+
+    /// Every shared token on this tape uses this nonce
+    pub share_nonce: Hash,
 }
 
 impl TapeInfo {
@@ -100,6 +109,9 @@ impl TapeInfo {
             flags,
             end_epoch,
             next_track_number,
+            authority: Address::default(),
+            delegate: Address::default(),
+            share_nonce: Hash::default(),
         }
     }
 }
@@ -818,6 +830,9 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(200),
             next_track_number: TrackNumber(0),
+            authority: Address::new_unique(),
+            delegate: Address::default(),
+            share_nonce: Hash::new_unique(),
         };
 
         let bytes = wincode::serialize(&info).unwrap();
