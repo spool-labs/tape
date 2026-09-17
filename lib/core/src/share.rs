@@ -7,13 +7,22 @@ use tape_crypto::address::Address;
 use tape_crypto::ed25519::consts::ED25519_SIG_LEN;
 use tape_crypto::ed25519::sig_verify;
 #[cfg(not(target_os = "solana"))]
-use tape_crypto::ed25519::Keypair;
+use tape_crypto::ed25519::{Keypair, Signature};
 use tape_crypto::hash::{Hash, HASH_BYTES};
 
 use crate::types::tls::NetworkTlsPubkey;
 
 /// The signature covers this domain tag, ahead of the token fields
 pub const SHARE_V1: &[u8; 8] = b"SHARE_V1";
+
+/// The reader's per-request signature covers this domain tag
+pub const READ_V1: &[u8; 7] = b"READ_V1";
+
+/// A read request may expire at most this many seconds after now
+pub const MAX_READ_REQUEST_TTL: i64 = 300;
+
+/// Separates the read request's fields; no field may contain it
+const READ_FIELD_SEPARATOR: u8 = 0x00;
 
 /// Track key that opens every track on the tape
 pub const ALL_TRACKS: Hash = Hash([0u8; HASH_BYTES]);
@@ -57,6 +66,9 @@ pub enum ShareError {
     WrongKey,
     BadSignature,
     Malformed,
+    RequestExpired,
+    RequestTooFarAhead,
+    RequestSignature,
 }
 
 impl ShareError {
@@ -71,6 +83,9 @@ impl ShareError {
             ShareError::WrongKey => "share token is for another track",
             ShareError::BadSignature => "share token signature is invalid",
             ShareError::Malformed => "share token is malformed",
+            ShareError::RequestExpired => "read request has expired",
+            ShareError::RequestTooFarAhead => "read request expiry is too far ahead",
+            ShareError::RequestSignature => "read request signature is invalid",
         }
     }
 }
@@ -156,6 +171,69 @@ impl ShareToken {
     }
 }
 
+/// A request signed by the token's reader, binding the reader key to one call
+#[cfg(not(target_os = "solana"))]
+pub struct ReadRequest {
+    pub method: String,
+    pub path: String,
+    pub expiry: i64,
+}
+
+#[cfg(not(target_os = "solana"))]
+impl ReadRequest {
+    /// Bind one method, path, and expiry into a request for the reader to sign
+    pub fn new(method: &str, path: &str, expiry: i64) -> Self {
+        Self {
+            method: method.to_ascii_uppercase(),
+            path: path.to_string(),
+            expiry,
+        }
+    }
+
+    /// The reader signs these bytes and the verifier rebuilds them
+    pub fn signing_message(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(
+            READ_V1.len() + self.method.len() + self.path.len() + 2 + size_of::<i64>(),
+        );
+
+        out.extend_from_slice(READ_V1);
+        out.extend_from_slice(self.method.as_bytes());
+        out.push(READ_FIELD_SEPARATOR);
+        out.extend_from_slice(self.path.as_bytes());
+        out.push(READ_FIELD_SEPARATOR);
+        out.extend_from_slice(&self.expiry.to_le_bytes());
+
+        out
+    }
+
+    /// Sign one call with the token's reader key
+    pub fn sign(keypair: &Keypair, method: &str, path: &str, expiry: i64) -> Signature {
+        keypair.sign(&Self::new(method, path, expiry).signing_message())
+    }
+
+    /// Check a presented request against the token's reader and the local clock
+    pub fn verify(
+        reader: &NetworkTlsPubkey,
+        method: &str,
+        path: &str,
+        expiry: i64,
+        signature: &Signature,
+        now: i64,
+    ) -> Result<(), ShareError> {
+        if expiry <= now {
+            return Err(ShareError::RequestExpired);
+        }
+
+        if expiry > now.saturating_add(MAX_READ_REQUEST_TTL) {
+            return Err(ShareError::RequestTooFarAhead);
+        }
+
+        let message = Self::new(method, path, expiry).signing_message();
+        sig_verify(reader.as_bytes(), &signature.to_bytes(), &message)
+            .map_err(|_| ShareError::RequestSignature)
+    }
+}
+
 /// Current unix time in seconds; token expiry is judged by the local clock
 #[cfg(not(target_os = "solana"))]
 pub fn unix_now() -> i64 {
@@ -172,6 +250,7 @@ mod tests {
     use rand::rngs::OsRng;
 
     const EXPIRY: i64 = 1_800_000_000;
+    const REQUEST_PATH: &str = "/object/abc";
 
     fn context(token: &ShareToken) -> ShareContext {
         ShareContext {
@@ -183,6 +262,14 @@ mod tests {
             reader: token.reader,
             now: token.expiry - 1,
         }
+    }
+
+    fn request() -> (Keypair, NetworkTlsPubkey, Signature) {
+        let reader = Keypair::new(&mut OsRng);
+        let pubkey = NetworkTlsPubkey::new(reader.pubkey().to_bytes());
+        let signature = ReadRequest::sign(&reader, "GET", REQUEST_PATH, EXPIRY);
+
+        (reader, pubkey, signature)
     }
 
     fn sample(track_key: Hash) -> ShareToken {
@@ -292,5 +379,83 @@ mod tests {
         context.track_key = Hash([0x66; 32]);
 
         assert_eq!(token.verify(&context), Ok(()));
+    }
+
+    // a signed request passes at a clock inside its window
+    #[test]
+    fn signed_request() {
+        let (_reader, pubkey, signature) = request();
+
+        let checked = ReadRequest::verify(&pubkey, "GET", REQUEST_PATH, EXPIRY, &signature, EXPIRY - 10);
+
+        assert_eq!(checked, Ok(()));
+    }
+
+    // the method is signed, so the same signature does not open another verb
+    #[test]
+    fn other_method() {
+        let (_reader, pubkey, signature) = request();
+
+        let checked = ReadRequest::verify(&pubkey, "HEAD", REQUEST_PATH, EXPIRY, &signature, EXPIRY - 10);
+
+        assert_eq!(checked, Err(ShareError::RequestSignature));
+    }
+
+    // the path is signed, so the same signature does not open another object
+    #[test]
+    fn other_path() {
+        let (_reader, pubkey, signature) = request();
+
+        let checked = ReadRequest::verify(&pubkey, "GET", "/object/def", EXPIRY, &signature, EXPIRY - 10);
+
+        assert_eq!(checked, Err(ShareError::RequestSignature));
+    }
+
+    // a request is refused from its expiry second on, matching the token's boundary
+    #[test]
+    fn stale_request() {
+        let (_reader, pubkey, signature) = request();
+
+        let checked = ReadRequest::verify(&pubkey, "GET", REQUEST_PATH, EXPIRY, &signature, EXPIRY);
+
+        assert_eq!(checked, Err(ShareError::RequestExpired));
+    }
+
+    // an expiry further ahead than the window allows is refused
+    #[test]
+    fn distant_request() {
+        let reader = Keypair::new(&mut OsRng);
+        let pubkey = NetworkTlsPubkey::new(reader.pubkey().to_bytes());
+        let expiry = EXPIRY + MAX_READ_REQUEST_TTL + 1;
+        let signature = ReadRequest::sign(&reader, "GET", REQUEST_PATH, expiry);
+
+        let checked = ReadRequest::verify(&pubkey, "GET", REQUEST_PATH, expiry, &signature, EXPIRY);
+
+        assert_eq!(checked, Err(ShareError::RequestTooFarAhead));
+    }
+
+    // a request signed by any other key is refused
+    #[test]
+    fn other_reader() {
+        let (_reader, _pubkey, signature) = request();
+        let stranger = Keypair::new(&mut OsRng);
+        let pubkey = NetworkTlsPubkey::new(stranger.pubkey().to_bytes());
+
+        let checked = ReadRequest::verify(&pubkey, "GET", REQUEST_PATH, EXPIRY, &signature, EXPIRY - 10);
+
+        assert_eq!(checked, Err(ShareError::RequestSignature));
+    }
+
+    // a lowercase method signs the same message as its uppercase form
+    #[test]
+    fn method_case() {
+        let (reader, pubkey, signature) = request();
+        let lowercase = ReadRequest::sign(&reader, "get", REQUEST_PATH, EXPIRY);
+
+        assert_eq!(lowercase.to_bytes(), signature.to_bytes());
+
+        let checked = ReadRequest::verify(&pubkey, "get", REQUEST_PATH, EXPIRY, &signature, EXPIRY - 10);
+
+        assert_eq!(checked, Ok(()));
     }
 }

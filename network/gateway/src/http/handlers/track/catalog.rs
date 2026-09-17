@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
+use axum::http::{HeaderMap, Method, Uri};
 use axum::response::IntoResponse;
 use rpc::Rpc;
 use store::Store;
@@ -22,6 +23,7 @@ use tape_store::ops::{ObjectListOps, TapeOps, TrackOps};
 
 use super::{parse_address, track_data_with_pending, track_with_pending};
 use crate::http::error::RouteError;
+use crate::http::handlers::share::authorize_signed_read;
 use crate::http::handlers::{binary_response, store_error};
 use crate::http::state::AppState;
 
@@ -43,11 +45,18 @@ pub async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
 pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
 ) -> Result<impl IntoResponse, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
     let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
+
+    // This gateway's own store serves the blob metadata, so an admitted caller needs no node token.
+    authorize_signed_read(&state, &headers, &method, uri.path(), &track)?;
+
     let data_addr = track_pda(track.tape, track.track_number).0;
-    let data = track_data_with_pending(&state, data_addr, &track)?.ok_or(RouteError::NotFound)?;
+    let data = track_data_with_pending(&state, data_addr, track.tape)?.ok_or(RouteError::NotFound)?;
 
     binary_response(&TrackDataResponse { data })
 }

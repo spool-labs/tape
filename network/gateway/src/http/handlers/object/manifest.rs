@@ -5,11 +5,12 @@ use futures::Stream;
 use rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
+use tape_core::share::ShareToken;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
-use tape_protocol::api::{current_request_id, with_request_id};
+use tape_protocol::api::{current_request_id, current_share_token, with_request_id, with_share_token};
 use tape_sdk::stream::manifest::ChunkManifest;
 
 use super::decode::decode_track_bytes;
@@ -120,7 +121,12 @@ where
 {
     let chunks = resolve_planned_chunks(&state, tape, manifest, plan)?;
     let (status, headers) = ranged_object_headers(range, total_size, &metadata, etag, status)?;
-    let body = Body::from_stream(manifest_chunk_stream(state, chunks, current_request_id()));
+    let body = Body::from_stream(manifest_chunk_stream(
+        state,
+        chunks,
+        current_request_id(),
+        current_share_token(),
+    ));
     Ok((status, headers, body).into_response())
 }
 
@@ -128,6 +134,7 @@ fn manifest_chunk_stream<Db, Cluster, Blockchain>(
     state: AppState<Db, Cluster, Blockchain>,
     chunks: Vec<StreamChunk>,
     request_id: Option<String>,
+    share_token: Option<ShareToken>,
 ) -> impl Stream<Item = Result<Bytes, RouteError>> + Send + 'static
 where
     Db: Store + 'static,
@@ -140,6 +147,7 @@ where
             chunks,
             next: 0,
             request_id,
+            share_token,
         },
         |mut stream| async move {
             let Some(chunk) = stream.chunks.get(stream.next).copied() else {
@@ -150,9 +158,13 @@ where
             // The whole chunk decodes and verifies against the manifest size
             // before any slicing; a ranged read changes what is sent, never
             // what is checked. The body is polled after the request middleware
-            // finished, so the id captured at response build re-enters scope
-            // here and each chunk's peer fetches stay correlated.
-            let decode = decode_track_bytes(&stream.state, chunk.track_addr, chunk.track);
+            // finished, so the id and share token captured at response build
+            // re-enter scope here: each chunk's peer fetches stay correlated, and
+            // a hidden stream's chunk fetches still present the token.
+            let decode = with_share_token(
+                stream.share_token,
+                decode_track_bytes(&stream.state, chunk.track_addr, chunk.track),
+            );
             let decoded = match stream.request_id.clone() {
                 Some(id) => with_request_id(id, decode).await?,
                 None => decode.await?,
@@ -182,6 +194,7 @@ struct ObjectStreamState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     chunks: Vec<StreamChunk>,
     next: usize,
     request_id: Option<String>,
+    share_token: Option<ShareToken>,
 }
 
 #[cfg(test)]

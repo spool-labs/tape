@@ -11,6 +11,8 @@ use arc_swap::ArcSwap;
 use rpc::Rpc;
 use store::Store;
 use tape_api::program::tapedrive::track_pda;
+use tape_core::share::ShareToken;
+use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::{Keypair, Pubkey};
@@ -65,6 +67,27 @@ impl S3WriteContext {
                 "delegate keypair reconstruction failed: {error}"
             ))
         })
+    }
+
+    /// Sign a share token as the tape's delegate, for one reader on one track key
+    ///
+    /// Nodes accept it only for tapes that delegate to this key; the caller checks that first.
+    pub fn issue_share_token(
+        &self,
+        tape: Address,
+        track_key: Hash,
+        reader: NetworkTlsPubkey,
+        nonce: Hash,
+        expiry: i64,
+    ) -> Result<ShareToken, TapedriveError> {
+        Ok(ShareToken::issue(
+            &self.delegate_keypair()?,
+            tape,
+            track_key,
+            reader,
+            nonce,
+            expiry,
+        ))
     }
 
     /// Build an SDK `Tapedrive`` write client over the gateway's shared node

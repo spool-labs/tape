@@ -196,6 +196,8 @@ pub struct CredentialCaps {
     pub can_delete: bool,
     /// May perform the multipart-upload lifecycle
     pub can_multipart: bool,
+    /// May read a hidden object
+    pub can_read: bool,
 }
 
 impl CredentialCaps {
@@ -205,6 +207,7 @@ impl CredentialCaps {
             can_put: true,
             can_delete: true,
             can_multipart: true,
+            can_read: true,
         }
     }
 
@@ -214,6 +217,7 @@ impl CredentialCaps {
             can_put: false,
             can_delete: false,
             can_multipart: false,
+            can_read: false,
         }
     }
 }

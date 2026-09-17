@@ -273,6 +273,11 @@ impl TestGateway {
         format!("http://{}:{}", self.public_host, self.public_port)
     }
 
+    /// Set the share tokens this gateway presents when fetching hidden tracks, before the runtime starts
+    pub fn set_share_tokens(&mut self, share_tokens: Vec<String>) {
+        self.app_config.gateway.share_tokens = share_tokens;
+    }
+
     /// Site serving knobs, settable before the runtime starts.
     pub fn site_config_mut(&mut self) -> &mut GatewaySiteConfig {
         &mut self.app_config.gateway.site

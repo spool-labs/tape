@@ -45,7 +45,7 @@ pub async fn decode_track_bytes<
         return Err(RouteError::BadRequest("unsupported track kind".into()));
     }
 
-    let track_data = track_data_with_pending(state, track_addr, &track)?.ok_or(RouteError::NotFound)?;
+    let track_data = track_data_with_pending(state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
     let BlobData::Coded(blob) = track_data else {
         crate::metrics::inc_decode_result("data_mismatch");
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
@@ -90,7 +90,7 @@ async fn decode_inline<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track_addr: Address,
     track: CompressedTrack,
 ) -> Result<DecodedObject, RouteError> {
-    let bytes = match track_data_with_pending(state, track_addr, &track)? {
+    let bytes = match track_data_with_pending(state, track_addr, track.tape)? {
         Some(BlobData::Inline(bytes)) => {
             // The peer-fetch path verifies before caching, so only the local copy
             // needs checking here; either way the bytes are hashed exactly once.

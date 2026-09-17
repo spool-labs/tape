@@ -2,13 +2,14 @@ use std::time::Duration;
 
 use axum::Extension;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::Response;
 use rpc::Rpc;
 use store::Store;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
+use tape_protocol::api::with_share_token;
 use tape_sdk::stream::manifest::ChunkManifest;
 
 use super::decode::decode_track_bytes;
@@ -18,6 +19,7 @@ use super::response::{
     range_header, resolve_range,
 };
 use crate::http::error::RouteError;
+use crate::http::handlers::share::authorize_signed_read;
 use crate::http::handlers::track::{ensure_readable, parse_address, track_with_pending};
 use crate::http::state::AppState;
 use crate::meter::{GatewayMeterDecision, MeterCaller, rate_limited_response};
@@ -33,6 +35,8 @@ pub async fn get_object<
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(caller): Extension<MeterCaller>,
     Path(track_id): Path<String>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Response, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
@@ -42,16 +46,21 @@ pub async fn get_object<
         return Err(RouteError::BadRequest("track is not certified".into()));
     }
 
+    let token = authorize_signed_read(&state, &headers, &method, uri.path(), &track)?;
+
     let metadata = object_response_metadata(&state, track_addr)?;
-    read_object_response(
-        state,
-        track_addr,
-        track,
-        metadata,
-        StatusCode::OK,
-        &caller,
-        range_header(&headers).map(str::to_string),
-        rate_limited_response,
+    with_share_token(
+        token,
+        read_object_response(
+            state,
+            track_addr,
+            track,
+            metadata,
+            StatusCode::OK,
+            &caller,
+            range_header(&headers).map(str::to_string),
+            rate_limited_response,
+        ),
     )
     .await
 }
@@ -145,6 +154,8 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(caller): Extension<MeterCaller>,
     Path(track_id): Path<String>,
+    method: Method,
+    uri: Uri,
     headers: HeaderMap,
 ) -> Result<Response, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
@@ -153,6 +164,8 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
     if !track.is_certified() {
         return Err(RouteError::BadRequest("track is not certified".into()));
     }
+
+    let token = authorize_signed_read(&state, &headers, &method, uri.path(), &track)?;
 
     match state
         .meter
@@ -165,7 +178,7 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     let metadata = object_response_metadata(&state, track_addr)?;
-    let decoded = decode_track_bytes(&state, track_addr, track).await?;
+    let decoded = with_share_token(token, decode_track_bytes(&state, track_addr, track)).await?;
     state
         .context
         .metrics

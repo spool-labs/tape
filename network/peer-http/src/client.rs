@@ -741,7 +741,7 @@ fn stamp_request_scope(request: reqwest::RequestBuilder) -> reqwest::RequestBuil
     };
 
     match current_share_token() {
-        Some(token) => request.header(SHARE_TOKEN_HEADER, token),
+        Some(token) => request.header(SHARE_TOKEN_HEADER, encode_share_token(&token)),
         None => request,
     }
 }

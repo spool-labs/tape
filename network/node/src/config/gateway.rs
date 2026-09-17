@@ -33,6 +33,10 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub site: GatewaySiteConfig,
 
+    /// This gateway presents these base64 share tokens when fetching hidden tracks.
+    #[serde(default)]
+    pub share_tokens: Vec<String>,
+
     /// Blacklists this gateway follows; reads of what they deny answer 410.
     #[serde(default)]
     pub blacklists: Vec<Subscription>,
