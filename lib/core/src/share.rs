@@ -22,6 +22,7 @@ pub const READ_V1: &[u8; 7] = b"READ_V1";
 pub const MAX_READ_REQUEST_TTL: i64 = 300;
 
 /// Separates the read request's fields; no field may contain it
+#[cfg(not(target_os = "solana"))]
 const READ_FIELD_SEPARATOR: u8 = 0x00;
 
 /// Track key that opens every track on the tape
