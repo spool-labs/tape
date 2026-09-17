@@ -509,7 +509,7 @@ impl Rpc for LiteSvmRpc {
             block_time: Some(slot_data.block_time),
             index: 0,
         }
-        .encode(UiTransactionEncoding::Json, Some(0))
+        .encode(UiTransactionEncoding::Json, Some(1))
         .map_err(|e| RpcError::Internal(format!("failed to encode transaction: {e}")))
     }
 

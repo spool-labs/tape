@@ -68,6 +68,9 @@ async fn send_transfer_records_block_and_status() {
     let txs = block.transactions.expect("full tx details present");
     assert_eq!(txs.len(), 1, "one tx recorded in block");
 
+    let fetched = rpc.get_transaction(&sig).await.expect("v1 transaction is fetchable");
+    assert_eq!(fetched.slot, slot + 1);
+
     let recipient_addr: Address = recipient.into();
     let recipient_account = rpc.get_account(&recipient_addr).await.expect("recipient account");
     assert_eq!(recipient_account.lamports, 1_000_000);
