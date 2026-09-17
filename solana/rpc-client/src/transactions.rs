@@ -627,6 +627,8 @@ mod tests {
     const LOCAL_VALIDATOR: &str = "http://127.0.0.1:8899";
     const MEMO_PROGRAM: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 
+    // The memo program spends nearly the whole compute ceiling on a payload
+    // this size, so these sends run at MAX_COMPUTE_UNIT_LIMIT.
     fn memo(len: usize) -> Instruction {
         Instruction {
             program_id: Pubkey::from_str(MEMO_PROGRAM).expect("memo program id"),
@@ -692,8 +694,12 @@ mod tests {
         let blockhash = client.rpc().get_latest_blockhash().await.expect("blockhash");
         let oversized = sign_unchecked(&payer, memo(largest + 1), blockhash);
         assert_eq!(transaction_len(&oversized).expect("measure"), MAX_TRANSACTION_SIZE + 1);
-        let refused = client.rpc().send_transaction(&oversized).await;
-        assert!(refused.is_err(), "validator accepted {} bytes", MAX_TRANSACTION_SIZE + 1);
+        let refused = client
+            .rpc()
+            .send_transaction(&oversized)
+            .await
+            .expect_err("validator accepted an oversized transaction");
+        assert!(refused.to_string().contains("too large"), "refused for another reason: {refused}");
     }
 
     #[tokio::test]
