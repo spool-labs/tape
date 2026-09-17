@@ -219,7 +219,7 @@ pub(super) fn peer_totals(families: &[MetricFamily]) -> HttpStats {
 pub(super) fn chain_totals(families: &[MetricFamily]) -> ChainStats {
     let mut c = ChainStats::default();
     for family in families {
-        match family.get_name() {
+        match family.name() {
             "rpc_requests_total" => c.rpc_total += counter_sum(family),
             "rpc_errors_total" => {
                 let (rpc, tx) = split_rpc_errors(family);
@@ -239,7 +239,7 @@ pub(super) fn store_io_totals(families: &[MetricFamily]) -> (u64, u64, u64) {
     let mut read = 0;
     let mut written = 0;
     for family in families {
-        match family.get_name() {
+        match family.name() {
             "tape_store_operations_total" => ops += counter_sum(family),
             "tape_store_bytes_read_total" => read += counter_sum(family),
             "tape_store_bytes_written_total" => written += counter_sum(family),
@@ -266,7 +266,7 @@ pub(super) fn http_stats(families: &[MetricFamily]) -> HttpStats {
 pub(super) fn chain_stats(families: &[MetricFamily]) -> ChainStats {
     let mut c = ChainStats::default();
     for family in families {
-        match family.get_name() {
+        match family.name() {
             "rpc_requests_total" => c.rpc_total += counter_sum(family),
             "rpc_errors_total" => {
                 let (rpc, tx) = split_rpc_errors(family);

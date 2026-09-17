@@ -2,7 +2,6 @@
 
 use std::time::{Duration, Instant};
 
-use tape_store_api::Store;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::bft::is_supermajority;
 use tape_core::erasure::GROUP_SIZE;

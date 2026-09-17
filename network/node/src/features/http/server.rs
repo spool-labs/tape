@@ -44,6 +44,8 @@ pub struct HttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     http_config: HttpConfig,
     https_config: HttpsConfig,
+    /// Only the metrics routes read this, so without that feature it sits unused
+    #[cfg_attr(not(feature = "metrics"), allow(dead_code))]
     metrics_enabled: bool,
     cancel: CancellationToken,
 }
