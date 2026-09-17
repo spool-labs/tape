@@ -1,4 +1,6 @@
-//! The summed quorum key has to agree with the full aggregate verify.
+//! Where the milliseconds go in one certificate verification.
+
+use std::time::Instant;
 
 use tape_core::bls::{BlsPrivateKey, BlsQuorumKey, BlsSignature};
 
@@ -24,4 +26,32 @@ fn summed_verify_agrees() {
 
     let short = BlsQuorumKey::sum(&pubkeys[..18]).unwrap();
     assert!(agg.verify_quorum(message, &short).is_err(), "a thinner quorum must not stand");
+}
+
+// one aggregate check costs ~10ms live against ~3ms of pairing math; this
+// names the difference
+#[test]
+fn where_the_verify_goes() {
+    let message = b"bls cost probe";
+    let keys: Vec<BlsPrivateKey> = (0..19).map(|_| BlsPrivateKey::from_random()).collect();
+    let sigs: Vec<BlsSignature> = keys.iter().map(|k| k.sign(message).unwrap()).collect();
+    let pubkeys: Vec<_> = keys.iter().map(|k| k.public_key().unwrap()).collect();
+
+    let start = Instant::now();
+    let agg = BlsSignature::aggregate(&sigs).unwrap();
+    let aggregate_us = start.elapsed().as_micros();
+
+    let start = Instant::now();
+    agg.verify_aggregate(message, &pubkeys).unwrap();
+    let verify_us = start.elapsed().as_micros();
+
+    let start = Instant::now();
+    for _ in 0..19 {
+        let _ = BlsSignature::aggregate(&sigs[..1]).unwrap();
+    }
+    let nineteen_roundtrips_us = start.elapsed().as_micros();
+
+    panic!(
+        "aggregate(19)={aggregate_us}us verify={verify_us}us 19x(decompress+compress)={nineteen_roundtrips_us}us"
+    );
 }

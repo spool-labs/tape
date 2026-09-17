@@ -25,7 +25,8 @@ use tower::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
-use crate::admission::{AdmitAll, Admission};
+use crate::admission::Admission;
+use crate::blacklist::denials::GatewayBlacklists;
 use crate::drain::DrainStatus;
 use crate::cache::GatewaySliceCache;
 use crate::http::AppState;
@@ -47,6 +48,7 @@ pub struct GatewayHttpServer<Db: Store, Cluster: Api, Blockchain: Rpc> {
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
     staging: Arc<StagingStore<Db>>,
+    blacklists: Arc<GatewayBlacklists>,
     http_config: HttpConfig,
     cancel: CancellationToken,
 }
@@ -65,6 +67,7 @@ where
         slice_cache: Arc<GatewaySliceCache<Db>>,
         meter: Arc<GatewayMeter>,
         staging: Arc<StagingStore<Db>>,
+        blacklists: Arc<GatewayBlacklists>,
         http_config: HttpConfig,
         cancel: CancellationToken,
     ) -> Self {
@@ -73,25 +76,26 @@ where
             slice_cache,
             meter,
             staging,
+            blacklists,
             http_config,
             cancel,
         }
     }
 
     fn build_router(&self) -> Router {
+        // The native read listener never writes, so it carries no delegate
+        // signing context and its accounting and admission state are never
+        // exercised.
         let state = AppState {
-            context: self.context.clone(),
-            slice_cache: self.slice_cache.clone(),
-            meter: self.meter.clone(),
-            // The native read listener never writes, so it carries no delegate
-            // signing context and its accounting and admission state are never
-            // exercised.
-            write_ctx: None,
             s3_delegate: s3_delegate_address(&self.context.config.gateway.s3),
-            accounting: Arc::new(Accounting::new()),
-            admission: Arc::new(AdmitAll),
             site_hosts: SiteHostBindings::from_config(self.context.config.gateway.site.txt_domains),
-            staging: self.staging.clone(),
+            ..AppState::reader(
+                self.context.clone(),
+                self.slice_cache.clone(),
+                self.meter.clone(),
+                self.staging.clone(),
+                self.blacklists.clone(),
+            )
         };
         let peer_body_limit = DefaultBodyLimit::max(self.http_config.peer_max_bytes);
 
@@ -262,6 +266,7 @@ pub struct GatewayS3Server<Db: Store, Cluster: Api, Blockchain: Rpc> {
     slice_cache: Arc<GatewaySliceCache<Db>>,
     meter: Arc<GatewayMeter>,
     staging: Arc<StagingStore<Db>>,
+    blacklists: Arc<GatewayBlacklists>,
     write_ctx: Option<Arc<S3WriteContext>>,
     accounting: Arc<Accounting>,
     admission: Arc<dyn Admission>,
@@ -283,6 +288,7 @@ where
         slice_cache: Arc<GatewaySliceCache<Db>>,
         meter: Arc<GatewayMeter>,
         staging: Arc<StagingStore<Db>>,
+        blacklists: Arc<GatewayBlacklists>,
         write_ctx: Option<Arc<S3WriteContext>>,
         accounting: Arc<Accounting>,
         admission: Arc<dyn Admission>,
@@ -294,6 +300,7 @@ where
             slice_cache,
             meter,
             staging,
+            blacklists,
             write_ctx,
             accounting,
             admission,
@@ -314,6 +321,7 @@ where
             // The S3 listener never serves site hosts.
             site_hosts: None,
             staging: self.staging.clone(),
+            blacklists: self.blacklists.clone(),
         };
 
         let verifier = verifier_from_config(&self.s3_config);
@@ -347,6 +355,7 @@ where
             tokio::spawn(reservation_sweep_loop(
                 self.accounting.clone(),
                 self.context.store.clone(),
+                self.context.config.gateway.s3.write.reservation_ttl_secs,
                 self.cancel.clone(),
             ))
         });
@@ -479,14 +488,14 @@ async fn handle_http_error(error: axum::BoxError) -> StatusCode {
     }
 }
 
-/// Service routes 503 until bootstrap catch-up completes; status routes are
+/// Service routes 503 until bootstrap and blacklist catch-up complete; status routes are
 /// registered outside this layer and serve throughout.
 async fn require_ready<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     req: Request,
     next: Next,
 ) -> Response {
-    if !state.context.bootstrap.is_ready() {
+    if !state.context.bootstrap.is_ready() || !state.blacklists.is_caught_up() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     next.run(req).await

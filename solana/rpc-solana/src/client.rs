@@ -467,9 +467,8 @@ fn decode_block_response(body: &[u8]) -> Result<Block, RpcError> {
         return Err(match error.code {
             JSON_RPC_SERVER_ERROR_SLOT_SKIPPED => RpcError::SlotSkipped,
             // The chain has the block; this backend cannot serve it yet
-            JSON_RPC_SERVER_ERROR_BLOCK_NOT_AVAILABLE => RpcError::BlockNotAvailable,
-            // The rooted check declined to call it a skip, so this backend lost it
-            JSON_RPC_SERVER_ERROR_LONG_TERM_STORAGE_SLOT_SKIPPED => RpcError::BlockPruned,
+            JSON_RPC_SERVER_ERROR_BLOCK_NOT_AVAILABLE
+            | JSON_RPC_SERVER_ERROR_LONG_TERM_STORAGE_SLOT_SKIPPED => RpcError::BlockNotAvailable,
             _ => RpcError::Request(error.message),
         });
     }
@@ -1036,21 +1035,6 @@ mod tests {
 
         // The ingest loop skips the slot off this, so the message must survive.
         assert!(error.is_skipped_slot(), "got {error:?}");
-    }
-
-    // a slot the backend lost is retried in place
-    #[test]
-    fn long_term_storage_miss_retries_in_place() {
-        let body = br#"{"jsonrpc":"2.0","error":{"code":-32009,
-            "message":"Slot 12345 was skipped, or missing in long-term storage"},
-            "id":1}"#;
-
-        let error = decode_block_response(body).expect_err("a missing slot is an error");
-
-        assert!(matches!(error, RpcError::BlockPruned), "got {error:?}");
-        assert!(error.is_retriable(), "got {error:?}");
-        assert!(!error.should_failover(), "got {error:?}");
-        assert!(!error.is_skipped_slot(), "got {error:?}");
     }
 
     #[test]

@@ -1,8 +1,6 @@
 use std::collections::HashSet;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch::Receiver;
@@ -20,8 +18,6 @@ use store::{DiskVolume, Store};
 use store_rocks::SplitStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
-use tape_core::challenge::schedule::MAX_PENDING_ROUNDS;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::prelude::{EpochPhase, NodeId, NodeStatus, SpoolIndex};
 use tape_core::types::coin::SOL;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -75,8 +71,8 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub schedules: Schedules,
     pub attest_queue: Arc<AttestQueue>,
     pub certify_slots: Arc<tokio::sync::Semaphore>,
-    certify_stage: OnceLock<mpsc::SyncSender<CertifyJob>>,
-    verify_stage: OnceLock<mpsc::Sender<VerifyRequest>>,
+    certify_stage: std::sync::OnceLock<std::sync::mpsc::Sender<CertifyJob>>,
+    verify_stage: std::sync::OnceLock<std::sync::mpsc::Sender<VerifyRequest>>,
     pub challenge_counters: ChallengeCounters,
     pub challenge_tripwire: Arc<Tripwire>,
     pub epoch_digest: Arc<DigestWatch>,
@@ -118,24 +114,11 @@ pub struct VerifyRequest {
 /// Certify worker threads; two clear a round inside one cadence
 const CERTIFY_WORKERS: usize = 2;
 
-/// Certify jobs the stage holds: one batch per peer for every settling round
-const CERTIFY_QUEUE: usize = GROUP_SIZE * MAX_PENDING_ROUNDS;
-
-/// Where a certify job went
-pub enum CertifySubmit {
-    /// The stage took it
-    Queued,
-    /// The stage was full, so it runs on the blocking pool
-    Spilled(tokio::task::JoinHandle<()>),
-    /// Teardown closed the stage and handed the job back
-    Closed(CertifyJob),
-}
-
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockchain> {
     /// The certify stage's intake, its workers spawned on first use
-    pub fn certify_stage(&self) -> &mpsc::SyncSender<CertifyJob> {
+    pub fn certify_stage(&self) -> &std::sync::mpsc::Sender<CertifyJob> {
         self.certify_stage.get_or_init(|| {
-            let (tx, rx) = mpsc::sync_channel::<CertifyJob>(CERTIFY_QUEUE);
+            let (tx, rx) = std::sync::mpsc::channel::<CertifyJob>();
             let rx = Arc::new(std::sync::Mutex::new(rx));
             for n in 0..CERTIFY_WORKERS {
                 let rx = rx.clone();
@@ -147,14 +130,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
                             Ok(guard) => guard.recv(),
                             Err(_) => return,
                         };
-                        let Ok(job) = job else {
-                            return;
-                        };
-                        // A panic would end this worker and leave every later
-                        // claim standing unverified.
-                        let guarded = AssertUnwindSafe(job);
-                        if catch_unwind(guarded).is_err() {
-                            tracing::error!("challenge: certify worker panicked, batch unverified");
+                        match job {
+                            Ok(job) => job(),
+                            Err(_) => return,
                         }
                     });
             }
@@ -162,29 +140,18 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         })
     }
 
-    /// Hands one job to the certify stage, spilling to the blocking pool when full
-    pub fn submit_certify(&self, job: CertifyJob) -> CertifySubmit {
-        match self.certify_stage().try_send(job) {
-            Ok(()) => CertifySubmit::Queued,
-            Err(mpsc::TrySendError::Full(job)) => {
-                CertifySubmit::Spilled(tokio::task::spawn_blocking(job))
-            }
-            Err(mpsc::TrySendError::Disconnected(job)) => CertifySubmit::Closed(job),
-        }
-    }
-
     /// The proof verify stage's intake, its workers spawned on first use
     ///
     /// A worker takes everything queued behind the proof that woke it, so a
     /// round's answers check their signatures in one pairing product.
-    pub fn verify_stage(self: &Arc<Self>) -> &mpsc::Sender<VerifyRequest>
+    pub fn verify_stage(self: &Arc<Self>) -> &std::sync::mpsc::Sender<VerifyRequest>
     where
         Db: 'static,
         Cluster: 'static,
         Blockchain: 'static,
     {
         self.verify_stage.get_or_init(|| {
-            let (tx, rx) = mpsc::channel::<VerifyRequest>();
+            let (tx, rx) = std::sync::mpsc::channel::<VerifyRequest>();
             let rx = Arc::new(std::sync::Mutex::new(rx));
             for n in 0..self.config.challenge.verify_workers.max(1) {
                 let rx = rx.clone();
@@ -203,8 +170,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
                             // A panic here would otherwise end the only worker
                             // and leave every later proof refused in silence,
                             // which reads as dishonesty rather than a fault.
-                            let guarded = AssertUnwindSafe(|| context.verify_clump(clump));
-                            if catch_unwind(guarded).is_err() {
+                            let guarded = std::panic::AssertUnwindSafe(|| context.verify_clump(clump));
+                            if std::panic::catch_unwind(guarded).is_err() {
                                 tracing::error!("challenge: verify worker panicked, clump refused");
                             }
                         }
@@ -531,8 +498,8 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             schedules: Schedules::default(),
             attest_queue: Arc::new(AttestQueue::default()),
             certify_slots: Arc::new(tokio::sync::Semaphore::new(CERTIFY_SLOTS)),
-            certify_stage: OnceLock::new(),
-            verify_stage: OnceLock::new(),
+            certify_stage: std::sync::OnceLock::new(),
+            verify_stage: std::sync::OnceLock::new(),
             challenge_counters: ChallengeCounters::default(),
             challenge_tripwire,
             epoch_digest: Arc::new(DigestWatch::default()),

@@ -1,6 +1,6 @@
 //! Accounting glue for the write chokepoint.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -24,9 +24,6 @@ use crate::http::state::AppState;
 /// How long a fetched on-chain tape precondition stays cached.
 const TAPE_PRECONDITION_TTL: Duration = Duration::from_secs(10);
 
-/// Age at which an uncommitted reservation is presumed orphaned.
-pub const RESERVATION_TTL_SECS: i64 = 300;
-
 /// How often the reservation TTL sweep runs.
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -40,6 +37,9 @@ pub struct Accounting {
     /// Process-monotonic source of audit-log sequence numbers, keeping every
     /// audit key unique so concurrent appends never clobber each other.
     audit_sequence: AtomicU64,
+    /// Reservations this process still has a write running against, which the
+    /// TTL sweep uses to tell an abandoned reservation from a slow write
+    in_flight: Mutex<HashSet<LedgerReservationKey>>,
 }
 
 impl Accounting {
@@ -56,6 +56,30 @@ impl Accounting {
     /// Allocate the next unique audit-log sequence number.
     pub fn next_audit_sequence(&self) -> u64 {
         self.audit_sequence.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Mark a reservation as backing a write that is running now.
+    pub(super) fn hold(&self, key: LedgerReservationKey) {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key);
+    }
+
+    /// Drop a reservation's in-flight mark once it is committed or refunded.
+    pub(super) fn release(&self, key: &LedgerReservationKey) {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(key);
+    }
+
+    /// Snapshot of the reservations a write is currently running against.
+    pub(super) fn in_flight(&self) -> HashSet<LedgerReservationKey> {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -157,11 +181,15 @@ where
 {
     let budget = default_budget(state)?;
     let _guard = lock_ledger(state.accounting.as_ref());
-    state
+    let outcome = state
         .context
         .store
         .reserve(&principal, request, budget, now)
-        .map_err(unavailable("ledger unavailable"))
+        .map_err(unavailable("ledger unavailable"))?;
+    if let ReserveOutcome::Granted(key) = &outcome {
+        state.accounting.hold(*key);
+    }
+    Ok(outcome)
 }
 
 /// Reconcile a reservation to its actual cost and commit it.
@@ -178,14 +206,17 @@ pub fn commit_budget<Db, Cluster, Blockchain>(
     let _guard = lock_ledger(state.accounting.as_ref());
     match state.context.store.commit(key, actual_bytes, now) {
         Ok(true) => {}
-        Ok(false) => tracing::warn!(
-            "s3 accounting: reservation already reclaimed at commit; write went unbilled \
-             (raise gateway.s3.write.budgets sweep ttl_secs above write latency)"
+        // The sweep skips anything held in flight, so reaching here means the
+        // reservation was committed or refunded twice.
+        Ok(false) => tracing::error!(
+            principal = %key.principal,
+            "s3 accounting: reservation already reconciled at commit; write went unbilled"
         ),
         Err(error) => {
             tracing::warn!(%error, "s3 accounting: failed to commit reservation (will be swept)")
         }
     }
+    state.accounting.release(key);
 }
 
 /// Release a reservation without billing, under the ledger lock.
@@ -201,6 +232,7 @@ pub fn refund_budget<Db, Cluster, Blockchain>(
     if let Err(error) = state.context.store.refund(key) {
         tracing::warn!(%error, "s3 accounting: failed to refund reservation (will be swept)");
     }
+    state.accounting.release(key);
 }
 
 /// Reclaim orphaned reservations older than the TTL.
@@ -210,8 +242,9 @@ pub fn sweep_reservations<S: Store>(
     now: i64,
     ttl_secs: i64,
 ) -> usize {
+    let in_flight = accounting.in_flight();
     let _guard = lock_ledger(accounting);
-    match store.sweep_reservations(now, ttl_secs) {
+    match store.sweep_reservations(now, ttl_secs, &in_flight) {
         Ok(count) => count,
         Err(error) => {
             tracing::error!(%error, "s3 accounting: reservation sweep failed");
@@ -224,6 +257,7 @@ pub fn sweep_reservations<S: Store>(
 pub async fn reservation_sweep_loop<S: Store>(
     accounting: Arc<Accounting>,
     store: Arc<TapeStore<S>>,
+    ttl_secs: i64,
     cancel: CancellationToken,
 ) {
     let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
@@ -237,7 +271,7 @@ pub async fn reservation_sweep_loop<S: Store>(
             // on the following poll); the synchronous sweep runs only after the tick
             // resolves, so a dropped branch never leaves a partial sweep.
             _ = ticker.tick() => {
-                let reclaimed = sweep_reservations(&accounting, &store, now_unix(), RESERVATION_TTL_SECS);
+                let reclaimed = sweep_reservations(&accounting, &store, now_unix(), ttl_secs);
                 if reclaimed > 0 {
                     tracing::warn!(reclaimed, "s3 accounting: reclaimed orphaned write reservations");
                 }

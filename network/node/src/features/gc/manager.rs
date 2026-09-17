@@ -183,7 +183,8 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
         .map_err(|error| NodeError::Store(format!("set_gc_completed_epoch: {error}")))
 }
 
-fn at_durable_tip<Db: Store, Cluster: Api, Blockchain: Rpc>(
+/// Whether the store has applied blocks to within the at-tip threshold of the finalized tip
+pub fn at_durable_tip<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
 ) -> Result<bool, NodeError> {
     if matches!(context.ingest_state(), IngestState::Stalled { .. }) {

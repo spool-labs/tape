@@ -21,9 +21,11 @@ const RESERVE_EPOCHS: u64 = 8;
 const INDEX_BODY: &[u8] = b"<html><body>site index</body></html>";
 const STYLE_BODY: &[u8] = b"body { color: #01a2f2; }";
 const MISSING_BODY: &[u8] = b"<html><body>lost tape</body></html>";
+const PLAIN_INDEX_BODY: &[u8] = b"<html><body>plain site</body></html>";
 
+const TENANT_POLICY: &str = "default-src 'self'";
 const SITE_POLICY: &[u8] =
-    br#"{"max_age_secs": 5, "connect_origins": ["https://rpc.test"]}"#;
+    br#"{"max_age_secs": 5, "content_security_policy": "default-src 'self'"}"#;
 
 const CUSTOM_DOMAIN: &str = "mysite.test";
 const SUBDOMAIN_SUFFIX: &str = "sites.test";
@@ -135,6 +137,23 @@ async fn site_serving_inner() {
         eprintln!("gateway_site: site objects written");
     }
 
+    // A second site with no policy object of its own shows the gateway defaults.
+    let plain_key = TapeKey::generate();
+    let plain_tape = plain_key.address();
+    {
+        let scenario = harness.scenario();
+        let writer = scenario.sdk(harness.admin());
+        writer
+            .reserve(&plain_key, StorageUnits::mb(1), RESERVE_EPOCHS)
+            .await
+            .expect("reserve plain site tape");
+        writer
+            .put_object(&plain_key, "index.html", PLAIN_INDEX_BODY, Some("text/html"))
+            .await
+            .expect("put plain index page");
+        eprintln!("gateway_site: plain site written");
+    }
+
     // Host-based serving: one custom domain, the subdomain suffix, and a
     // single allowed cross-origin reader.
     {
@@ -221,19 +240,12 @@ async fn site_serving_inner() {
         "public, max-age=5, must-revalidate",
         "tenant policy should shorten the revalidation window"
     );
-    assert!(
-        header(&response, "content-security-policy")
-            .ends_with("connect-src 'self' https://rpc.test"),
-        "tenant policy should extend connect-src"
+    assert_eq!(
+        header(&response, "content-security-policy"),
+        TENANT_POLICY,
+        "tenant policy sets the content policy header"
     );
     assert_eq!(header(&response, "x-content-type-options"), "nosniff");
-    assert!(
-        response
-            .headers()
-            .get("content-security-policy")
-            .is_some(),
-        "site responses carry a content security policy"
-    );
     assert!(
         response.headers().get("content-disposition").is_none(),
         "site responses render inline"
@@ -242,6 +254,27 @@ async fn site_serving_inner() {
     let body = response.bytes().await.expect("read index body");
     assert_eq!(body.as_ref(), INDEX_BODY);
     eprintln!("gateway_site: index served inline");
+
+    // A site with no policy of its own carries no content policy at all: it
+    // may load from anywhere, and still forbids type sniffing.
+    let plain_base = format!("{}/site/{plain_tape}", gateway.base_url());
+    wait_site_ready(&client, &plain_base, active_timeout)
+        .await
+        .expect("plain site served through the gateway");
+    let response = client
+        .get(format!("{plain_base}/"))
+        .send()
+        .await
+        .expect("request plain site index");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().get("content-security-policy").is_none(),
+        "no policy configured means no policy header"
+    );
+    assert_eq!(header(&response, "x-content-type-options"), "nosniff");
+    let body = response.bytes().await.expect("read plain index body");
+    assert_eq!(body.as_ref(), PLAIN_INDEX_BODY);
+    eprintln!("gateway_site: plain site served open");
 
     // A matching If-None-Match revalidates without a body.
     let response = client
@@ -340,6 +373,21 @@ async fn site_serving_inner() {
     assert_eq!(body.as_ref(), INDEX_BODY);
     eprintln!("gateway_site: subdomain root served");
 
+    // The well-known reservation holds on the subdomain form too.
+    let response = client
+        .get(format!("{base}/.well-known/acme-challenge/token"))
+        .header("host", format!("{label}.{SUBDOMAIN_SUFFIX}"))
+        .send()
+        .await
+        .expect("request well-known path on subdomain");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = response.bytes().await.expect("read subdomain well-known body");
+    assert!(
+        body.is_empty(),
+        "well-known must never serve tape content on a subdomain"
+    );
+    eprintln!("gateway_site: well-known reserved on subdomain");
+
     // The allowed origin earns the cross-origin header, others get nothing.
     let response = client
         .get(format!("{base}/"))
@@ -374,6 +422,47 @@ async fn site_serving_inner() {
     assert_eq!(response.status(), StatusCode::OK);
     eprintln!("gateway_site: unmapped host falls through");
 
+    // A host under the suffix that names no tape is nobody's: not found,
+    // never the gateway's own routes. The bare suffix is the same.
+    for host in [format!("nosuchlabel.{SUBDOMAIN_SUFFIX}"), SUBDOMAIN_SUFFIX.to_string()] {
+        let response = client
+            .get(format!("{base}/v1/health"))
+            .header("host", &host)
+            .send()
+            .await
+            .expect("request health under the suffix");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{host} must fail closed");
+    }
+    eprintln!("gateway_site: suffix hosts fail closed");
+
+    // With the path form retired, a path request redirects to the same path
+    // on the site's subdomain while the host form keeps serving.
+    gateway.stop().await.expect("stop gateway for redirect");
+    gateway.site_config_mut().subdomain_redirect = true;
+    gateway.start().await.expect("restart gateway with redirect");
+    gateway
+        .wait_healthy(Duration::from_secs(180))
+        .await
+        .expect("gateway healthy after restart");
+    let response = client
+        .get(format!("{site_base}/assets/app.css?download=1"))
+        .send()
+        .await
+        .expect("request path form with redirect on");
+    assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(
+        header(&response, "location"),
+        format!("http://{label}.{SUBDOMAIN_SUFFIX}/assets/app.css?download=1")
+    );
+    let response = client
+        .get(format!("{base}/"))
+        .header("host", format!("{label}.{SUBDOMAIN_SUFFIX}"))
+        .send()
+        .await
+        .expect("request host form with redirect on");
+    assert_eq!(response.status(), StatusCode::OK);
+    eprintln!("gateway_site: path form redirects to the subdomain");
+
     gateway.stop().await.expect("stop gateway");
     harness.stop_all().await.expect("stop storage nodes");
     eprintln!("gateway_site: complete");
@@ -403,4 +492,3 @@ async fn wait_site_ready(client: &Client, site_base: &str, timeout: Duration) ->
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
-

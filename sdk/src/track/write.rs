@@ -81,6 +81,9 @@ pub struct UploadPlan {
     pub stripe_size: usize,
     pub stripe_count: usize,
     pub leaves: [Hash; GROUP_SIZE],
+    /// Hash of the bytes this plan was encoded from, which a write checks the
+    /// plan it is handed against
+    pub content_hash: Hash,
 }
 
 #[derive(Clone)]
@@ -500,7 +503,8 @@ pub async fn write_track_only<Blockchain: Rpc, Cluster: Api>(
 ///
 /// `plan` must be the encode of `data`; it only skips work, it does not change
 /// what is written. `prepare_plan` is a pure function of the bytes, so a plan
-/// from `content_etag` is identical to the one this would otherwise build.
+/// from `content_etag` is identical to the one this would otherwise build; an
+/// unpaired plan is refused.
 pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -533,7 +537,10 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
         let mut mirror = ArchiveMirror::new(&tape.tracks);
 
         let plan = match plan {
-            Some(plan) => plan,
+            Some(plan) => {
+                check_plan_matches(&plan, data)?;
+                plan
+            }
             None => encode_blob(client, data.to_vec(), Operation::WriteTrack).await?,
         };
         let sent = register_blob_processed(
@@ -641,6 +648,7 @@ impl ObjectWrite {
 
 fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
     let data_len = data.len();
+    let content_hash = hash(&data);
     let profile = EncodingProfile::clay_default();
     let mut encoder = BlobEncoder::with_profile(profile);
     let (slices, merkle_root, leaves) = encoder
@@ -659,7 +667,19 @@ fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
         stripe_size,
         stripe_count: num_stripes(data_len, stripe_size),
         leaves,
+        content_hash,
     })
+}
+
+/// Refuse a plan that is not the encode of `data`, which would otherwise store
+/// the wrong content under an etag computed from the right one.
+fn check_plan_matches(plan: &UploadPlan, data: &[u8]) -> Result<(), TapedriveError> {
+    if plan.storage_units.to_bytes() != data.len() as u64 || plan.content_hash != hash(data) {
+        return Err(TapedriveError::Encoding(
+            "upload plan was not encoded from these bytes".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Encode a blob into its upload plan on a blocking thread; encoding a 64 MiB
@@ -1885,7 +1905,7 @@ mod tests {
     use crate::error::TapedriveError;
 
     use super::{
-        content_etag, content_etag_named, ensure_expected_track_position, hash,
+        check_plan_matches, content_etag, content_etag_named, ensure_expected_track_position, hash,
         inline_write_fits, prepare_plan, should_retry_certification, TrackNumber,
         SDK_INLINE_RAW_MAX_BYTES,
     };
@@ -1910,6 +1930,22 @@ mod tests {
         assert_eq!(plan.stripe_count, fresh.stripe_count);
         assert_eq!(plan.leaves, fresh.leaves);
         assert_eq!(plan.slices.len(), fresh.slices.len());
+    }
+
+    // a plan from other bytes is refused, whatever its length
+    #[test]
+    fn unpaired_plan() {
+        let data = blob(SDK_INLINE_RAW_MAX_BYTES * 4);
+        let plan = prepare_plan(data.clone()).expect("plan");
+
+        assert!(check_plan_matches(&plan, &data).is_ok());
+
+        // Same length, different content: the length check alone would pass it.
+        let mut altered = data.clone();
+        altered[0] ^= 0xFF;
+        assert!(check_plan_matches(&plan, &altered).is_err());
+
+        assert!(check_plan_matches(&plan, &data[..data.len() - 1]).is_err());
     }
 
     // inline payloads never encode, so they carry no plan

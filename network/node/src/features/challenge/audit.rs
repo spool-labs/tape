@@ -16,7 +16,7 @@ use tape_core::erasure::{
 };
 use tape_core::track::blob::SubLeafProof;
 use tape_core::track::data::BlobData;
-use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex};
+use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 use tape_protocol::api::{AttestReq, ProofOfAccessReq, SpoolAttestation};
@@ -56,39 +56,6 @@ impl Round {
             spool,
             block: self.block,
         }
-    }
-}
-
-/// Whether this node can still settle the round, so evidence about it can land
-pub fn admits_round<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &NodeContext<Db, Cluster, Blockchain>,
-    round: &Round,
-) -> Result<(), RefusalReason> {
-    // No grid for the epoch means this node asked nothing of it and settles
-    // none of its rounds.
-    let Some(schedule) = context.schedules.get(round.epoch) else {
-        return Err(RefusalReason::NoLocalQuestion);
-    };
-
-    let progress = context.ingest.progress();
-    let behind = schedule
-        .round_by(SlotNumber(progress.last_dispatched_slot()))
-        .unwrap_or(RoundNumber(0));
-    // Ahead comes from the chain tip: a node behind still owes its peers' rounds
-    let ahead = schedule
-        .round_by(SlotNumber(progress.known_tip().unwrap_or(progress.last_dispatched_slot())))
-        .unwrap_or(behind);
-    let span = schedule.settling_rounds();
-    let window = behind.as_u64().saturating_sub(span)..=ahead.as_u64().saturating_add(span);
-    if !window.contains(&round.round.as_u64()) {
-        return Err(RefusalReason::OutOfWindow);
-    }
-
-    // The entropy block seeds the draw, so a round opened on another block is a
-    // different question and no evidence about it reaches the one asked here.
-    match context.round_traces.block_for(round.epoch, round.round, round.group) {
-        Some(block) if block != round.block => Err(RefusalReason::NoLocalQuestion),
-        Some(_) | None => Ok(()),
     }
 }
 
@@ -278,7 +245,7 @@ pub fn accept_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
         _ => return Err(RefusalReason::EncodingNotHeld),
     };
 
-    let Some(owner) = state.spool_owner_at(answer.epoch, answer.spool) else {
+    let Some(owner) = state.spool_owner(answer.spool) else {
         return Err(RefusalReason::UnknownOwner);
     };
     let Some(peer) = state.peer(owner) else {
@@ -310,9 +277,7 @@ pub fn answer_signer<Db: Store, Cluster: Api, Blockchain: Rpc>(
         _ => return Err(RefusalReason::EncodingNotHeld),
     };
 
-    let owner = state
-        .spool_owner_at(answer.epoch, answer.spool)
-        .ok_or(RefusalReason::UnknownOwner)?;
+    let owner = state.spool_owner(answer.spool).ok_or(RefusalReason::UnknownOwner)?;
     let peer = state.peer(owner).ok_or(RefusalReason::UnknownKey)?;
     answer
         .verify_shape(&expected, registered, in_time)
@@ -359,16 +324,10 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
         Some(me),
     );
 
-    // Nobody to post to, so a batch opened here would hold signatures nothing sends
-    let Some(members) = group_members_at(state, answer.epoch, answer.group) else {
-        return;
-    };
+    let members = group_members_at(state, answer.epoch, answer.group).unwrap_or_default();
     // Where this node sits in the group, which is what spreads the relay copies.
     let at = members.iter().position(|peer| *peer == me).unwrap_or_default();
     let peers: Vec<Address> = members.into_iter().filter(|peer| *peer != me).collect();
-    if peers.is_empty() {
-        return;
-    }
 
     // One round's signatures ride together. This one joins the batch; the first
     // of a round opens it and owns the sender that carries all of them.
@@ -378,7 +337,7 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
         round: round.round,
         block: round.block,
     };
-    let opened = context.attest_queue.push(batch, answer.spool, signature, peers.len());
+    let opened = context.attest_queue.push(batch, answer.spool, signature);
 
     let context = context.clone();
 
@@ -431,18 +390,16 @@ pub fn spawn_attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
                 }
 
                 if !context.attest_queue.is_open(&batch) {
-                    break;
+                    return;
                 }
 
                 // A signature landing mid-post moved the count, so this returns
                 // at once; an error is the batch retiring
                 match timeout(SENDER_IDLE, gathered.changed()).await {
                     Ok(Ok(())) => {}
-                    _ => break,
+                    _ => return,
                 }
             }
-            // Counted out so a signature arriving later gets a sender of its own
-            context.attest_queue.sender_done(&batch);
         });
     }
 }

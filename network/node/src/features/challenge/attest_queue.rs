@@ -30,8 +30,6 @@ struct Batch {
     held: Vec<(SpoolIndex, BlsSignature)>,
     /// Watched count; a notify would wake one of a round's many senders
     gathered: watch::Sender<usize>,
-    /// Senders still carrying this batch; at zero the next push takes it over
-    senders: usize,
 }
 
 #[derive(Default)]
@@ -49,14 +47,13 @@ pub struct AttestQueue {
 }
 
 impl AttestQueue {
-    /// Adds one signature, returning a watch on the count when the caller owes
-    /// the batch that many senders. A batch already carried wakes the ones it has.
+    /// Adds one signature, returning a watch on the count when it opened the
+    /// batch. An open batch wakes the senders already carrying it.
     pub fn push(
         &self,
         key: BatchKey,
         spool: SpoolIndex,
         signature: BlsSignature,
-        senders: usize,
     ) -> Option<watch::Receiver<usize>> {
         let Ok(mut state) = self.state.lock() else {
             return None;
@@ -70,31 +67,16 @@ impl AttestQueue {
                 let batch = batch.get_mut();
                 batch.held.push((spool, signature));
                 batch.gathered.send_replace(batch.held.len());
-                if batch.senders > 0 {
-                    return None;
-                }
-                batch.senders = senders;
-                Some(batch.gathered.subscribe())
+                None
             }
             Entry::Vacant(slot) => {
                 let (gathered, watch) = watch::channel(1);
                 slot.insert(Batch {
                     held: vec![(spool, signature)],
                     gathered,
-                    senders,
                 });
                 Some(watch)
             }
-        }
-    }
-
-    /// Counts one sender out, which is what lets a later push start another.
-    pub fn sender_done(&self, key: &BatchKey) {
-        let Ok(mut state) = self.state.lock() else {
-            return;
-        };
-        if let Some(batch) = state.batches.get_mut(key) {
-            batch.senders = batch.senders.saturating_sub(1);
         }
     }
 
@@ -158,27 +140,9 @@ mod tests {
     #[test]
     fn one_sender_per_round() {
         let queue = AttestQueue::default();
-        assert!(queue.push(key(1), SpoolIndex(0), signature(), 2).is_some());
-        assert!(queue.push(key(1), SpoolIndex(1), signature(), 2).is_none());
-        assert!(queue.push(key(2), SpoolIndex(0), signature(), 2).is_some());
-    }
-
-    // a batch every sender has left holds signatures nothing posts, so the next
-    // push takes it over
-    #[test]
-    fn idle_senders_are_replaced() {
-        let queue = AttestQueue::default();
-        assert!(queue.push(key(1), SpoolIndex(0), signature(), 2).is_some());
-
-        queue.sender_done(&key(1));
-        assert!(
-            queue.push(key(1), SpoolIndex(1), signature(), 2).is_none(),
-            "one sender still carries the batch"
-        );
-
-        queue.sender_done(&key(1));
-        assert!(queue.push(key(1), SpoolIndex(2), signature(), 2).is_some());
-        assert_eq!(queue.since(&key(1), 0).len(), 3);
+        assert!(queue.push(key(1), SpoolIndex(0), signature()).is_some());
+        assert!(queue.push(key(1), SpoolIndex(1), signature()).is_none());
+        assert!(queue.push(key(2), SpoolIndex(0), signature()).is_some());
     }
 
     // reading leaves the batch in place, so a later signature reaches the
@@ -186,11 +150,11 @@ mod tests {
     #[test]
     fn reading_does_not_reopen() {
         let queue = AttestQueue::default();
-        queue.push(key(1), SpoolIndex(0), signature(), 2);
+        queue.push(key(1), SpoolIndex(0), signature());
 
         assert_eq!(queue.since(&key(1), 0).len(), 1);
         assert!(queue.is_open(&key(1)));
-        assert!(queue.push(key(1), SpoolIndex(1), signature(), 2).is_none());
+        assert!(queue.push(key(1), SpoolIndex(1), signature()).is_none());
         assert_eq!(queue.since(&key(1), 1).len(), 1);
         // Every sender reads the same signatures, each from its own cursor.
         assert_eq!(queue.since(&key(1), 0).len(), 2);
@@ -199,8 +163,8 @@ mod tests {
     #[test]
     fn retiring_closes_the_batch() {
         let queue = AttestQueue::default();
-        queue.push(key(1), SpoolIndex(0), signature(), 1);
-        queue.push(key(4), SpoolIndex(0), signature(), 1);
+        queue.push(key(1), SpoolIndex(0), signature());
+        queue.push(key(4), SpoolIndex(0), signature());
 
         queue.retire_before(EpochNumber(3), RoundNumber(4));
         assert!(!queue.is_open(&key(1)));
@@ -214,15 +178,15 @@ mod tests {
         let queue = AttestQueue::default();
         queue.retire_before(EpochNumber(3), RoundNumber(4));
 
-        assert!(queue.push(key(1), SpoolIndex(0), signature(), 1).is_none());
+        assert!(queue.push(key(1), SpoolIndex(0), signature()).is_none());
         assert!(!queue.is_open(&key(1)));
-        assert!(queue.push(key(4), SpoolIndex(0), signature(), 1).is_some());
+        assert!(queue.push(key(4), SpoolIndex(0), signature()).is_some());
     }
 
     #[test]
     fn discarding_a_block_closes_its_rounds() {
         let queue = AttestQueue::default();
-        queue.push(key(1), SpoolIndex(0), signature(), 1);
+        queue.push(key(1), SpoolIndex(0), signature());
 
         queue.discard_block(Hash([7; 32]));
         assert!(!queue.is_open(&key(1)));

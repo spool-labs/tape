@@ -3,7 +3,7 @@ use tape_api::event::{
     AssignmentFinalized, CommissionClaimed, CommitteeCreated, CommitteeResized,
     EpochAdvanced, EpochCommitted, EpochCreated, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
-    StakeUnlockRequested, StakeWithdrawn, TapeDestroyed, TapeExtended, TapeReserved,
+    StakeUnlockRequested, StakeWithdrawn, TapeExtended, TapeReserved,
     TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
@@ -116,10 +116,6 @@ pub enum RawInstruction {
         track: Address,
     },
     ReserveTape {
-        owner: Address,
-        tape: Address,
-    },
-    DestroyTape {
         owner: Address,
         tape: Address,
     },
@@ -288,11 +284,6 @@ pub enum ParsedInstruction {
         owner: Address,
         tape: Address,
         event: TapeReserved,
-    },
-    DestroyTape {
-        owner: Address,
-        tape: Address,
-        event: TapeDestroyed,
     },
     ExtendTape {
         payer: Address,
@@ -553,12 +544,6 @@ pub fn parse_raw_instruction(
             let owner = get_account(0)?;
             let tape = get_account(3)?;
             Ok(Some(RawInstruction::ReserveTape { owner, tape }))
-        }
-
-        TapeInstruction::DestroyTape => {
-            let owner = get_account(0)?;
-            let tape = get_account(2)?;
-            Ok(Some(RawInstruction::DestroyTape { owner, tape }))
         }
 
         TapeInstruction::ExtendTapeCapacity | TapeInstruction::ExtendTapeExpiry => {

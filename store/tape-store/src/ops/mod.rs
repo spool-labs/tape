@@ -6,6 +6,7 @@
 //! - `TapeOps`: Tape metadata
 //! - `TrackOps`: Compressed-track catalog
 //! - `TrackDataOps`: Local track payload data
+//! - `TapeTrackScan`: Ordered walk of a tape's tracks with their payloads
 //! - `ObjectInfoOps`: Object info (blacklisted, invalid, valid)
 //! - `ObjectMetadataOps`: Named-object reverse lookup
 //! - `SpoolOps`: Spool status, sync progress, pending recovery (NOT epoch-namespaced)
@@ -40,6 +41,7 @@ mod spool;
 mod tape;
 mod track;
 mod track_data;
+mod track_scan;
 mod vote;
 
 // Re-export operation traits
@@ -61,6 +63,7 @@ pub use snapshot::SnapshotOps;
 pub use slice::SliceOps;
 pub use spool::SpoolOps;
 pub use tape::TapeOps;
-pub use track::TrackOps;
+pub use track::{TrackOps, tape_track_numbers};
 pub use track_data::TrackDataOps;
+pub use track_scan::{ScannedTrack, TapeTrackScan};
 pub use vote::VoteOps;

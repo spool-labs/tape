@@ -11,14 +11,13 @@ use store::Store;
 use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
 use tape_core::erasure::{GROUP_SIZE, group_for_spool};
-use tape_core::types::SpoolIndex;
 use tape_crypto::Address;
 use tape_protocol::{Api, ProtocolState};
 use tape_protocol::api::{AttestationPayload, ProofOfAccessPayload};
 use tracing::{debug, trace, warn};
 
 use crate::features::challenge::audit::{
-    Round, admits_round, attest_message, round_of, spawn_relay_and_attest,
+    Round, attest_message, group_members_at, round_of, spawn_relay_and_attest,
 };
 use crate::features::challenge::certify::agreement_threshold;
 use crate::features::challenge::fold::fold_outcome;
@@ -27,7 +26,7 @@ use crate::features::challenge::rounds::RoundKey;
 use crate::features::challenge::trace::MarkKind;
 use crate::features::http::auth::ActivePeer;
 use crate::features::http::error::RouteError;
-use crate::context::{CertifySubmit, NodeContext};
+use crate::context::NodeContext;
 use crate::features::http::state::AppState;
 use crate::features::state::digest::Report;
 
@@ -56,11 +55,6 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
     let protocol = state.context.state();
     let round = round_of(&answer);
     let key = round.key(answer.spool);
-
-    // The rounds this node still settles bound what it will hold evidence for.
-    if let Err(reason) = admits_round(&state.context, &round) {
-        return Err(refuse(&state, &round, Some(answer.spool), reason));
-    }
 
     // A relayed duplicate is the common case, not an error: every peer that
     // accepted the answer forwards it, so most copies arrive after the first.
@@ -117,7 +111,7 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
             MarkKind::AnswerRefused,
             None,
         );
-        return Err(refuse(&state, &round, Some(answer.spool), reason));
+        return Err(refuse(&state, &answer, reason));
     }
 
     if !state.context.round_buffer.accept_answer(key, answer.clone()) {
@@ -134,31 +128,17 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
     Ok(StatusCode::OK)
 }
 
-/// Counts a refusal, logs it, and puts the reason in the body
-///
-/// A batch carries no spool and logs at debug: refusing a flood is what it is
-/// for, and an attacker would otherwise pick the log volume.
+/// Counts a refusal, names it in the log, and names it in the body.
 fn refuse<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
-    round: &Round,
-    spool: Option<SpoolIndex>,
+    answer: &ProofOfAccess,
     reason: RefusalReason,
 ) -> RouteError {
     state.context.challenge_counters.refusals.record(reason);
-    let Some(spool) = spool else {
-        debug!(
-            epoch = round.epoch.0,
-            round = round.round.0,
-            group = round.group.0,
-            reason = reason.label(),
-            "challenge: attestation batch refused"
-        );
-        return RouteError::BadRequest(format!("attestation refused: {}", reason.label()));
-    };
     warn!(
-        spool = %spool,
-        round = round.round.0,
-        epoch = round.epoch.0,
+        spool = %answer.spool,
+        round = answer.round.0,
+        epoch = answer.epoch.0,
         reason = reason.label(),
         "challenge: proof of access refused"
     );
@@ -205,12 +185,6 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
         return Err(RouteError::Forbidden("attestation signer is not in the group".into()));
     }
     let threshold = threshold_at(&protocol, &round)?;
-
-    // A key outside the rounds this node settles would sit in the buffer until
-    // it retired, and an admitted peer could name as many of them as it liked.
-    if let Err(reason) = admits_round(&state.context, &round) {
-        return Err(refuse(&state, &round, None, reason));
-    }
 
     // One signature per spool in the group, each spool once, each in the group
     if payload.attests.len() > GROUP_SIZE {
@@ -276,6 +250,9 @@ struct Claimed {
     key: RoundKey,
     owner: Address,
     threshold: usize,
+    /// The challenged group's roster in the round's epoch, which the threshold
+    /// is a fraction of
+    members: Vec<Address>,
     attestations: Vec<(Address, BlsSignature)>,
     signers: BTreeMap<Address, BlsPubkey>,
 }
@@ -333,15 +310,10 @@ pub(crate) async fn certify_banked<
         }
         let _ = finished.send(());
     });
-    match stage.submit_certify(job) {
-        CertifySubmit::Queued => {}
-        // The sweep owes this a thread outside the runtime, so wait on the pool.
-        CertifySubmit::Spilled(spilled) => {
-            let _ = spilled.await;
-        }
-        // Teardown closed the stage: finish inline so provisional claims are
-        // released before the suspension guard drops.
-        CertifySubmit::Closed(job) => job(),
+    if let Err(error) = stage.certify_stage().send(job) {
+        // The stage only closes during teardown. Finish inline so provisional
+        // claims are still released before the suspension guard is dropped.
+        (error.0)();
     }
     let _ = wait.await;
 }
@@ -407,12 +379,14 @@ fn claim_certificate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     key: RoundKey,
     threshold: usize,
 ) -> Option<Claimed> {
-    // Resolved before the claim, so a spool with no owner to credit is never
-    // left marked certified with nothing to verify it.
-    let owner = protocol.spool_owner_at(key.epoch, key.spool)?;
+    // Read before the claim, which is spent either way this returns.
+    let members = group_members_at(protocol, key.epoch, group_for_spool(key.spool))?;
+
     if !state.context.round_buffer.claim_certificate(key, threshold) {
         return None;
     }
+
+    let owner = protocol.spool_owner(key.spool)?;
     if owner == state.context.node_address() {
         return None;
     }
@@ -425,7 +399,7 @@ fn claim_certificate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .filter_map(|(signer, _)| Some((*signer, protocol.peer(*signer)?.bls_pubkey)))
         .collect();
 
-    Some(Claimed { key, owner, threshold, attestations, signers })
+    Some(Claimed { key, owner, threshold, members, attestations, signers })
 }
 
 /// Certifies everything one batch claimed, on the certify stage rather than
@@ -438,20 +412,10 @@ fn spawn_certify_batch<Db: Store + 'static, Cluster: Api + 'static, Blockchain: 
     let stage = state.context.clone();
     let state = state.clone();
     let round = *round;
-    let spools = claimed.len();
     // folds still ride the blocking pool, and the worker is not a runtime thread
     let runtime = tokio::runtime::Handle::current();
     let job = Box::new(move || certify_batch(state, round, claimed, runtime));
-    // A spilled batch still gets verified, so the claims stand either way
-    if let CertifySubmit::Spilled(_) = stage.submit_certify(job) {
-        debug!(
-            epoch = round.epoch.0,
-            round = round.round.0,
-            group = round.group.0,
-            spools,
-            "challenge: certify stage full, batch verified on the blocking pool"
-        );
-    }
+    let _ = stage.certify_stage().send(job);
 }
 
 /// Verifies and records every quorum claimed from one incoming batch.
@@ -563,14 +527,16 @@ fn aggregate_stands(round: &Round, claim: &Claimed) -> bool {
     // what the slow path would accept
     let summed = quorum_key(claim).is_some_and(|quorum| {
         certificate.as_ref().is_some_and(|certificate| {
-            certificate.verify_summed(claim.threshold, claim.owner, &quorum).is_ok()
+            certificate
+                .verify_summed(claim.threshold, claim.owner, &claim.members, &quorum)
+                .is_ok()
         })
     });
 
     summed
         || certificate.as_ref().is_some_and(|certificate| {
             certificate
-                .verify(claim.threshold, claim.owner, |signer| {
+                .verify(claim.threshold, claim.owner, &claim.members, |signer| {
                     claim.signers.get(&signer).copied()
                 })
                 .inspect_err(|rejection| {
@@ -655,7 +621,7 @@ fn mark<Db: Store, Cluster: Api, Blockchain: Rpc>(
         round.group,
         key.spool,
         kind,
-        protocol.spool_owner_at(round.epoch, key.spool),
+        protocol.spool_owner(key.spool),
     );
 }
 

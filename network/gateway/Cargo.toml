@@ -9,6 +9,10 @@ name = "tape-gateway"
 path = "src/bin/gateway/main.rs"
 
 [dependencies]
+tape-blacklist = { workspace = true }
+tape-rack = { workspace = true }
+tape-retry = { workspace = true }
+tape-forwarded = { workspace = true }
 tape-core = { workspace = true, features = ["wincode"] }
 tape-api = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true }
@@ -34,8 +38,6 @@ tracing = "0.1"
 wincode = { workspace = true }
 
 # S3 SigV4 verification
-hmac = { workspace = true }
-sha2 = { workspace = true }
 hex = { workspace = true }
 # Wipe the in-memory delegate signing key on drop
 zeroize = { workspace = true }

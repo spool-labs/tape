@@ -6,7 +6,8 @@ use serde::Deserialize;
 
 use tape_crypto::address::Address;
 
-use super::cidr::CidrBlock;
+use tape_blacklist::subscription::{Subscription, validate as validate_subscriptions};
+use tape_forwarded::cidr::CidrBlock;
 use super::helpers::{
     deserialize_domain_map, deserialize_option_pathbuf, deserialize_socket_addr,
     deserialize_subdomain_suffix,
@@ -31,6 +32,17 @@ pub struct GatewayConfig {
     /// Static site serving over the native read listener.
     #[serde(default)]
     pub site: GatewaySiteConfig,
+
+    /// Blacklists this gateway follows; reads of what they deny answer 410.
+    #[serde(default)]
+    pub blacklists: Vec<Subscription>,
+}
+
+impl GatewayConfig {
+    /// Why the blacklist subscriptions cannot be followed, if they cannot
+    pub fn validate_blacklists(&self) -> Result<(), String> {
+        validate_subscriptions(&self.blacklists).map_err(|error| format!("gateway.blacklists: {error}"))
+    }
 }
 
 
@@ -63,16 +75,24 @@ pub struct GatewaySiteConfig {
     #[serde(default, deserialize_with = "deserialize_subdomain_suffix")]
     pub subdomain_suffix: Option<String>,
 
+    /// Retire the path form: a `/site/<tape>/...` request on a non-site host
+    /// answers with a permanent redirect to the same path on the site's own
+    /// subdomain, so tenant pages stop rendering on the gateway's origin.
+    /// Needs `subdomain_suffix`.
+    #[serde(default)]
+    pub subdomain_redirect: bool,
+
     /// Origins allowed to fetch site content cross-origin; a single star
     /// entry allows any origin.
     #[serde(default)]
     pub cors_origins: Vec<String>,
 
-    /// API origins hosted pages may call from the browser, added to the
-    /// content security policy; a single star entry allows any. List both
-    /// the https and wss forms when an endpoint speaks websockets.
+    /// A complete Content-Security-Policy value stamped on every site
+    /// response. Unset means no policy: hosted pages load from anywhere, the
+    /// way static hosts behave, and isolation comes from each site's own
+    /// origin rather than from this header.
     #[serde(default)]
-    pub connect_origins: Vec<String>,
+    pub content_security_policy: Option<String>,
 }
 
 impl Default for GatewaySiteConfig {
@@ -83,8 +103,9 @@ impl Default for GatewaySiteConfig {
             txt_domains: false,
             domains: BTreeMap::new(),
             subdomain_suffix: None,
+            subdomain_redirect: false,
             cors_origins: Vec::new(),
-            connect_origins: Vec::new(),
+            content_security_policy: None,
         }
     }
 }
@@ -106,6 +127,15 @@ pub fn is_valid_origin(origin: &str) -> bool {
         .bytes()
         .all(|byte| byte.is_ascii_graphic() && byte != b';' && byte != b',');
     has_scheme && is_header_safe
+}
+
+/// Whether a value can travel verbatim as a policy header: non-empty
+/// printable ASCII, so a stray control byte cannot end the header early
+pub fn is_valid_policy(policy: &str) -> bool {
+    !policy.is_empty()
+        && policy
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() || byte == b' ')
 }
 
 /// S3-compatible gateway listener controls.
@@ -217,7 +247,6 @@ fn default_s3_max_queued_bytes() -> u64 {
 
 /// S3 write-authorization defaults and control-plane wiring.
 #[derive(Clone, Deserialize, Eq, PartialEq)]
-#[derive(Default)]
 pub struct S3WriteConfig {
     /// The default authorization decision for a write that no stored policy rule
     /// explicitly resolves.
@@ -236,6 +265,26 @@ pub struct S3WriteConfig {
     /// (`HMAC-SHA256(secret, pepper)`).
     #[serde(default)]
     pub pepper: Option<String>,
+
+    /// Age (seconds) at which a reservation held by no running write is
+    /// presumed orphaned and reclaimed. A running write keeps its reservation
+    /// however long it takes, so this bounds a crashed process's holdings.
+    #[serde(default = "default_reservation_ttl_secs")]
+    pub reservation_ttl_secs: i64,
+}
+
+// Hand-written because a derived `i64` default of 0 makes every reservation
+// instantly sweepable.
+impl Default for S3WriteConfig {
+    fn default() -> Self {
+        Self {
+            default: WriteDefault::default(),
+            admin: S3AdminConfig::default(),
+            budgets: S3WriteBudgets::default(),
+            pepper: None,
+            reservation_ttl_secs: default_reservation_ttl_secs(),
+        }
+    }
 }
 
 
@@ -247,6 +296,7 @@ impl std::fmt::Debug for S3WriteConfig {
             .field("admin", &self.admin)
             .field("budgets", &self.budgets)
             .field("pepper", &self.pepper.as_ref().map(|_| "<redacted>"))
+            .field("reservation_ttl_secs", &self.reservation_ttl_secs)
             .finish()
     }
 }
@@ -345,6 +395,10 @@ fn default_puts_per_hour() -> u32 {
 
 fn default_max_concurrent_multipart() -> u32 {
     16
+}
+
+fn default_reservation_ttl_secs() -> i64 {
+    300
 }
 
 /// Gateway slice-cache controls.

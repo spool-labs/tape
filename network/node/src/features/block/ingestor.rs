@@ -6,6 +6,7 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+use rpc::skip::slots_to_fetch;
 use rpc::{Rpc, RpcError};
 use store::Store;
 use tape_blocks::ParsedInstruction;
@@ -19,7 +20,7 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::block::fetch::{
-    FETCH_PIPELINE_DEPTH, fetch_and_parse_block, fetch_blocks_ordered, slots_to_fetch,
+    FETCH_PIPELINE_DEPTH, fetch_and_parse_block, fetch_blocks_ordered,
 };
 use crate::features::bootstrap::LiveStart;
 use crate::features::block::pending_blocks::{AppendOutcome, PendingBlocks};
@@ -508,7 +509,7 @@ mod tests {
 
         let mut ingestor = BlockIngestor::new(
             ctx.clone(),
-            LiveStart { slot: join_slot, parent: None },
+            LiveStart::at(join_slot),
             senders,
             CancellationToken::new(),
         );
@@ -603,7 +604,7 @@ mod tests {
 
         let mut ingestor = BlockIngestor::new(
             ctx.clone(),
-            LiveStart { slot: join_slot, parent: None },
+            LiveStart::at(join_slot),
             senders,
             CancellationToken::new(),
         );

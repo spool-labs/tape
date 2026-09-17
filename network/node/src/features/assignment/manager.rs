@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rpc::Rpc;
 use store::Store;
-use tape_api::program::tapedrive::{blacklist_pda, track_pda};
+use tape_api::program::tapedrive::blacklist_pda;
 use tape_blocks::ParsedInstruction;
 use tape_core::system::{EpochPhase, VoteKind};
 use tape_core::track::data::BlobData;
@@ -17,7 +17,7 @@ use tape_retry::RetryConfig;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, TapeOps, TapeTrackScan, TrackDataOps};
 use tape_store::types::ObjectInfo;
 use tracing::{debug, warn};
 
@@ -253,55 +253,38 @@ where
                 continue;
             }
 
-            let mut cursor = None;
-            loop {
-                let tracks = self
-                    .context
-                    .store
-                    .iter_tracks_by_tape_from(blacklist, cursor, BLACKLIST_BATCH)
-                    .map_err(store_error("blacklist track scan"))?;
-                if tracks.is_empty() {
-                    break;
+            let mut scan = TapeTrackScan::new(blacklist, BLACKLIST_BATCH);
+            while let Some(scanned) = scan
+                .next_track(&self.context.store)
+                .map_err(store_error("blacklist track scan"))?
+            {
+                if !self.track_before_cutoff(scanned.address, voting_epoch)? {
+                    continue;
                 }
 
-                for track in &tracks {
-                    let track_address = track_pda(blacklist, track.track_number).0;
-                    if !self.track_before_cutoff(track_address, voting_epoch)? {
-                        continue;
-                    }
-
-                    if self
-                        .context
-                        .store
-                        .get_track_data(track_address)
-                        .map_err(store_error("blacklist track data lookup"))?
-                        .is_some()
-                    {
-                        continue;
-                    }
-
-                    match self
-                        .fetch_entry(state, blacklist, track_address, track)
-                        .await?
-                    {
-                        Some(data) => {
-                            self.context
-                                .store
-                                .put_track_data(track_address, data)
-                                .map_err(store_error("put blacklist track data"))?;
-                        }
-                        None => {
-                            complete = false;
-                            debug!(
-                                node = %member.node,
-                                track = %track_address,
-                                "assignment: waiting for blacklist track data"
-                            );
-                        }
-                    }
+                if scanned.data.is_some() {
+                    continue;
                 }
 
-                cursor = tracks.last().map(|track| track.track_number);
+                match self
+                    .fetch_entry(state, blacklist, scanned.address, &scanned.track)
+                    .await?
+                {
+                    Some(data) => {
+                        self.context
+                            .store
+                            .put_track_data(scanned.address, data)
+                            .map_err(store_error("put blacklist track data"))?;
+                    }
+                    None => {
+                        complete = false;
+                        debug!(
+                            node = %member.node,
+                            track = %scanned.address,
+                            "assignment: waiting for blacklist track data"
+                        );
+                    }
+                }
             }
         }
 

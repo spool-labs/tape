@@ -14,8 +14,8 @@ use crate::keys::helpers::{load_ed25519_keypair, load_ed25519_keypair_bytes, Hel
 /// The tape's on-chain address is derived from this key, you don't need
 /// to store the address separately.
 ///
-/// **Keep this key safe.** Anyone with it can write to, delete from, or
-/// destroy the tape. You can share the *address* freely for reads.
+/// **Keep this key safe.** Anyone with it can write to or delete from the
+/// tape. You can share the *address* freely for reads.
 ///
 /// # Example
 /// ```rust,ignore

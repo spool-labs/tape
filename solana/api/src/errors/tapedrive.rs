@@ -23,8 +23,6 @@ pub enum TapeError {
     NoSpace = 0x21,
     #[error("tape expired")]
     TapeExpired = 0x22,
-    #[error("not expired")]
-    NotExpired = 0x23,
     #[error("not empty")]
     NotEmpty = 0x24,
 
@@ -164,7 +162,6 @@ impl TapeError {
             Self::NoCapacity => "No storage capacity available",
             Self::NoSpace => "Insufficient space on tape",
             Self::TapeExpired => "Tape has expired",
-            Self::NotExpired => "Tape has not expired yet",
             Self::NotEmpty => "Tape is not empty",
             Self::BadEpochState => "Epoch is not in the expected phase",
             Self::TooSoon => "Please wait - epoch duration has not elapsed",

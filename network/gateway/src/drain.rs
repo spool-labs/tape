@@ -88,7 +88,6 @@ fn is_transient_rpc(error: &RpcError) -> bool {
         RpcError::Request(_) => true,
         RpcError::Timeout(_) => true,
         RpcError::BlockNotAvailable => true,
-        RpcError::BlockPruned => true,
         RpcError::AllEndpointsFailed { .. } => true,
         RpcError::AccountNotFound(_) => true,
         RpcError::TransactionNotFound(_) => true,

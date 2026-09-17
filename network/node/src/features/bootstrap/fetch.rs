@@ -77,9 +77,8 @@ where
     Blockchain: Rpc,
 {
     // Snapshot rows are stamped at slot zero, under every live round's cutoff.
-    let written = persist_snapshot_metadata_to_store(context.store.as_ref(), epoch, decoded);
     context.sample_sets.backdated_write();
-    written
+    persist_snapshot_metadata_to_store(context.store.as_ref(), epoch, decoded)
 }
 
 pub fn persist_snapshot_metadata_to_store<Db: Store>(

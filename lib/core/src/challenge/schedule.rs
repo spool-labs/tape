@@ -257,17 +257,6 @@ impl Schedule {
         SlotNumber(entropy_slot.as_u64() + PROOF_DEADLINE_SLOTS)
     }
 
-    /// Rounds that can still be settling at once at this grid's cadence
-    pub fn settling_rounds(&self) -> u64 {
-        (SETTLE_DEADLINE_SLOTS / self.interval_slots).max(1)
-    }
-
-    /// The last round whose entropy window had opened by this slot
-    pub fn round_by(&self, slot: SlotNumber) -> Option<RoundNumber> {
-        let offset = slot.as_u64().checked_sub(self.first_slot().as_u64())?;
-        Some(RoundNumber(offset / self.interval_slots))
-    }
-
     /// The round whose entropy window covers this slot, if any.
     ///
     /// None between rounds, which is most of the grid: the window is two slots
@@ -453,37 +442,5 @@ mod tests {
 
         // Before the grid opens there is no round at all.
         assert_eq!(schedule.round_at(SlotNumber(schedule.first_slot().as_u64() - 1)), None);
-    }
-
-    // the grid position a slot sits on, gaps between rounds included
-    #[test]
-    fn slot_to_position() {
-        let schedule = Schedule::for_epoch(SlotNumber(9_000), epoch_slots(DEVNET), &nonce(0));
-        let base = schedule.base_slot(RoundNumber(4)).as_u64();
-
-        assert_eq!(schedule.round_by(SlotNumber(base)), Some(RoundNumber(4)));
-        assert_eq!(
-            schedule.round_by(SlotNumber(base + schedule.interval_slots - 1)),
-            Some(RoundNumber(4)),
-            "the gap after a window still belongs to the round that opened it"
-        );
-        assert_eq!(
-            schedule.round_by(SlotNumber(base + schedule.interval_slots)),
-            Some(RoundNumber(5))
-        );
-        assert_eq!(schedule.round_by(SlotNumber(schedule.first_slot().as_u64() - 1)), None);
-    }
-
-    // the rounds still settling at any moment: the deadline at this cadence
-    #[test]
-    fn settling_span() {
-        for seconds in [MAINNET, DEVNET, LOCALNET, SIMNET] {
-            let schedule = Schedule::for_epoch(SlotNumber(9_000), epoch_slots(seconds), &nonce(0));
-            assert_eq!(
-                schedule.settling_rounds(),
-                SETTLE_DEADLINE_SLOTS / schedule.interval_slots
-            );
-            assert!(schedule.settling_rounds() >= 1);
-        }
     }
 }

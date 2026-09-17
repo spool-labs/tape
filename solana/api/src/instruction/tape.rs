@@ -16,10 +16,6 @@ pub struct ReserveTape {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct DestroyTape {}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ExtendTapeCapacity {
     pub units: StorageUnits,
 }
@@ -131,28 +127,6 @@ fn extend_tape_accounts(
 
         AccountMeta::new_readonly(spl_token::ID, false),
     ]
-}
-
-pub fn build_destroy_tape_ix(
-    fee_payer: Address,
-    authority: Address,
-) -> Instruction {
-    let (tape_address, _) = tape_pda(authority);
-    let (system_address, _) = system_pda();
-
-    Instruction {
-        program_id: tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new_readonly(authority.into(), true),
-
-            AccountMeta::new(tape_address.into(), false),
-            AccountMeta::new_readonly(system_address.into(), false),
-
-            AccountMeta::new_readonly(system_program::ID, false),
-        ],
-        data: DestroyTape {}.to_bytes(),
-    }
 }
 
 pub fn build_set_tape_delegate_ix(

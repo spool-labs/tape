@@ -3,13 +3,13 @@ use std::collections::HashSet;
 
 use bytemuck::try_from_bytes;
 use store::Store;
-use tape_api::program::tapedrive::{blacklist_pda, track_pda};
+use tape_api::program::tapedrive::blacklist_pda;
 use tape_core::system::BlacklistEntry;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, StorageUnits};
 use tape_crypto::Address;
-use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, TapeOps, TapeTrackScan};
 use tape_store::types::{ObjectInfo, SystemObjectKind};
 use tape_store::TapeStore;
 
@@ -74,39 +74,26 @@ fn read_blacklist_entries<Db: Store>(
         return Ok(BlacklistEntries::Ready(HashSet::new()));
     }
 
-    let mut cursor = None;
+    let mut scan = TapeTrackScan::new(blacklist, BLACKLIST_SCAN_BATCH);
     let mut entries = HashSet::new();
-    loop {
-        let tracks = store
-            .iter_tracks_by_tape_from(blacklist, cursor, BLACKLIST_SCAN_BATCH)
-            .map_err(|error| NodeError::Store(format!("blacklist track scan: {error}")))?;
-
-        if tracks.is_empty() {
-            break;
-        }
-
-        for track in &tracks {
-            let track_address = track_pda(blacklist, track.track_number).0;
-            if let Some(cutoff_epoch) = cutoff_epoch {
-                if !blacklist_track_is_before_cutoff(store, track_address, cutoff_epoch)? {
-                    continue;
-                }
+    while let Some(scanned) = scan
+        .next_track(store)
+        .map_err(|error| NodeError::Store(format!("blacklist track scan: {error}")))?
+    {
+        if let Some(cutoff_epoch) = cutoff_epoch {
+            if !blacklist_track_is_before_cutoff(store, scanned.address, cutoff_epoch)? {
+                continue;
             }
-
-            let data = store
-                .get_track_data(track_address)
-                .map_err(|error| NodeError::Store(format!("blacklist track data lookup: {error}")))?;
-            let Some(data) = data else {
-                return Ok(BlacklistEntries::Pending {
-                    track: track_address,
-                });
-            };
-
-            let entry = decode_blacklist_entry(track_address, blacklist, track, &data)?;
-            entries.insert(entry);
         }
 
-        cursor = tracks.last().map(|track| track.track_number);
+        let Some(data) = &scanned.data else {
+            return Ok(BlacklistEntries::Pending {
+                track: scanned.address,
+            });
+        };
+
+        let entry = decode_blacklist_entry(scanned.address, blacklist, &scanned.track, data)?;
+        entries.insert(entry);
     }
 
     Ok(BlacklistEntries::Ready(entries))

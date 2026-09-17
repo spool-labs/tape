@@ -1,7 +1,6 @@
 use std::sync::Arc;
-use std::time::Duration;
 
-use rpc::{NUM_CONSECUTIVE_LEADER_SLOTS, Rpc};
+use rpc::Rpc;
 use store::Store;
 use tape_api::errors::TapeError;
 use tape_core::system::EpochPhase;
@@ -20,11 +19,6 @@ use crate::features::lifecycle::types::{Action, TaskDone};
 // Purpose: Submit a JoinCommittee transaction to volunteer for the next
 //          epoch's committee. This signals the node intends to serve
 //          in the upcoming epoch.
-
-/// Slots past the tip known at confirmation by which the seating block is ingested
-const JOIN_VISIBLE_SLOTS: u64 = NUM_CONSECUTIVE_LEADER_SLOTS.get() as u64;
-/// How often the seating wait re-reads ingest when no state change wakes it
-const SEATING_POLL: Duration = Duration::from_secs(1);
 
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -64,13 +58,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
         match outcome {
             TxOutcome::Confirmed(sig) => {
                 info!(epoch = epoch.0, %sig, "join_committee: confirmed");
-                // Ingest past this slot has seen the seating block
-                let progress = ctx.ingest.progress();
-                let landed_by = progress
-                    .known_tip()
-                    .unwrap_or(0)
-                    .max(progress.last_dispatched_slot())
-                    .saturating_add(JOIN_VISIBLE_SLOTS);
                 // Hold Done until the membership shows up in ingested state.
                 // The planner replans the moment a task returns, and until the
                 // join is observed it still reads this node as absent, so
@@ -93,22 +80,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
                         info!(epoch = epoch.0, "join_committee: outcompeted, seated members all outrank us");
                         return TaskDone::Done(Action::JoinCommittee, epoch);
                     }
-                    // Unseated by a later join with a seat open since, which an
-                    // eviction landing behind the joins leaves; return so the
-                    // planner can join again.
-                    if ctx.ingest.progress().last_dispatched_slot() > landed_by {
-                        info!(epoch = epoch.0, "join_committee: unseated with a seat open, rejoining");
-                        return TaskDone::Rejected(Action::JoinCommittee, epoch);
-                    }
-                    // Ingest moves without a state change when nothing lands,
-                    // which is exactly the wedge, so the wait also wakes on time.
                     tokio::select! {
                         changed = state_rx.changed() => {
                             if changed.is_err() {
                                 return TaskDone::Cancelled(Action::JoinCommittee, epoch);
                             }
                         }
-                        _ = tokio::time::sleep(SEATING_POLL) => {}
                         _ = cancel.cancelled() => {
                             return TaskDone::Cancelled(Action::JoinCommittee, epoch);
                         }
@@ -166,77 +143,4 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     TaskDone::Cancelled(Action::JoinCommittee, epoch)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use tape_core::system::EpochPhase;
-    use tape_core::types::EpochNumber;
-    use tokio::time::timeout;
-    use tokio_util::sync::CancellationToken;
-
-    use super::{run, JOIN_VISIBLE_SLOTS};
-    use crate::core::ingest::IngestState;
-    use crate::features::lifecycle::types::{Action, TaskDone};
-    use crate::harness::{NodeHarness, TestContext};
-
-    const EPOCH: EpochNumber = EpochNumber(3);
-    const NODE: usize = 24;
-    const CAPACITY: usize = 20;
-    const TIP: u64 = 10;
-
-    // a next committee one seat short of capacity that this node is not in,
-    // with ingest at a known tip so the join submits
-    async fn short_committee() -> (NodeHarness, TestContext) {
-        let harness = NodeHarness::builder()
-            .nodes(25)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Active)
-            .next_committee_size(CAPACITY)
-            .next_committee_nodes(0..CAPACITY - 1)
-            .build()
-            .await
-            .expect("build harness");
-        let ctx = harness.ctx_for(NODE);
-        ctx.ingest.publish(IngestState::AtTip);
-        ctx.ingest.progress().record_tip(TIP);
-        ctx.ingest.progress().record_dispatched(TIP);
-        (harness, ctx)
-    }
-
-    // seated by its own join, unseated by a later one, and a seat freed since:
-    // once ingest is past the seating block the task returns so the planner joins again
-    #[tokio::test]
-    async fn unseated_with_a_seat_open_returns() {
-        let (_harness, ctx) = short_committee().await;
-        let mut task = tokio::spawn(run(ctx.clone(), EPOCH, CancellationToken::new()));
-        assert!(timeout(Duration::from_secs(2), &mut task).await.is_err(), "waiting on the seat");
-
-        // Ingest moves past the seating block with no state change
-        ctx.ingest.progress().record_dispatched(TIP + JOIN_VISIBLE_SLOTS + 1);
-
-        let done = timeout(Duration::from_secs(10), task)
-            .await
-            .expect("the task returned")
-            .expect("join task");
-
-        assert!(matches!(done, TaskDone::Rejected(Action::JoinCommittee, EPOCH)), "{done:?}");
-        let committee = ctx.rpc.get_committee(EPOCH.next()).await.expect("next committee");
-        assert!(committee.iter().any(|member| member.node == ctx.node_address()), "the join landed");
-    }
-
-    // before ingest reaches the seating block, absence is lag and the task keeps waiting
-    #[tokio::test]
-    async fn absent_before_the_seating_block_waits() {
-        let (_harness, ctx) = short_committee().await;
-        let cancel = CancellationToken::new();
-        let mut task = tokio::spawn(run(ctx.clone(), EPOCH, cancel.clone()));
-
-        assert!(timeout(Duration::from_secs(3), &mut task).await.is_err(), "still waiting");
-        let committee = ctx.rpc.get_committee(EPOCH.next()).await.expect("next committee");
-        assert!(committee.iter().any(|member| member.node == ctx.node_address()), "the join landed");
-        cancel.cancel();
-    }
 }

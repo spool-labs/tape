@@ -2,9 +2,8 @@
 //!
 //! - `getBlock` is served from the in-memory slot store (filled by
 //!   bootstrap + live tail), in the encoding the request asks for: json,
-//!   the default, or base64. On miss, falls through to upstream without
-//!   inserting — the live tail owns slot-store writes. Other encodings
-//!   pass through to upstream.
+//!   the default, or base64. A confirmed miss fills the store from
+//!   upstream. Other encodings and commitments pass through to upstream.
 //! - Everything else uses the original moka-based read-through cache
 //!   (per-method TTLs from `cache::Policy`). Submit methods are logged
 //!   and forwarded uncached.
@@ -35,8 +34,9 @@ use tracing::{info, warn};
 
 use crate::cache::{CacheStore, MethodKind, Policy};
 use crate::key::CacheKey;
+use crate::runtime::fetch_slot_block;
 use crate::submit_log;
-use crate::upstream::{Upstream, UpstreamError};
+use crate::upstream::{CALLER_RATE_LIMIT_WAIT, RpcEnvelope, Upstream, UpstreamError};
 
 /// Solana JSON-RPC error code for skipped or missing slots. Returned
 /// verbatim from upstream RPCs; we serve the same code from cached
@@ -274,7 +274,7 @@ async fn handle(
             // upstream call, which is cheap compared to the uncached
             // baseline. Keeps the error path straightforward.
             state.stats.upstream_calls.fetch_add(1, Ordering::Relaxed);
-            match state.upstream.forward(&req).await {
+            match state.upstream.forward(&req, CALLER_RATE_LIMIT_WAIT).await {
                 Ok(envelope) => {
                     if let Some(result) = &envelope.result {
                         state
@@ -348,7 +348,7 @@ async fn fill_and_serve_cached_block(
     match state
         .slot_store
         .try_get_with(slot, async move {
-            crate::runtime::fetch_slot_block(fetch_state.as_ref(), slot).await
+            fetch_slot_block(fetch_state.as_ref(), slot, CALLER_RATE_LIMIT_WAIT).await
         })
         .await
     {
@@ -396,7 +396,7 @@ fn serve_skipped_envelope(id: Value) -> Response {
 /// non-confirmed `getBlock` requests and general passthrough paths.
 async fn forward_passthrough(state: &AppState, req: &Value, id: Value) -> Response {
     state.stats.upstream_calls.fetch_add(1, Ordering::Relaxed);
-    match state.upstream.forward(req).await {
+    match state.upstream.forward(req, CALLER_RATE_LIMIT_WAIT).await {
         Ok(envelope) => (
             StatusCode::OK,
             axum::Json(reshape_with_id(envelope, id)),
@@ -410,7 +410,7 @@ async fn forward_raw(state: &AppState, req: &Value) -> Response {
     state.stats.upstream_calls.fetch_add(1, Ordering::Relaxed);
     // For batch requests, `id` is per-sub-request; nothing for us to
     // preserve at the envelope level. Just forward and return verbatim.
-    match state.upstream.forward(req).await {
+    match state.upstream.forward(req, CALLER_RATE_LIMIT_WAIT).await {
         Ok(env) => {
             let wire = json!({
                 "jsonrpc": env.jsonrpc,
@@ -429,7 +429,7 @@ async fn forward_raw(state: &AppState, req: &Value) -> Response {
 
 /// Rebuild a JSON-RPC response envelope substituting the caller's
 /// original `id`, which is what clients match on.
-fn reshape_with_id(env: crate::upstream::RpcEnvelope, id: Value) -> Value {
+fn reshape_with_id(env: RpcEnvelope, id: Value) -> Value {
     let mut out = json!({
         "jsonrpc": env.jsonrpc,
         "id": id,

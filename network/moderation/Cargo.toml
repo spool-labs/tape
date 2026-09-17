@@ -1,0 +1,46 @@
+[package]
+name = "tape-moderation"
+description = "Tapedrive's blacklist producer: report intake, content checks, publishing and tape upkeep"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+readme.workspace = true
+publish = false
+
+[dependencies]
+tape-api.workspace = true
+tape-blacklist.workspace = true
+tape-core.workspace = true
+tape-crypto.workspace = true
+tape-forwarded.workspace = true
+tape-protocol.workspace = true
+tape-rack.workspace = true
+tape-sdk.workspace = true
+peer-http.workspace = true
+rpc.workspace = true
+rpc-solana.workspace = true
+
+axum.workspace = true
+base64 = "0.22"
+clap.workspace = true
+prometheus.workspace = true
+reqwest.workspace = true
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9"
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7", features = ["rt"] }
+tower-http = { version = "0.6", features = ["cors", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wincode.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

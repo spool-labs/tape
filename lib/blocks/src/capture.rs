@@ -1,7 +1,7 @@
 //! Capture parsed Tapedrive instructions into replayable events.
 
 use bytemuck::bytes_of;
-use tape_api::event::{TapeDestroyed, TapeExtended, TapeReserved, TrackDeleted, TrackWritten};
+use tape_api::event::{TapeExtended, TapeReserved, TrackDeleted, TrackWritten};
 use tape_api::program::tapedrive::track_pda;
 use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayTrackObject, ReplayableEvent};
 use tape_core::spooler::GroupIndex;
@@ -286,9 +286,6 @@ fn capture_instruction(
         ParsedInstruction::ReserveTape { event, .. } => {
             capture_tape(*current_epoch, tx_id, actor, event)
         }
-        ParsedInstruction::DestroyTape { event, .. } => {
-            capture_destroy(*current_epoch, tx_id, actor, event)
-        }
         ParsedInstruction::ExtendTape { event, .. } => {
             capture_extend(*current_epoch, tx_id, actor, event)
         }
@@ -486,23 +483,6 @@ fn capture_delete(
     }
 }
 
-fn capture_destroy(
-    epoch: EpochNumber,
-    tx_id: Txid,
-    actor: Option<Address>,
-    event: &TapeDestroyed,
-) -> Captured {
-    Captured {
-        event: captured_event(
-            epoch,
-            tx_id,
-            actor,
-            ReplayableEvent::DestroyTape { tape: event.tape, epoch },
-        ),
-        raw_track: None,
-    }
-}
-
 fn capture_extend(
     epoch: EpochNumber,
     tx_id: Txid,
@@ -543,8 +523,7 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::ClaimCommission { authority, .. } => Some(*authority),
 
         ParsedInstruction::DeleteTrack { owner, .. }
-        | ParsedInstruction::ReserveTape { owner, .. }
-        | ParsedInstruction::DestroyTape { owner, .. } => Some(*owner),
+        | ParsedInstruction::ReserveTape { owner, .. } => Some(*owner),
 
         ParsedInstruction::ExtendTape { payer, .. } => Some(*payer),
 

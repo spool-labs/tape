@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
@@ -5,6 +6,7 @@ use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits};
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
 use tape_sdk::keys::tape_key::TapeKey;
+use tape_sdk::metrics::{InMemory, Operation, Phase};
 use tape_sdk::object::{ListObjectsQuery, ObjectBatchItem};
 
 const TARGET_GROUPS: u64 = 1;
@@ -63,7 +65,8 @@ async fn object_layer_round_trip_inner() {
         .expect("advance to epoch 2");
     assert_eq!(epoch, 2, "expected epoch 2");
 
-    let sdk = scenario.sdk(harness.admin());
+    let metrics = Arc::new(InMemory::new());
+    let sdk = scenario.sdk(harness.admin()).with_metrics(metrics.clone());
     let bucket = TapeKey::generate();
     let name = "photos/cat.jpg";
     let data = b"named object bytes";
@@ -139,9 +142,22 @@ async fn object_layer_round_trip_inner() {
         !stylesheet_track.is_certified(),
         "coded batch object should remain pending at the optimistic boundary"
     );
+    metrics.clear();
     sdk.certify_objects_batch(&bucket, stored.verification)
         .await
         .expect("certify stored object batch");
+    // The store half's mirror carries into certification, so the one coded
+    // object certifies without ever asking a peer for a proof.
+    assert_eq!(
+        batch_phase_count(&metrics, Phase::CertifySubmit),
+        1,
+        "the coded batch object should certify exactly once"
+    );
+    assert_eq!(
+        batch_phase_count(&metrics, Phase::CertifyProof),
+        0,
+        "batch certification should prove tracks against the carried mirror"
+    );
     let stylesheet_track = wait_for_certified_track(
         &sdk,
         &receipts[1].address,
@@ -171,6 +187,51 @@ async fn object_layer_round_trip_inner() {
         index
     );
 
+    // Certifying one retained batch must not stale a later handle.
+    let earlier = sdk
+        .store_objects_batch(
+            &bucket,
+            vec![ObjectBatchItem {
+                name: "earlier.css".into(),
+                data: vec![b'a'; 4 * 1024],
+                content_type: ContentType::TextCss,
+                plan: None,
+            }],
+        )
+        .await
+        .expect("store earlier deferred batch");
+    let later = sdk
+        .store_objects_batch(
+            &bucket,
+            vec![ObjectBatchItem {
+                name: "later.css".into(),
+                data: vec![b'b'; 4 * 1024],
+                content_type: ContentType::TextCss,
+                plan: None,
+            }],
+        )
+        .await
+        .expect("store later deferred batch");
+    let later_track = later.receipts[0].address;
+
+    sdk.certify_objects_batch(&bucket, earlier.verification)
+        .await
+        .expect("certify earlier deferred batch");
+    metrics.clear();
+    sdk.certify_objects_batch(&bucket, later.verification)
+        .await
+        .expect("certify batch after root-only conflict");
+    assert!(
+        batch_phase_count(&metrics, Phase::CertifyProof) > 0,
+        "root-only conflict should fall back to a fresh peer proof"
+    );
+    let later_track = wait_for_certified_track(&sdk, &later_track, Duration::from_secs(10)).await;
+    assert!(
+        later_track.is_certified(),
+        "batch should certify after another handle changes the tape root"
+    );
+
+    metrics.clear();
     let fully_put = sdk
         .put_objects_batch(
             &bucket,
@@ -193,8 +254,28 @@ async fn object_layer_round_trip_inner() {
         complete_track.is_certified(),
         "put_objects_batch should retain its fully verified contract"
     );
+    assert_eq!(
+        batch_phase_count(&metrics, Phase::CertifySubmit),
+        1,
+        "the fully verified batch should certify exactly once"
+    );
+    assert_eq!(
+        batch_phase_count(&metrics, Phase::CertifyProof),
+        0,
+        "put_objects_batch should prove its track against its own mirror"
+    );
 
     harness.stop_all().await.expect("stop runtimes");
+}
+
+fn batch_phase_count(metrics: &InMemory, phase: Phase) -> u64 {
+    let mut count = 0;
+    for (key, summary) in metrics.snapshot() {
+        if key.operation == Operation::WriteBatch && key.phase == phase {
+            count += summary.count;
+        }
+    }
+    count
 }
 
 async fn wait_for_certified_track(

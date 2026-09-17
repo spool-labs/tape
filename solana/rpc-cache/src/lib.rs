@@ -17,6 +17,8 @@ pub mod cache;
 pub mod config;
 pub mod filter;
 pub mod key;
+#[cfg(test)]
+pub mod mock_upstream;
 pub mod runtime;
 pub mod server;
 pub mod submit_log;
