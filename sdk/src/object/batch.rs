@@ -17,9 +17,9 @@ use crate::stream::manifest::MAX_TRACK_SIZE;
 use crate::stream::write::{append_to_mirror, certify_chunk, verify_mirror_root};
 use crate::tapedrive::Tapedrive;
 use crate::track::write::{
-    UploadPlan, WrittenTrack, collect_certification, encode_blob, inline_write_fits,
-    register_blob_processed, register_raw_processed, resolve_sent_blob, resolve_sent_raw,
-    upload_with_retry, wait_for_certified_track,
+    SentRegister, UploadPlan, WrittenTrack, collect_certification, encode_blob, inline_write_fits,
+    prepare_blob_register, prepare_raw_register, resolve_sent_blob, resolve_sent_raw,
+    send_registers, upload_with_retry, wait_for_certified_track,
 };
 use crate::transfer::certify::CollectedSignatures;
 
@@ -59,6 +59,13 @@ enum PreparedItem {
         bytes_written: u64,
         plan: Box<UploadPlan>,
     },
+}
+
+/// What the batch knows about one register of a run, beside the transaction itself.
+struct RunItem {
+    index: usize,
+    name: String,
+    bytes_written: u64,
 }
 
 enum SentItem {
@@ -269,7 +276,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .try_collect()
             .await?;
 
-        let mut sent = Vec::with_capacity(prepared.len());
+        let mut run = Vec::with_capacity(prepared.len());
+        let mut registers = Vec::with_capacity(prepared.len());
         for item in prepared {
             match item {
                 PreparedItem::Inline {
@@ -279,23 +287,16 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                     data,
                 } => {
                     let bytes_written = data.len() as u64;
-                    let submitted = register_raw_processed(
+                    registers.push(prepare_raw_register(
                         self,
                         bucket,
                         name.as_bytes(),
                         content_type,
                         StorageUnits::from_bytes(bytes_written),
                         &data,
-                        Operation::WriteBatch,
                         self.write_options.visibility,
-                    )
-                    .await?;
-                    sent.push(SentItem::Inline {
-                        index,
-                        name,
-                        bytes_written,
-                        sent: submitted,
-                    });
+                    )?);
+                    run.push(RunItem { index, name, bytes_written });
                 }
                 PreparedItem::Coded {
                     index,
@@ -304,25 +305,37 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                     bytes_written,
                     plan,
                 } => {
-                    let submitted = register_blob_processed(
+                    registers.push(prepare_blob_register(
                         self,
                         bucket,
                         name.as_bytes(),
                         content_type,
                         StorageUnits::from_bytes(bytes_written),
                         *plan,
-                        Operation::WriteBatch,
                         self.write_options.visibility,
-                    )
-                    .await?;
-                    sent.push(SentItem::Coded {
-                        index,
-                        name,
-                        bytes_written,
-                        sent: Box::new(submitted),
-                    });
+                    )?);
+                    run.push(RunItem { index, name, bytes_written });
                 }
             }
+        }
+
+        let registered = send_registers(self, bucket, registers, Operation::WriteBatch).await?;
+        let mut sent = Vec::with_capacity(run.len());
+        for (item, register) in run.into_iter().zip(registered) {
+            sent.push(match register {
+                SentRegister::Raw(raw) => SentItem::Inline {
+                    index: item.index,
+                    name: item.name,
+                    bytes_written: item.bytes_written,
+                    sent: raw,
+                },
+                SentRegister::Blob(blob) => SentItem::Coded {
+                    index: item.index,
+                    name: item.name,
+                    bytes_written: item.bytes_written,
+                    sent: blob,
+                },
+            });
         }
 
         let resolved: Vec<ResolvedItem> = stream::iter(sent)
