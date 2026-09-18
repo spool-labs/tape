@@ -51,6 +51,16 @@ pub trait Rpc: Send + Sync {
     /// Get the commitment level used by this RPC client
     fn commitment(&self) -> CommitmentLevel;
 
+    /// Whether a JSON-RPC batch runs strictly in array order on this backend
+    ///
+    /// A chain the operator runs executes each call of a batch before it
+    /// answers the next, so transactions whose proofs were built in order can
+    /// be sent as one batch. The open Solana network guarantees neither, so
+    /// callers there keep sending one transaction at a time.
+    fn executes_batches_in_order(&self) -> bool {
+        false
+    }
+
     // ========================================================================
     // Slot/Block Operations
     // ========================================================================
@@ -143,6 +153,23 @@ pub trait Rpc: Send + Sync {
     /// Send a transaction without waiting for confirmation
     async fn send_transaction(&self, transaction: &VersionedTransaction)
         -> Result<Txid, RpcError>;
+
+    /// Send transactions in the given order, one verdict each
+    ///
+    /// The outer error is a failure to reach the backend at all. An entry's
+    /// error is that transaction's own rejection, and later entries still
+    /// answer for themselves.
+    async fn send_transactions(
+        &self,
+        transactions: &[VersionedTransaction],
+    ) -> Result<Vec<Result<Txid, RpcError>>, RpcError> {
+        let mut sent = Vec::with_capacity(transactions.len());
+        for transaction in transactions {
+            sent.push(self.send_transaction(transaction).await);
+        }
+
+        Ok(sent)
+    }
 
     /// Simulate a transaction without submitting it, returning the execution
     /// outcome and compute units consumed
