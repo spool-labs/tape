@@ -258,7 +258,7 @@ mod tests {
         for byte in 1..=200 {
             records.push(Record::new(address(byte)));
         }
-        let max_bytes = 3704;
+        let max_bytes = 1024;
 
         let tracks = render_tracks(&records, max_bytes).expect("render tracks");
 

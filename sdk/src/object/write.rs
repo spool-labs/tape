@@ -141,7 +141,7 @@ fn object_write_mode(name: &[u8], size: StorageUnits) -> ObjectWriteMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::track::write::SDK_INLINE_RAW_MAX_BYTES;
+    use tape_api::instruction::MAX_INLINE_WRITE;
 
     #[test]
     fn write_mode() {
@@ -153,15 +153,9 @@ mod tests {
             object_write_mode(b"tiny.txt", StorageUnits::from_bytes(128)),
             ObjectWriteMode::Inline
         );
+        // The name trailer spends part of the inline budget.
         assert_eq!(
-            object_write_mode(b"tiny.txt", StorageUnits::from_bytes(1_024)),
-            ObjectWriteMode::Inline
-        );
-        assert_eq!(
-            object_write_mode(
-                b"tiny.txt",
-                StorageUnits::from_bytes(SDK_INLINE_RAW_MAX_BYTES as u64 + 1)
-            ),
+            object_write_mode(b"tiny.txt", StorageUnits::from_bytes(MAX_INLINE_WRITE as u64)),
             ObjectWriteMode::Blob
         );
         assert_eq!(

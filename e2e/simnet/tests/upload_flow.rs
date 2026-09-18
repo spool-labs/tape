@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_api::instruction::MAX_INLINE_WRITE;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::CompressedTrack;
@@ -10,7 +11,7 @@ use tape_core::types::{BasisPoints, ContentType, StorageUnits};
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
-use tape_sdk::track::write::{content_etag, SDK_INLINE_RAW_MAX_BYTES};
+use tape_sdk::track::write::content_etag;
 
 const TARGET_GROUPS: u64 = 5;
 
@@ -86,7 +87,7 @@ async fn upload_flow_inner() {
     let scenario = harness.scenario();
 
     let mut rng = StdRng::seed_from_u64(0xDA7A_51CE);
-    let raw_data = random_bytes(&mut rng, SDK_INLINE_RAW_MAX_BYTES);
+    let raw_data = random_bytes(&mut rng, MAX_INLINE_WRITE);
     let blob_data = random_bytes(&mut rng, 128 * 1024);
     let plan_data = random_bytes(&mut rng, 96 * 1024);
     let stream_data = random_bytes(&mut rng, MAX_TRACK_SIZE + 1024);

@@ -15,7 +15,7 @@ use tape_rack::format::{
 };
 use tape_rack::record::Record;
 use tape_sdk::stream::manifest::MAX_TRACKS_PER_TAPE;
-use tape_sdk::track::write::SDK_INLINE_RAW_MAX_BYTES;
+use tape_api::instruction::MAX_INLINE_WRITE;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -31,7 +31,7 @@ use crate::types::ids::DecisionId;
 use crate::types::timestamp::Timestamp;
 
 /// Largest track: the SDK's one-transaction inline write
-pub const MAX_TRACK_BYTES: usize = SDK_INLINE_RAW_MAX_BYTES;
+pub const MAX_TRACK_BYTES: usize = MAX_INLINE_WRITE;
 
 /// Decisions read per pass; a pass that writes everything loops for more
 const DECISIONS_PER_PASS: usize = 512;
@@ -610,7 +610,7 @@ mod tests {
     #[tokio::test]
     async fn batching() {
         let setup = setup().await;
-        let bytes: Vec<u8> = (1..=200).collect();
+        let bytes: Vec<u8> = (1..=30).collect();
         for byte in &bytes {
             queue(&setup, *byte, 0).await;
         }
@@ -647,7 +647,7 @@ mod tests {
     #[tokio::test]
     async fn full_batch() {
         let setup = setup().await;
-        for byte in 1..=100 {
+        for byte in 1..=20 {
             queue(&setup, byte, 0).await;
         }
 
@@ -656,7 +656,7 @@ mod tests {
         assert_eq!(report, FlushReport { written: 1, deleted: 0, outcome: FlushOutcome::Waiting });
         let tracks = setup.chain.tracks(setup.tape);
         let first = parse_entries(tracks[1].1.as_bytes()).expect("parse").len() as u64;
-        assert_eq!(count(&setup, "SELECT COUNT(*) FROM decisions WHERE track IS NULL"), 100 - first);
+        assert_eq!(count(&setup, "SELECT COUNT(*) FROM decisions WHERE track IS NULL"), 20 - first);
     }
 
     // tracks hold only entries: no report, reason, note or score
@@ -872,7 +872,7 @@ mod tests {
             .insert_tape(pending, TapeRole::Blacklist, PathBuf::from("pending.json"), Timestamp(0))
             .await
             .expect("pending tape");
-        for byte in 1..=200 {
+        for byte in 1..=30 {
             queue(&setup, byte, 0).await;
         }
 
