@@ -229,6 +229,7 @@ mod tests {
                         cost: TAPE(0),
                         burned: TAPE(0),
                         scheduled: TAPE(0),
+                        share_nonce: Hash::default(),
                     }),
                     record(track_event(tape, track_number, EpochNumber(6))),
                 ],
@@ -288,6 +289,7 @@ mod tests {
                             cost: TAPE(0),
                             burned: TAPE(0),
                             scheduled: TAPE(0),
+                            share_nonce: Hash::default(),
                         }),
                         record(track_event(tape, TrackNumber(0), EpochNumber(7))),
                     ],
@@ -346,6 +348,7 @@ mod tests {
                         cost: TAPE(0),
                         burned: TAPE(0),
                         scheduled: TAPE(0),
+                        share_nonce: Hash::default(),
                     }),
                     record(track_event(tape, TrackNumber(5), EpochNumber(4))),
                     record(ReplayableEvent::CertifyTrack {
@@ -406,6 +409,7 @@ mod tests {
                         cost: TAPE(0),
                         burned: TAPE(0),
                         scheduled: TAPE(0),
+                        share_nonce: Hash::default(),
                     }),
                     record(named_track_event(
                         tape,
@@ -483,6 +487,7 @@ mod tests {
                         cost: TAPE(0),
                         burned: TAPE(0),
                         scheduled: TAPE(0),
+                        share_nonce: Hash::default(),
                     }),
                     record(inline_track_event(
                         tape,

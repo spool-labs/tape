@@ -153,6 +153,11 @@ impl Tape {
         Ok(())
     }
 
+    /// Every tape starts on its own share nonce.
+    pub fn seed_share_nonce(&mut self, slot_hash: Hash) {
+        self.share_nonce = hashv(&[&slot_hash.to_bytes(), &self.id.pack()]);
+    }
+
     pub fn advance_share_nonce(&mut self, slot_hash: Hash) {
         self.share_nonce = hashv(&[&self.share_nonce.to_bytes(), &slot_hash.to_bytes()]);
     }

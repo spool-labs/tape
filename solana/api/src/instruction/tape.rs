@@ -72,6 +72,7 @@ pub fn build_reserve_tape_ix(
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(system_program::ID, false),
             AccountMeta::new_readonly(sysvar::rent::ID, false),
+            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
         data: ReserveTape {
             storage_units,

@@ -2,6 +2,7 @@ use tape_solana::*;
 use tape_api::program::prelude::*;
 
 use crate::tape::helpers::{TapeSpec, collect_payment, create_tape_account, reserve_archive};
+use crate::track::helpers::slot_hash_seed;
 
 pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = ReserveTape::try_from_bytes(data)?;
@@ -19,6 +20,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         token_program_info,
         system_program_info,
         rent_info,
+        slot_hashes_info,
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -95,6 +97,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         fee_payer_info,
         &seeds,
         reservation,
+        slot_hash_seed(slot_hashes_info)?,
     )?;
 
     Ok(())
@@ -103,7 +106,24 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_account::Account;
+    use tape_crypto::hash::hashv;
     use tape_test::*;
+
+    const SLOT_HASH: Hash = Hash([0x5A; 32]);
+
+    fn slot_hashes_account() -> (Pubkey, Account) {
+        let mut data = vec![0u8; 48];
+        data[0] = 1;
+        data[16..48].copy_from_slice(&SLOT_HASH.to_bytes());
+        (sysvar::slot_hashes::ID, Account {
+            lamports: 1,
+            data,
+            owner: sysvar::ID,
+            executable: false,
+            rent_epoch: 0,
+        })
+    }
 
     /// A user tape that expired at epoch 50
     fn expired_tape(authority: Pubkey) -> Tape {
@@ -176,6 +196,7 @@ mod tests {
             token_program(),
             system_program(),
             rent_sysvar(),
+            slot_hashes_account(),
         ];
 
         let env = test_env();
@@ -192,6 +213,7 @@ mod tests {
                         used: StorageUnits::zero(),
                         active_epoch: start_epoch,
                         expiry_epoch: end_epoch,
+                        share_nonce: hashv(&[&SLOT_HASH.to_bytes(), &TapeNumber(1).pack()]),
                         ..Tape::zeroed()
                     }.pack().as_ref()
                 ).build(),
@@ -307,6 +329,7 @@ mod tests {
             token_program(),
             system_program(),
             rent_sysvar(),
+            slot_hashes_account(),
         ];
 
         let env = test_env();

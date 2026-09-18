@@ -167,6 +167,7 @@ pub fn create_tape_account<'account_info>(
     fee_payer_info: &AccountInfo<'account_info>,
     seeds: &[&[u8]],
     reservation: TapeReservation,
+    slot_hash: Hash,
 ) -> ProgramResult {
     create_program_account::<Tape>(
         tape_info,
@@ -184,6 +185,7 @@ pub fn create_tape_account<'account_info>(
     tape.expiry_epoch = reservation.spec.expiry_epoch;
     tape.capacity = reservation.spec.capacity;
     tape.used = StorageUnits::zero();
+    tape.seed_share_nonce(slot_hash);
 
     TapeReserved {
         tape: reservation.spec.address,
@@ -196,6 +198,7 @@ pub fn create_tape_account<'account_info>(
         cost: reservation.payment.cost,
         burned: reservation.payment.burned,
         scheduled: reservation.payment.scheduled,
+        share_nonce: tape.share_nonce,
     }
     .log();
 

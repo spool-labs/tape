@@ -490,6 +490,7 @@ fn capture_tape(
                 cost: event.cost,
                 burned: event.burned,
                 scheduled: event.scheduled,
+                share_nonce: event.share_nonce,
             },
         ),
         raw_track: None,
@@ -612,6 +613,8 @@ mod tests {
 
     use super::{capture_block, CaptureOutput};
     use crate::ParsedInstruction;
+
+    const SHARE_NONCE: Hash = Hash([7u8; 32]);
 
     fn blob_encoding(slices: &[Vec<u8>]) -> BlobEncoding {
         let leaves =
@@ -750,6 +753,7 @@ mod tests {
                 cost: TAPE(11),
                 burned: TAPE(1),
                 scheduled: TAPE(10),
+                share_nonce: SHARE_NONCE,
             },
         }
     }
@@ -818,7 +822,7 @@ mod tests {
         ));
         assert!(matches!(
             captured.events[2].record.event,
-            ReplayableEvent::ReserveTape { .. }
+            ReplayableEvent::ReserveTape { share_nonce, .. } if share_nonce == SHARE_NONCE
         ));
     }
 

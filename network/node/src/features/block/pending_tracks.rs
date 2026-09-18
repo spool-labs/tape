@@ -244,7 +244,7 @@ impl PendingTracks {
                             next_track_number: TrackNumber(0),
                             authority: event.authority,
                             delegate: Address::default(),
-                            share_nonce: Hash::default(),
+                            share_nonce: event.share_nonce,
                         },
                     );
                 }

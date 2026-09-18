@@ -1080,6 +1080,7 @@ mod tests {
                     cost: TAPE(0),
                     burned: TAPE(0),
                     scheduled: TAPE(0),
+                    share_nonce: Hash::default(),
                 }),
             ),
             (

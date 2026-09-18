@@ -67,6 +67,7 @@ pub fn apply_event<Db: Store>(
             flags,
             authority,
             expiry_epoch,
+            share_nonce,
             ..
         } => {
             store
@@ -79,7 +80,7 @@ pub fn apply_event<Db: Store>(
                         next_track_number: TrackNumber(0),
                         authority: *authority,
                         delegate: Address::default(),
-                        share_nonce: Hash::default(),
+                        share_nonce: *share_nonce,
                     },
                 )
                 .map_err(store_error)?;
@@ -621,6 +622,7 @@ mod tests {
         let slot = SlotNumber(55);
         let tape = Address::new_unique();
         let authority = Address::new_unique();
+        let share_nonce = Hash::new_unique();
         let track_number = TrackNumber(9);
         let (track, _) = track_pda(tape, track_number);
 
@@ -636,6 +638,7 @@ mod tests {
                 cost: TAPE(0),
                 burned: TAPE(0),
                 scheduled: TAPE(0),
+                share_nonce,
             },
             make_blob_track(tape, track_number, EpochNumber(6)),
             ReplayableEvent::CertifyTrack {
@@ -655,7 +658,7 @@ mod tests {
                 next_track_number: TrackNumber(10),
                 authority,
                 delegate: Address::default(),
-                share_nonce: Hash::default(),
+                share_nonce,
             })
         );
 
@@ -727,6 +730,7 @@ mod tests {
                 cost: TAPE(0),
                 burned: TAPE(0),
                 scheduled: TAPE(0),
+                share_nonce: Hash::default(),
             },
             track_event,
         ];
@@ -927,6 +931,7 @@ mod tests {
                 cost: TAPE(0),
                 burned: TAPE(0),
                 scheduled: TAPE(0),
+                share_nonce: Hash::default(),
             },
             make_blob_track(tape, TrackNumber(4), EpochNumber(6)),
             ReplayableEvent::ExtendTape {

@@ -91,6 +91,7 @@ pub enum ReplayableEvent {
         cost: Coin<TAPE>,
         burned: Coin<TAPE>,
         scheduled: Coin<TAPE>,
+        share_nonce: Hash,
     },
 
     /// Tape was destroyed: reserved while snapshots on chain still hold it,
@@ -476,6 +477,7 @@ mod tests {
                 cost: TAPE(0),
                 burned: TAPE(0),
                 scheduled: TAPE(0),
+                share_nonce: Hash::default(),
             },
             ReplayableEvent::DestroyTape {
                 tape: Address::from([8u8; 32]),

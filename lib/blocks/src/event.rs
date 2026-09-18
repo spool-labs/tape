@@ -448,6 +448,7 @@ mod tests {
             cost: TAPE(100),
             burned: TAPE(10),
             scheduled: TAPE(90),
+            share_nonce: Hash::default(),
         };
 
         let log = encode_event(EventType::TapeReserved, &event);

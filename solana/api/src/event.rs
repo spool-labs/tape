@@ -170,6 +170,9 @@ pub struct TapeReserved {
 
     /// TAPE flux units scheduled into epoch rewards.
     pub scheduled: Coin<TAPE>,
+
+    /// Share nonce the tape starts on
+    pub share_nonce: Hash,
 }
 
 tape_solana::event!(EventType, TapeReserved);
