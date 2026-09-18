@@ -14,14 +14,15 @@ use crate::error::TapedriveError;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Phase};
 use crate::stream::manifest::MAX_TRACK_SIZE;
-use crate::stream::write::{append_to_mirror, certify_chunk, verify_mirror_root};
+use crate::stream::write::{
+    ChunkCertification, append_to_mirror, certify_chunk_run, verify_mirror_root,
+};
 use crate::tapedrive::Tapedrive;
 use crate::track::write::{
     SentRegister, UploadPlan, WrittenTrack, collect_certification, encode_blob, inline_write_fits,
     prepare_blob_register, prepare_raw_register, resolve_sent_blob, resolve_sent_raw,
     send_registers, upload_with_retry, wait_for_certified_track,
 };
-use crate::transfer::certify::CollectedSignatures;
 
 const MAX_ENCODE_WORKERS: usize = 4;
 const RESOLVE_CONCURRENCY: usize = 3;
@@ -114,12 +115,6 @@ enum StoredItem {
         receipts: Vec<CertifyRes>,
         etag: Hash,
     },
-}
-
-struct PendingCertification {
-    written: WrittenTrack,
-    collected: CollectedSignatures,
-    receipts: Vec<CertifyRes>,
 }
 
 struct StoredCertification {
@@ -492,7 +487,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             return Ok(());
         }
 
-        let pending: Vec<PendingCertification> = stream::iter(pending)
+        let pending: Vec<ChunkCertification> = stream::iter(pending)
             .map(|stored| async move {
                 let collected = collect_certification(
                     self,
@@ -501,7 +496,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                     &stored.receipts,
                 )
                 .await?;
-                Ok::<_, TapedriveError>(PendingCertification {
+                Ok::<_, TapedriveError>(ChunkCertification {
                     written: stored.written,
                     collected,
                     receipts: stored.receipts,
@@ -521,19 +516,12 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         }
 
         let mut certified = Vec::with_capacity(pending.len());
-        for pending in pending {
-            certify_chunk(
-                self,
-                bucket,
-                &mirror,
-                &pending.written,
-                pending.collected,
-                &pending.receipts,
-                Operation::WriteBatch,
-            )
-            .await?;
-            certified.push(pending.written.track.track_number);
+        for item in &pending {
+            certified.push(item.written.track.track_number);
         }
+
+        // The certifies go out in one run against the mirror, once every register sent ahead of them has its leaf.
+        certify_chunk_run(self, bucket, &mirror, pending, Operation::WriteBatch).await?;
 
         let visibility = self
             .timer(Operation::WriteBatch, Phase::CertifyVisible)

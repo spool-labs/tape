@@ -9,10 +9,14 @@ use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use tape_rpc::{CommitmentLevel, Rpc};
+use tape_rpc_client::{parse_tape_error, sign_transaction};
+use tape_api::compute::CERTIFY_TRACK_CU;
+use tape_api::errors::TapeError;
+use tape_api::instruction::build_certify_track_ix;
 use tape_api::program::tapedrive::track_pda;
 use tape_api::state::Tape;
 use tape_core::object::object_etag;
-use tape_core::prelude::CompressedTrack;
+use tape_core::prelude::{CompressedTrack, EpochNumber};
 use tape_core::track::data::{track_key, BlobDataSlice};
 use tape_core::track::mirror::ArchiveMirror;
 use tape_core::track::types::CompressedTrackProof;
@@ -947,6 +951,139 @@ pub(crate) async fn append_to_mirror<Blockchain: Rpc, Cluster: Api>(
         track = %written.address,
         "mirror could not follow a foreign register; later proofs come from storage nodes"
     );
+    Ok(())
+}
+
+/// One stored track ready to certify against the mirror.
+pub(crate) struct ChunkCertification {
+    pub written: WrittenTrack,
+    pub collected: CollectedSignatures,
+    pub receipts: Vec<CertifyRes>,
+}
+
+/// One certify built against the mirror and sent, kept to replay on the mirror.
+struct BuiltCertification {
+    proof: CompressedTrackProof,
+    certified: CompressedTrack,
+}
+
+/// Certify a run of stored chunks against the mirror the caller holds.
+///
+/// A chain that runs a JSON-RPC batch in order takes the whole run in one
+/// round trip: every proof is built against the mirror in turn, every
+/// transaction signs against one blockhash, and the chain executes them in
+/// the order they were built. An entry the chain refuses drops that track and
+/// the ones behind it back onto the one-at-a-time path, which rebuilds them
+/// against the mirror as it stands after the last certify that landed.
+pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    mirror: &Mutex<ArchiveMirror>,
+    mut pending: Vec<ChunkCertification>,
+    operation: Operation,
+) -> Result<(), TapedriveError> {
+    if !client.rpc().rpc().executes_batches_in_order() {
+        return certify_chunks_singly(client, tape_key, mirror, pending, operation).await;
+    }
+
+    let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
+    let blockhash = client.rpc().rpc().get_latest_blockhash().await?;
+
+    // Built against a copy, so a refused entry leaves the caller's mirror at
+    // the last certify the chain actually ran.
+    let mut working = mirror.lock().await.clone();
+    let mut built = Vec::with_capacity(pending.len());
+    let mut transactions = Vec::with_capacity(pending.len());
+    for item in &pending {
+        let certified = certified_track(&item.written.track);
+        let Ok(proof) = working.proof_for(certified.track_number) else {
+            break;
+        };
+        if working
+            .apply_certified_with_proof(certified.track_number, &certified, &proof)
+            .is_err()
+        {
+            break;
+        }
+
+        let certify_ix = build_certify_track_ix(
+            payer.pubkey().into(),
+            tape_key.pubkey().into(),
+            proof,
+            EpochNumber(item.collected.epoch),
+            item.collected.bitmap,
+            item.collected.aggregated_signature,
+        );
+        transactions.push(sign_transaction(
+            payer,
+            &[tape_signer],
+            CERTIFY_TRACK_CU,
+            &[certify_ix],
+            blockhash,
+        )?);
+        built.push(BuiltCertification { proof, certified });
+    }
+
+    if transactions.is_empty() {
+        return certify_chunks_singly(client, tape_key, mirror, pending, operation).await;
+    }
+
+    let submit = client
+        .timer(operation, Phase::CertifySubmit)
+        .chunks(transactions.len() as u64);
+    let verdicts = client.rpc().rpc().send_transactions(&transactions).await;
+    submit.finish_result(&verdicts);
+    let verdicts = verdicts?;
+
+    let mut landed = 0;
+    for (index, verdict) in verdicts.into_iter().enumerate() {
+        if let Err(err) = verdict {
+            // The track was certified before the run reached it, so the
+            // chain holds the leaf the mirror is about to write.
+            if !matches!(parse_tape_error(&err), Some(TapeError::AlreadyCertified)) {
+                break;
+            }
+        }
+
+        let build = &built[index];
+        apply_certified_to_mirror(client, tape_key, mirror, &build.certified, Some(&build.proof))
+            .await?;
+        landed = index + 1;
+    }
+
+    if landed > 0 {
+        // The program accepted signatures for the collected epoch, which
+        // proves the cached committee is current.
+        client.state().touch();
+    }
+
+    let refused = pending.split_off(landed);
+    certify_chunks_singly(client, tape_key, mirror, refused, operation).await
+}
+
+/// Certify each chunk on its own, the way a chain that promises no batch
+/// order has to.
+async fn certify_chunks_singly<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    mirror: &Mutex<ArchiveMirror>,
+    pending: Vec<ChunkCertification>,
+    operation: Operation,
+) -> Result<(), TapedriveError> {
+    for item in pending {
+        certify_chunk(
+            client,
+            tape_key,
+            mirror,
+            &item.written,
+            item.collected,
+            &item.receipts,
+            operation,
+        )
+        .await?;
+    }
+
     Ok(())
 }
 
