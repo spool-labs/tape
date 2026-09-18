@@ -397,6 +397,10 @@ impl Rpc for LiteSvmRpc {
         CommitmentLevel::Finalized
     }
 
+    fn executes_batches_in_order(&self) -> bool {
+        true
+    }
+
     async fn get_slot(&self) -> Result<u64, RpcError> {
         let inner = self
             .inner
