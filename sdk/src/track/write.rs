@@ -2061,14 +2061,26 @@ pub(crate) async fn certify_submit_with_retry<Blockchain: Rpc, Cluster: Api>(
     }
 }
 
+/// True when the program refused because the chain's epoch moved past the one
+/// the transaction addresses its group account by
+pub(crate) fn is_epoch_changed(err: &TapedriveError) -> bool {
+    match err {
+        TapedriveError::Rpc(rpc) => {
+            matches!(parse_tape_error(rpc), Some(TapeError::EpochChanged))
+        }
+        _ => false,
+    }
+}
+
 /// True when a rejection invalidates the collected signatures themselves,
 /// rather than the proof or the transaction attempt.
 pub(crate) fn needs_fresh_signatures(err: &TapedriveError) -> bool {
+    if is_epoch_changed(err) {
+        return true;
+    }
+
     match err {
-        TapedriveError::Rpc(rpc) => matches!(
-            parse_tape_error(rpc),
-            Some(TapeError::BadSignature | TapeError::EpochChanged)
-        ),
+        TapedriveError::Rpc(rpc) => matches!(parse_tape_error(rpc), Some(TapeError::BadSignature)),
         _ => false,
     }
 }

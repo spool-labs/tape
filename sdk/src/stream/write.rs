@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use futures::stream::{self, FuturesOrdered, Stream, StreamExt};
+use futures::stream::{self, FuturesOrdered, Stream, StreamExt, TryStreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::sleep;
@@ -54,6 +54,12 @@ const MAX_TRACKS: TrackNumber = TrackNumber(MAX_TRACKS_PER_TAPE);
 /// Encoded chunks buffered ahead of the serial register submits, so encoding
 /// (seconds of CPU per chunk) overlaps register confirmations.
 const ENCODE_AHEAD: usize = 2;
+
+/// Certify attempts that sign again after the chain's epoch turned under a run
+const EPOCH_RECOLLECT_ATTEMPTS: usize = 3;
+
+/// Tracks signed again at once when an epoch turn stales a whole run
+const RECOLLECT_CONCURRENCY: usize = 2;
 
 /// Concurrent chunk encodes, bounded by available cores. Each in-flight
 /// encode holds its input and coded slices (~3x the chunk), so four workers
@@ -987,12 +993,25 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
     }
 
     let mut pending = pending;
+    let mut recollects = 0;
     while !pending.is_empty() {
-        let landed = certify_run_once(client, tape_key, mirror, &pending, operation).await?;
-        let mut refused = pending.split_off(landed);
+        let outcome = certify_run_once(client, tape_key, mirror, &pending, operation).await?;
+        let mut refused = pending.split_off(outcome.landed);
         let Some(item) = refused.first() else {
             break;
         };
+
+        // The epoch turned under the run. Every entry left signed under the
+        // old one and addresses the old group account, so they sign again and
+        // go back out against the mirror the run already proved them from.
+        if outcome.is_epoch_changed && recollects < EPOCH_RECOLLECT_ATTEMPTS {
+            recollects += 1;
+            sleep(CERTIFY_CONFLICT_DELAY).await;
+            client.state().invalidate();
+            debug!(entries = refused.len(), attempt = recollects, "epoch turned under a certify run; signing again");
+            pending = recollect_run(client, refused, operation).await?;
+            continue;
+        }
 
         // Only the refused track goes the slow way. The ones behind it are
         // still the mirror's to prove, so they go back into a run rather than
@@ -1016,6 +1035,31 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
     Ok(())
 }
 
+/// What one run of the batch did.
+struct RunOutcome {
+    landed: usize,
+    is_epoch_changed: bool,
+}
+
+/// Sign every entry of a run again under the epoch the chain has now.
+///
+/// The receipts banked at upload belong to the epoch that turned, so none of
+/// them are offered back to the collector.
+async fn recollect_run<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    pending: Vec<ChunkCertification>,
+    operation: Operation,
+) -> Result<Vec<ChunkCertification>, TapedriveError> {
+    stream::iter(pending)
+        .map(|item| async move {
+            let collected = collect_certification(client, &item.written, operation, &[]).await?;
+            Ok::<_, TapedriveError>(ChunkCertification { collected, ..item })
+        })
+        .buffered(RECOLLECT_CONCURRENCY)
+        .try_collect()
+        .await
+}
+
 /// Build and send one run against the mirror, returning how many of its
 /// entries the chain took.
 ///
@@ -1028,7 +1072,7 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
     mirror: &Mutex<ArchiveMirror>,
     pending: &[ChunkCertification],
     operation: Operation,
-) -> Result<usize, TapedriveError> {
+) -> Result<RunOutcome, TapedriveError> {
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
     let blockhash = client.rpc().rpc().get_latest_blockhash().await?;
@@ -1069,7 +1113,7 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
     }
 
     if transactions.is_empty() {
-        return Ok(0);
+        return Ok(RunOutcome { landed: 0, is_epoch_changed: false });
     }
 
     let submit = client
@@ -1080,6 +1124,7 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
     let verdicts = verdicts?;
 
     let mut landed = 0;
+    let mut is_epoch_changed = false;
     for (index, verdict) in verdicts.into_iter().enumerate() {
         if let Err(err) = verdict {
             match parse_tape_error(&err) {
@@ -1087,13 +1132,14 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
                 // chain holds the leaf the mirror is about to write.
                 Some(TapeError::AlreadyCertified) => {}
                 verdict => {
+                    is_epoch_changed = matches!(verdict, Some(TapeError::EpochChanged));
                     warn!(
                         index,
                         entries = built.len(),
                         track = built[index].certified.track_number.as_u64(),
                         ?verdict,
                         %err,
-                        "certify run refused; rebuilding the rest against the chain",
+                        "certify run refused",
                     );
                     break;
                 }
@@ -1112,7 +1158,7 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
         client.state().touch();
     }
 
-    Ok(landed)
+    Ok(RunOutcome { landed, is_epoch_changed })
 }
 
 /// Certify each chunk on its own, the way a chain that promises no batch
