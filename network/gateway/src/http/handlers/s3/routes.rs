@@ -31,7 +31,7 @@ use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{with_share_token, ApiError};
 use tape_sdk::error::{TapedriveError, UploadError};
-use tape_sdk::track::write::content_etag;
+use tape_sdk::track::write::content_etag_named;
 use tape_store::ops::{CredentialOps, ObjectListOps, ObjectListPage, TapeOps};
 use tape_store::types::{CredentialScope, ObjectListEntry, PendingOp, PendingWrite};
 
@@ -1241,7 +1241,9 @@ where
     Blockchain: Rpc + 'static,
 {
     let size = data.len() as u64;
-    let computed = match content_etag(&data).await {
+    // The name trailer shares the inline budget with the payload, so the
+    // ETag has to follow the same inline-or-coded decision the write makes.
+    let computed = match content_etag_named(key.as_bytes(), &data).await {
         Ok(computed) => computed,
         Err(error) => {
             permit.refund(state);

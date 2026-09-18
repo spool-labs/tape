@@ -1,6 +1,14 @@
 /// Hard runtime ceiling on compute units for a single transaction.
 pub const MAX_COMPUTE_UNIT_LIMIT: u32 = 1_400_000;
 
+/// Per-instruction budget for a send that sets no limit of its own. A v1
+/// transaction with no limit in its config gets zero compute units.
+pub const DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT: u32 = 200_000;
+
+/// Hard runtime ceiling on the account data a single transaction can load. A
+/// v1 transaction with no limit in its config can load nothing.
+pub const MAX_LOADED_ACCOUNTS_DATA_SIZE: u32 = 64 * 1024 * 1024;
+
 /// Headroom added on top of a simulation-measured compute unit consumption
 /// before resending, as a percentage of the measured value.
 pub const MEASURED_CU_HEADROOM_PERCENT: u64 = 25;

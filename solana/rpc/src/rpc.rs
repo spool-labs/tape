@@ -10,7 +10,8 @@ use solana_account::Account;
 use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_commitment_config::CommitmentLevel;
 use solana_hash::Hash;
-use solana_transaction::{Transaction, TransactionError};
+use solana_transaction::versioned::VersionedTransaction;
+use solana_transaction::TransactionError;
 use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
 use tape_blocks::wire::Block;
 use tape_crypto::address::Address;
@@ -140,19 +141,20 @@ pub trait Rpc: Send + Sync {
     // ========================================================================
 
     /// Send a transaction without waiting for confirmation
-    async fn send_transaction(&self, transaction: &Transaction) -> Result<Txid, RpcError>;
+    async fn send_transaction(&self, transaction: &VersionedTransaction)
+        -> Result<Txid, RpcError>;
 
     /// Simulate a transaction without submitting it, returning the execution
     /// outcome and compute units consumed
     async fn simulate_transaction(
         &self,
-        transaction: &Transaction,
+        transaction: &VersionedTransaction,
     ) -> Result<SimulationResult, RpcError>;
 
     /// Send a transaction and wait until it reaches the commitment.
     async fn send_and_confirm_transaction(
         &self,
-        transaction: &Transaction,
+        transaction: &VersionedTransaction,
         commitment: CommitmentLevel,
         skip_preflight: bool,
     ) -> Result<Txid, RpcError>;

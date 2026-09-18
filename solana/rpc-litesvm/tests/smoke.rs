@@ -2,11 +2,15 @@ use tape_rpc::Rpc;
 use rpc_litesvm::LiteSvmRpc;
 use solana_hash::Hash as SolanaHash;
 use solana_keypair::Keypair;
-use solana_message::Message;
+use solana_message::v1::{Message, TransactionConfig};
+use solana_message::VersionedMessage;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use solana_system_interface::instruction as system_instruction;
-use solana_transaction::Transaction;
+use solana_transaction::versioned::VersionedTransaction;
+use tape_api::compute::{
+    DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT, MAX_LOADED_ACCOUNTS_DATA_SIZE,
+};
 use tape_crypto::address::Address;
 
 #[tokio::test]
@@ -38,11 +42,13 @@ async fn send_transfer_records_block_and_status() {
     let slot = rpc.get_slot().await.expect("slot available");
 
     let ix = system_instruction::transfer(&payer.pubkey(), &recipient, 1_000_000);
-    let tx = Transaction::new(
-        &[&payer],
-        Message::new(&[ix], Some(&payer.pubkey())),
-        blockhash,
-    );
+    let config = TransactionConfig::empty()
+        .with_compute_unit_limit(DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT)
+        .with_loaded_accounts_data_size_limit(MAX_LOADED_ACCOUNTS_DATA_SIZE);
+    let message = Message::try_compile_with_config(&payer.pubkey(), &[ix], blockhash, config)
+        .expect("compile transfer");
+    let tx = VersionedTransaction::try_new(VersionedMessage::V1(message), &[&payer])
+        .expect("sign transfer");
 
     let sig = rpc
         .send_and_confirm_transaction(&tx, rpc.commitment(), false)
@@ -61,6 +67,9 @@ async fn send_transfer_records_block_and_status() {
     let block = rpc.get_block(slot + 1).await.expect("block exists");
     let txs = block.transactions.expect("full tx details present");
     assert_eq!(txs.len(), 1, "one tx recorded in block");
+
+    let fetched = rpc.get_transaction(&sig).await.expect("v1 transaction is fetchable");
+    assert_eq!(fetched.slot, slot + 1);
 
     let recipient_addr: Address = recipient.into();
     let recipient_account = rpc.get_account(&recipient_addr).await.expect("recipient account");

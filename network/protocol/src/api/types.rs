@@ -16,7 +16,7 @@ use tape_core::prelude::{BlobData, EpochNumber, SpoolIndex, TrackNumber};
 use tape_core::types::RoundNumber;
 use tape_core::track::types::{PackedTrack, PackedTrackProof};
 use tape_core::types::{ContentType, SlotNumber, SpoolBitmap, StorageUnits};
-use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
+use tape_api::instruction::MAX_INLINE_WRITE;
 use tape_crypto::prelude::{Address, Hash};
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
@@ -37,7 +37,7 @@ type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
 type SampleLeafBytes = WincodeVec<Pod<u8>, BincodeLen<SUB_LEAF_BYTES>>;
 
 /// Matches the maximum payload accepted by the on-chain write instruction.
-type InlinePayloadBytes = WincodeVec<Pod<u8>, BincodeLen<TRACK_WRITE_MAX_BYTES>>;
+type InlinePayloadBytes = WincodeVec<Pod<u8>, BincodeLen<MAX_INLINE_WRITE>>;
 
 /// Response from the signature endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -513,16 +513,16 @@ mod tests {
     #[test]
     fn oversize_inline() {
         let mut encoded = wincode::serialize(&SampleProofPayload::Inline {
-            payload: vec![0x5A; TRACK_WRITE_MAX_BYTES],
+            payload: vec![0x5A; MAX_INLINE_WRITE],
         })
         .unwrap();
-        inflate(&mut encoded, TRACK_WRITE_MAX_BYTES as u64);
+        inflate(&mut encoded, MAX_INLINE_WRITE as u64);
 
         assert!(wincode::deserialize::<SampleProofPayload>(&encoded).is_err());
 
         // At the cap it still decodes.
         let ok = wincode::serialize(&SampleProofPayload::Inline {
-            payload: vec![0x5A; TRACK_WRITE_MAX_BYTES],
+            payload: vec![0x5A; MAX_INLINE_WRITE],
         })
         .unwrap();
         assert!(wincode::deserialize::<SampleProofPayload>(&ok).is_ok());

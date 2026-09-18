@@ -19,9 +19,6 @@ pub async fn submit_finalize_group<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let fee_payer = ctx.pubkey().into();
     let ix = build_finalize_group_ix(fee_payer, epoch, payload, proof);
 
-    // No explicit compute-unit limit: the FinalizeGroup payload + assignment
-    // merkle proof already push this tx near the 1232-byte transaction-size
-    // limit, and a ComputeBudget instruction would add ~40 bytes (its program
-    // key + the instruction) and push it over.
+    // Sent under the per-instruction default compute unit limit.
     ctx.rpc.simulate_then_send(ctx.signer(), vec![ix]).await
 }

@@ -121,6 +121,8 @@ pub mod metrics;
 // Public exports
 pub use accounts::EpochBatch;
 pub use client::RpcClient;
+pub use solana_message::v1::MAX_TRANSACTION_SIZE;
+pub use transactions::{sign_transaction, transaction_len};
 
 #[cfg(test)]
 mod tests {

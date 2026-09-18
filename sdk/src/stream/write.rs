@@ -1345,7 +1345,7 @@ mod tests {
 
     #[test]
     fn large_manifest() {
-        let manifest_bytes = sample_manifest_bytes(64);
+        let manifest_bytes = sample_manifest_bytes(256);
 
         assert_eq!(
             manifest_write_mode(b"roms/large.bin", &manifest_bytes),

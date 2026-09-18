@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -18,31 +17,14 @@ use crate::metrics::ApiMetrics;
 /// Per-request timeout for vote calls.
 const VOTE_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Connections a peer's slice bodies spread over; one h2 client holds one socket.
-const SLICE_CONNECTIONS: usize = 8;
-
-/// The clients pinned to one peer's TLS public key. Cached on the `HttpApi` and
-/// invalidated when PeerManager observes a change to the peer's on-chain
-/// `network_tls` field.
+/// A reqwest client pinned to a specific peer's TLS public key. Cached on the
+/// `HttpApi` and invalidated when PeerManager observes a change to the peer's
+/// on-chain `network_tls` field.
 #[derive(Clone)]
 pub struct PinnedPeerClient {
-    pub ring: Arc<Vec<reqwest::Client>>,
-    pub cursor: Arc<AtomicUsize>,
+    pub client: reqwest::Client,
     pub tls_pubkey: NetworkTlsPubkey,
     pub network_address: NetworkAddress,
-}
-
-impl PinnedPeerClient {
-    /// The connection every call outside a slice body speaks over.
-    pub fn first(&self) -> reqwest::Client {
-        self.ring[0].clone()
-    }
-
-    /// The next connection in the ring, for one slice body.
-    pub fn next(&self) -> reqwest::Client {
-        let step = self.cursor.fetch_add(1, Ordering::Relaxed);
-        self.ring[step % self.ring.len()].clone()
-    }
 }
 
 /// One completed peer call that moved payload bytes.
@@ -86,30 +68,26 @@ impl HttpApi {
     /// Get-or-build a pinned HTTPS client for the given peer. Rebuilds when the
     /// cached entry's TLS pubkey or network address differ from the current
     /// PeerNode snapshot (which is how we handle peer key rotations).
-    fn client_for(&self, peer: &PeerNode) -> Result<(PinnedPeerClient, String), ApiError> {
+    fn client_for(&self, peer: &PeerNode) -> Result<(reqwest::Client, String), ApiError> {
         if let Some(entry) = self.clients.get(&peer.node) {
             if entry.tls_pubkey == peer.tls_pubkey
                 && entry.network_address == peer.network_address
             {
                 let url = https_base_url(entry.network_address)?;
-                return Ok((entry.clone(), url));
+                return Ok((entry.client.clone(), url));
             }
         }
 
-        let mut ring = Vec::with_capacity(SLICE_CONNECTIONS);
-        for _ in 0..SLICE_CONNECTIONS {
-            ring.push(self.build_pinned_client(peer.tls_pubkey)?);
-        }
+        let client = self.build_pinned_client(peer.tls_pubkey)?;
         let pinned = PinnedPeerClient {
-            ring: Arc::new(ring),
-            cursor: Arc::new(AtomicUsize::new(0)),
+            client: client.clone(),
             tls_pubkey: peer.tls_pubkey,
             network_address: peer.network_address,
         };
-        self.clients.insert(peer.node, pinned.clone());
+        self.clients.insert(peer.node, pinned);
 
         let url = https_base_url(peer.network_address)?;
-        Ok((pinned, url))
+        Ok((client, url))
     }
 
     fn build_pinned_client(&self, tls_pubkey: NetworkTlsPubkey) -> Result<reqwest::Client, ApiError> {
@@ -131,15 +109,7 @@ impl HttpApi {
 
     fn resolve(&self, node: Address) -> Result<(reqwest::Client, String), ApiError> {
         let peer = self.resolve_peer(node)?;
-        let (pinned, url) = self.client_for(&peer)?;
-        Ok((pinned.first(), url))
-    }
-
-    /// A peer's next connection, for one slice body in either direction.
-    fn resolve_slice(&self, node: Address) -> Result<(reqwest::Client, String), ApiError> {
-        let peer = self.resolve_peer(node)?;
-        let (pinned, url) = self.client_for(&peer)?;
-        Ok((pinned.next(), url))
+        self.client_for(&peer)
     }
 
     fn resolve_peer(&self, node: Address) -> Result<PeerNode, ApiError> {
@@ -186,7 +156,7 @@ fn https_base_url(addr: NetworkAddress) -> Result<String, ApiError> {
 #[async_trait]
 impl Api for HttpApi {
     async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
-        let (client, base) = self.resolve_slice(node)?;
+        let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", slice_url(&track_id, req.spool));
         let body =
@@ -223,7 +193,7 @@ impl Api for HttpApi {
     }
 
     async fn get_slice(&self, node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
-        let (client, base) = self.resolve_slice(node)?;
+        let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", slice_url(&track_id, req.spool));
 
