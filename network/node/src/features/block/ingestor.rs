@@ -26,7 +26,7 @@ use crate::features::bootstrap::LiveStart;
 use crate::features::block::pending_blocks::{AppendOutcome, PendingBlocks};
 
 /// Bounds on the poll wait, so a measured slot time cannot spin or stall it
-const TIP_POLL_MIN_MS: u64 = 25;
+const TIP_POLL_MIN_MS: u64 = 2;
 const TIP_POLL_MAX_MS: u64 = 400;
 
 /// Minimum interval between INFO-level dispatch summaries. Per-block
