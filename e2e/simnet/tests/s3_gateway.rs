@@ -400,15 +400,18 @@ async fn read_write_inner() {
         &s3_base, &host, &bucket_label, &coded_key, &stream_body, PUT_CONTENT_TYPE,
     ).await;
     let listed = wait_sdk_object_listed(&harness, &bucket, &coded_key, &coded_key, active_timeout).await;
+    
     assert_eq!(listed.kind, TrackKind::Coded as u64);
     assert_eq!(coded_etag, format!("\"{}\"", listed.etag));
     wait_pending_drained(&admin_base, OPERATOR_TOKEN, active_timeout).await;
+    
     let coded_head_etag = assert_s3_head_object(
         &s3_base, &bucket_label, &coded_key, stream_body.len(), PUT_CONTENT_TYPE,
     ).await;
     let coded_read_etag = assert_s3_get_object(
         &s3_base, &bucket_label, &coded_key, &stream_body, PUT_CONTENT_TYPE,
     ).await;
+    
     assert_eq!(coded_etag, coded_head_etag);
     assert_eq!(coded_etag, coded_read_etag);
     assert_s3_not_modified(&s3_base, &bucket_label, &coded_key, &coded_etag).await;
