@@ -2162,7 +2162,7 @@ mod tests {
 
     use super::{
         check_plan_matches, content_etag, content_etag_named, ensure_expected_track_position,
-        hash, inline_write_fits, needs_fresh_signatures, prepare_plan,
+        hash, inline_write_fits, is_epoch_changed, needs_fresh_signatures, prepare_plan,
         should_retry_certification, RpcError, TapeError, TrackNumber, MAX_INLINE_WRITE,
     };
     use tape_api::instruction::build_track_write_ix;
@@ -2340,5 +2340,26 @@ mod tests {
         assert!(!needs_fresh_signatures(&TapedriveError::Peer(
             ApiError::StaleTrackProof,
         )));
+    }
+
+    // the epoch turning under a certify reads apart from every other refusal
+    #[test]
+    fn epoch_turn_verdict() {
+        let turned = TapedriveError::Rpc(RpcError::Request(
+            "RPC response error: Error processing Instruction 1: custom program error: 0x34"
+                .to_string(),
+        ));
+        let bad_proof = TapedriveError::Rpc(RpcError::Request(
+            "RPC response error: Error processing Instruction 1: custom program error: 0x70"
+                .to_string(),
+        ));
+
+        assert!(is_epoch_changed(&turned));
+        assert!(!is_epoch_changed(&bad_proof));
+        assert!(!is_epoch_changed(&TapedriveError::NotFound));
+
+        // both still retry, so the run only changes which way it retries
+        assert!(should_retry_certification(&turned));
+        assert!(should_retry_certification(&bad_proof));
     }
 }
