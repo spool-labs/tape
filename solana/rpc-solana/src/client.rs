@@ -4,9 +4,10 @@ use crate::config::RpcConfig;
 use crate::selector::{EndpointCursor, EndpointSelector};
 use async_trait::async_trait;
 use solana_account::Account;
-use solana_client::client_error::ClientError;
+use solana_client::client_error::{ClientError, ClientErrorKind};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig, RpcSimulateTransactionConfig, RpcTransactionConfig};
+use solana_client::rpc_request::{RpcError as SolanaRpcError, RpcResponseErrorData};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
 use solana_pubkey::Pubkey;
@@ -18,6 +19,7 @@ use solana_transaction_status::{
     UiTransactionEncoding,
 };
 use std::future::Future;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use tape_rpc::{Rpc, RpcError, SimulationResult};
 use tape_crypto::address::Address;
@@ -496,6 +498,158 @@ struct JsonRpcError {
     message: String,
 }
 
+/// Build the JSON-RPC batch body for a run of sends, one call per
+/// transaction with its index as the id.
+fn send_batch_request(
+    transactions: &[VersionedTransaction],
+) -> Result<serde_json::Value, RpcError> {
+    let mut calls = Vec::with_capacity(transactions.len());
+    for (index, transaction) in transactions.iter().enumerate() {
+        let encoded = wincode::serialize(transaction)
+            .map_err(|error| RpcError::Internal(format!("encode transaction: {error}")))?;
+        calls.push(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": index,
+            "method": "sendTransaction",
+            "params": [
+                base64::encode(encoded),
+                {
+                    "encoding": "base64",
+                    "skipPreflight": true,
+                },
+            ],
+        }));
+    }
+
+    Ok(serde_json::Value::Array(calls))
+}
+
+/// Post one batch of sends and read a verdict per transaction.
+async fn send_batch(
+    http: &reqwest::Client,
+    endpoint: &str,
+    body: &serde_json::Value,
+    count: usize,
+) -> Result<Vec<Result<Txid, RpcError>>, RpcError> {
+    let response = http
+        .post(endpoint)
+        .json(body)
+        .send()
+        .await
+        .map_err(|error| RpcError::Request(error.to_string()))?;
+
+    let status = response.status();
+    let payload = response
+        .bytes()
+        .await
+        .map_err(|error| RpcError::Request(error.to_string()))?;
+
+    if !status.is_success() {
+        return Err(RpcError::Request(format!(
+            "sendTransaction batch http {}: {}",
+            status.as_u16(),
+            String::from_utf8_lossy(&payload[..payload.len().min(256)])
+        )));
+    }
+
+    decode_send_batch_response(&payload, count)
+}
+
+/// Turn a batch reply into one verdict per call, placed by the id it answers.
+///
+/// JSON-RPC lets a server answer a batch in any order, so nothing is read off
+/// an entry's position.
+fn decode_send_batch_response(
+    body: &[u8],
+    count: usize,
+) -> Result<Vec<Result<Txid, RpcError>>, RpcError> {
+    let reply: SendBatchReply = serde_json::from_slice(body)
+        .map_err(|error| RpcError::Deserialization(error.to_string()))?;
+
+    // A server that refuses the batch outright answers with one error object
+    // rather than an array.
+    let envelopes = match reply {
+        SendBatchReply::Batch(envelopes) => envelopes,
+        SendBatchReply::Refusal(failure) => {
+            let message = match failure.error {
+                Some(error) => error.message,
+                None => "sendTransaction batch answered a single result".to_string(),
+            };
+            return Err(RpcError::Request(message));
+        }
+    };
+
+    let mut verdicts: Vec<Option<Result<Txid, RpcError>>> = (0..count).map(|_| None).collect();
+    for envelope in envelopes {
+        let id = envelope.id.ok_or_else(|| {
+            RpcError::Deserialization("sendTransaction batch answered without an id".into())
+        })?;
+        let slot = verdicts.get_mut(id).ok_or_else(|| {
+            RpcError::Deserialization(format!(
+                "sendTransaction batch answered id {id} of {count} calls"
+            ))
+        })?;
+        if slot.is_some() {
+            return Err(RpcError::Deserialization(format!(
+                "sendTransaction batch answered id {id} twice"
+            )));
+        }
+        *slot = Some(decode_send_entry(envelope.result, envelope.error));
+    }
+
+    let mut out = Vec::with_capacity(count);
+    for (index, verdict) in verdicts.into_iter().enumerate() {
+        out.push(verdict.ok_or_else(|| {
+            RpcError::Deserialization(format!("sendTransaction batch left id {index} unanswered"))
+        })?);
+    }
+
+    Ok(out)
+}
+
+/// One entry's verdict, classified the way a single send's rejection is.
+fn decode_send_entry(
+    result: Option<String>,
+    error: Option<JsonRpcError>,
+) -> Result<Txid, RpcError> {
+    if let Some(error) = error {
+        let client_error = ClientError::from(ClientErrorKind::RpcError(
+            SolanaRpcError::RpcResponseError {
+                code: error.code,
+                message: error.message,
+                data: RpcResponseErrorData::Empty,
+            },
+        ));
+        return Err(SolanaRpc::convert_error(client_error, None));
+    }
+
+    let signature = result.ok_or_else(|| {
+        RpcError::Deserialization("sendTransaction batch entry has neither result nor error".into())
+    })?;
+    let signature = Signature::from_str(&signature)
+        .map_err(|error| RpcError::Deserialization(format!("send signature: {error}")))?;
+
+    Ok(signature.into())
+}
+
+/// What a batch post answers with: one entry per call, or one refusal.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum SendBatchReply {
+    Batch(Vec<SendEnvelope>),
+    Refusal(SendEnvelope),
+}
+
+#[derive(serde::Deserialize)]
+struct SendEnvelope {
+    #[serde(default)]
+    id: Option<usize>,
+    #[serde(default)]
+    result: Option<String>,
+    #[serde(default)]
+    error: Option<JsonRpcError>,
+}
+
 /// agave's getBlock error codes
 const JSON_RPC_SERVER_ERROR_BLOCK_NOT_AVAILABLE: i64 = -32004;
 const JSON_RPC_SERVER_ERROR_SLOT_SKIPPED: i64 = -32007;
@@ -585,6 +739,10 @@ async fn send_and_poll(
 impl Rpc for SolanaRpc {
     fn commitment(&self) -> CommitmentLevel {
         self.config.commitment
+    }
+
+    fn executes_batches_in_order(&self) -> bool {
+        self.config.is_batch_ordered
     }
 
     async fn get_slot(&self) -> Result<u64, RpcError> {
@@ -818,6 +976,28 @@ impl Rpc for SolanaRpc {
         Ok(signature.into())
     }
 
+    async fn send_transactions(
+        &self,
+        transactions: &[VersionedTransaction],
+    ) -> Result<Vec<Result<Txid, RpcError>>, RpcError> {
+        if transactions.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let body = send_batch_request(transactions)?;
+        let count = transactions.len();
+
+        self.with_retry_at("sendTransaction:batch", |index| {
+            send_batch(
+                &self.http,
+                &self.config.endpoints[index],
+                &body,
+                count,
+            )
+        })
+        .await
+    }
+
     async fn simulate_transaction(
         &self,
         transaction: &VersionedTransaction,
@@ -948,7 +1128,7 @@ pub fn redact_url_query(msg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solana_client::client_error::ClientErrorKind;
+    use tape_rpc::looks_like_transaction_error;
     use solana_instruction_error::InstructionError;
     use solana_transaction::TransactionError;
 
@@ -1018,6 +1198,73 @@ mod tests {
         assert_eq!(params[1]["maxSupportedTransactionVersion"], 1);
         // Rendered by Display, so pin the wire spelling rather than trust it.
         assert_eq!(params[1]["commitment"], "confirmed");
+    }
+
+    // a batch reply is placed by the id it answers, whatever order it arrives in
+    #[test]
+    fn batch_replies_land_by_id() {
+        let first = Signature::from([1u8; 64]).to_string();
+        let second = Signature::from([2u8; 64]).to_string();
+        let third = Signature::from([3u8; 64]).to_string();
+        let body = format!(
+            r#"[{{"jsonrpc":"2.0","id":2,"result":"{third}"}},
+                {{"jsonrpc":"2.0","id":0,"result":"{first}"}},
+                {{"jsonrpc":"2.0","id":1,"result":"{second}"}}]"#
+        );
+
+        let verdicts = decode_send_batch_response(body.as_bytes(), 3).expect("batch decodes");
+
+        let landed: Vec<String> = verdicts
+            .into_iter()
+            .map(|verdict| verdict.expect("entry sent").to_string())
+            .collect();
+        assert_eq!(landed, vec![first, second, third]);
+    }
+
+    // one rejected entry stays that entry's, and the sends around it still report their signatures
+    #[test]
+    fn batch_entry_error_stays_on_its_entry() {
+        let first = Signature::from([1u8; 64]).to_string();
+        let third = Signature::from([3u8; 64]).to_string();
+        let body = format!(
+            r#"[{{"jsonrpc":"2.0","id":0,"result":"{first}"}},
+                {{"jsonrpc":"2.0","id":1,"error":{{"code":-32002,
+                  "message":"Error processing Instruction 0: custom program error: 0x74"}}}},
+                {{"jsonrpc":"2.0","id":2,"result":"{third}"}}]"#
+        );
+
+        let mut verdicts = decode_send_batch_response(body.as_bytes(), 3).expect("batch decodes");
+
+        let rejected = verdicts.remove(1).expect_err("the middle entry was rejected");
+        assert!(
+            looks_like_transaction_error(&rejected.to_string()),
+            "the program's rejection has to survive into the entry: {rejected}"
+        );
+        assert!(verdicts[0].is_ok());
+        assert!(verdicts[1].is_ok());
+    }
+
+    // a reply short of the calls it answers is a batch failure, not a per-entry one
+    #[test]
+    fn batch_reply_must_answer_every_call() {
+        let first = Signature::from([1u8; 64]).to_string();
+        let body = format!(r#"[{{"jsonrpc":"2.0","id":0,"result":"{first}"}}]"#);
+
+        assert!(decode_send_batch_response(body.as_bytes(), 2).is_err());
+    }
+
+    // every call of the batch asks for the same base64 send the single path does
+    #[test]
+    fn batch_request_shape() {
+        let transaction = VersionedTransaction::default();
+
+        let request = send_batch_request(&[transaction.clone(), transaction]).expect("encodes");
+
+        assert_eq!(request[0]["id"], 0);
+        assert_eq!(request[1]["id"], 1);
+        assert_eq!(request[1]["method"], "sendTransaction");
+        assert_eq!(request[1]["params"][1]["encoding"], "base64");
+        assert_eq!(request[1]["params"][1]["skipPreflight"], true);
     }
 
     #[test]

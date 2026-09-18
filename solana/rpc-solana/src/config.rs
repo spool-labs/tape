@@ -29,6 +29,11 @@ pub struct RpcConfig {
     /// Retry policy configuration
     #[serde(default)]
     pub retry: RpcRetryConfig,
+
+    /// True when this chain runs a JSON-RPC batch strictly in array order.
+    /// Set in code from the genesis preset, never in a config file.
+    #[serde(skip)]
+    pub is_batch_ordered: bool,
 }
 
 /// Retry and backoff configuration
@@ -79,6 +84,7 @@ impl Default for RpcConfig {
             commitment: default_commitment(),
             timeout: default_timeout(),
             retry: RpcRetryConfig::default(),
+            is_batch_ordered: false,
         }
     }
 }
@@ -184,6 +190,7 @@ mod tests {
                 max_endpoint_attempts: 2,
                 endpoint_cooldown: Duration::from_secs(30),
             },
+            is_batch_ordered: false,
         };
 
         let json = serde_json::to_string(&config).unwrap();

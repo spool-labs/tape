@@ -10641,6 +10641,7 @@ name = "tape-rpc-solana"
 version = "0.4.3"
 dependencies = [
  "async-trait",
+ "base64 0.13.1",
  "reqwest",
  "serde",
  "serde_json",
@@ -10662,6 +10663,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "wincode 0.5.5",
 ]
 
 [[package]]
