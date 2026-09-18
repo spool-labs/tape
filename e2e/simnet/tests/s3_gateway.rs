@@ -50,15 +50,17 @@ use sha2::{Digest, Sha256};
 use solana_signer::Signer;
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_api::instruction::MAX_NAME_LEN;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::types::{BasisPoints, StorageUnits, TrackNumber};
+use tape_core::track::types::TrackKind;
+use tape_core::types::{BasisPoints, ContentType, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_sdk::error::TapedriveError;
 use tape_e2e_simnet::{
     NodeRuntimeMode, SimnetBuilder, SimnetHarness, TestGateway, run_simnet_test,
 };
 use tape_sdk::keys::tape_key::TapeKey;
-use tape_sdk::object::ListObjectsQuery;
+use tape_sdk::object::{ListedObject, ListObjectsQuery};
 
 const NODE_COUNT: usize = GROUP_SIZE;
 const TARGET_GROUPS: u64 = 1;
@@ -136,6 +138,7 @@ async fn read_write_inner() {
     let (s3_addr, admin_addr) = gateway
         .enable_s3_admin_writes(ACCESS_KEY_ID, SECRET_ACCESS_KEY, OPERATOR_TOKEN, SERVER_PEPPER)
         .expect("enable s3 admin write path");
+    gateway.s3_config_mut().max_buffered_bytes = OBJECT_SIZE_BYTES;
     eprintln!("s3_gateway: fixtures built, s3 listener on {s3_addr}, admin on {admin_addr}");
 
     let all: Vec<usize> = (0..NODE_COUNT).collect();
@@ -366,6 +369,52 @@ async fn read_write_inner() {
     assert_s3_list_buckets_anonymous_denied(&s3_base).await;
     eprintln!("s3_gateway: ListBuckets listed the scoped bucket (signed) and denied anonymous");
 
+    // Crossing the configured buffer limit exercises a chunk and an inline manifest.
+    let stream_key = "uploads/streamed.bin";
+    let stream_body = deterministic_bytes(OBJECT_SIZE_BYTES + 1);
+    let stream_etag =
+        assert_s3_streamed_put(&s3_base, &host, &bucket_label, stream_key, &stream_body, PUT_CONTENT_TYPE)
+            .await;
+    eprintln!("s3_gateway: streamed (UNSIGNED-PAYLOAD) PutObject succeeded (200, etag {stream_etag})");
+    let listed = wait_sdk_object_listed(&harness, &bucket, stream_key, stream_key, active_timeout).await;
+    assert_eq!(listed.kind, TrackKind::Inline as u64);
+    assert_eq!(stream_etag, format!("\"{}\"", listed.etag));
+    wait_pending_drained(&admin_base, OPERATOR_TOKEN, active_timeout).await;
+    wait_s3_head_ok(&s3_base, &bucket_label, stream_key, Duration::from_secs(180)).await;
+    let stream_read_etag =
+        assert_s3_get_object(&s3_base, &bucket_label, stream_key, &stream_body, PUT_CONTENT_TYPE).await;
+    assert_eq!(stream_etag, stream_read_etag);
+    let stream_head_etag = assert_s3_head_object(
+        &s3_base, &bucket_label, stream_key, stream_body.len(), PUT_CONTENT_TYPE,
+    ).await;
+    assert_eq!(stream_etag, stream_head_etag);
+    eprintln!("s3_gateway: streamed object read back through gateway GET (etag {stream_read_etag})");
+    // A ranged GET of the manifest-backed object serves through the stream
+    // range path (chunk-subset decode) on the S3 listener.
+    assert_s3_get_range(&s3_base, &bucket_label, stream_key, &stream_body, 1000, 2023).await;
+    eprintln!("s3_gateway: streamed object ranged GET returned 206");
+
+    // A long name forces a coded manifest while keeping the upload small.
+    let coded_key = format!("uploads/{}", "m".repeat(MAX_NAME_LEN - PUT_PREFIX.len()));
+    let coded_etag = assert_s3_streamed_put(
+        &s3_base, &host, &bucket_label, &coded_key, &stream_body, PUT_CONTENT_TYPE,
+    ).await;
+    let listed = wait_sdk_object_listed(&harness, &bucket, &coded_key, &coded_key, active_timeout).await;
+    assert_eq!(listed.kind, TrackKind::Coded as u64);
+    assert_eq!(coded_etag, format!("\"{}\"", listed.etag));
+    wait_pending_drained(&admin_base, OPERATOR_TOKEN, active_timeout).await;
+    let coded_head_etag = assert_s3_head_object(
+        &s3_base, &bucket_label, &coded_key, stream_body.len(), PUT_CONTENT_TYPE,
+    ).await;
+    let coded_read_etag = assert_s3_get_object(
+        &s3_base, &bucket_label, &coded_key, &stream_body, PUT_CONTENT_TYPE,
+    ).await;
+    assert_eq!(coded_etag, coded_head_etag);
+    assert_eq!(coded_etag, coded_read_etag);
+    assert_s3_not_modified(&s3_base, &bucket_label, &coded_key, &coded_etag).await;
+    assert_resumed_manifest(&harness, stream_key, false).await;
+    assert_resumed_manifest(&harness, &coded_key, true).await;
+
     let put_etag = assert_s3_signed_put(
         &s3_base,
         &host,
@@ -431,24 +480,6 @@ async fn read_write_inner() {
 
     assert_s3_not_modified(&s3_base, &bucket_label, conditional_key, &conditional_etag).await;
     eprintln!("s3_gateway: conditional GET answered 304 for the etag the client holds");
-
-    // (2b) A streamed UNSIGNED-PAYLOAD PutObject takes the bounded-memory write
-    // path (object_reader -> write_object_stream -> chunk track + manifest) instead
-    // of buffering + hash-verifying, and must read back identically through GET.
-    let stream_key = "uploads/streamed.bin";
-    let stream_body = deterministic_bytes(48 * 1024);
-    let stream_etag =
-        assert_s3_streamed_put(&s3_base, &host, &bucket_label, stream_key, &stream_body, PUT_CONTENT_TYPE)
-            .await;
-    eprintln!("s3_gateway: streamed (UNSIGNED-PAYLOAD) PutObject succeeded (200, etag {stream_etag})");
-    wait_s3_head_ok(&s3_base, &bucket_label, stream_key, Duration::from_secs(180)).await;
-    let stream_read_etag =
-        assert_s3_get_object(&s3_base, &bucket_label, stream_key, &stream_body, PUT_CONTENT_TYPE).await;
-    eprintln!("s3_gateway: streamed object read back through gateway GET (etag {stream_read_etag})");
-    // A ranged GET of the manifest-backed object serves through the stream
-    // range path (chunk-subset decode) on the S3 listener.
-    assert_s3_get_range(&s3_base, &bucket_label, stream_key, &stream_body, 1000, 2023).await;
-    eprintln!("s3_gateway: streamed object ranged GET returned 206");
 
     // (2c) A store-backed (durable) multipart upload round-trips on-chain:
     // create -> upload one part -> complete -> read back through GET.
@@ -1146,10 +1177,8 @@ async fn assert_s3_signed_put(
 /// Assert a streamed (`UNSIGNED-PAYLOAD`) SigV4 `PUT /{bucket}/{key}` succeeds
 /// (`200 OK`) and returns its quoted ETag.
 ///
-/// The signature is valid but the payload hash is the `UNSIGNED-PAYLOAD` sentinel,
-/// so the gateway takes the bounded-memory streamed path (`object_reader` ->
-/// `write_object_stream` -> chunk track + manifest) rather than buffering and
-/// hash-verifying the body.
+/// The caller supplies a body above the configured buffer limit to exercise
+/// the stream writer with the `UNSIGNED-PAYLOAD` sentinel.
 async fn assert_s3_streamed_put(
     base: &str,
     host: &str,
@@ -1425,7 +1454,7 @@ async fn wait_sdk_object_listed(
     prefix: &str,
     key: &str,
     timeout: Duration,
-) {
+) -> ListedObject {
     let scenario = harness.scenario();
     let sdk = scenario.sdk(harness.admin());
     let start = Instant::now();
@@ -1434,18 +1463,59 @@ async fn wait_sdk_object_listed(
             .list_objects(bucket, ListObjectsQuery::new(prefix))
             .await
             .expect("sdk list objects");
-        if page
+        if let Some(object) = page
             .objects
-            .iter()
-            .any(|object| object.name.as_slice() == key.as_bytes())
+            .into_iter()
+            .find(|object| object.name.as_slice() == key.as_bytes())
         {
-            return;
+            return object;
         }
         if start.elapsed() >= timeout {
             panic!("object {key} never became visible via SDK list within {timeout:?}");
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+async fn assert_resumed_manifest(harness: &SimnetHarness, name: &str, is_coded: bool) {
+    let scenario = harness.scenario();
+    let sdk = scenario.sdk(harness.admin());
+    let tape_key = TapeKey::generate();
+    let data = b"resumable stream payload";
+    let size = StorageUnits::from_bytes(data.len() as u64);
+    sdk.reserve(&tape_key, StorageUnits::mb(1), RESERVE_EPOCHS)
+        .await
+        .expect("reserve stream tape");
+
+    // The store boundary leaves a coded manifest pending so resume must certify it.
+    let (stored, _) = sdk.store_named_stream(
+        &tape_key, name, ContentType::TextPlain, size, data.as_slice(),
+    ).await.expect("store stream before final certification");
+    assert_eq!(stored.track.is_coded(), is_coded);
+    assert_eq!(stored.track.is_certified(), !is_coded);
+
+    let receipt = sdk.write_named_bytes(&tape_key, name, ContentType::TextPlain, data)
+        .await
+        .expect("resume stored stream");
+    let listed = wait_sdk_object_listed(
+        harness, &tape_key.address(), name, name, Duration::from_secs(60),
+    ).await;
+    assert_eq!(receipt.etag, listed.etag);
+    assert_eq!(receipt.manifest, stored.address);
+    if is_coded {
+        assert_ne!(receipt.etag, stored.track.value_hash);
+    } else {
+        assert_eq!(receipt.etag, stored.track.value_hash);
+    }
+
+    // Repeating the reader write exercises resume of an already certified manifest.
+    let repeated = sdk.write_named_stream(
+        &tape_key, name, ContentType::TextPlain, size, data.as_slice(),
+    ).await.expect("resume certified stream");
+    assert_eq!(repeated.etag, receipt.etag);
+    assert_eq!(repeated.manifest, receipt.manifest);
+    let tape = sdk.get_tape(&tape_key.address()).await.expect("fetch stream tape");
+    assert_eq!(tape.tracks.next_number(), TrackNumber(2));
 }
 
 /// Send a signed DeleteObjects request and assert every key is reported deleted.

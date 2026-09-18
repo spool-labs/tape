@@ -11,6 +11,7 @@ use tracing::{debug, warn};
 use tape_rpc::{CommitmentLevel, Rpc};
 use tape_api::program::tapedrive::track_pda;
 use tape_api::state::Tape;
+use tape_core::object::object_etag;
 use tape_core::prelude::CompressedTrack;
 use tape_core::track::data::{track_key, BlobDataSlice};
 use tape_core::track::mirror::ArchiveMirror;
@@ -30,7 +31,7 @@ use crate::tapedrive::Tapedrive;
 use crate::track::write::{
     certified_track, certify_submit_with_retry, certify_with_retry, coded_identity,
     collect_certification, encode_blob, ensure_track_matches, finish_coded_track, inline_write_fits,
-    needs_fresh_signatures, register_blob_processed, resolve_sent_blob,
+    needs_fresh_signatures, plan_blob, register_blob_processed, resolve_sent_blob,
     should_retry_certification, submit_blob_with_logical_size, submit_certification_with_proof,
     submit_raw_with_logical_size, upload_with_retry, wait_for_certified_track, UploadPlan,
     WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
@@ -122,7 +123,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         )
         .await;
         timer.finish_result(&result);
-        result
+        result.map(|manifest| (manifest.written, manifest.receipts))
     }
 }
 
@@ -134,9 +135,9 @@ pub async fn write_bytes<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     data: &[u8],
 ) -> Result<StreamReceipt, TapedriveError> {
-    let (manifest, receipts) =
+    let manifest =
         store_bytes(client, tape_key, name, content_type, data).await?;
-    complete_stream(client, tape_key, &manifest, &receipts).await
+    complete_stream(client, tape_key, &manifest).await
 }
 
 /// Write bytes from an async reader as a multi-track stream.
@@ -148,9 +149,15 @@ pub async fn write_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unp
     size: StorageUnits,
     reader: Reader,
 ) -> Result<StreamReceipt, TapedriveError> {
-    let (manifest, receipts) =
+    let manifest =
         store_stream(client, tape_key, name, content_type, size, reader).await?;
-    complete_stream(client, tape_key, &manifest, &receipts).await
+    complete_stream(client, tape_key, &manifest).await
+}
+
+struct StoredManifest {
+    written: WrittenTrack,
+    receipts: Vec<CertifyRes>,
+    etag: Hash,
 }
 
 // Chunks are internal fragments addressed by track number, never by name.
@@ -298,7 +305,7 @@ async fn store_bytes<Blockchain: Rpc, Cluster: Api>(
     name: &[u8],
     content_type: ContentType,
     data: &[u8],
-) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
+) -> Result<StoredManifest, TapedriveError> {
     let size = StorageUnits::from_bytes(data.len() as u64);
 
     // A prior interrupted write of this stream leaves a matching prefix of tracks
@@ -329,7 +336,7 @@ async fn store_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
     content_type: ContentType,
     size: StorageUnits,
     mut reader: Reader,
-) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
+) -> Result<StoredManifest, TapedriveError> {
     validate_stream_size(size).map_err(stream_error)?;
     let chunk_count = chunk_count_for_size(size).map_err(stream_error)?;
 
@@ -372,7 +379,7 @@ async fn resume_stream_reader<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead +
     chunk_count: TrackNumber,
     first: Vec<u8>,
     mut reader: Reader,
-) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
+) -> Result<StoredManifest, TapedriveError> {
     let timer = client
         .timer(Operation::WriteStream, Phase::Total)
         .bytes(size.to_bytes());
@@ -497,7 +504,7 @@ async fn resume_stream<Blockchain: Rpc, Cluster: Api>(
     data: &[u8],
     size: StorageUnits,
     chunk_count: TrackNumber,
-) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
+) -> Result<StoredManifest, TapedriveError> {
     let timer = client
         .timer(Operation::WriteStream, Phase::Total)
         .bytes(size.to_bytes());
@@ -523,7 +530,7 @@ async fn store_resumed_manifest<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     size: StorageUnits,
     chunk_count: TrackNumber,
-) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
+) -> Result<StoredManifest, TapedriveError> {
     let entries = build_entries(TrackNumber(0), chunk_count, size).map_err(stream_error)?;
     let manifest = build_manifest(hash(name), size, entries).map_err(stream_error)?;
     let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
@@ -588,15 +595,15 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
     size: StorageUnits,
     manifest_bytes: &[u8],
     track_number: TrackNumber,
-) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
+) -> Result<StoredManifest, TapedriveError> {
     let tape = tape_key.address();
     let existing = match client.get_track_by_number(&tape, track_number).await {
         Ok(track) => track,
         Err(TapedriveError::NotFound) => {
-            let (written, receipts) =
+            let manifest =
                 store_manifest(client, tape_key, name, content_type, size, manifest_bytes).await?;
-            verify_track_number(&written, track_number)?;
-            return Ok((written, receipts));
+            verify_track_number(&manifest.written, track_number)?;
+            return Ok(manifest);
         }
         Err(other) => return Err(other),
     };
@@ -609,13 +616,14 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
             })?;
             ensure_track_matches(&existing, track_key(name, &slice), meta.value_hash)?;
             // Inline tracks certify at register, so a matching one is complete.
-            Ok((
-                WrittenTrack {
+            Ok(StoredManifest {
+                written: WrittenTrack {
                     address: track_pda(tape, track_number).0,
                     track: existing,
                 },
-                Vec::new(),
-            ))
+                receipts: Vec::new(),
+                etag: object_etag(&existing, None),
+            })
         }
         ManifestWriteMode::Coded => {
             let (plan, key, value_hash) =
@@ -625,12 +633,16 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
                 address: track_pda(tape, track_number).0,
                 track: existing,
             };
-            if written.track.is_certified() {
-                return Ok((written, Vec::new()));
-            }
-            let receipts =
-                upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
-            Ok((written, receipts))
+            let receipts = if written.track.is_certified() {
+                Vec::new()
+            } else {
+                upload_with_retry(client, &written, &plan, Operation::WriteStream).await?
+            };
+            Ok(StoredManifest {
+                etag: object_etag(&written.track, Some(&plan_blob(&plan))),
+                written,
+                receipts,
+            })
         }
     }
 }
@@ -1226,7 +1238,7 @@ async fn store_manifest<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     logical_size: StorageUnits,
     manifest_bytes: &[u8],
-) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
+) -> Result<StoredManifest, TapedriveError> {
     if manifest_write_mode(name, manifest_bytes) == ManifestWriteMode::Inline {
         let written = submit_raw_with_logical_size(
             client,
@@ -1239,7 +1251,11 @@ async fn store_manifest<Blockchain: Rpc, Cluster: Api>(
             client.write_options.visibility,
         )
         .await?;
-        return Ok((written, Vec::new()));
+        return Ok(StoredManifest {
+            etag: object_etag(&written.track, None),
+            written,
+            receipts: Vec::new(),
+        });
     }
 
     let (written, plan) = submit_blob_with_logical_size(
@@ -1254,7 +1270,11 @@ async fn store_manifest<Blockchain: Rpc, Cluster: Api>(
     )
     .await?;
     let receipts = upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
-    Ok((written, receipts))
+    Ok(StoredManifest {
+        etag: object_etag(&written.track, Some(&plan_blob(&plan))),
+        written,
+        receipts,
+    })
 }
 
 /// Store the final manifest after every chunk is stored and certified.
@@ -1265,7 +1285,7 @@ async fn store_manifest_for_chunks<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     size: StorageUnits,
     pending_chunks: Vec<PendingChunk>,
-) -> Result<(WrittenTrack, Vec<CertifyRes>), TapedriveError> {
+) -> Result<StoredManifest, TapedriveError> {
     let entries = pending_chunks
         .into_iter()
         .map(|pending_chunk| pending_chunk.entry)
@@ -1279,22 +1299,21 @@ async fn store_manifest_for_chunks<Blockchain: Rpc, Cluster: Api>(
 async fn complete_stream<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
-    manifest: &WrittenTrack,
-    receipts: &[CertifyRes],
+    manifest: &StoredManifest,
 ) -> Result<StreamReceipt, TapedriveError> {
-    let track = if manifest.track.is_certified() {
-        manifest.track
+    let track = if manifest.written.track.is_certified() {
+        manifest.written.track
     } else {
         certify_with_retry(
             client,
             tape_key,
-            manifest,
+            &manifest.written,
             Operation::WriteStream,
-            receipts,
+            &manifest.receipts,
         )
         .await?
     };
-    Ok(StreamReceipt::from_manifest_track(&track))
+    Ok(StreamReceipt::from_manifest_track(&track, manifest.etag))
 }
 
 fn stream_error(error: StreamError) -> TapedriveError {
@@ -1303,12 +1322,48 @@ fn stream_error(error: StreamError) -> TapedriveError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use arc_swap::ArcSwap;
     use bytemuck::Zeroable;
+    use peer_memory::MemoryApi;
+    use rpc_litesvm::LiteSvmRpc;
     use tape_api::state::Tape;
+    use tape_core::spooler::GroupIndex;
+    use tape_core::system::Member;
+    use tape_core::track::types::{TrackState, TrackVisibility};
+    use tape_core::types::coin::TAPE;
     use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::address::Address;
+    use tape_peer_manager::PeerManager;
+    use tape_protocol::api::{ApiError, GetTrackByNumberRes, PeerReq, PeerRes};
+    use tape_protocol::ProtocolState;
+    use tape_rpc_client::RpcClient;
+
+    use crate::track::write::content_etag_named;
 
     use super::*;
+
+    fn manifest_client(track: CompressedTrack) -> Tapedrive<LiteSvmRpc, MemoryApi> {
+        let api = MemoryApi::new(move |_, request| {
+            if let PeerReq::GetTrackByNumber(request) = request {
+                assert_eq!(request.tape, track.tape);
+                assert_eq!(request.track_number, track.track_number);
+                return PeerRes::GetTrackByNumber(Ok(GetTrackByNumberRes { track }));
+            }
+            PeerRes::GetTrackByNumber(Err(ApiError::Other("unexpected request".into())))
+        });
+        let mut state = ProtocolState::default();
+        state.current.committee.push(Member::new(Address::new_unique(), TAPE(1)));
+        state.touch();
+        Tapedrive::from_parts(
+            ArcSwap::from_pointee(state),
+            Arc::new(PeerManager::new()),
+            Arc::new(api),
+            Arc::new(RpcClient::from_rpc(LiteSvmRpc::new())),
+            None,
+        )
+    }
 
     fn make_tape(capacity_bytes: u64, used_bytes: u64, next_track_number: u64) -> Tape {
         let mut tape = Tape::zeroed();
@@ -1351,6 +1406,59 @@ mod tests {
             manifest_write_mode(b"roms/large.bin", &manifest_bytes),
             ManifestWriteMode::Coded
         );
+    }
+
+    // Resuming a certified manifest returns the same ETag as the object index for both storage modes.
+    #[tokio::test]
+    async fn resumed_etags() {
+        let name = b"backup.tar";
+        for chunk_count in [1, 256] {
+            let tape_key = TapeKey::generate();
+            let bytes = sample_manifest_bytes(chunk_count);
+            let computed = content_etag_named(name, &bytes).await.expect("encode manifest");
+            let blob = computed.plan.as_ref().map(plan_blob);
+            let data = match blob {
+                Some(blob) => BlobDataSlice::Coded(blob),
+                None => BlobDataSlice::Inline(&bytes),
+            };
+            let metadata = data.meta().expect("valid manifest metadata");
+            let track = CompressedTrack {
+                tape: tape_key.address(),
+                track_number: TrackNumber(chunk_count),
+                key: track_key(name, &data),
+                kind: metadata.kind as u64,
+                state: TrackState::Certified as u64,
+                visibility: TrackVisibility::Public as u64,
+                size: metadata.size,
+                group: GroupIndex(0),
+                value_hash: metadata.value_hash,
+            };
+            let client = manifest_client(track);
+
+            let manifest = ensure_stream_manifest(
+                &client,
+                &tape_key,
+                name,
+                ContentType::Unknown,
+                StorageUnits::from_bytes(MAX_TRACK_SIZE as u64 * chunk_count),
+                &bytes,
+                track.track_number,
+            ).await.expect("resume manifest");
+            assert!(manifest.receipts.is_empty());
+            let receipt = complete_stream(&client, &tape_key, &manifest)
+                .await
+                .expect("complete stream");
+
+            assert_eq!(receipt.manifest, track_pda(track.tape, track.track_number).0);
+            assert_eq!(receipt.manifest_track_number, track.track_number);
+            assert_eq!(receipt.etag, object_etag(&track, blob.as_ref()));
+            assert_eq!(track.is_coded(), chunk_count == 256);
+            if track.is_coded() {
+                assert_ne!(receipt.etag, track.value_hash);
+            } else {
+                assert_eq!(receipt.etag, track.value_hash);
+            }
+        }
     }
 
     // capacity checks include the serialized manifest bytes.

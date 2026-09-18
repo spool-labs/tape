@@ -18,7 +18,7 @@ use tape_gateway::admission::{AdmitAll, Admission};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
-use tape_node::config::gateway::{GatewaySiteConfig, MeteringGrade, WriteDefault};
+use tape_node::config::gateway::{GatewaySiteConfig, MeteringGrade, S3Config, WriteDefault};
 use tape_node::config::node::NodeConfig;
 use tape_node::core::atlas::{parse_observers, AtlasBuffer};
 use tape_node::context::{NodeContext, NodeContextBuilder};
@@ -281,6 +281,11 @@ impl TestGateway {
     /// Site serving knobs, settable before the runtime starts.
     pub fn site_config_mut(&mut self) -> &mut GatewaySiteConfig {
         &mut self.app_config.gateway.site
+    }
+
+    /// S3 settings, settable before the runtime starts
+    pub fn s3_config_mut(&mut self) -> &mut S3Config {
+        &mut self.app_config.gateway.s3
     }
 
     /// Blacklist subscriptions, settable while the runtime is stopped.

@@ -160,7 +160,7 @@ impl S3WriteContext {
                     tracing::warn!(%error, %tape, %prior, "overwrite reclaim failed; prior object left for later sweep");
                 }
             }
-            Ok((receipt.manifest_value_hash, receipt.manifest))
+            Ok((receipt.etag, receipt.manifest))
         }
     }
 
@@ -185,7 +185,7 @@ impl S3WriteContext {
         let receipt = client
             .write_named_stream_as(&operator, name, content_type, size, reader)
             .await?;
-        Ok((receipt.manifest_value_hash, receipt.manifest))
+        Ok((receipt.etag, receipt.manifest))
     }
 
     /// Delete the `track` backing an object on `tape` as the delegate.
