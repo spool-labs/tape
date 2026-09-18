@@ -58,9 +58,9 @@ async fn undersized_compute_unit_limit_resends_with_measured_budget() {
 
     let signer = TapeKeypair::from_solana_keypair(&payer).expect("derive tape keypair");
 
-    // A 200 unit budget covers one transfer and runs out on the second, so the
-    // first attempt fails on chain and the client must measure the real cost
-    // by simulation and resend.
+    // A 200 unit budget covers the compute budget instruction but not the two
+    // transfers, so the first attempt fails on chain and the client must
+    // measure the real cost by simulation and resend.
     let instructions = vec![
         system_instruction::transfer(&payer.pubkey(), &recipient, 1_000_000),
         system_instruction::transfer(&payer.pubkey(), &recipient, 1_000_000),

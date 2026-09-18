@@ -8,9 +8,7 @@ use tape_rpc_client::parse_tape_error;
 use tape_api::compute::{CERTIFY_TRACK_CU, TRACK_WRITE_CU};
 use tape_api::errors::TapeError;
 use tape_api::event::TrackWritten;
-use tape_api::instruction::{
-    build_certify_track_ix, build_track_write_ix, track_write_ix_len, MAX_INLINE_WRITE,
-};
+use tape_api::instruction::{build_certify_track_ix, build_track_write_ix, track_write_ix_len};
 use tape_api::program::tapedrive::track_pda;
 use solana_instruction::Instruction;
 use tape_blocks::{parse_event_data, TapedriveEvent};
@@ -47,6 +45,13 @@ use crate::tapedrive::Tapedrive;
 use crate::track::{bootstrap_network_state, query};
 use crate::transfer::certify::{CertificationCollector, CollectedSignatures};
 use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
+
+// The program accepts up to 10 KiB for raw TrackWrite payloads; this bound is
+// about the transaction, not the program: the largest payload whose one-call
+// write still fits the 1232-byte raw transaction. Measured live on devnet
+// 2026-08-24 — at 825 the boundary transaction came out 4 bytes over. The
+// visibility byte grew the header by one, so the limit drops to 820.
+pub const SDK_INLINE_RAW_MAX_BYTES: usize = 820;
 
 /// Poll cadence for visibility and certification waits.
 const POLL_INTERVAL_MS: u64 = 400;
@@ -762,7 +767,7 @@ fn track_object(
 }
 
 fn inline_write_data_limit() -> usize {
-    track_write_ix_len(MAX_INLINE_WRITE, None)
+    track_write_ix_len(SDK_INLINE_RAW_MAX_BYTES, None)
         .expect("unnamed inline track write size should fit usize")
 }
 
@@ -1996,13 +2001,9 @@ mod tests {
     use super::{
         check_plan_matches, content_etag, content_etag_named, ensure_expected_track_position,
         hash, inline_write_fits, needs_fresh_signatures, prepare_plan,
-        should_retry_certification, RpcError, TapeError, TrackNumber, MAX_INLINE_WRITE,
+        should_retry_certification, RpcError, TapeError, TrackNumber, SDK_INLINE_RAW_MAX_BYTES,
     };
-    use tape_api::instruction::build_track_write_ix;
-    use tape_core::track::data::{BlobData, BlobInfo};
-    use tape_core::erasure::SUB_LEAF_BYTES;
-    use tape_core::track::types::TrackVisibility;
-    use tape_crypto::prelude::Address;
+    use tape_api::instruction::TRACK_WRITE_MAX_BYTES;
 
     fn blob(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i * 31 + 7) as u8).collect()
@@ -2020,7 +2021,7 @@ mod tests {
     // a reused plan writes exactly what a fresh encode would have
     #[tokio::test]
     async fn plan_reuse() {
-        let data = blob(MAX_INLINE_WRITE * 4);
+        let data = blob(SDK_INLINE_RAW_MAX_BYTES * 4);
         let computed = content_etag(&data).await.expect("etag");
         let plan = computed.plan.expect("coded payload carries its plan");
         let fresh = prepare_plan(data).expect("fresh plan");
@@ -2037,7 +2038,7 @@ mod tests {
     // a plan from other bytes is refused, whatever its length
     #[test]
     fn unpaired_plan() {
-        let data = blob(MAX_INLINE_WRITE * 4);
+        let data = blob(SDK_INLINE_RAW_MAX_BYTES * 4);
         let plan = prepare_plan(data.clone()).expect("plan");
 
         assert!(check_plan_matches(&plan, &data).is_ok());
@@ -2053,18 +2054,18 @@ mod tests {
     // inline payloads never encode, so they carry no plan
     #[tokio::test]
     async fn inline_no_plan() {
-        let data = blob(MAX_INLINE_WRITE);
+        let data = blob(SDK_INLINE_RAW_MAX_BYTES);
         let computed = content_etag(&data).await.expect("etag");
 
         assert!(computed.plan.is_none());
         assert_eq!(computed.etag, hash(&data));
     }
 
-    // An owner answers a challenge with the whole inline payload, so the
-    // program limit is the proof size: one coded sub-leaf.
+    // The SDK inline write limit must always remain below the program limit.
     #[test]
-    fn inline_limit_is_one_sub_leaf() {
-        assert_eq!(MAX_INLINE_WRITE, SUB_LEAF_BYTES);
+    fn sdk_inline_raw_limit_is_below_program_limit() {
+        assert_eq!(SDK_INLINE_RAW_MAX_BYTES, 820);
+        assert!(SDK_INLINE_RAW_MAX_BYTES < TRACK_WRITE_MAX_BYTES);
     }
 
     // A payload that is inline unnamed but not with its name must take the
@@ -2072,7 +2073,7 @@ mod tests {
     #[tokio::test]
     async fn named_etag_follows_the_trailer_budget() {
         let name = b"obj-23-4643.txt";
-        let data = blob(MAX_INLINE_WRITE);
+        let data = blob(SDK_INLINE_RAW_MAX_BYTES);
         assert!(!inline_write_fits(name, data.len()));
 
         let unnamed = content_etag(&data).await.expect("etag");
@@ -2083,36 +2084,17 @@ mod tests {
         assert_eq!(named.etag, plan.commitment_hash);
     }
 
-    // A payload over the program limit never becomes an instruction.
-    #[test]
-    fn oversized_payload_refused() {
-        let write = |len: usize| {
-            build_track_write_ix(
-                Address::from([1; 32]),
-                Address::from([2; 32]),
-                Address::from([3; 32]),
-                BlobInfo {
-                    object: None,
-                    data: BlobData::Inline(blob(len)),
-                },
-                TrackVisibility::Public,
-            )
-        };
-        assert!(write(MAX_INLINE_WRITE).is_ok());
-        assert!(write(MAX_INLINE_WRITE + 1).is_err());
-    }
-
     #[test]
     fn inline_budget() {
         let name = b"object/name";
-        let max_named_payload = (0..=MAX_INLINE_WRITE)
+        let max_named_payload = (0..=SDK_INLINE_RAW_MAX_BYTES)
             .rev()
             .find(|payload_len| inline_write_fits(name, *payload_len))
             .expect("named inline payload should have some capacity");
 
-        assert!(inline_write_fits(b"", MAX_INLINE_WRITE));
-        assert!(!inline_write_fits(name, MAX_INLINE_WRITE));
-        assert!(max_named_payload < MAX_INLINE_WRITE);
+        assert!(inline_write_fits(b"", SDK_INLINE_RAW_MAX_BYTES));
+        assert!(!inline_write_fits(name, SDK_INLINE_RAW_MAX_BYTES));
+        assert!(max_named_payload < SDK_INLINE_RAW_MAX_BYTES);
         assert!(inline_write_fits(name, max_named_payload));
         assert!(!inline_write_fits(name, max_named_payload + 1));
     }

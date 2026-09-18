@@ -22,7 +22,7 @@ use solana_commitment_config::CommitmentLevel;
 use solana_hash::Hash;
 use solana_pubkey::Pubkey;
 use solana_signature::Signature;
-use solana_transaction::versioned::VersionedTransaction;
+use solana_transaction::{versioned::VersionedTransaction, Transaction};
 use solana_transaction_status::{
     ConfirmedTransactionWithStatusMeta, EncodedConfirmedTransactionWithStatusMeta,
     TransactionWithStatusMeta, UiTransactionEncoding,
@@ -509,7 +509,7 @@ impl Rpc for LiteSvmRpc {
             block_time: Some(slot_data.block_time),
             index: 0,
         }
-        .encode(UiTransactionEncoding::Json, Some(1))
+        .encode(UiTransactionEncoding::Json, Some(0))
         .map_err(|e| RpcError::Internal(format!("failed to encode transaction: {e}")))
     }
 
@@ -625,10 +625,7 @@ impl Rpc for LiteSvmRpc {
         Ok(out)
     }
 
-    async fn send_transaction(
-        &self,
-        transaction: &VersionedTransaction,
-    ) -> Result<Txid, RpcError> {
+    async fn send_transaction(&self, transaction: &Transaction) -> Result<Txid, RpcError> {
         let mut inner = self
             .inner
             .lock()
@@ -639,7 +636,7 @@ impl Rpc for LiteSvmRpc {
         let tx_slot = inner.pending_slot;
         inner.svm.warp_to_slot(tx_slot);
 
-        let vtx = transaction.clone();
+        let vtx: VersionedTransaction = transaction.clone().into();
         let pre_balances = Self::balances_for_transaction(&inner, &vtx);
 
         let result = inner.svm.send_transaction(vtx.clone());
@@ -663,7 +660,7 @@ impl Rpc for LiteSvmRpc {
 
     async fn send_and_confirm_transaction(
         &self,
-        transaction: &VersionedTransaction,
+        transaction: &Transaction,
         _commitment: CommitmentLevel,
         _skip_preflight: bool,
     ) -> Result<Txid, RpcError> {
@@ -674,14 +671,15 @@ impl Rpc for LiteSvmRpc {
 
     async fn simulate_transaction(
         &self,
-        transaction: &VersionedTransaction,
+        transaction: &Transaction,
     ) -> Result<SimulationResult, RpcError> {
         let inner = self
             .inner
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
 
-        match inner.svm.simulate_transaction(transaction.clone()) {
+        let vtx: VersionedTransaction = transaction.clone().into();
+        match inner.svm.simulate_transaction(vtx) {
             Ok(info) => Ok(SimulationResult {
                 err: None,
                 units_consumed: Some(info.meta.compute_units_consumed),

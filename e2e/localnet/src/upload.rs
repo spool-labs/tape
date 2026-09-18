@@ -7,7 +7,6 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rand::RngCore;
 use tape_rpc_solana::{RpcConfig, SolanaRpc};
-use tape_api::instruction::MAX_INLINE_WRITE;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::types::StorageUnits;
 use tape_crypto::address::Address;
@@ -27,7 +26,7 @@ use crate::view::UploadView;
 /// window of the last few.
 const MAX_UPLOAD_HISTORY: usize = 4096;
 const DEFAULT_UPLOAD_EPOCHS: u64 = 100;
-const MAX_RAW_UPLOAD_BYTES: usize = MAX_INLINE_WRITE;
+const MAX_RAW_UPLOAD_BYTES: usize = 825;
 const MIN_RAW_UPLOAD_BYTES: usize = 64;
 const MIN_BLOB_UPLOAD_BYTES: usize = 1024 * 1024;
 const MAX_BLOB_UPLOAD_BYTES: usize = 64 * 1024 * 1024;

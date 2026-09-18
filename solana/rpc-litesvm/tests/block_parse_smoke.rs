@@ -1,15 +1,11 @@
 use tape_rpc::Rpc;
 use rpc_litesvm::LiteSvmRpc;
 use solana_keypair::Keypair;
-use solana_message::v1::{Message, TransactionConfig};
-use solana_message::VersionedMessage;
+use solana_message::Message;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use solana_system_interface::instruction as system_instruction;
-use solana_transaction::versioned::VersionedTransaction;
-use tape_api::compute::{
-    DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT, MAX_LOADED_ACCOUNTS_DATA_SIZE,
-};
+use solana_transaction::Transaction;
 
 #[tokio::test]
 async fn fetched_block_is_parseable_by_tape_blocks() {
@@ -27,13 +23,11 @@ async fn fetched_block_is_parseable_by_tape_blocks() {
     let slot = rpc.get_slot().await.expect("slot available");
 
     let ix = system_instruction::transfer(&payer.pubkey(), &recipient, 1_000_000);
-    let config = TransactionConfig::empty()
-        .with_compute_unit_limit(DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT)
-        .with_loaded_accounts_data_size_limit(MAX_LOADED_ACCOUNTS_DATA_SIZE);
-    let message = Message::try_compile_with_config(&payer.pubkey(), &[ix], blockhash, config)
-        .expect("compile transfer");
-    let tx = VersionedTransaction::try_new(VersionedMessage::V1(message), &[&payer])
-        .expect("sign transfer");
+    let tx = Transaction::new(
+        &[&payer],
+        Message::new(&[ix], Some(&payer.pubkey())),
+        blockhash,
+    );
 
     rpc.send_and_confirm_transaction(&tx, rpc.commitment(), false)
         .await

@@ -1,17 +1,13 @@
 use crate::client::RpcClient;
 use tape_rpc::{CommitmentLevel, Rpc, RpcError};
+use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_hash::Hash;
 use solana_instruction::Instruction;
-use solana_message::v1::{Message, TransactionConfig, MAX_TRANSACTION_SIZE};
-use solana_message::VersionedMessage;
 use solana_pubkey::Pubkey as SolanaPubkey;
 use solana_signature::Signature as SolanaSignature;
 use solana_signer::{Signer as SolanaSigner, SignerError as SolanaSignerError};
-use solana_transaction::versioned::VersionedTransaction;
-use tape_api::compute::{
-    DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT, MAX_COMPUTE_UNIT_LIMIT,
-    MAX_LOADED_ACCOUNTS_DATA_SIZE, MEASURED_CU_HEADROOM_PERCENT,
-};
+use solana_transaction::Transaction;
+use tape_api::compute::{MAX_COMPUTE_UNIT_LIMIT, MEASURED_CU_HEADROOM_PERCENT};
 use tape_crypto::signer::Signer as TapeSigner;
 use tape_crypto::tx::Txid;
 
@@ -90,7 +86,6 @@ impl<R: Rpc> RpcClient<R> {
         self.submit(
             payer,
             &[],
-            default_compute_unit_limit(&instructions),
             &instructions,
             SubmitOptions::new(self.rpc().commitment(), "send_instructions"),
         )
@@ -149,7 +144,6 @@ impl<R: Rpc> RpcClient<R> {
         self.submit(
             payer,
             signers,
-            default_compute_unit_limit(&instructions),
             &instructions,
             SubmitOptions::new(self.rpc().commitment(), "send_instructions_with_signers"),
         )
@@ -198,7 +192,6 @@ impl<R: Rpc> RpcClient<R> {
         self.submit(
             payer,
             &[],
-            default_compute_unit_limit(&instructions),
             &instructions,
             SubmitOptions {
                 simulate_first: true,
@@ -255,7 +248,6 @@ impl<R: Rpc> RpcClient<R> {
         self.submit(
             payer,
             &[],
-            default_compute_unit_limit(&instructions),
             &instructions,
             SubmitOptions {
                 confirm: false,
@@ -288,7 +280,6 @@ impl<R: Rpc> RpcClient<R> {
         self.submit(
             payer,
             signers,
-            default_compute_unit_limit(&instructions),
             &instructions,
             SubmitOptions {
                 confirm: false,
@@ -301,8 +292,8 @@ impl<R: Rpc> RpcClient<R> {
         .await
     }
 
-    /// Send the batch under a compute unit limit, and on budget exhaustion
-    /// measure the real cost by simulation and resend once.
+    /// Cap the batch with a compute budget instruction and send it, and on
+    /// budget exhaustion measure the real cost by simulation and resend once.
     async fn send_capped(
         &self,
         payer: &dyn TapeSigner,
@@ -311,16 +302,14 @@ impl<R: Rpc> RpcClient<R> {
         instructions: Vec<Instruction>,
         options: SubmitOptions,
     ) -> Result<Txid, RpcError> {
+        let mut capped = instructions;
+        capped.insert(
+            0,
+            ComputeBudgetInstruction::set_compute_unit_limit(compute_unit_limit),
+        );
         let mut attempted = None;
         let result = self
-            .submit_reporting(
-                payer,
-                signers,
-                compute_unit_limit,
-                &instructions,
-                options,
-                &mut attempted,
-            )
+            .submit_reporting(payer, signers, &capped, options, &mut attempted)
             .await;
 
         let Err(err) = &result else {
@@ -331,7 +320,7 @@ impl<R: Rpc> RpcClient<R> {
         }
 
         // The resend signs a second, independently valid transaction: a
-        // different compute unit limit and a fresh blockhash, so both can land.
+        // different budget instruction and a fresh blockhash, so both can land.
         // Ask what became of the first signature before signing another.
         //
         // `Ok(None)` still resends: it means the RPC has not seen the
@@ -360,9 +349,10 @@ impl<R: Rpc> RpcClient<R> {
             }
         }
 
-        let Some(measured) = self
-            .measured_compute_unit_limit(payer, signers, &instructions)
-            .await
+        // Reuse the batch for the probe and the resend by swapping out the
+        // budget instruction at the front.
+        capped[0] = ComputeBudgetInstruction::set_compute_unit_limit(MAX_COMPUTE_UNIT_LIMIT);
+        let Some(measured) = self.measured_compute_unit_limit(payer, signers, &capped).await
         else {
             return result;
         };
@@ -373,8 +363,8 @@ impl<R: Rpc> RpcClient<R> {
             "compute budget exceeded, resending with measured limit"
         );
 
-        self.submit(payer, signers, measured, &instructions, options)
-            .await
+        capped[0] = ComputeBudgetInstruction::set_compute_unit_limit(measured);
+        self.submit(payer, signers, &capped, options).await
     }
 
     /// Simulate a signed transaction and report an execution failure as the
@@ -387,10 +377,7 @@ impl<R: Rpc> RpcClient<R> {
     /// The simulation runs at the client's commitment rather than through the
     /// RPC node's preflight, which defaults to the finalized bank and would
     /// reject transactions whose precondition landed seconds ago.
-    async fn simulation_rejection(
-        &self,
-        transaction: &VersionedTransaction,
-    ) -> Option<RpcError> {
+    async fn simulation_rejection(&self, transaction: &Transaction) -> Option<RpcError> {
         let simulation = match self.rpc().simulate_transaction(transaction).await {
             Ok(simulation) => simulation,
             Err(err) => {
@@ -409,25 +396,18 @@ impl<R: Rpc> RpcClient<R> {
         })
     }
 
-    /// Simulate the batch at the runtime ceiling and return the consumed units
-    /// plus headroom, or None if simulation cannot produce a usable
-    /// measurement.
+    /// Simulate a probe batch already capped at the runtime ceiling and return
+    /// the consumed units plus headroom, or None if simulation cannot produce
+    /// a usable measurement.
     async fn measured_compute_unit_limit(
         &self,
         payer: &dyn TapeSigner,
         signers: &[&dyn TapeSigner],
-        instructions: &[Instruction],
+        probe: &[Instruction],
     ) -> Option<u32> {
         // Simulation replaces or ignores the blockhash, so the probe signs
         // against the default one instead of fetching a fresh one.
-        let transaction = sign_transaction(
-            payer,
-            signers,
-            MAX_COMPUTE_UNIT_LIMIT,
-            instructions,
-            Hash::default(),
-        )
-        .ok()?;
+        let transaction = Self::sign_transaction(payer, signers, probe, Hash::default());
 
         let simulation = self.rpc().simulate_transaction(&transaction).await.ok()?;
         if simulation.err.is_some() {
@@ -448,19 +428,11 @@ impl<R: Rpc> RpcClient<R> {
         &self,
         payer: &dyn TapeSigner,
         signers: &[&dyn TapeSigner],
-        compute_unit_limit: u32,
         instructions: &[Instruction],
         options: SubmitOptions,
     ) -> Result<Txid, RpcError> {
-        self.submit_reporting(
-            payer,
-            signers,
-            compute_unit_limit,
-            instructions,
-            options,
-            &mut None,
-        )
-        .await
+        self.submit_reporting(payer, signers, instructions, options, &mut None)
+            .await
     }
 
     /// `submit`, additionally reporting the signature it put on the wire.
@@ -472,7 +444,6 @@ impl<R: Rpc> RpcClient<R> {
         &self,
         payer: &dyn TapeSigner,
         signers: &[&dyn TapeSigner],
-        compute_unit_limit: u32,
         instructions: &[Instruction],
         options: SubmitOptions,
         attempted: &mut Option<Txid>,
@@ -484,7 +455,7 @@ impl<R: Rpc> RpcClient<R> {
 
         let result = async {
             let transaction = self
-                .build_signed_transaction(payer, signers, compute_unit_limit, instructions)
+                .build_signed_transaction(payer, signers, instructions)
                 .await?;
             *attempted = transaction
                 .signatures
@@ -544,163 +515,42 @@ impl<R: Rpc> RpcClient<R> {
         &self,
         payer: &dyn TapeSigner,
         signers: &[&dyn TapeSigner],
-        compute_unit_limit: u32,
         instructions: &[Instruction],
-    ) -> Result<VersionedTransaction, RpcError> {
+    ) -> Result<Transaction, RpcError> {
         let blockhash = self.rpc().get_latest_blockhash().await?;
-        sign_transaction(payer, signers, compute_unit_limit, instructions, blockhash)
-    }
-}
-
-/// Sign instructions into a v1 transaction with the payer as the first signer.
-pub fn sign_transaction(
-    payer: &dyn TapeSigner,
-    signers: &[&dyn TapeSigner],
-    compute_unit_limit: u32,
-    instructions: &[Instruction],
-    blockhash: Hash,
-) -> Result<VersionedTransaction, RpcError> {
-    let payer_pubkey: SolanaPubkey = payer.pubkey().into();
-
-    let mut all_signers: Vec<SolanaSignerAdapter<'_>> = Vec::with_capacity(signers.len() + 1);
-    all_signers.push(SolanaSignerAdapter(payer));
-    all_signers.extend(signers.iter().copied().map(SolanaSignerAdapter));
-
-    let message = Message::try_compile_with_config(
-        &payer_pubkey,
-        instructions,
-        blockhash,
-        transaction_config(compute_unit_limit),
-    )
-    .map_err(|err| RpcError::Internal(format!("compile transaction: {err}")))?;
-
-    let transaction = VersionedTransaction::try_new(VersionedMessage::V1(message), &all_signers)
-        .map_err(|err| RpcError::Internal(format!("sign transaction: {err}")))?;
-
-    // The in-memory test chain accepts any size, so the cap is enforced here.
-    let len = transaction_len(&transaction)?;
-    if len > MAX_TRANSACTION_SIZE {
-        return Err(RpcError::Internal(format!(
-            "transaction is {len} bytes, over the {MAX_TRANSACTION_SIZE} byte limit"
-        )));
+        Ok(Self::sign_transaction(payer, signers, instructions, blockhash))
     }
 
-    Ok(transaction)
-}
+    /// Sign instructions into a transaction with the payer as the first signer.
+    fn sign_transaction(
+        payer: &dyn TapeSigner,
+        signers: &[&dyn TapeSigner],
+        instructions: &[Instruction],
+        blockhash: Hash,
+    ) -> Transaction {
+        let payer_pubkey: SolanaPubkey = payer.pubkey().into();
 
-/// Wire size of a signed transaction.
-pub fn transaction_len(transaction: &VersionedTransaction) -> Result<usize, RpcError> {
-    let len = wincode::serialized_size(transaction)
-        .map_err(|err| RpcError::Internal(format!("measure transaction: {err}")))?;
-    usize::try_from(len).map_err(|err| RpcError::Internal(format!("measure transaction: {err}")))
-}
+        let mut all_signers: Vec<SolanaSignerAdapter<'_>> = Vec::with_capacity(signers.len() + 1);
+        all_signers.push(SolanaSignerAdapter(payer));
+        all_signers.extend(signers.iter().copied().map(SolanaSignerAdapter));
 
-/// A v1 message carries its budget in the config, and a limit left out of the
-/// config is zero, so every transaction sets both.
-fn transaction_config(compute_unit_limit: u32) -> TransactionConfig {
-    TransactionConfig::empty()
-        .with_compute_unit_limit(compute_unit_limit)
-        .with_loaded_accounts_data_size_limit(MAX_LOADED_ACCOUNTS_DATA_SIZE)
-}
-
-/// Budget for a send that sets no limit of its own.
-fn default_compute_unit_limit(instructions: &[Instruction]) -> u32 {
-    let count = u32::try_from(instructions.len()).unwrap_or(u32::MAX);
-    DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT
-        .saturating_mul(count)
-        .min(MAX_COMPUTE_UNIT_LIMIT)
+        Transaction::new_signed_with_payer(
+            instructions,
+            Some(&payer_pubkey),
+            &all_signers,
+            blockhash,
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-    use std::time::Duration;
-
     use super::*;
     use tape_rpc_solana::RpcConfig;
-    use solana_client::nonblocking::rpc_client::RpcClient as SolanaRpcClient;
     use solana_keypair::Keypair as SolanaKeypair;
     use solana_pubkey::Pubkey;
     use solana_system_interface::instruction as system_instruction;
     use tape_crypto::ed25519::Keypair;
-
-    const LOCAL_VALIDATOR: &str = "http://127.0.0.1:8899";
-    const MEMO_PROGRAM: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
-
-    // The memo program spends nearly the whole compute ceiling on a payload
-    // this size, so these sends run at MAX_COMPUTE_UNIT_LIMIT.
-    fn memo(len: usize) -> Instruction {
-        Instruction {
-            program_id: Pubkey::from_str(MEMO_PROGRAM).expect("memo program id"),
-            accounts: Vec::new(),
-            data: vec![b'a'; len],
-        }
-    }
-
-    // Sign with no size check, so the validator is the one to refuse.
-    fn sign_unchecked(payer: &Keypair, instruction: Instruction, blockhash: Hash) -> VersionedTransaction {
-        let message = Message::try_compile_with_config(
-            &payer.pubkey().into(),
-            &[instruction],
-            blockhash,
-            transaction_config(MAX_COMPUTE_UNIT_LIMIT),
-        )
-        .expect("compile");
-        VersionedTransaction::try_new(VersionedMessage::V1(message), &[SolanaSignerAdapter(payer)])
-            .expect("sign")
-    }
-
-    // A v1 transaction of exactly MAX_TRANSACTION_SIZE lands on a real
-    // validator and one byte more is refused. Needs Agave 4.2.2 or later.
-    #[tokio::test]
-    #[ignore] // Requires solana-test-validator on 127.0.0.1:8899
-    async fn v1_size_boundary() {
-        let client = RpcClient::new(RpcConfig {
-            endpoints: vec![LOCAL_VALIDATOR.to_string()],
-            ..RpcConfig::default()
-        })
-        .expect("client");
-
-        let solana_payer = SolanaKeypair::new();
-        let payer = Keypair::from_keypair_bytes(solana_payer.to_bytes()).expect("convert payer");
-        let payer_pubkey: Pubkey = payer.pubkey().into();
-
-        let faucet = SolanaRpcClient::new(LOCAL_VALIDATOR.to_string());
-        faucet
-            .request_airdrop(&payer_pubkey, 1_000_000_000)
-            .await
-            .expect("airdrop");
-        while faucet.get_balance(&payer_pubkey).await.expect("balance") == 0 {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-
-        let empty = transaction_len(&sign_unchecked(&payer, memo(0), Hash::default()))
-            .expect("measure");
-        let largest = MAX_TRANSACTION_SIZE - empty;
-
-        let fits = sign_transaction(&payer, &[], MAX_COMPUTE_UNIT_LIMIT, &[memo(largest)], Hash::default())
-            .expect("sign largest");
-        assert_eq!(transaction_len(&fits).expect("measure"), MAX_TRANSACTION_SIZE);
-
-        client
-            .send_instructions_with_compute_unit_limit(
-                &payer,
-                MAX_COMPUTE_UNIT_LIMIT,
-                vec![memo(largest)],
-            )
-            .await
-            .expect("a full-size v1 transaction should land");
-
-        let blockhash = client.rpc().get_latest_blockhash().await.expect("blockhash");
-        let oversized = sign_unchecked(&payer, memo(largest + 1), blockhash);
-        assert_eq!(transaction_len(&oversized).expect("measure"), MAX_TRANSACTION_SIZE + 1);
-        let refused = client
-            .rpc()
-            .send_transaction(&oversized)
-            .await
-            .expect_err("validator accepted an oversized transaction");
-        assert!(refused.to_string().contains("too large"), "refused for another reason: {refused}");
-    }
 
     #[tokio::test]
     #[ignore] // Requires actual RPC endpoint

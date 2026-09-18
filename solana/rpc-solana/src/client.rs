@@ -11,8 +11,7 @@ use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
 use solana_pubkey::Pubkey;
 use solana_signature::Signature;
-use solana_transaction::versioned::VersionedTransaction;
-use solana_transaction::TransactionError;
+use solana_transaction::{Transaction, TransactionError};
 use solana_transaction_status::{
     EncodedConfirmedTransactionWithStatusMeta, TransactionDetails,
     UiTransactionEncoding,
@@ -537,7 +536,7 @@ fn confirm_cadence() -> (&'static [u64], u64) {
 
 async fn send_and_poll(
     client: &RpcClient,
-    transaction: &VersionedTransaction,
+    transaction: &Transaction,
     commitment: CommitmentLevel,
     skip_preflight: bool,
 ) -> Result<Signature, ClientError> {
@@ -797,10 +796,7 @@ impl Rpc for SolanaRpc {
         Ok(out)
     }
 
-    async fn send_transaction(
-        &self,
-        transaction: &VersionedTransaction,
-    ) -> Result<Txid, RpcError> {
+    async fn send_transaction(&self, transaction: &Transaction) -> Result<Txid, RpcError> {
         let transaction = Arc::new(transaction.clone());
 
         let signature = self
@@ -820,7 +816,7 @@ impl Rpc for SolanaRpc {
 
     async fn simulate_transaction(
         &self,
-        transaction: &VersionedTransaction,
+        transaction: &Transaction,
     ) -> Result<SimulationResult, RpcError> {
         let transaction = Arc::new(transaction.clone());
         let config = RpcSimulateTransactionConfig {
@@ -853,7 +849,7 @@ impl Rpc for SolanaRpc {
 
     async fn send_and_confirm_transaction(
         &self,
-        transaction: &VersionedTransaction,
+        transaction: &Transaction,
         commitment: CommitmentLevel,
         skip_preflight: bool,
     ) -> Result<Txid, RpcError> {

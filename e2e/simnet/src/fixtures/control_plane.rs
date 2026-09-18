@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use tape_api::compute::MAX_COMPUTE_UNIT_LIMIT;
@@ -51,7 +52,7 @@ impl SimnetScenario<'_> {
         let amount = TAPE::parse(&amount_tape.to_string())
             .map_err(|_| anyhow::anyhow!("invalid stake amount"))?;
 
-        let mut ixs = Vec::new();
+        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(MAX_COMPUTE_UNIT_LIMIT)];
         let payer_is_authority = payer.pubkey() == authority;
         if !payer_is_authority {
             ixs.extend(build_authority_with_tokens_ix(
@@ -72,9 +73,8 @@ impl SimnetScenario<'_> {
 
         self.harness
             .chain()
-            .send_capped_with_signers_and_advance(
+            .send_instructions_with_signers_and_advance(
                 payer,
-                MAX_COMPUTE_UNIT_LIMIT,
                 ixs,
                 &[node.keypair()],
                 self.harness.config().slot_advance_per_tx,
@@ -103,7 +103,7 @@ impl SimnetScenario<'_> {
         let amount = TAPE::parse(&amount_tape.to_string())
             .map_err(|_| anyhow::anyhow!("invalid stake amount"))?;
 
-        let mut ixs = Vec::new();
+        let mut ixs = vec![ComputeBudgetInstruction::set_compute_unit_limit(MAX_COMPUTE_UNIT_LIMIT)];
         ixs.extend(build_authority_with_tokens_ix(
             payer.pubkey().into(),
             authority.into(),
@@ -119,9 +119,8 @@ impl SimnetScenario<'_> {
 
         self.harness
             .chain()
-            .send_capped_with_signers_and_advance(
+            .send_instructions_with_signers_and_advance(
                 payer,
-                MAX_COMPUTE_UNIT_LIMIT,
                 ixs,
                 &[gateway.keypair()],
                 self.harness.config().slot_advance_per_tx,
@@ -143,13 +142,13 @@ impl SimnetScenario<'_> {
             node_address,
             current_epoch,
         );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
         self.harness
             .chain()
-            .send_capped_and_advance(
+            .send_instructions_and_advance(
                 payer,
-                Self::CU_MED,
-                vec![ix],
+                vec![cu_ix, ix],
                 self.harness.config().slot_advance_per_tx,
             )
             .await
@@ -173,13 +172,13 @@ impl SimnetScenario<'_> {
             node_address,
             current_epoch,
         );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
         self.harness
             .chain()
-            .send_capped_with_signers_and_advance(
+            .send_instructions_with_signers_and_advance(
                 payer,
-                Self::CU_MED,
-                vec![ix],
+                vec![cu_ix, ix],
                 &[node.keypair()],
                 self.harness.config().slot_advance_per_tx,
             )
@@ -202,13 +201,13 @@ impl SimnetScenario<'_> {
             current_epoch,
             node_address,
         );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
         self.harness
             .chain()
-            .send_capped_and_advance(
+            .send_instructions_and_advance(
                 payer,
-                Self::CU_MED,
-                vec![ix],
+                vec![cu_ix, ix],
                 self.harness.config().slot_advance_per_tx,
             )
             .await
@@ -242,13 +241,13 @@ impl SimnetScenario<'_> {
             node_address,
             current_epoch,
         );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
         self.harness
             .chain()
-            .send_capped_and_advance(
+            .send_instructions_and_advance(
                 payer,
-                Self::CU_MED,
-                vec![ix],
+                vec![cu_ix, ix],
                 self.harness.config().slot_advance_per_tx,
             )
             .await
@@ -287,13 +286,13 @@ impl SimnetScenario<'_> {
             self.node_address(node_index).into(),
             entry,
         );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
         self.harness
             .chain()
-            .send_capped_with_signers_and_advance(
+            .send_instructions_with_signers_and_advance(
                 payer,
-                Self::CU_MED,
-                vec![ix],
+                vec![cu_ix, ix],
                 &[node.keypair()],
                 self.harness.config().slot_advance_per_tx,
             )
@@ -318,13 +317,13 @@ impl SimnetScenario<'_> {
             self.node_address(node_index).into(),
             spool_groups,
         );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
         self.harness
             .chain()
-            .send_capped_with_signers_and_advance(
+            .send_instructions_with_signers_and_advance(
                 payer,
-                Self::CU_MED,
-                vec![ix],
+                vec![cu_ix, ix],
                 &[node.keypair()],
                 self.harness.config().slot_advance_per_tx,
             )
@@ -353,13 +352,13 @@ impl SimnetScenario<'_> {
             self.node_address(node_index).into(),
             committee_size,
         );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
         self.harness
             .chain()
-            .send_capped_with_signers_and_advance(
+            .send_instructions_with_signers_and_advance(
                 payer,
-                Self::CU_MED,
-                vec![ix],
+                vec![cu_ix, ix],
                 &[node.keypair()],
                 self.harness.config().slot_advance_per_tx,
             )
@@ -390,13 +389,13 @@ impl SimnetScenario<'_> {
             self.node_address(node_index).into(),
             threshold,
         );
+        let cu_ix = ComputeBudgetInstruction::set_compute_unit_limit(Self::CU_MED);
 
         self.harness
             .chain()
-            .send_capped_with_signers_and_advance(
+            .send_instructions_with_signers_and_advance(
                 payer,
-                Self::CU_MED,
-                vec![ix],
+                vec![cu_ix, ix],
                 &[node.keypair()],
                 self.harness.config().slot_advance_per_tx,
             )

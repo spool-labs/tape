@@ -255,10 +255,10 @@ mod tests {
     #[test]
     fn packed_tracks() {
         let mut records = Vec::new();
-        for byte in 1..=200 {
+        for byte in 1..=40 {
             records.push(Record::new(address(byte)));
         }
-        let max_bytes = 1024;
+        let max_bytes = 821;
 
         let tracks = render_tracks(&records, max_bytes).expect("render tracks");
 

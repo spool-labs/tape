@@ -13,9 +13,7 @@ use tape_solana::*;
 use crate::helpers::read_instruction_pod;
 use crate::program::tapedrive::{self, group_pda, system_pda};
 
-/// Largest inline payload. An owner proves access to an inline track by
-/// sending the whole payload, so this bounds every proof of access.
-pub const MAX_INLINE_WRITE: usize = 1024;
+pub const TRACK_WRITE_MAX_BYTES: usize = 10 * 1024;
 pub const MAX_NAME_LEN: usize = 1024;
 
 #[repr(C)]
@@ -188,7 +186,7 @@ fn parse_payload(kind: u8, payload: &[u8]) -> Result<BlobDataSlice<'_>, ProgramE
 }
 
 fn parse_inline(payload: &[u8]) -> Result<BlobDataSlice<'_>, ProgramError> {
-    if payload.len() > MAX_INLINE_WRITE {
+    if payload.len() > TRACK_WRITE_MAX_BYTES {
         return Err(ProgramError::InvalidInstructionData);
     }
 
@@ -276,7 +274,7 @@ fn make_track_write(
     let BlobInfo { object, data } = blob;
     let (kind, payload) = match data {
         BlobData::Inline(bytes) => {
-            if bytes.len() > MAX_INLINE_WRITE {
+            if bytes.len() > TRACK_WRITE_MAX_BYTES {
                 return Err(ProgramError::InvalidInstructionData);
             }
 
