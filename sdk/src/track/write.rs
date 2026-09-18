@@ -1059,8 +1059,27 @@ async fn submit_registers<Blockchain: Rpc, Cluster: Api>(
         )?);
     }
 
-    for sent in client.rpc().rpc().send_transactions(&transactions).await? {
-        signatures.push(sent?);
+    for (index, sent) in client
+        .rpc()
+        .rpc()
+        .send_transactions(&transactions)
+        .await?
+        .into_iter()
+        .enumerate()
+    {
+        match sent {
+            Ok(signature) => signatures.push(signature),
+            Err(err) => {
+                warn!(
+                    index,
+                    entries = transactions.len(),
+                    verdict = ?parse_tape_error(&err),
+                    %err,
+                    "register run refused",
+                );
+                return Err(TapedriveError::Rpc(err));
+            }
+        }
     }
 
     Ok(signatures)

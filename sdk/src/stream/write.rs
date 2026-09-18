@@ -1039,10 +1039,21 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
     let mut landed = 0;
     for (index, verdict) in verdicts.into_iter().enumerate() {
         if let Err(err) = verdict {
-            // The track was certified before the run reached it, so the
-            // chain holds the leaf the mirror is about to write.
-            if !matches!(parse_tape_error(&err), Some(TapeError::AlreadyCertified)) {
-                break;
+            match parse_tape_error(&err) {
+                // The track was certified before the run reached it, so the
+                // chain holds the leaf the mirror is about to write.
+                Some(TapeError::AlreadyCertified) => {}
+                verdict => {
+                    warn!(
+                        index,
+                        entries = built.len(),
+                        track = built[index].certified.track_number.as_u64(),
+                        ?verdict,
+                        %err,
+                        "certify run refused; rebuilding the rest against the chain",
+                    );
+                    break;
+                }
             }
         }
 
