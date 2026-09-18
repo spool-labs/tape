@@ -979,13 +979,56 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     mirror: &Mutex<ArchiveMirror>,
-    mut pending: Vec<ChunkCertification>,
+    pending: Vec<ChunkCertification>,
     operation: Operation,
 ) -> Result<(), TapedriveError> {
     if !client.rpc().rpc().executes_batches_in_order() {
         return certify_chunks_singly(client, tape_key, mirror, pending, operation).await;
     }
 
+    let mut pending = pending;
+    while !pending.is_empty() {
+        let landed = certify_run_once(client, tape_key, mirror, &pending, operation).await?;
+        let mut refused = pending.split_off(landed);
+        let Some(item) = refused.first() else {
+            break;
+        };
+
+        // Only the refused track goes the slow way. The ones behind it are
+        // still the mirror's to prove, so they go back into a run rather than
+        // following it onto the peer path one at a time.
+        let track = item.written.track.track_number;
+        let item = refused.remove(0);
+        certify_chunk(
+            client,
+            tape_key,
+            mirror,
+            &item.written,
+            item.collected,
+            &item.receipts,
+            operation,
+        )
+        .await?;
+        debug!(track = track.as_u64(), behind = refused.len(), "refused certify settled on its own");
+        pending = refused;
+    }
+
+    Ok(())
+}
+
+/// Build and send one run against the mirror, returning how many of its
+/// entries the chain took.
+///
+/// The caller's mirror is advanced over the entries that landed and left
+/// alone for the rest, so a refusal leaves it at the last certify the chain
+/// actually ran.
+async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    mirror: &Mutex<ArchiveMirror>,
+    pending: &[ChunkCertification],
+    operation: Operation,
+) -> Result<usize, TapedriveError> {
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
     let blockhash = client.rpc().rpc().get_latest_blockhash().await?;
@@ -995,7 +1038,7 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
     let mut working = mirror.lock().await.clone();
     let mut built = Vec::with_capacity(pending.len());
     let mut transactions = Vec::with_capacity(pending.len());
-    for item in &pending {
+    for item in pending {
         let certified = certified_track(&item.written.track);
         let Ok(proof) = working.proof_for(certified.track_number) else {
             break;
@@ -1026,7 +1069,7 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
     }
 
     if transactions.is_empty() {
-        return certify_chunks_singly(client, tape_key, mirror, pending, operation).await;
+        return Ok(0);
     }
 
     let submit = client
@@ -1069,8 +1112,7 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
         client.state().touch();
     }
 
-    let refused = pending.split_off(landed);
-    certify_chunks_singly(client, tape_key, mirror, refused, operation).await
+    Ok(landed)
 }
 
 /// Certify each chunk on its own, the way a chain that promises no batch
