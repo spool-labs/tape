@@ -640,6 +640,14 @@ enum SendBatchReply {
     Refusal(SendEnvelope),
 }
 
+/// True when the chain is reporting a transaction it has already run.
+///
+/// A batch post that timed out or lost its answer is retried whole, so every
+/// transaction of it that did land comes back this way.
+fn is_already_processed(err: &RpcError) -> bool {
+    err.to_string().contains("already processed")
+}
+
 #[derive(serde::Deserialize)]
 struct SendEnvelope {
     #[serde(default)]
@@ -987,15 +995,31 @@ impl Rpc for SolanaRpc {
         let body = send_batch_request(transactions)?;
         let count = transactions.len();
 
-        self.with_retry_at("sendTransaction:batch", |index| {
-            send_batch(
-                &self.http,
-                &self.config.endpoints[index],
-                &body,
-                count,
-            )
-        })
-        .await
+        let mut sent = self
+            .with_retry_at("sendTransaction:batch", |index| {
+                send_batch(
+                    &self.http,
+                    &self.config.endpoints[index],
+                    &body,
+                    count,
+                )
+            })
+            .await?;
+
+        // A retried post replays transactions the chain already ran. Their
+        // signatures are the ones we signed, so the entry reports what it
+        // reports on the first post: the transaction landed.
+        for (verdict, transaction) in sent.iter_mut().zip(transactions) {
+            if let Err(err) = verdict {
+                if is_already_processed(err) {
+                    if let Some(signature) = transaction.signatures.first() {
+                        *verdict = Ok((*signature).into());
+                    }
+                }
+            }
+        }
+
+        Ok(sent)
     }
 
     async fn simulate_transaction(
@@ -1242,6 +1266,17 @@ mod tests {
         );
         assert!(verdicts[0].is_ok());
         assert!(verdicts[1].is_ok());
+    }
+
+    // a replayed transaction the chain already ran reads as that transaction landing
+    #[test]
+    fn already_processed_reads_as_landed() {
+        let refusal = RpcError::Request(
+            "RPC response error -32002: transaction already processed; ".to_string(),
+        );
+
+        assert!(is_already_processed(&refusal));
+        assert!(!is_already_processed(&RpcError::Request("boom".to_string())));
     }
 
     // a reply short of the calls it answers is a batch failure, not a per-entry one
