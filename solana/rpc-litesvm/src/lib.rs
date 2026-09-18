@@ -306,6 +306,35 @@ impl LiteSvmRpc {
         inner.svm.get_sysvar::<SvmClock>().unix_timestamp
     }
 
+    /// Execute one transaction on the held bank, recording it in the block
+    /// the pending slot will hold.
+    fn execute_locked(
+        inner: &mut Inner,
+        transaction: &VersionedTransaction,
+    ) -> Result<Txid, RpcError> {
+        // Warp SVM to the pending slot so the on-chain program sees the
+        // correct Clock::slot value and the block is recorded there.
+        let tx_slot = inner.pending_slot;
+        inner.svm.warp_to_slot(tx_slot);
+
+        let vtx = transaction.clone();
+        let pre_balances = Self::balances_for_transaction(inner, &vtx);
+
+        let result = inner.svm.send_transaction(vtx.clone());
+
+        let post_balances = Self::balances_for_transaction(inner, &vtx);
+        Self::record_transaction_locked(inner, vtx, &result, pre_balances, post_balances);
+
+        match result {
+            Ok(meta) => Ok(Txid::from(meta.signature)),
+            Err(failed) => Err(RpcError::Transaction {
+                message: transaction_error(&failed.err, &failed.meta.logs),
+                err: Some(failed.err),
+                simulated: false,
+            }),
+        }
+    }
+
     fn balances_for_transaction(inner: &Inner, tx: &VersionedTransaction) -> Vec<u64> {
         tx.message
             .static_account_keys()
@@ -638,31 +667,33 @@ impl Rpc for LiteSvmRpc {
             .lock()
             .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
 
-        // Warp SVM to the pending slot so the on-chain program sees the
-        // correct Clock::slot value and the block is recorded there.
-        let tx_slot = inner.pending_slot;
-        inner.svm.warp_to_slot(tx_slot);
-
-        let vtx = transaction.clone();
-        let pre_balances = Self::balances_for_transaction(&inner, &vtx);
-
-        let result = inner.svm.send_transaction(vtx.clone());
-
-        let post_balances = Self::balances_for_transaction(&inner, &vtx);
-        Self::record_transaction_locked(&mut inner, vtx, &result, pre_balances, post_balances);
+        let sent = Self::execute_locked(&mut inner, transaction);
 
         // Fresh blockhash so repeated identical messages don't hit
         // "already processed" in tight test loops.
         inner.svm.expire_blockhash();
 
-        match result {
-            Ok(meta) => Ok(Txid::from(meta.signature)),
-            Err(failed) => Err(RpcError::Transaction {
-                message: transaction_error(&failed.err, &failed.meta.logs),
-                err: Some(failed.err),
-                simulated: false,
-            }),
+        sent
+    }
+
+    async fn send_transactions(
+        &self,
+        transactions: &[VersionedTransaction],
+    ) -> Result<Vec<Result<Txid, RpcError>>, RpcError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| RpcError::Internal(format!("mutex poisoned: {e}")))?;
+
+        // The blockhash holds until the run is over: every transaction of a
+        // batch was signed against the one the caller read before it.
+        let mut sent = Vec::with_capacity(transactions.len());
+        for transaction in transactions {
+            sent.push(Self::execute_locked(&mut inner, transaction));
         }
+        inner.svm.expire_blockhash();
+
+        Ok(sent)
     }
 
     async fn send_and_confirm_transaction(
