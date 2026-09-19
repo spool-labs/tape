@@ -250,7 +250,7 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
 
         // The scan stays forward because the backend has no reverse cursor, but
         // the window does not grow: older entries fall off as newer ones land.
-        let mut tail: VecDeque<(EpochNumber, RoundNumber, bool)> = VecDeque::with_capacity(limit);
+        let mut tail: VecDeque<(EpochNumber, RoundNumber, bool)> = VecDeque::new();
         for (key_bytes, value_bytes) in iter {
             let key: ChallengeRoundKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("round key: {e}")))?;
@@ -287,6 +287,7 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
 
 #[cfg(test)]
 mod tests {
+    use tape_core::types::BasisPoints;
     use tape_store_memory::MemoryStore;
 
     use super::*;
@@ -305,7 +306,7 @@ mod tests {
         let record = store.peer_record(Address::new_unique(), SPOOL).unwrap();
 
         assert_eq!(record, PeerRecord::default());
-        assert!(!record.eviction_fires());
+        assert_eq!(record.success_rate(), BasisPoints(10_000));
     }
 
     // the key orders by epoch then round, so a spool's history comes back in the

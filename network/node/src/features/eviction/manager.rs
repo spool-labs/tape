@@ -184,7 +184,7 @@ where
             .map(|(_, record)| record)
             .collect();
 
-        let healthy = match node_verdict(&records) {
+        let healthy = match node_verdict(&records, &self.context.config.eviction.policy) {
             NodeVerdict::RateFailed => false,
             NodeVerdict::Unproven | NodeVerdict::RunFailed => self.answers(node).await,
             NodeVerdict::Healthy => true,

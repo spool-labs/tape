@@ -1,11 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsPrivateKey;
+use tape_core::challenge::schedule::Schedule;
 use tape_api::consts::NAME_LENGTH;
 use tape_api::genesis::GenesisConfig;
-use tape_core::types::BasisPoints;
+use tape_core::types::{BasisPoints, SlotNumber};
 use tape_crypto::ed25519::Keypair;
 use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed25519_keypair};
 
@@ -94,7 +95,7 @@ pub struct NodeConfig {
     pub genesis_preset: GenesisPreset,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum GenesisPreset {
     /// Production profile (1-week epochs). Safe default.
@@ -109,6 +110,15 @@ pub enum GenesisPreset {
 }
 
 impl GenesisPreset {
+    /// Explicit network timing, never inferred from epoch duration.
+    pub fn challenge_interval_slots(self) -> u64 {
+        match self {
+            Self::Mainnet | Self::Devnet => 7,
+            Self::Localnet => 25,
+            Self::Simnet => 10,
+        }
+    }
+
     pub fn config(self) -> GenesisConfig {
         match self {
             GenesisPreset::Mainnet => GenesisConfig::mainnet(),
@@ -121,6 +131,12 @@ impl GenesisPreset {
 
 
 impl NodeConfig {
+    pub fn challenge_interval_slots(&self) -> u64 {
+        self.challenge
+            .interval_slots
+            .unwrap_or_else(|| self.genesis_preset.challenge_interval_slots())
+    }
+
     /// Returns whether challenge and eviction participation are both enabled.
     pub fn eviction_enabled(&self) -> bool {
         self.challenge.enabled && self.eviction.enabled
@@ -142,6 +158,24 @@ impl NodeConfig {
 
     /// Validate semantic constraints after parsing.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        Schedule::for_epoch(SlotNumber(0), self.challenge_interval_slots())
+        .map_err(|error| ConfigError::Invalid(format!("challenge.interval_slots: {error:?}")))?;
+
+        self.eviction
+            .policy
+            .validate()
+            .map_err(|error| ConfigError::Invalid(format!("eviction.policy.{error}")))?;
+
+        if self.challenge.realign_after_blank_rounds == 0 {
+            return Err(ConfigError::Invalid(
+                "challenge.realign_after_blank_rounds must be greater than zero".into(),
+            ));
+        }
+        if self.challenge.verify_workers == 0 {
+            return Err(ConfigError::Invalid(
+                "challenge.verify_workers must be greater than zero".into(),
+            ));
+        }
         if self.node.name.trim().is_empty() {
             return Err(ConfigError::Invalid("node.name is required".into()));
         }
@@ -834,6 +868,103 @@ network:
         .unwrap();
 
         assert!(config.eviction.enabled);
+    }
+
+    #[test]
+    fn eviction_policy_is_explicit_and_independent_of_genesis_preset() {
+        for preset in ["mainnet", "devnet", "localnet", "simnet"] {
+            let yaml = format!(
+                r#"
+genesis_preset: {preset}
+eviction:
+  policy:
+    max_consecutive_misses: 45
+    min_opportunities: 90
+    minimum_success_rate_bps: 6000
+"#
+            );
+            let config = NodeConfig::from_yaml_str(&yaml).expect("valid eviction policy");
+
+            assert_eq!(config.eviction.policy.max_consecutive_misses, 45);
+            assert_eq!(config.eviction.policy.min_opportunities, 90);
+            assert_eq!(
+                config.eviction.policy.minimum_success_rate_bps,
+                BasisPoints(6_000)
+            );
+        }
+    }
+
+    #[test]
+    fn challenge_interval_uses_named_presets_and_explicit_overrides() {
+        let presets = [
+            ("mainnet", 7),
+            ("devnet", 7),
+            ("localnet", 25),
+            ("simnet", 10),
+        ];
+
+        for (preset, interval) in presets {
+            let yaml = format!("genesis_preset: {preset}");
+            let config = NodeConfig::from_yaml_str(&yaml).expect("valid preset");
+            assert_eq!(config.challenge_interval_slots(), interval);
+
+            let yaml = format!(
+                r#"
+genesis_preset: {preset}
+challenge:
+  interval_slots: 40
+"#
+            );
+            let config = NodeConfig::from_yaml_str(&yaml).expect("valid interval override");
+            assert_eq!(config.challenge_interval_slots(), 40);
+        }
+
+        for interval in [0, 1, 4] {
+            let yaml = format!(
+                r#"
+challenge:
+  interval_slots: {interval}
+"#
+            );
+            assert!(NodeConfig::from_yaml_str(&yaml).is_err());
+        }
+
+        let misspelled = r#"
+challenge:
+  interval_slot: 10
+"#;
+        assert!(NodeConfig::from_yaml_str(misspelled).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_or_misspelled_eviction_policy() {
+        let invalid_rules = [
+            (0, 60, 5_000),
+            (30, 0, 5_000),
+            (30, 60, 10_001),
+        ];
+
+        for (max_misses, min_opportunities, rate_bps) in invalid_rules {
+            let yaml = format!(
+                r#"
+eviction:
+  policy:
+    max_consecutive_misses: {max_misses}
+    min_opportunities: {min_opportunities}
+    minimum_success_rate_bps: {rate_bps}
+"#
+            );
+            assert!(NodeConfig::from_yaml_str(&yaml).is_err(), "accepted {yaml}");
+        }
+
+        let misspelled = r#"
+eviction:
+  policy:
+    max_consecutive_miss: 30
+    min_opportunities: 60
+    minimum_success_rate_bps: 5000
+"#;
+        assert!(NodeConfig::from_yaml_str(misspelled).is_err());
     }
 
     #[test]

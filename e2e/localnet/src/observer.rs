@@ -8,7 +8,6 @@ use tape_rpc_client::RpcClient;
 use tape_rpc_solana::{RpcConfig, SolanaRpc};
 use solana_pubkey::Pubkey;
 use tape_api::program::tapedrive::node_pda;
-use tape_core::challenge::record::MIN_OPPORTUNITIES;
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, SlotNumber};
@@ -290,8 +289,11 @@ impl Observer {
         let mut rates: Vec<u64> = node_views
             .iter()
             .filter_map(|node| node.challenge.as_ref())
-            .flat_map(|grid| grid.rows.iter())
-            .filter(|row| row.opportunities >= MIN_OPPORTUNITIES)
+            .flat_map(|grid| {
+                grid.rows
+                    .iter()
+                    .filter(move |row| row.opportunities >= grid.min_opportunities)
+            })
             .map(|row| row.success_rate_bps)
             .collect();
         rates.sort_unstable();

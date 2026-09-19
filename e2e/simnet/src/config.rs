@@ -1,5 +1,7 @@
 use std::time::Duration;
 use solana_pubkey::Pubkey;
+use tape_node::config::challenge::ChallengeConfig;
+use tape_node::config::eviction::EvictionConfig;
 
 /// A serialized account payload to seed into the simulated on-chain state.
 #[derive(Debug, Clone)]
@@ -52,8 +54,10 @@ pub struct SimnetConfig {
     pub file_log: bool,
     /// Arbitrary serialized accounts to inject into LiteSVM before nodes start.
     pub seed_accounts: Vec<SeededAccount>,
-    /// Whether nodes propose and sign evictions.
-    pub eviction: bool,
+    /// Eviction participation and evidence policy, shared by every node.
+    pub eviction: EvictionConfig,
+    /// Explicit challenge settings applied to every node in this simulation.
+    pub challenge: ChallengeConfig,
 }
 
 impl Default for SimnetConfig {
@@ -66,7 +70,8 @@ impl Default for SimnetConfig {
             slot_advance_per_tx: 1,
             file_log: false,
             seed_accounts: Vec::new(),
-            eviction: true,
+            eviction: Default::default(),
+            challenge: Default::default(),
         }
     }
 }

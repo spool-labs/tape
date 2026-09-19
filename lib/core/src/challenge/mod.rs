@@ -1,10 +1,12 @@
 pub mod certificate;
+pub mod policy;
 pub mod proof;
 pub mod record;
 pub mod sample;
 pub mod schedule;
 
 pub use certificate::{CertificateRejection, SuccessCertificate};
+pub use policy::EvictionPolicy;
 pub use proof::{ProofOfAccess, ProofRejection};
 pub use record::{Fold, PeerRecord};
 pub use sample::{Sample, SampleEntry, draw, round_seed, sort_entries};

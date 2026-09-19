@@ -323,10 +323,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         // The digest is cached under the epoch, and a join or an eviction
         // rewrites what it covers without moving the epoch.
         self.epoch_digest.invalidate();
-        // sub-minute test epochs judge runs on the short threshold
-        tape_core::challenge::record::set_run_threshold(
-            state.current.epoch.preferences.epoch_duration.0,
-        );
         self.state.publish(state)
     }
 
@@ -493,6 +489,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
     }
 
     pub async fn build(self) -> Result<Arc<NodeContext<Db, Cluster, Blockchain>>, NodeError> {
+        self.config
+            .validate()
+            .map_err(|error| NodeError::Config(error.to_string()))?;
+
+        let schedules = Schedules::new(self.config.challenge_interval_slots())
+            .map_err(|error| NodeError::Config(format!("challenge interval: {error:?}")))?;
         let node_id = Self::resolve_node_id(&self.rpc, &self.keypair).await?;
         let (node_address, _) = node_pda(self.keypair.address());
         let admission = Arc::new(AdmissionLimiter::new(self.config.http.admission.clone()));
@@ -528,7 +530,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             round_buffer: Arc::new(RoundBuffer::default()),
             round_traces: Arc::new(TraceRing::default()),
             sample_sets: Arc::new(SampleSets::default()),
-            schedules: Schedules::default(),
+            schedules,
             attest_queue: Arc::new(AttestQueue::default()),
             certify_slots: Arc::new(tokio::sync::Semaphore::new(CERTIFY_SLOTS)),
             certify_stage: OnceLock::new(),

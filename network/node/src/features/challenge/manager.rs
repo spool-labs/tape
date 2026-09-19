@@ -6,7 +6,7 @@ use futures::StreamExt;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::challenge::schedule::{
-    HANDOVER_GRACE_ROUNDS, MAX_PENDING_ROUNDS, SETTLE_DEADLINE_SLOTS, round_width_slots,
+    MAX_PENDING_ROUNDS, SETTLE_DEADLINE_SLOTS, round_width_slots,
 };
 use tape_core::erasure::group_for_spool;
 use tape_core::system::EpochPhase;
@@ -146,10 +146,8 @@ where
 
         let state = self.context.state();
 
-        // Before the phase gate too: the grid is laid the first time this node
-        // sees the epoch and kept, so a round that spans the turn is judged
-        // against the grid it was asked with rather than one derived again off
-        // the epoch's own span afterwards.
+        // Retain the epoch's grid while its rounds can still settle, including
+        // after the phase or membership changes.
         self.context.schedules.observe(&state, block.slot);
 
         // Before the phase gate: an epoch that left Active still owes a
@@ -332,7 +330,7 @@ where
         let mut stood = 0u64;
 
         let first = self.first_round.get(&round.epoch).copied().unwrap_or(round.round);
-        let grace = first.as_u64() + HANDOVER_GRACE_ROUNDS;
+        let grace = first.as_u64() + self.context.config.challenge.handover_grace_rounds;
 
         for asked in &open.spools {
             let (spool, owner) = (asked.spool, asked.owner);
@@ -446,8 +444,7 @@ where
         warn!(group = group.0, "challenge: nothing stood for a run of rounds, realigning");
 
         // Every target queued so far was weighed against the view now under
-        // suspicion, and the run arm fires at three misses while this fires
-        // later. Drop them rather than propose an eviction off a view the node
+        // suspicion. Drop them rather than propose an eviction off a view the node
         // has already stopped trusting.
         self.context.eviction_queue.clear_records();
         // Rounds already open were derived from the same suspect view. Mark
@@ -569,7 +566,7 @@ where
             return folded.certified;
         };
 
-        if record.eviction_fires() {
+        if record.eviction_fires(&self.context.config.eviction.policy) {
             info!(
                 node = %peer,
                 spool = spool.0,

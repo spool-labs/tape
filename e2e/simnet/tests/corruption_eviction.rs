@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use tape_store_api::{Column, Store};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::challenge::EvictionPolicy;
 use tape_core::erasure::{GROUP_SIZE, group_for_spool};
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
@@ -12,6 +13,14 @@ use tape_store::columns::SliceCol;
 use tape_core::track::data::BlobData;
 use tape_store::ops::{SampleOps, SliceOps, SpoolOps, TrackDataOps};
 use tape_store::types::SliceKey;
+
+// This scenario needs eviction within its test budget. The runtime uses this
+// declared policy through the same configuration path as a deployed node.
+const EVICTION_POLICY: EvictionPolicy = EvictionPolicy {
+    max_consecutive_misses: 6,
+    min_opportunities: 12,
+    minimum_success_rate_bps: BasisPoints(5_000),
+};
 
 const COMMITTEE_NODES: usize = GROUP_SIZE;
 const NODE_COUNT: usize = COMMITTEE_NODES + 1;
@@ -22,7 +31,7 @@ const SEATED_STAKE: u64 = 1_000;
 const SPARE_STAKE: u64 = 500;
 const STEADY_EPOCH: u64 = 2;
 
-/// Allows three draws of the victim's spool plus proposal and voting.
+/// Allows the configured evidence sample plus proposal and voting.
 const EVICT_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// After the boundary the successor has to sync the spool, refuse the rotten
@@ -37,6 +46,7 @@ fn corruption_eviction() {
 async fn corruption_eviction_inner() {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
+        .eviction_policy(EVICTION_POLICY)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
         .build()

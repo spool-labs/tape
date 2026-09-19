@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use tape_store_api::{Column, Store};
-use tape_core::challenge::PeerRecord;
+use tape_core::challenge::{EvictionPolicy, PeerRecord};
 use tape_core::erasure::{GROUP_SIZE, group_for_spool};
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
@@ -14,6 +14,14 @@ use tape_core::track::data::BlobData;
 use tape_store::ops::{ChallengeOps, SampleOps, SliceOps, SpoolOps, TrackDataOps};
 use tape_store::types::SliceKey;
 
+// This scenario needs eviction within its test budget. The runtime uses this
+// declared policy through the same configuration path as a deployed node.
+const EVICTION_POLICY: EvictionPolicy = EvictionPolicy {
+    max_consecutive_misses: 6,
+    min_opportunities: 60,
+    minimum_success_rate_bps: BasisPoints(5_000),
+};
+
 const COMMITTEE_NODES: usize = GROUP_SIZE;
 const NODE_COUNT: usize = COMMITTEE_NODES + 1;
 const SPARE_NODE: usize = COMMITTEE_NODES;
@@ -22,13 +30,13 @@ const TARGET_GROUPS: u64 = 1;
 const SEATED_STAKE: u64 = 1_000;
 const SPARE_STAKE: u64 = 500;
 
-/// Keeps the lifetime rate above its floor while the consecutive-miss rule fires.
-const BANKED_SUCCESSES: u64 = 5;
+/// Leave room for evidence already in flight while the test restores the bytes.
+const RESTORE_MARGIN_ROUNDS: u64 = 2;
 
-/// One opportunity settles per epoch or so, so banking is most of the run.
+/// Bound the setup independently of epoch duration.
 const BANK_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Three consecutive misses at roughly one round per epoch.
+/// Allows the configured miss streak and phase transitions.
 const RUN_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// Long enough that a vote would have landed. `corruption_eviction` gets from a
@@ -43,6 +51,7 @@ fn challenge_reprieve() {
 async fn challenge_reprieve_inner() {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
+        .eviction_policy(EVICTION_POLICY)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
         .build()
@@ -107,9 +116,20 @@ async fn challenge_reprieve_inner() {
     // the probe is never consulted, which is the case corruption_eviction covers.
     // The gate is on the thinnest record in the group, since every member votes
     // on its own and the margin has to hold for all of them.
-    await_record(&harness, victim, spool, BANK_TIMEOUT, "banked successes", |record| {
-        record.successes >= BANKED_SUCCESSES
-    })
+    await_record(
+        &harness,
+        victim,
+        spool,
+        BANK_TIMEOUT,
+        "banked successes",
+        |record| {
+            let mut projected = *record;
+            projected.opportunities +=
+                EVICTION_POLICY.max_consecutive_misses + RESTORE_MARGIN_ROUNDS;
+
+            projected.success_rate() >= EVICTION_POLICY.minimum_success_rate_bps
+        },
+    )
     .await;
 
     // Rot the whole spool and keep rotting it. One pass is not enough: every
@@ -148,10 +168,19 @@ async fn challenge_reprieve_inner() {
 
         // The state the reprieve is defined on: the peer has stopped answering
         // and its lifetime rate is still good, so the rule fires on the run alone.
-        let record = observer_record(&harness, victim, spool);
-        if record.run_fires() && !record.rate_fires() {
-            break record;
+        let records = observer_records(&harness, victim, spool);
+        assert!(
+            records.iter().all(|record| !record.rate_fires(&EVICTION_POLICY)),
+            "reprieve prerequisite lost: an observer failed the rate rule: {records:?}"
+        );
+
+        if let Some(record) = records
+            .iter()
+            .find(|record| record.run_fires(&EVICTION_POLICY))
+        {
+            break *record;
         }
+        let record = observer_record(&harness, victim, spool);
         assert!(
             start.elapsed() < RUN_TIMEOUT,
             "no run-only rule within {RUN_TIMEOUT:?}, weakest record {record:?}"
@@ -226,7 +255,8 @@ async fn await_record(
     let start = Instant::now();
     loop {
         let record = observer_record(harness, victim, spool);
-        if ready(&record) {
+        let records = observer_records(harness, victim, spool);
+        if !records.is_empty() && records.iter().all(&ready) {
             return record;
         }
         assert!(
@@ -239,6 +269,13 @@ async fn await_record(
 
 /// Return the weakest record any group-mate holds for the victim.
 fn observer_record(harness: &SimnetHarness, victim: Address, spool: SpoolIndex) -> PeerRecord {
+    observer_records(harness, victim, spool)
+        .into_iter()
+        .min_by_key(|record| (record.success_rate().0, record.successes))
+        .unwrap_or_default()
+}
+
+fn observer_records(harness: &SimnetHarness, victim: Address, spool: SpoolIndex) -> Vec<PeerRecord> {
     // The record for the spool this test actually corrupted. Records are per
     // spool, so reading the weakest of the victim's would answer about one the
     // rot never touched.
@@ -253,8 +290,7 @@ fn observer_record(harness: &SimnetHarness, victim: Address, spool: SpoolIndex) 
                 .peer_record(victim, spool)
                 .expect("peer record")
         })
-        .min_by_key(|record| (record.successes, record.success_rate().0))
-        .unwrap_or_default()
+        .collect()
 }
 
 fn node_spool(harness: &SimnetHarness, index: usize) -> SpoolIndex {

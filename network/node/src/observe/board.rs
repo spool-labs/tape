@@ -11,14 +11,14 @@ use tape_core::bft::has_honest_signer;
 use tape_core::challenge::schedule::{
     ATTESTATION_WINDOW_SLOTS, CONFIRMATION_SLOTS, PROOF_DEADLINE_SLOTS, SAMPLE_LOOKBACK_SLOTS,
     SETTLE_DEADLINE_SLOTS, SLOT_MS, SPAN_SLOTS,
-    Schedule, round_width_slots,
+    round_width_slots,
 };
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::bitmap::BitmapRead;
 use tape_core::types::SpoolIndex;
 use tape_core::challenge::record::{
     NodeVerdict, PeerRecord, node_tally, node_verdict,
-    MAX_CONSECUTIVE_MISSES, MIN_OPPORTUNITIES, RATE_FLOOR, RECENT_ROUNDS,
+    RECENT_ROUNDS,
 };
 use tape_core::system::NodeStatus;
 use crate::features::challenge::certify::agreement_threshold;
@@ -1043,7 +1043,7 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
                     successes: record.successes,
                     consecutive_misses: record.consecutive_misses,
                     success_rate_bps: record.success_rate().0,
-                    rule_fired: record.eviction_fires(),
+                    rule_fired: record.eviction_fires(&context.config.eviction.policy),
                     queued: queued.contains(&node),
                     judged: 0,
                     recent: 0,
@@ -1079,13 +1079,13 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .collect();
 
     let schedule = context.schedules.get(state.epoch());
-    let slot_ms = observed_slot_ms(context, &state, schedule.as_ref());
+    let slot_ms = observed_slot_ms(context);
 
     ChallengeGrid {
         recent_capacity: RECENT_ROUNDS as u64,
-        min_opportunities: MIN_OPPORTUNITIES,
-        rate_floor_bps: RATE_FLOOR.0,
-        max_consecutive_misses: MAX_CONSECUTIVE_MISSES,
+        min_opportunities: context.config.eviction.policy.min_opportunities,
+        rate_floor_bps: context.config.eviction.policy.minimum_success_rate_bps.0,
+        max_consecutive_misses: context.config.eviction.policy.max_consecutive_misses,
         round_span_ms: (round_width_slots() - SPAN_SLOTS) * slot_ms,
         proof_deadline_ms: PROOF_DEADLINE_SLOTS * slot_ms,
         attest_deadline_ms: (CONFIRMATION_SLOTS + ATTESTATION_WINDOW_SLOTS) * slot_ms,
@@ -1108,22 +1108,11 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 /// Milliseconds a slot actually takes, measured from the chain's own clock.
 ///
-/// The epoch-span quotient below is only the fallback until enough blocks land:
-/// a young chain's span is a bootstrap artifact rather than a rate.
+/// Until enough blocks land, display the chain's nominal slot time.
 fn observed_slot_ms<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
-    state: &ProtocolState,
-    schedule: Option<&Schedule>,
 ) -> u64 {
-    if let Some(measured) = context.ingest.progress().slot_ms() {
-        return measured;
-    }
-    let seconds = state.current.epoch.preferences.epoch_duration.0;
-    schedule
-        .map(|schedule| schedule.epoch_slots)
-        .filter(|slots| *slots > 0 && seconds > 0)
-        .map(|slots| (seconds * 1_000 / slots).max(1))
-        .unwrap_or(SLOT_MS)
+    context.ingest.progress().slot_ms().unwrap_or(SLOT_MS)
 }
 
 fn owner_rows<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -1149,7 +1138,7 @@ fn owner_rows<Db: Store, Cluster: Api, Blockchain: Rpc>(
                 successes: tally.successes,
                 rate_bps: tally.rate().0,
                 worst_run: tally.worst_run,
-                verdict: match node_verdict(&records) {
+                verdict: match node_verdict(&records, &context.config.eviction.policy) {
                     NodeVerdict::Healthy => OwnerVerdict::Healthy,
                     NodeVerdict::Unproven => OwnerVerdict::Unproven,
                     NodeVerdict::RunFailed => OwnerVerdict::RunFailed,

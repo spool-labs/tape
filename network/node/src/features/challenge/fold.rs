@@ -1,4 +1,3 @@
-use tape_store_api::Store;
 use tape_core::challenge::record::RECENT_ROUNDS;
 use tape_core::challenge::{Fold, PeerRecord};
 use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex};
@@ -6,6 +5,7 @@ use tape_crypto::Address;
 use tape_protocol::ProtocolState;
 use tape_store::TapeStore;
 use tape_store::ops::ChallengeOps;
+use tape_store_api::Store;
 use tracing::debug;
 
 pub struct Folded {
@@ -34,18 +34,39 @@ pub fn fold_outcome<Db: Store>(
     // every peer's spools, so the duplicate is the common case and should not
     // cost a record read.
     if prior == Some(true) || (prior == Some(false) && !certified) {
-        return Folded { record: None, certified: stands };
+        return Folded {
+            record: None,
+            certified: stands,
+        };
     }
 
     let mut record = store.peer_record(peer, spool).unwrap_or_default();
     let fold = record.record(epoch, round, certified, prior);
     if fold == Fold::Ignored {
-        return Folded { record: None, certified: stands };
+        return Folded {
+            record: None,
+            certified: stands,
+        };
     }
 
     if fold == Fold::Rebuild {
-        match store.peer_rounds_tail(peer, spool, RECENT_ROUNDS as usize) {
+        // Keep the whole known miss streak, plus its preceding success if it
+        // is still stored. The display strip alone cannot reconstruct a long
+        // streak, and pruning must not erase the evidence already counted.
+        let limit = record
+            .consecutive_misses
+            .saturating_add(1)
+            .max(RECENT_ROUNDS as u64);
+        match store.peer_rounds_tail(peer, spool, usize::try_from(limit).unwrap_or(usize::MAX)) {
             Ok(mut rounds) => {
+                let retained_misses = rounds
+                    .iter()
+                    .rev()
+                    .take_while(|(_, _, proved)| !proved)
+                    .count();
+                let preceding_misses = record
+                    .consecutive_misses
+                    .saturating_sub(retained_misses as u64);
                 // This round is written below rather than above, so it is placed
                 // into the tail here instead of being read back out of it.
                 let at = rounds.partition_point(|(held, at, _)| (*held, *at) < (epoch, round));
@@ -55,7 +76,7 @@ pub fn fold_outcome<Db: Store>(
                     }
                     _ => rounds.insert(at, (epoch, round, certified)),
                 }
-                record.rebuild_recency(&rounds);
+                record.rebuild_recency(&rounds, preceding_misses);
             }
             Err(error) => debug!(%error, node = %peer, "challenge: rounds unavailable for rebuild"),
         }
@@ -68,7 +89,10 @@ pub fn fold_outcome<Db: Store>(
         debug!(%error, node = %peer, "challenge: fold not persisted");
     }
 
-    Folded { record: Some(record), certified: stands }
+    Folded {
+        record: Some(record),
+        certified: stands,
+    }
 }
 
 /// Returns whether the peer owns the spool in the current or previous epoch.
@@ -78,11 +102,18 @@ pub fn holds_spool(state: &ProtocolState, peer: Address, spool: SpoolIndex) -> b
 
 #[cfg(test)]
 mod tests {
-    use tape_store_memory::MemoryStore;
     use tape_store::TapeStore;
+    use tape_store_memory::MemoryStore;
 
     use super::*;
-    use tape_core::challenge::record::MAX_CONSECUTIVE_MISSES;
+    use tape_core::challenge::EvictionPolicy;
+    use tape_core::types::BasisPoints;
+
+    const POLICY: EvictionPolicy = EvictionPolicy {
+        max_consecutive_misses: 30,
+        min_opportunities: 60,
+        minimum_success_rate_bps: BasisPoints(5_000),
+    };
 
     const SPOOL: SpoolIndex = SpoolIndex(41);
 
@@ -101,8 +132,14 @@ mod tests {
         assert_eq!(certificate.record.expect("folded").successes, 1);
 
         let settled = fold_outcome(&store, peer, SPOOL, epoch, round, false);
-        assert!(settled.certified, "a settled round downgraded a certificate");
-        assert!(settled.record.is_none(), "an ignored fold reported a change");
+        assert!(
+            settled.certified,
+            "a settled round downgraded a certificate"
+        );
+        assert!(
+            settled.record.is_none(),
+            "an ignored fold reported a change"
+        );
 
         let record = store.peer_record(peer, SPOOL).unwrap_or_default();
         assert_eq!(record.opportunities, 1);
@@ -125,7 +162,10 @@ mod tests {
         assert_eq!(answered.successes, 1);
         assert_eq!(answered.consecutive_misses, 0);
         assert_eq!(missed.successes, 0);
-        assert_eq!(missed.consecutive_misses, 1, "an answer erased another spool's miss");
+        assert_eq!(
+            missed.consecutive_misses, 1,
+            "an answer erased another spool's miss"
+        );
     }
 
     #[test]
@@ -134,20 +174,30 @@ mod tests {
         let peer = Address::new_unique();
         let (kept, dropped) = (SpoolIndex(11), SpoolIndex(12));
 
-        for round in 0..MAX_CONSECUTIVE_MISSES {
+        for round in 0..POLICY.max_consecutive_misses {
             let at = RoundNumber(round);
             fold_outcome(&store, peer, kept, EpochNumber(5), at, true);
             fold_outcome(&store, peer, dropped, EpochNumber(5), at, false);
         }
 
-        assert!(!store.peer_record(peer, kept).unwrap_or_default().run_fires());
-        assert!(store.peer_record(peer, dropped).unwrap_or_default().run_fires());
+        assert!(
+            !store
+                .peer_record(peer, kept)
+                .unwrap_or_default()
+                .run_fires(&POLICY)
+        );
+        assert!(
+            store
+                .peer_record(peer, dropped)
+                .unwrap_or_default()
+                .run_fires(&POLICY)
+        );
 
         let worst = store
             .records_for_peer(peer)
             .unwrap_or_default()
             .into_iter()
-            .any(|(_, record)| record.run_fires());
+            .any(|(_, record)| record.run_fires(&POLICY));
         assert!(worst, "the node-level rule cannot see the dropped spool");
     }
 
@@ -184,5 +234,66 @@ mod tests {
         assert_eq!(record.opportunities, 1);
         assert_eq!(record.successes, 1);
         assert_eq!(record.consecutive_misses, 0);
+    }
+
+    #[test]
+    fn late_certificate_rebuilds_a_streak_longer_than_the_display_strip() {
+        let store = store();
+        let peer = Address::new_unique();
+        for round in 0..150 {
+            fold_outcome(
+                &store,
+                peer,
+                SPOOL,
+                EpochNumber(1),
+                RoundNumber(round),
+                false,
+            );
+        }
+        fold_outcome(&store, peer, SPOOL, EpochNumber(1), RoundNumber(1), true);
+        let record = store.peer_record(peer, SPOOL).unwrap();
+        assert_eq!(record.consecutive_misses, 148);
+        assert_eq!(record.recent_len, 64);
+        assert_eq!(record.opportunities, 150);
+        assert_eq!(record.successes, 1);
+    }
+
+    #[test]
+    fn late_outcomes_preserve_pruned_streak_until_a_success_breaks_it() {
+        let store = store();
+        let peer = Address::new_unique();
+        for round in 0..100 {
+            fold_outcome(
+                &store,
+                peer,
+                SPOOL,
+                EpochNumber(1),
+                RoundNumber(round),
+                false,
+            );
+        }
+        for round in 0..50 {
+            if round != 40 {
+                fold_outcome(
+                    &store,
+                    peer,
+                    SPOOL,
+                    EpochNumber(2),
+                    RoundNumber(round),
+                    false,
+                );
+            }
+        }
+        store.prune_rounds_before(EpochNumber(2)).unwrap();
+        fold_outcome(&store, peer, SPOOL, EpochNumber(2), RoundNumber(40), false);
+        let record = store.peer_record(peer, SPOOL).unwrap();
+        assert_eq!(record.consecutive_misses, 150);
+        assert_eq!(record.opportunities, 150);
+
+        fold_outcome(&store, peer, SPOOL, EpochNumber(2), RoundNumber(10), true);
+        let record = store.peer_record(peer, SPOOL).unwrap();
+        assert_eq!(record.consecutive_misses, 39);
+        assert_eq!(record.opportunities, 150);
+        assert_eq!(record.successes, 1);
     }
 }

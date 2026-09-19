@@ -15,7 +15,7 @@ use tape_core::bls::BlsPrivateKey;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
-use tape_node::config::node::NodeConfig;
+use tape_node::config::node::{GenesisPreset, NodeConfig};
 use tape_node::core::atlas::{parse_observers, AtlasBuffer};
 use tape_node::context::{NodeContext, NodeContextBuilder};
 use tape_node::runtime::{NodeRuntimeHandle, NodeRuntimeStatus, start_with_context};
@@ -25,7 +25,7 @@ use crate::node_volume;
 use tokio::time::Duration;
 use tracing::Instrument;
 
-use crate::config::NodeRuntimeMode;
+use crate::config::{NodeRuntimeMode, SimnetConfig};
 
 type TestNodeContext = Arc<NodeContext<ReelStore, HttpApi, LiteSvmRpc>>;
 
@@ -68,11 +68,8 @@ impl TestNode {
     pub fn new(
         id: usize,
         rpc: LiteSvmRpc,
-        mode: NodeRuntimeMode,
         bind_addr: SocketAddr,
-        public_port: u16,
-        stop_timeout: Duration,
-        eviction: bool,
+        simnet: &SimnetConfig,
     ) -> Result<Self> {
         let keypair = Keypair::new();
         let bls_keypair = BlsPrivateKey::from_random();
@@ -82,21 +79,21 @@ impl TestNode {
         };
         let name = format!("sim-node-{id}");
         let public_host = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let app_config = test_app_config(bind_addr, eviction)?;
+        let app_config = test_app_config(bind_addr, simnet)?;
 
         Ok(Self {
             id,
             name,
             bind_addr,
             public_host,
-            public_port,
+            public_port: bind_addr.port(),
             keypair,
             bls_keypair,
             tls_keypair,
             rpc,
             app_config,
             context: None,
-            test_config: TestConfig::new(mode, stop_timeout),
+            test_config: TestConfig::new(simnet.runtime_mode, simnet.stop_timeout),
             runtime: None,
             store_dir: node_volume(&format!("node-{id}"))?,
         })
@@ -266,9 +263,11 @@ impl TestNode {
     }
 }
 
-fn test_app_config(bind_addr: SocketAddr, eviction: bool) -> Result<NodeConfig> {
+fn test_app_config(bind_addr: SocketAddr, simnet: &SimnetConfig) -> Result<NodeConfig> {
     let mut config = NodeConfig::default();
-    config.eviction.enabled = eviction;
+    config.genesis_preset = GenesisPreset::Simnet;
+    config.eviction = simnet.eviction.clone();
+    config.challenge = simnet.challenge.clone();
     config.node.node_keypair = PathBuf::from("/dev/null");
     config.node.bls_keypair = PathBuf::from("/dev/null");
     config.solana.rpc = vec!["http://127.0.0.1:8899".into()];
@@ -276,6 +275,7 @@ fn test_app_config(bind_addr: SocketAddr, eviction: bool) -> Result<NodeConfig> 
     config.https.listen = bind_addr;
     config.http.listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
     config.store.path = PathBuf::from("/tmp");
+    config.validate()?;
     Ok(config)
 }
 

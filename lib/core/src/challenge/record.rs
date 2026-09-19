@@ -13,41 +13,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
+use super::EvictionPolicy;
 use crate::types::{BasisPoints, EpochNumber, RoundNumber};
-
-/// Rounds a peer must have been asked before its rate means anything.
-pub const MIN_OPPORTUNITIES: u64 = 4;
-
-/// Success rate below which a peer with enough opportunities has failed the rule.
-pub const RATE_FLOOR: BasisPoints = BasisPoints(5_000);
-
-/// Consecutive misses that fire the rule regardless of rate; devnet honest
-/// peers answer 87-99%, so a shorter run fires on a bad minute
-pub const MAX_CONSECUTIVE_MISSES: u64 = 20;
-
-/// The run threshold for sub-minute test epochs, where 20 rounds outruns the harness
-const TEST_RUN_MISSES: u64 = 3;
-
-/// Epochs at or under this many seconds judge on the test threshold
-const TEST_EPOCH_SECS: u64 = 30;
-
-/// The threshold in force, locked on the first real epoch duration seen
-static RUN_MISSES: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-
-/// Derives the run threshold from the chain's epoch duration, once
-pub fn set_run_threshold(epoch_secs: u64) {
-    if epoch_secs > 0 {
-        let _ = RUN_MISSES.set(if epoch_secs <= TEST_EPOCH_SECS {
-            TEST_RUN_MISSES
-        } else {
-            MAX_CONSECUTIVE_MISSES
-        });
-    }
-}
-
-fn run_threshold() -> u64 {
-    *RUN_MISSES.get().unwrap_or(&MAX_CONSECUTIVE_MISSES)
-}
 
 /// What folding one outcome did to the record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,13 +110,25 @@ impl PeerRecord {
 
     /// Re-derive the order-sensitive fields from the rounds as stored.
     ///
-    /// `rounds` is every recorded outcome for this peer, oldest first.
-    pub fn rebuild_recency(&mut self, rounds: &[(EpochNumber, RoundNumber, bool)]) {
-        self.consecutive_misses = rounds
+    /// `rounds` is the retained tail, oldest first. `preceding_misses` preserves
+    /// the known streak before that tail when older outcomes have been pruned.
+    /// The 64-bit display strip does not bound the eviction evidence.
+    pub fn rebuild_recency(
+        &mut self,
+        rounds: &[(EpochNumber, RoundNumber, bool)],
+        preceding_misses: u64,
+    ) {
+        let trailing_misses = rounds
             .iter()
             .rev()
             .take_while(|(_, _, proved)| !proved)
             .count() as u64;
+        self.consecutive_misses = trailing_misses
+            + if trailing_misses == rounds.len() as u64 {
+                preceding_misses
+            } else {
+                0
+            };
 
         self.recent = 0;
         let tail = rounds.len().saturating_sub(RECENT_ROUNDS as usize);
@@ -183,8 +162,8 @@ impl PeerRecord {
     /// for itself, since a run only grows while the peer is being judged and
     /// clearing it needs a success the peer has no chance to earn once the rounds
     /// have stopped.
-    pub fn run_fires(&self) -> bool {
-        self.consecutive_misses >= run_threshold()
+    pub fn run_fires(&self, policy: &EvictionPolicy) -> bool {
+        self.consecutive_misses >= policy.max_consecutive_misses
     }
 
     /// Whether the lifetime rate has fallen through the floor.
@@ -192,8 +171,9 @@ impl PeerRecord {
     /// This arm makes no claim about reachability. A peer answering every round
     /// with an invalid proof trips it while staying perfectly reachable, so no
     /// amount of answering a probe clears it.
-    pub fn rate_fires(&self) -> bool {
-        self.opportunities >= MIN_OPPORTUNITIES && self.success_rate() < RATE_FLOOR
+    pub fn rate_fires(&self, policy: &EvictionPolicy) -> bool {
+        self.opportunities >= policy.min_opportunities
+            && self.success_rate() < policy.minimum_success_rate_bps
     }
 
     /// Whether this history is enough to propose an eviction.
@@ -201,8 +181,8 @@ impl PeerRecord {
     /// Two arms, both from the paper's repeated-local-misses rule: a run of
     /// consecutive misses catches a node that stopped answering, and a rate floor
     /// over enough opportunities catches one that answers erratically.
-    pub fn eviction_fires(&self) -> bool {
-        self.run_fires() || self.rate_fires()
+    pub fn eviction_fires(&self, policy: &EvictionPolicy) -> bool {
+        self.run_fires(policy) || self.rate_fires(policy)
     }
 
     /// The recent strip oldest-first, for drawing one row of the grid.
@@ -242,24 +222,25 @@ pub enum NodeVerdict {
 ///
 /// The rate arm outranks the run arm because only the run arm makes a claim a
 /// probe can settle, so a node failing both is not let off by answering.
-pub fn node_verdict<'a>(records: impl IntoIterator<Item = &'a PeerRecord>) -> NodeVerdict {
+pub fn node_verdict<'a>(
+    records: impl IntoIterator<Item = &'a PeerRecord>,
+    policy: &EvictionPolicy,
+) -> NodeVerdict {
     let mut judged = 0;
     let mut rate = false;
     let mut run = false;
     for record in records {
         judged = judged.max(record.opportunities);
-        rate |= record.rate_fires();
-        run |= record.run_fires();
+        rate |= record.rate_fires(policy);
+        run |= record.run_fires(policy);
     }
 
     if rate {
         NodeVerdict::RateFailed
-    } else if judged < MIN_OPPORTUNITIES {
-        // Below the floor a run is thinner evidence than a live probe, and a
-        // short active phase can leave a spool with only a handful of rounds.
-        NodeVerdict::Unproven
     } else if run {
         NodeVerdict::RunFailed
+    } else if judged < policy.min_opportunities {
+        NodeVerdict::Unproven
     } else {
         NodeVerdict::Healthy
     }
@@ -308,6 +289,50 @@ pub fn node_tally<'a>(records: impl IntoIterator<Item = &'a PeerRecord>) -> Node
 mod tests {
     use super::*;
 
+    const POLICY: EvictionPolicy = EvictionPolicy {
+        max_consecutive_misses: 20,
+        min_opportunities: 4,
+        minimum_success_rate_bps: BasisPoints(5_000),
+    };
+
+    #[test]
+    fn policies_are_independent_and_do_not_need_initialization() {
+        let record = spool(10, 7, 3);
+        let sensitive = EvictionPolicy {
+            max_consecutive_misses: 3,
+            ..POLICY
+        };
+
+        for _ in 0..3 {
+            assert_eq!(node_verdict(&[record], &POLICY), NodeVerdict::Healthy);
+            assert_eq!(node_verdict(&[record], &sensitive), NodeVerdict::RunFailed);
+        }
+    }
+
+    #[test]
+    fn minimum_rate_sample_does_not_override_the_consecutive_miss_rule() {
+        let policy = EvictionPolicy {
+            max_consecutive_misses: 30,
+            min_opportunities: 60,
+            ..POLICY
+        };
+        let record = spool(30, 0, 30);
+        assert!(record.eviction_fires(&policy));
+        assert!(!record.rate_fires(&policy));
+        assert_eq!(node_verdict(&[record], &policy), NodeVerdict::RunFailed);
+    }
+
+    #[test]
+    fn rate_rule_waits_for_its_configured_evidence() {
+        let policy = EvictionPolicy {
+            min_opportunities: 60,
+            ..POLICY
+        };
+        assert!(!spool(59, 10, 1).rate_fires(&policy));
+        assert!(spool(60, 10, 1).rate_fires(&policy));
+        assert!(!spool(60, 30, 1).rate_fires(&policy));
+    }
+
     fn spool(opportunities: u64, successes: u64, run: u64) -> PeerRecord {
         PeerRecord {
             opportunities,
@@ -320,51 +345,69 @@ mod tests {
     #[test]
     fn one_dead_spool_fails_the_node() {
         let healthy = spool(20, 20, 0);
-        let dead = spool(20, 0, MAX_CONSECUTIVE_MISSES);
+        let dead = spool(20, 0, POLICY.max_consecutive_misses);
         let records = [healthy, healthy, healthy, healthy, dead];
 
-        assert_eq!(node_verdict(&records), NodeVerdict::RateFailed);
+        assert_eq!(node_verdict(&records, &POLICY), NodeVerdict::RateFailed);
 
         // The pooled rate the board shows is comfortably above the floor, which
         // is why it must never be what the rule reads.
         let tally = node_tally(&records);
         assert_eq!(tally.spools, 5);
-        assert!(tally.rate() > RATE_FLOOR);
-        assert_eq!(tally.worst_run, MAX_CONSECUTIVE_MISSES);
+        assert!(tally.rate() > POLICY.minimum_success_rate_bps);
+        assert_eq!(tally.worst_run, POLICY.max_consecutive_misses);
     }
 
     #[test]
     fn rate_outranks_run() {
-        let both = spool(MIN_OPPORTUNITIES, 0, MAX_CONSECUTIVE_MISSES);
-        assert!(both.rate_fires() && both.run_fires());
-        assert_eq!(node_verdict(&[both]), NodeVerdict::RateFailed);
+        let both = spool(POLICY.min_opportunities, 0, POLICY.max_consecutive_misses);
+        assert!(both.rate_fires(&POLICY) && both.run_fires(&POLICY));
+        assert_eq!(node_verdict(&[both], &POLICY), NodeVerdict::RateFailed);
     }
 
     #[test]
     fn too_few_rounds_is_unproven() {
-        let short = spool(MIN_OPPORTUNITIES - 1, 0, MIN_OPPORTUNITIES - 1);
-        assert!(!short.rate_fires(), "too few rounds for the rate arm");
-        assert!(!short.run_fires(), "too few rounds to be a run");
-        assert_eq!(node_verdict(&[short]), NodeVerdict::Unproven);
+        let short = spool(
+            POLICY.min_opportunities - 1,
+            0,
+            POLICY.min_opportunities - 1,
+        );
+        assert!(
+            !short.rate_fires(&POLICY),
+            "too few rounds for the rate arm"
+        );
+        assert!(!short.run_fires(&POLICY), "too few rounds to be a run");
+        assert_eq!(node_verdict(&[short], &POLICY), NodeVerdict::Unproven);
     }
 
     #[test]
     fn a_long_run_fails_the_node() {
-        let stalled = spool(MIN_OPPORTUNITIES + 4, MIN_OPPORTUNITIES + 1, MAX_CONSECUTIVE_MISSES);
-        assert!(!stalled.rate_fires());
-        assert_eq!(node_verdict(&[stalled]), NodeVerdict::RunFailed);
+        let stalled = spool(
+            POLICY.min_opportunities + 4,
+            POLICY.min_opportunities + 1,
+            POLICY.max_consecutive_misses,
+        );
+        assert!(!stalled.rate_fires(&POLICY));
+        assert_eq!(node_verdict(&[stalled], &POLICY), NodeVerdict::RunFailed);
     }
 
     #[test]
     fn no_records_is_unproven() {
-        assert_eq!(node_verdict(&[]), NodeVerdict::Unproven);
+        assert_eq!(node_verdict(&[], &POLICY), NodeVerdict::Unproven);
         assert_eq!(node_tally(&[]).rate(), BasisPoints(BasisPoints::MAX));
     }
 
     #[test]
     fn every_spool_answering_is_healthy() {
-        let good = spool(MIN_OPPORTUNITIES + 2, MIN_OPPORTUNITIES + 2, 0);
-        assert_eq!(node_verdict(&[good, good, good]), NodeVerdict::Healthy);
+        let good = spool(
+            POLICY.min_opportunities + 2,
+            POLICY.min_opportunities + 2,
+            0,
+        );
+        assert_eq!(
+            node_verdict(&[good, good, good], &POLICY),
+            NodeVerdict::Healthy
+        );
     }
 
     fn at(round: u64) -> (EpochNumber, RoundNumber) {
@@ -374,7 +417,7 @@ mod tests {
     #[test]
     fn fresh_record() {
         let record = PeerRecord::default();
-        assert!(!record.eviction_fires());
+        assert!(!record.eviction_fires(&POLICY));
         assert_eq!(record.success_rate(), BasisPoints(BasisPoints::MAX));
     }
 
@@ -386,7 +429,7 @@ mod tests {
             assert_eq!(record.record(epoch, round, true, None), Fold::Advanced);
         }
         assert_eq!(record.success_rate(), BasisPoints(BasisPoints::MAX));
-        assert!(!record.eviction_fires());
+        assert!(!record.eviction_fires(&POLICY));
     }
 
     #[test]
@@ -395,12 +438,12 @@ mod tests {
         for round in 0..100 {
             record.record(EpochNumber(1), RoundNumber(round), true, None);
         }
-        for round in 100..100 + MAX_CONSECUTIVE_MISSES {
+        for round in 100..100 + POLICY.max_consecutive_misses {
             record.record(EpochNumber(1), RoundNumber(round), false, None);
         }
 
-        assert!(record.success_rate() > RATE_FLOOR);
-        assert!(record.eviction_fires());
+        assert!(record.success_rate() > POLICY.minimum_success_rate_bps);
+        assert!(record.eviction_fires(&POLICY));
     }
 
     #[test]
@@ -409,7 +452,7 @@ mod tests {
         for round in 0..10 {
             record.record(EpochNumber(1), RoundNumber(round), round != 5, None);
         }
-        assert!(!record.eviction_fires());
+        assert!(!record.eviction_fires(&POLICY));
     }
 
     #[test]
@@ -420,12 +463,12 @@ mod tests {
         }
         assert_eq!(record.consecutive_misses, 1);
         assert_eq!(record.success_rate(), BasisPoints(5_000));
-        assert!(!record.eviction_fires());
+        assert!(!record.eviction_fires(&POLICY));
 
         // One more miss tips it under the floor.
         record.record(EpochNumber(1), RoundNumber(40), false, None);
-        assert!(record.success_rate() < RATE_FLOOR);
-        assert!(record.eviction_fires());
+        assert!(record.success_rate() < POLICY.minimum_success_rate_bps);
+        assert!(record.eviction_fires(&POLICY));
     }
 
     #[test]
@@ -449,7 +492,10 @@ mod tests {
 
         let strip = record.recent_rounds();
         assert_eq!(strip.len(), RECENT_ROUNDS as usize);
-        assert!(strip.iter().all(|proved| *proved), "an aged-out miss lingered");
+        assert!(
+            strip.iter().all(|proved| *proved),
+            "an aged-out miss lingered"
+        );
         assert_eq!(record.opportunities, RECENT_ROUNDS as u64 + 10);
     }
 
@@ -464,7 +510,7 @@ mod tests {
         // already swept out of the round store.
         let fold = record.record(EpochNumber(1), RoundNumber(4), true, None);
         assert_eq!(fold, Fold::Rebuild);
-        record.rebuild_recency(&[at_round(2, 0, true), at_round(2, 1, true)]);
+        record.rebuild_recency(&[at_round(2, 0, true), at_round(2, 1, true)], 0);
 
         assert_eq!(record.opportunities, 6);
         assert_eq!(record.recent_rounds(), vec![true, true]);
@@ -486,15 +532,22 @@ mod tests {
     #[test]
     fn stops_partway() {
         let mut record = run(&[true], 40);
-        assert!(!record.eviction_fires());
+        assert!(!record.eviction_fires(&POLICY));
 
-        let last = 40 + MAX_CONSECUTIVE_MISSES - 1;
+        let last = 40 + POLICY.max_consecutive_misses - 1;
         for round in 40..last {
             record.record(EpochNumber(1), RoundNumber(round), false, None);
-            assert!(!record.eviction_fires(), "fired after {} misses", round - 39);
+            assert!(
+                !record.eviction_fires(&POLICY),
+                "fired after {} misses",
+                round - 39
+            );
         }
         record.record(EpochNumber(1), RoundNumber(last), false, None);
-        assert!(record.eviction_fires(), "a full run of misses should fire");
+        assert!(
+            record.eviction_fires(&POLICY),
+            "a full run of misses should fire"
+        );
     }
 
     #[test]
@@ -502,31 +555,37 @@ mod tests {
         let record = run(&[true, false], 400);
 
         assert_eq!(record.consecutive_misses, 1);
-        assert_eq!(record.success_rate(), RATE_FLOOR);
-        assert!(!record.eviction_fires());
+        assert_eq!(record.success_rate(), POLICY.minimum_success_rate_bps);
+        assert!(!record.eviction_fires(&POLICY));
     }
 
     #[test]
     fn arms_apart() {
         let mut stopped = run(&[true], 40);
-        for round in 40..40 + MAX_CONSECUTIVE_MISSES {
+        for round in 40..40 + POLICY.max_consecutive_misses {
             stopped.record(EpochNumber(1), RoundNumber(round), false, None);
         }
-        assert!(stopped.run_fires());
-        assert!(!stopped.rate_fires(), "a stopped peer's lifetime rate is still good");
+        assert!(stopped.run_fires(&POLICY));
+        assert!(
+            !stopped.rate_fires(&POLICY),
+            "a stopped peer's lifetime rate is still good"
+        );
 
         let erratic = run(&[true, false, false], 60);
-        assert!(!erratic.run_fires(), "one answer in three never reaches a full run");
-        assert!(erratic.rate_fires());
+        assert!(
+            !erratic.run_fires(&POLICY),
+            "one answer in three never reaches a full run"
+        );
+        assert!(erratic.rate_fires(&POLICY));
     }
 
     #[test]
     fn under_half() {
         let record = run(&[true, false, false], 60);
 
-        assert!(record.consecutive_misses < MAX_CONSECUTIVE_MISSES);
-        assert!(record.success_rate() < RATE_FLOOR);
-        assert!(record.eviction_fires());
+        assert!(record.consecutive_misses < POLICY.max_consecutive_misses);
+        assert!(record.success_rate() < POLICY.minimum_success_rate_bps);
+        assert!(record.eviction_fires(&POLICY));
     }
 
     #[test]
@@ -537,20 +596,26 @@ mod tests {
         record.record(EpochNumber(1), RoundNumber(22), true, None);
 
         assert_eq!(record.consecutive_misses, 0);
-        assert!(!record.eviction_fires());
+        assert!(!record.eviction_fires(&POLICY));
     }
 
     #[test]
     fn resets_the_run() {
         let record = run(&[true, false, false], 300);
-        assert!(record.eviction_fires());
+        assert!(record.eviction_fires(&POLICY));
     }
 
     #[test]
     fn replayed_round() {
         let mut record = PeerRecord::default();
-        assert_eq!(record.record(EpochNumber(1), RoundNumber(7), false, None), Fold::Advanced);
-        assert_eq!(record.record(EpochNumber(1), RoundNumber(7), false, Some(false)), Fold::Ignored);
+        assert_eq!(
+            record.record(EpochNumber(1), RoundNumber(7), false, None),
+            Fold::Advanced
+        );
+        assert_eq!(
+            record.record(EpochNumber(1), RoundNumber(7), false, Some(false)),
+            Fold::Ignored
+        );
 
         assert_eq!(record.opportunities, 1);
         assert_eq!(record.consecutive_misses, 1);
@@ -560,7 +625,10 @@ mod tests {
     fn success_stands() {
         let mut record = PeerRecord::default();
         record.record(EpochNumber(1), RoundNumber(7), true, None);
-        assert_eq!(record.record(EpochNumber(1), RoundNumber(7), false, Some(true)), Fold::Ignored);
+        assert_eq!(
+            record.record(EpochNumber(1), RoundNumber(7), false, Some(true)),
+            Fold::Ignored
+        );
 
         assert_eq!(record.opportunities, 1);
         assert_eq!(record.successes, 1);
@@ -574,11 +642,17 @@ mod tests {
         record.record(EpochNumber(1), RoundNumber(8), false, None);
         assert_eq!(record.consecutive_misses, 2);
 
-        assert_eq!(record.record(EpochNumber(1), RoundNumber(7), true, Some(false)), Fold::Rebuild);
-        record.rebuild_recency(&[
-            (EpochNumber(1), RoundNumber(7), true),
-            (EpochNumber(1), RoundNumber(8), false),
-        ]);
+        assert_eq!(
+            record.record(EpochNumber(1), RoundNumber(7), true, Some(false)),
+            Fold::Rebuild
+        );
+        record.rebuild_recency(
+            &[
+                (EpochNumber(1), RoundNumber(7), true),
+                (EpochNumber(1), RoundNumber(8), false),
+            ],
+            0,
+        );
 
         assert_eq!(record.opportunities, 2);
         assert_eq!(record.successes, 1);
@@ -591,15 +665,24 @@ mod tests {
         let mut record = PeerRecord::default();
         record.record(EpochNumber(1), RoundNumber(8), true, None);
 
-        assert_eq!(record.record(EpochNumber(1), RoundNumber(7), false, None), Fold::Rebuild);
-        record.rebuild_recency(&[
-            (EpochNumber(1), RoundNumber(7), false),
-            (EpochNumber(1), RoundNumber(8), true),
-        ]);
+        assert_eq!(
+            record.record(EpochNumber(1), RoundNumber(7), false, None),
+            Fold::Rebuild
+        );
+        record.rebuild_recency(
+            &[
+                (EpochNumber(1), RoundNumber(7), false),
+                (EpochNumber(1), RoundNumber(8), true),
+            ],
+            0,
+        );
 
         assert_eq!(record.opportunities, 2);
         assert_eq!(record.successes, 1);
-        assert_eq!(record.consecutive_misses, 0, "a later success already broke the run");
+        assert_eq!(
+            record.consecutive_misses, 0,
+            "a later success already broke the run"
+        );
         assert_eq!(record.recent_rounds(), vec![false, true]);
     }
 
@@ -615,7 +698,7 @@ mod tests {
         }
 
         let mut rebuilt = folded;
-        rebuilt.rebuild_recency(&rounds);
+        rebuilt.rebuild_recency(&rounds, 0);
 
         assert_eq!(rebuilt, folded);
     }
@@ -624,11 +707,11 @@ mod tests {
     fn across_epochs() {
         let mut record = PeerRecord::default();
         record.record(EpochNumber(1), RoundNumber(9), false, None);
-        for round in 0..MAX_CONSECUTIVE_MISSES - 1 {
+        for round in 0..POLICY.max_consecutive_misses - 1 {
             record.record(EpochNumber(2), RoundNumber(round), false, None);
         }
 
-        assert_eq!(record.consecutive_misses, MAX_CONSECUTIVE_MISSES);
-        assert!(record.eviction_fires());
+        assert_eq!(record.consecutive_misses, POLICY.max_consecutive_misses);
+        assert!(record.eviction_fires(&POLICY));
     }
 }

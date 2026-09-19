@@ -10329,6 +10329,7 @@ dependencies = [
  "tape-cli-common",
  "tape-core",
  "tape-crypto",
+ "tape-node",
  "tape-protocol",
  "tape-rpc",
  "tape-sdk",

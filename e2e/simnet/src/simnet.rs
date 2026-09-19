@@ -5,6 +5,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use tape_core::challenge::schedule::SLOT_MS;
+use tape_core::challenge::EvictionPolicy;
+use tape_node::config::challenge::ChallengeConfig;
 use tokio::task::JoinHandle;
 
 use crate::chain::ChainFixture;
@@ -54,7 +56,17 @@ impl SimnetBuilder {
 
     /// Whether nodes propose and sign evictions, on by default.
     pub fn eviction(mut self, enabled: bool) -> Self {
-        self.config.eviction = enabled;
+        self.config.eviction.enabled = enabled;
+        self
+    }
+
+    pub fn challenge(mut self, config: ChallengeConfig) -> Self {
+        self.config.challenge = config;
+        self
+    }
+
+    pub fn eviction_policy(mut self, policy: EvictionPolicy) -> Self {
+        self.config.eviction.policy = policy;
         self
     }
 
@@ -281,15 +293,5 @@ fn make_node(config: &SimnetConfig, chain: &ChainFixture, id: usize) -> Result<T
             .saturating_add(id.try_into().unwrap_or(u16::MAX));
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
     };
-    let port = bind_addr.port();
-
-    TestNode::new(
-        id,
-        chain.rpc().clone(),
-        config.runtime_mode,
-        bind_addr,
-        port,
-        config.stop_timeout,
-        config.eviction,
-    )
+    TestNode::new(id, chain.rpc().clone(), bind_addr, config)
 }
