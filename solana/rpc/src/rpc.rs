@@ -29,6 +29,31 @@ pub struct SimulationResult {
     pub units_consumed: Option<u64>,
 }
 
+/// Which chain a backend answers for
+///
+/// A tapesvm daemon or an in-process litesvm belongs to the operator that
+/// started it; an agave validator is the open Solana network everyone shares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainKind {
+    /// A chain the operator runs, serving the operator's own clients
+    Own,
+    /// The open Solana network
+    Shared,
+}
+
+impl ChainKind {
+    /// Whether the operator runs this chain
+    pub fn is_own(self) -> bool {
+        matches!(self, Self::Own)
+    }
+
+    /// A chain the operator runs executes each call of a batch before it
+    /// answers the next, so a run of sends goes out as one batch.
+    pub fn executes_batches_in_order(self) -> bool {
+        self.is_own()
+    }
+}
+
 /// One window of produced slots, answered by one member.
 #[derive(Debug, Clone, Default)]
 pub struct BlockWindow {
@@ -61,15 +86,23 @@ pub trait Rpc: Send + Sync {
     /// Get the commitment level used by this RPC client
     fn commitment(&self) -> CommitmentLevel;
 
+    /// Which chain this backend answers for
+    ///
+    /// The backend decides, which may cost it a round trip the first time it
+    /// is asked. Every default that depends on who runs the chain reads this
+    /// one answer, so two of them can never disagree.
+    async fn chain_kind(&self) -> ChainKind {
+        ChainKind::Shared
+    }
+
     /// Whether a JSON-RPC batch runs strictly in array order on this backend
     ///
     /// A backend that executes each call of a batch before it answers the
     /// next takes transactions whose proofs were built in order as one batch.
     /// An agave validator answers a send before it executes, so a caller
-    /// there keeps sending one transaction at a time. The backend decides,
-    /// which may cost it a round trip the first time it is asked.
+    /// there keeps sending one transaction at a time.
     async fn executes_batches_in_order(&self) -> bool {
-        false
+        self.chain_kind().await.executes_batches_in_order()
     }
 
     // ========================================================================
