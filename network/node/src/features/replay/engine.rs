@@ -8,21 +8,29 @@ use tracing::debug;
 
 use crate::core::error::NodeError;
 use crate::features::block::ingestor::ParsedBlock;
+use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::replay::types::ReplayBatch;
 use crate::features::store::apply::apply_event;
 use crate::features::store::manager::persist_batch;
 
-pub type ReplayPersistFn<Db> = fn(&TapeStore<Db>, &ReplayBatch) -> Result<(), NodeError>;
+pub type ReplayPersistFn<Db> =
+    fn(&TapeStore<Db>, &PendingTracks, &ReplayBatch) -> Result<(), NodeError>;
 
 pub struct ReplayEngine<'a, Db: Store> {
     store: &'a TapeStore<Db>,
+    pending: &'a PendingTracks,
     current_epoch: EpochNumber,
 }
 
 impl<'a, Db: Store> ReplayEngine<'a, Db> {
-    pub fn new(store: &'a TapeStore<Db>, current_epoch: EpochNumber) -> Self {
+    pub fn new(
+        store: &'a TapeStore<Db>,
+        pending: &'a PendingTracks,
+        current_epoch: EpochNumber,
+    ) -> Self {
         Self {
             store,
+            pending,
             current_epoch,
         }
     }
@@ -77,7 +85,7 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
         persist: ReplayPersistFn<Db>,
     ) -> Result<usize, NodeError> {
         let (batch, event_count) = self.capture_and_journal(block)?;
-        persist(self.store, &batch)?;
+        persist(self.store, self.pending, &batch)?;
         Ok(event_count)
     }
 
@@ -94,7 +102,13 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
 
         for entry in &log.entries {
             for record in &entry.records {
-                apply_event(self.store, entry.slot, entry.block_time, &record.event)?;
+                apply_event(
+                    self.store,
+                    self.pending,
+                    entry.slot,
+                    entry.block_time,
+                    &record.event,
+                )?;
             }
         }
 

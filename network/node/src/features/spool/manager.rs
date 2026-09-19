@@ -17,6 +17,7 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::spool::types::{Action, ScanResult, TaskDone, TaskResult};
 use crate::features::spool::{recover, repair, scan, sync};
+use crate::features::store::apply::drain_deferred_repairs;
 
 const SPOOL_MANAGER_HEARTBEAT: Duration = Duration::from_secs(1);
 const LOCKED_SPOOL_RETENTION_EPOCHS: u64 = 4;
@@ -27,6 +28,7 @@ pub struct SpoolManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     cancel: CancellationToken,
     workers: HashMap<SpoolIndex, CancellationToken>,
     join_set: JoinSet<TaskDone>,
+    has_advanced: bool,
 }
 
 impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
@@ -46,6 +48,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             cancel,
             workers, 
             join_set,
+            has_advanced: false,
         }
     }
 
@@ -118,6 +121,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
                 // Periodic heartbeat
                 _ = tokio::time::sleep(SPOOL_MANAGER_HEARTBEAT) => {
+                    drain_deferred_repairs(
+                        self.context.store.as_ref(),
+                        self.context.pending.as_ref(),
+                    )?;
                     self.try_spawn(observed_epoch)?;
                 }
             }
@@ -305,9 +312,9 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         Ok(())
     }
 
-    /// Update the current spool states based on the assignements
+    /// Update the spool states for the epoch; the first pass after start sends every assigned spool to Sync
     pub fn advance(
-        &self,
+        &mut self,
         epoch: EpochNumber,
     ) -> Result<(), NodeError> {
 
@@ -382,16 +389,19 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 }
 
                 // Assigned, have state AND epoch matches -> resume or continue
-                (true, Some(_state)) if _state.epoch == epoch => {}
+                (true, Some(state)) if self.has_advanced && state.epoch == epoch => {}
 
-                // Assigned, have state AND epoch doesn't match -> (sync, or keep what we hold)
+                // Assigned, have state -> (sync, or keep what we hold)
                 (true, Some(state)) => {
                     self.context
                         .store
                         .remove_spool_sync_cursor(spool)
                         .map_err(|e| NodeError::Store(format!("remove_spool_sync_cursor({spool}): {e}")))?;
 
-                    let next = refresh_state(self.context.as_ref(), spool, epoch, state.status)?;
+                    let next = match self.has_advanced {
+                        true => refresh_state(self.context.as_ref(), spool, epoch, state.status)?,
+                        false => make_sync_state(self.context.as_ref(), spool, epoch),
+                    };
 
                     info!(spool = %spool, epoch = epoch.0, status = ?next.status, "spool: refreshing assigned spool for new epoch");
 
@@ -402,6 +412,8 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 }
             }
         }
+
+        self.has_advanced = true;
 
         Ok(())
     }
@@ -643,7 +655,7 @@ mod tests {
     async fn advance_creates_sync_state_for_new_spool() {
         let ctx = test_context().await;
 
-        let manager = SpoolManager::new(
+        let mut manager = SpoolManager::new(
             ctx.clone(),
             RecoveryConfig::default(),
             CancellationToken::new(),
@@ -669,7 +681,7 @@ mod tests {
         ctx.store.add_pending_repair(SPOOL, track).unwrap();
         ctx.store.set_spool_sync_cursor(SPOOL, &track.to_bytes()).unwrap();
 
-        let manager = SpoolManager::new(
+        let mut manager = SpoolManager::new(
             ctx.clone(),
             RecoveryConfig::default(),
             CancellationToken::new(),
@@ -889,15 +901,16 @@ mod tests {
         assert!(manager.is_running(SPOOL));
     }
 
-    // a spool the node owned last epoch comes back without a sync
+    // the first pass re-syncs a kept spool, a later epoch turn keeps what it holds
     #[tokio::test]
     async fn kept_spool_active() {
+        let next_epoch = EpochNumber(3);
         let ctx = context_with_prev_owners((0..GROUP_SIZE).collect()).await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .expect("set spool state");
 
-        let manager = SpoolManager::new(
+        let mut manager = SpoolManager::new(
             ctx.clone(),
             RecoveryConfig::default(),
             CancellationToken::new(),
@@ -905,15 +918,30 @@ mod tests {
 
         manager.advance(EPOCH).expect("advance");
 
-        let state = ctx
+        let first = ctx
             .store
             .get_spool_state(SPOOL)
             .expect("get spool state")
             .expect("spool state");
-        assert_eq!(state.status, SpoolStatus::Active);
-        assert_eq!(state.epoch, EPOCH);
-        assert_eq!(state.prev_owner, Some(ctx.node_address()));
-        assert_eq!(manager.next_action(EPOCH).expect("next action"), None);
+        assert_eq!(first.status, SpoolStatus::Sync);
+        assert_eq!(first.epoch, EPOCH);
+
+        // the sync and scan pass finished and left the spool Active
+        ctx.store
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EPOCH))
+            .expect("set spool state");
+
+        manager.advance(next_epoch).expect("advance");
+
+        let second = ctx
+            .store
+            .get_spool_state(SPOOL)
+            .expect("get spool state")
+            .expect("spool state");
+        assert_eq!(second.status, SpoolStatus::Active);
+        assert_eq!(second.epoch, next_epoch);
+        assert_eq!(second.prev_owner, Some(ctx.node_address()));
+        assert_eq!(manager.next_action(next_epoch).expect("next action"), None);
     }
 
     // a queued repair puts the kept spool straight into Repair
@@ -927,11 +955,13 @@ mod tests {
             .add_pending_repair(SPOOL, Address::from([9; 32]))
             .expect("add pending repair");
 
-        let manager = SpoolManager::new(
+        let mut manager = SpoolManager::new(
             ctx.clone(),
             RecoveryConfig::default(),
             CancellationToken::new(),
         );
+        // past the first pass, where every assigned spool goes back to Sync
+        manager.has_advanced = true;
 
         manager.advance(EPOCH).expect("advance");
 
@@ -952,7 +982,7 @@ mod tests {
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .expect("set spool state");
 
-        let manager = SpoolManager::new(
+        let mut manager = SpoolManager::new(
             ctx.clone(),
             RecoveryConfig::default(),
             CancellationToken::new(),
@@ -978,7 +1008,7 @@ mod tests {
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Sync, EpochNumber(1)))
             .expect("set spool state");
 
-        let manager = SpoolManager::new(
+        let mut manager = SpoolManager::new(
             ctx.clone(),
             RecoveryConfig::default(),
             CancellationToken::new(),

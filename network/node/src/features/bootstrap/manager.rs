@@ -137,8 +137,9 @@ where
         .map_err(|error| NodeError::Store(format!("get_sync_cursor: {error}")))?;
 
     let mut replay = ReplayEngine::new(
-        context.store.as_ref(), 
-        BOOTSTRAP_EPOCH
+        context.store.as_ref(),
+        context.pending.as_ref(),
+        BOOTSTRAP_EPOCH,
     );
 
     if let Some(cursor) = cursor {

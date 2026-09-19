@@ -20,19 +20,25 @@
 //! removes the events for that slot.
 
 use std::collections::{BTreeMap, HashMap};
+use std::mem::take;
 use std::sync::RwLock;
+use std::time::Duration;
 
 use tape_blocks::ParsedInstruction;
 use tape_core::object::object_etag;
 use tape_core::snapshot::replay::ReplayTrackObject;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::{CompressedTrack, TrackState};
-use tape_core::types::{ContentType, SlotNumber, TrackNumber};
+use tape_core::types::{ContentType, SlotNumber, SpoolIndex, TrackNumber};
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_store::types::TapeInfo;
+use tokio::time::Instant;
 
 use crate::features::block::ingestor::ParsedBlock;
+
+/// How long a slice missing at certification waits before it becomes a repair
+pub const REPAIR_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 enum EventKind {
@@ -62,6 +68,14 @@ struct Event {
 struct TapeEvent {
     slot: SlotNumber,
     info: TapeInfo,
+}
+
+/// A missing slice held back until its deadline passes
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeferredRepair {
+    pub spool: SpoolIndex,
+    pub track: Address,
+    pub deadline: Instant,
 }
 
 /// A certified name-addressed object visible in confirmed pending state.
@@ -103,6 +117,9 @@ struct Inner {
 
     /// Reverse index for dropping a slot's reservations.
     tapes_by_slot: BTreeMap<SlotNumber, Vec<Address>>,
+
+    /// Missing slices waiting out their grace before they become repairs.
+    deferred_repairs: Vec<DeferredRepair>,
 }
 
 impl PendingTracks {
@@ -178,6 +195,43 @@ impl PendingTracks {
             .or_default()
             .push(TapeEvent { slot, info });
         inner.tapes_by_slot.entry(slot).or_default().push(tape);
+    }
+
+    /// Hold a missing slice back for one grace period before it becomes a repair
+    pub fn defer_repair(&self, spool: SpoolIndex, track: Address) {
+        let deadline = Instant::now() + REPAIR_GRACE;
+        let mut inner = self.inner.write().expect("pending-tracks lock poisoned");
+        inner.deferred_repairs.push(DeferredRepair {
+            spool,
+            track,
+            deadline,
+        });
+    }
+
+    /// Remove and return the deferred repairs whose deadline has passed
+    pub fn take_due_repairs(&self) -> Vec<DeferredRepair> {
+        let now = Instant::now();
+        let mut inner = self.inner.write().expect("pending-tracks lock poisoned");
+        let held = take(&mut inner.deferred_repairs);
+        let mut due = Vec::new();
+
+        for entry in held {
+            match entry.deadline <= now {
+                true => due.push(entry),
+                false => inner.deferred_repairs.push(entry),
+            }
+        }
+
+        due
+    }
+
+    /// How many missing slices are waiting out their grace
+    pub fn deferred_repair_count(&self) -> usize {
+        self.inner
+            .read()
+            .expect("pending-tracks lock poisoned")
+            .deferred_repairs
+            .len()
     }
 
     pub fn apply_certify(&self, slot: SlotNumber, track: Address) {

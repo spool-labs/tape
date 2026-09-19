@@ -11,14 +11,16 @@ use tape_store_api::Store;
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
+use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::replay::engine::ReplayEngine;
 
 /// Replay every event in the snapshot log in (slot-then-position) order.
 pub fn apply_snapshot_log<Db: Store>(
     store: &TapeStore<Db>,
+    pending: &PendingTracks,
     log: &SnapshotLog,
 ) -> Result<(), NodeError> {
-    ReplayEngine::new(store, log.epoch)
+    ReplayEngine::new(store, pending, log.epoch)
         .apply_snapshot_log(log)
 }
 
@@ -51,6 +53,8 @@ mod tests {
     };
     use tape_store::types::{ObjectInfo, TapeInfo};
     use tape_store::TapeStore;
+
+    use crate::features::block::pending_tracks::PendingTracks;
 
     use super::apply_snapshot_log;
 
@@ -236,7 +240,7 @@ mod tests {
             }],
         );
 
-        apply_snapshot_log(&store, &log).unwrap();
+        apply_snapshot_log(&store, &PendingTracks::new(), &log).unwrap();
 
         assert_eq!(
             store.get_tape(tape).unwrap(),
@@ -308,7 +312,7 @@ mod tests {
             ],
         );
 
-        apply_snapshot_log(&store, &log).unwrap();
+        apply_snapshot_log(&store, &PendingTracks::new(), &log).unwrap();
 
         // Both tracks present; tape counter advanced past the highest.
         assert!(store.get_track(track_a).unwrap().is_some());
@@ -359,7 +363,7 @@ mod tests {
             }],
         );
 
-        apply_snapshot_log(&store, &log).unwrap();
+        apply_snapshot_log(&store, &PendingTracks::new(), &log).unwrap();
         let snapshot_a = (
             store.get_tape(tape).unwrap(),
             store.get_track(track).unwrap(),
@@ -368,7 +372,7 @@ mod tests {
 
         // Apply the same log again. Non-destructive events must converge on
         // identical state.
-        apply_snapshot_log(&store, &log).unwrap();
+        apply_snapshot_log(&store, &PendingTracks::new(), &log).unwrap();
         let snapshot_b = (
             store.get_tape(tape).unwrap(),
             store.get_track(track).unwrap(),
@@ -424,11 +428,11 @@ mod tests {
         );
 
         let live_store = test_store();
-        apply_snapshot_log(&live_store, &log).unwrap();
+        apply_snapshot_log(&live_store, &PendingTracks::new(), &log).unwrap();
 
         let decoded = decode_encoded_log(Address::new_unique(), &log);
         let snapshot_store = test_store();
-        apply_snapshot_log(&snapshot_store, &decoded).unwrap();
+        apply_snapshot_log(&snapshot_store, &PendingTracks::new(), &decoded).unwrap();
 
         assert_eq!(
             snapshot_store.get_object_metadata(track).unwrap(),
@@ -511,7 +515,7 @@ mod tests {
 
         let decoded = decode_encoded_log(Address::new_unique(), &log);
         let store = test_store();
-        apply_snapshot_log(&store, &decoded).unwrap();
+        apply_snapshot_log(&store, &PendingTracks::new(), &decoded).unwrap();
 
         let inline_info = store.get_track(inline_track).unwrap().unwrap();
         assert_eq!(inline_info.kind, TrackKind::Inline as u64);
@@ -537,7 +541,7 @@ mod tests {
             SlotNumber(0),
             Vec::new(),
         );
-        apply_snapshot_log(&store, &log).unwrap();
+        apply_snapshot_log(&store, &PendingTracks::new(), &log).unwrap();
         // Nothing to assert — just confirm no error.
     }
 }

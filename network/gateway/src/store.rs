@@ -5,6 +5,7 @@ use tape_store_api::Store;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_node::core::types::ChannelName;
+use tape_node::features::block::pending_tracks::PendingTracks;
 use tape_node::features::replay::types::ReplayBatch;
 use tape_node::features::store::manager::{
     maintenance_ticker, persist_batch_with, settle_maintenance, tick_maintenance,
@@ -76,7 +77,11 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
                         };
                     };
 
-                    persist_batch(self.context.store.as_ref(), &batch)?;
+                    persist_batch(
+                        self.context.store.as_ref(),
+                        self.context.pending.as_ref(),
+                        &batch,
+                    )?;
                     self.follow.apply_block(&batch, &self.cancel).await?;
 
                     self.context.pending.drop_slot(batch.slot);
@@ -95,9 +100,10 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
 /// Every raw track is kept: a gateway serves reads for all of them
 pub fn persist_batch<Db: Store>(
     store: &TapeStore<Db>,
+    pending: &PendingTracks,
     batch: &ReplayBatch,
 ) -> Result<(), NodeError> {
-    persist_batch_with(store, batch, RawTrackPolicy::All)
+    persist_batch_with(store, pending, batch, RawTrackPolicy::All)
 }
 
 #[cfg(test)]
@@ -108,6 +114,7 @@ mod tests {
     use tape_core::types::SlotNumber;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
+    use tape_node::features::block::pending_tracks::PendingTracks;
     use tape_node::features::replay::types::{RawTrack, ReplayBatch};
     use tape_store::ops::{MetaOps, TrackDataOps};
     use tape_store::TapeStore;
@@ -143,7 +150,7 @@ mod tests {
             ],
         };
 
-        persist_batch(&store, &batch).unwrap();
+        persist_batch(&store, &PendingTracks::new(), &batch).unwrap();
 
         assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(42)));
         assert_eq!(

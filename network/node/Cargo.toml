@@ -73,6 +73,7 @@ openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 solana-keypair = { workspace = true }
 solana-signature = { workspace = true }
