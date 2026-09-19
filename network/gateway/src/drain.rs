@@ -48,6 +48,7 @@ const PERMANENT_TRANSACTION_ERRORS: &[&str] = &[
     "insufficient capacity",
     "account already in use",
     "invalid account data for instruction",
+    "invalid instruction data",
 ];
 
 /// Transport and cluster failures the typed variants do not separate.
@@ -100,9 +101,9 @@ fn classify(error: &TapedriveError) -> Failure {
 /// Sort one RPC failure.
 fn classify_rpc(error: &RpcError) -> Failure {
     match error {
-        RpcError::Transaction { message, .. } => classify_message(message),
-        RpcError::Request(message) if is_chain_busy(message) => Failure::Busy,
-        RpcError::Request(_) => Failure::Transient,
+        RpcError::Transaction { message, .. }
+        | RpcError::Request(message)
+        | RpcError::Internal(message) => classify_message(message),
         RpcError::Timeout(_) => Failure::Transient,
         RpcError::BlockNotAvailable => Failure::Transient,
         RpcError::BlockPruned => Failure::Transient,
@@ -111,13 +112,11 @@ fn classify_rpc(error: &RpcError) -> Failure {
         RpcError::TransactionNotFound(_) => Failure::Transient,
         RpcError::BlockhashExpired => Failure::Transient,
         RpcError::SlotSkipped => Failure::Permanent,
-        RpcError::Internal(message) if is_chain_busy(message) => Failure::Busy,
-        RpcError::Internal(_) => Failure::Transient,
         RpcError::Deserialization(_) => Failure::Permanent,
     }
 }
 
-/// Sort a transaction failure by its message; an unrecognised one stays transient.
+/// Sort a chain failure by its message; an unrecognised one stays transient.
 fn classify_message(message: &str) -> Failure {
     if is_chain_busy(message) {
         return Failure::Busy;
@@ -617,6 +616,10 @@ mod tests {
             Failure::Transient
         );
         assert_eq!(
+            classify(&TapedriveError::Rpc(RpcError::Request("connection reset".into()))),
+            Failure::Transient
+        );
+        assert_eq!(
             classify(&TapedriveError::Upload(UploadError::InsufficientQuorum {
                 got: 1,
                 need: 14,
@@ -677,12 +680,6 @@ mod tests {
     #[test]
     fn busy_errors() {
         assert_eq!(
-            classify(&TapedriveError::Rpc(RpcError::Request(
-                "not the writer, try 127.0.0.1:8899".into()
-            ))),
-            Failure::Busy
-        );
-        assert_eq!(
             classify(&transaction_error("the log is short of a quorum")),
             Failure::Busy
         );
@@ -693,10 +690,35 @@ mod tests {
             Failure::Busy
         );
         assert_eq!(
+            classify(&TapedriveError::Rpc(RpcError::Request(
+                "RPC request failed: not the writer".into()
+            ))),
+            Failure::Busy
+        );
+        assert_eq!(
             classify(&transaction_error("Transfer: insufficient funds 1, need 5000")),
             Failure::Permanent
         );
         assert_eq!(classify(&transaction_error("request timed out")), Failure::Transient);
+    }
+
+    // a program refusal reaching the drain untyped still parks the entry
+    #[test]
+    fn program_refusal_parks() {
+        let refusal = "RPC error: RPC request failed: RPC response error -32002: Error processing \
+                       Instruction 0: invalid instruction data; Program 4iG5 failed: invalid \
+                       instruction data;  tape=7vQf";
+
+        assert_eq!(
+            classify(&TapedriveError::Rpc(RpcError::Request(refusal.into()))),
+            Failure::Permanent
+        );
+        assert_eq!(
+            classify(&TapedriveError::Rpc(RpcError::Internal(
+                "Transfer: insufficient funds 1, need 5000".into()
+            ))),
+            Failure::Permanent
+        );
     }
 
     // a busy chain holds an entry at the floor, and the next transient failure starts the curve
