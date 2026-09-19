@@ -588,6 +588,7 @@ pub fn group_mates(state: &ProtocolState, me: Address) -> Vec<Address> {
 
 #[cfg(test)]
 mod tests {
+    use tape_core::challenge::schedule::SPAN_SLOTS;
     use tape_core::erasure::GROUP_SIZE;
 
     use super::*;
@@ -757,6 +758,91 @@ mod tests {
 
         assert!(!manager.open_rounds.is_empty());
         assert!(ctx.challenge_counters.opened.load(Ordering::Relaxed) > 0);
+    }
+
+    #[tokio::test]
+    async fn uses_second_slot() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+        let schedule = schedule(&ctx);
+        let block = Arc::new(ParsedBlock {
+            slot: SlotNumber(schedule.first_slot().as_u64() + 1),
+            blockhash: Hash([0x33; 32]),
+            ..ParsedBlock::default()
+        });
+
+        // The first slot has no block, so the next slot supplies the entropy.
+        manager
+            .on_produced(block.clone())
+            .await
+            .expect("produce the second slot");
+
+        assert_eq!(manager.open_rounds.len(), 1);
+        let pending = manager.open_rounds.values().next().expect("one group");
+        assert_eq!(pending.len(), 1);
+        let open = pending.front().expect("round opened");
+        assert_eq!(open.round.round, RoundNumber(0));
+        assert_eq!(open.round.block, block.blockhash);
+        assert_eq!(open.opened_slot, block.slot);
+
+        // A late entropy block does not move the next scheduled opening.
+        let next = second_round_block(&ctx);
+        manager
+            .on_produced(next.clone())
+            .await
+            .expect("produce the next round");
+
+        let pending = manager.open_rounds.values().next().expect("one group");
+        assert_eq!(pending.len(), 2);
+        let open = pending.back().expect("next round opened");
+        assert_eq!(open.round.round, RoundNumber(1));
+        assert_eq!(open.round.block, next.blockhash);
+        assert_eq!(open.opened_slot, next.slot);
+        assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn skips_empty_window() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+        let schedule = schedule(&ctx);
+        let window_end = schedule.first_slot().as_u64() + SPAN_SLOTS;
+        let next = second_round_block(&ctx);
+
+        // No blocks were produced inside the first round's entropy window.
+        for slot in window_end..next.slot.as_u64() {
+            let block = Arc::new(ParsedBlock {
+                slot: SlotNumber(slot),
+                blockhash: Hash([0x33; 32]),
+                ..ParsedBlock::default()
+            });
+            manager
+                .on_produced(block)
+                .await
+                .expect("produce a block between rounds");
+
+            assert!(manager.open_rounds.is_empty());
+            assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 0);
+        }
+
+        manager
+            .on_produced(next.clone())
+            .await
+            .expect("produce the next round");
+
+        assert_eq!(manager.open_rounds.len(), 1);
+        let pending = manager.open_rounds.values().next().expect("one group");
+        assert_eq!(pending.len(), 1);
+        let open = pending.front().expect("round opened");
+        assert_eq!(open.round.round, RoundNumber(1));
+        assert_eq!(open.round.block, next.blockhash);
+        assert_eq!(open.opened_slot, next.slot);
+        assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 1);
+        assert_eq!(ctx.challenge_counters.own_missed.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            ctx.challenge_counters.settled_missed.load(Ordering::Relaxed),
+            0
+        );
     }
 
     // a node challenges everyone else holding a position in its group, once
