@@ -7,7 +7,6 @@ use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 
-/// Identifies a challenged spool and the entropy block its signatures bind to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RoundKey {
     pub epoch: EpochNumber,
@@ -22,7 +21,6 @@ pub struct RoundBuffer {
     verifying: Mutex<HashSet<RoundKey>>,
 }
 
-/// Holds a key's verify slot until dropped
 pub struct VerifyGuard {
     buffer: Arc<RoundBuffer>,
     key: RoundKey,
@@ -39,8 +37,6 @@ impl Drop for VerifyGuard {
 #[derive(Default)]
 struct RoundEntry {
     answer: Option<ProofOfAccess>,
-    /// Ordered, so what comes back out is in a fixed order whatever order it
-    /// arrived in, which is what the aggregate's bytes depend on.
     attestations: BTreeMap<Address, BlsSignature>,
     refused: BTreeSet<Address>,
     certified: bool,

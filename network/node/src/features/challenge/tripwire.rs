@@ -5,31 +5,18 @@ use std::time::Duration;
 use tape_core::spooler::GroupIndex;
 use tape_retry::{Backoff, RetryConfig};
 
-/// Delay before a repeat realign, so a node whose group really has gone quiet
-/// does not re-read the chain on every round it settles.
 const REPEAT_BACKOFF: RetryConfig = RetryConfig {
     base_delay: Duration::from_secs(5),
     max_delay: Duration::from_secs(300),
     max_retries: None,
 };
 
-/// Suspends settlement when this node's view stops agreeing with its group.
-///
-/// A node whose in-memory view has drifted refuses every honest answer and
-/// records a miss against every spool owner, which is indistinguishable from the
-/// whole group failing at once. Blank rounds in a row are read as the view being
-/// wrong, not the group.
-///
-/// It counts and decides, nothing more. What made a round blank is the caller's
-/// knowledge, and the caller says so by which entry point it calls.
 pub struct Tripwire {
     threshold: u64,
     inner: Mutex<TripwireState>,
 }
 
 struct TripwireState {
-    // Counted per group. A node seated in several groups settles a round in each
-    // of them, and one healthy group must not clear another group's run.
     blank_rounds: HashMap<GroupIndex, u64>,
     is_realigning: bool,
     has_tripped: bool,

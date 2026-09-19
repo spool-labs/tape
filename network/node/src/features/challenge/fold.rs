@@ -10,7 +10,6 @@ use tracing::debug;
 
 pub struct Folded {
     pub record: Option<PeerRecord>,
-    /// The stored outcome, which may differ from a duplicate input.
     pub certified: bool,
 }
 

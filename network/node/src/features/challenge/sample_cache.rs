@@ -7,16 +7,10 @@ use std::sync::{Arc, Mutex};
 use tape_core::spooler::GroupIndex;
 use tape_core::types::{EpochNumber, RoundNumber};
 
-/// Rounds kept at once: one per group, with room for those still settling.
 const KEPT: usize = 32;
 
 type Key = (EpochNumber, RoundNumber, GroupIndex);
 
-/// The sample sets of the rounds currently in flight.
-///
-/// Held until a backdated row lands. A write at the tip stamps far above any
-/// live round's cutoff and cannot enter a set already built; only the snapshot
-/// and sync paths, which backdate, can.
 #[derive(Default)]
 pub struct SampleSets<T> {
     held: Mutex<HashMap<Key, (u64, Arc<T>)>>,

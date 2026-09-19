@@ -40,38 +40,23 @@ const BROADCAST_CONCURRENCY: usize = 8;
 // charging every spool in the group a miss.
 struct OpenRound {
     round: Round,
-    /// The spools asked, with who owed the answer when they were asked.
-    ///
-    /// Captured here rather than read at settlement: a round settles once its
-    /// block confirms, which is after it opened and can be the far side of an
-    /// epoch, and the spool may have changed hands by then. Judging against the
-    /// owner of the moment charges a miss to a node that was never asked.
     spools: Vec<Asked>,
     opened_slot: SlotNumber,
     confirmed: bool,
     askable: bool,
-    // Opened while the node was re-reading its view, so its evidence was
-    // gathered against a view the node had already stopped trusting.
     is_suspect: bool,
 }
 
 /// One spool a round put a question to.
 struct Asked {
     spool: SpoolIndex,
-    /// Who owed the answer when the round opened.
     owner: Address,
-    /// Whether this spool changed hands at the epoch boundary, which both sides
-    /// read off the assignments already in state rather than being told.
     handed: bool,
 }
 
 impl OpenRound {
     /// Its block confirmed and the round has had its full width to answer, or it
     /// waited past the point where the block could still confirm.
-    ///
-    /// Confirming alone is not enough: a block that confirms inside a round would
-    /// settle it before its proofs are due and charge honest owners a miss for
-    /// certificates still forming.
     fn settles_at(&self, now: SlotNumber) -> bool {
         let elapsed = now.as_u64().saturating_sub(self.opened_slot.as_u64());
         (self.confirmed && elapsed >= round_width_slots()) || elapsed >= SETTLE_DEADLINE_SLOTS
@@ -82,15 +67,8 @@ pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     chain_rx: mpsc::Receiver<ChainEvent>,
     cancel: CancellationToken,
-    // Every round a group is waiting on, oldest first: judged on its block
-    // confirming, not on the next round opening.
     open_rounds: HashMap<GroupIndex, VecDeque<OpenRound>>,
-    /// The first round this node opened in an epoch, which the handover grace
-    /// counts from: the grid's early positions fall in phases that do not
-    /// challenge, so an epoch's first round is rarely round zero.
     first_round: HashMap<EpochNumber, RoundNumber>,
-    /// Spools that have certified at least once this epoch, so a handover is
-    /// forgiven only until the new owner shows it holds the data.
     certified_in: HashSet<(EpochNumber, SpoolIndex)>,
 }
 
@@ -266,7 +244,7 @@ where
         Ok(())
     }
 
-    /// Judges rounds whose block confirmed, voids those that waited too long.
+    /// Verified rounds whose block confirmed, voids those that waited too long.
     /// Oldest first, so it stops at the first round still waiting.
     fn settle_confirmed(&mut self, now: SlotNumber) {
         let mut ready = Vec::new();
@@ -285,7 +263,7 @@ where
         }
     }
 
-    /// Judges one round: what the group made of every spool it was asked about.
+    /// Verify one round: what the group made of every spool it was asked about.
     fn settle_round(&mut self, open: &OpenRound) -> Option<bool> {
 
         // A round whose entropy block never confirmed is void. Nobody owed an
@@ -301,7 +279,7 @@ where
         }
 
         // Evidence opened under a suspect view, or still pending when another
-        // group trips the view, cannot safely be used to judge an owner.
+        // group trips the view, cannot safely be used to verify an owner.
         if open.is_suspect || self.context.challenge_tripwire.is_realigning() {
             self.context
                 .challenge_counters
@@ -340,7 +318,7 @@ where
             // fetches what it was handed: it holds none of it yet, and a miss
             // here is for data it never had the chance to keep. Ends at its
             // first certificate, so an owner that proves it holds the spool is
-            // judged from then on, and at the grace bound, so one that never
+            // verified from then on, and at the grace bound, so one that never
             // fetches is still caught.
             if certified {
                 self.certified_in.insert((round.epoch, spool));
@@ -448,7 +426,7 @@ where
         // has already stopped trusting.
         self.context.eviction_queue.clear_records();
         // Rounds already open were derived from the same suspect view. Mark
-        // them before the asynchronous refresh can complete so none are judged
+        // them before the asynchronous refresh can complete so none are verified
         // after the suspension lifts.
         for pending in self.open_rounds.values_mut() {
             for open in pending {

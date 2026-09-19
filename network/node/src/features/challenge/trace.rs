@@ -108,11 +108,8 @@ pub struct RoundTrace {
     pub nodes: Vec<Address>,
     pub marks: Vec<TraceMark>,
     pub outcomes: Vec<SpoolOutcome>,
-    /// When this trace was last sent out, for the push interval.
     pushed_ms: u64,
-    /// Marks already sent, so a push carries only what came after them.
     pushed_marks: usize,
-    /// Addresses already sent, counted the same way.
     pushed_nodes: usize,
 }
 
