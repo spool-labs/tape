@@ -32,7 +32,7 @@ const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
 /// How long a slice keeps pushing while its owner answers that it is not ready yet.
 const STRAGGLER_LIMIT: Duration = Duration::from_secs(60);
 
-/// The beat a straggler pushes at while its owner ingests the register.
+/// The beat a straggler pushes at once its retry ladder is spent.
 const STRAGGLER_STEP: Duration = Duration::from_millis(250);
 
 /// A slice with its merkle proof, ready for upload.
@@ -388,11 +388,14 @@ fn next_push_delay(
     error: &ApiError,
     elapsed: Duration,
 ) -> Option<Duration> {
-    match counts_against_peer(error) {
-        true => backoff.next_delay(),
-        false => match elapsed < STRAGGLER_LIMIT {
-            true => Some(STRAGGLER_STEP),
-            false => None,
+    match backoff.next_delay() {
+        Some(delay) => Some(delay),
+        None => match counts_against_peer(error) {
+            true => None,
+            false => match elapsed < STRAGGLER_LIMIT {
+                true => Some(STRAGGLER_STEP),
+                false => None,
+            },
         },
     }
 }
@@ -684,6 +687,31 @@ mod tests {
         assert_eq!(record.consecutive_failures, 0);
     }
 
+    // an owner that answers not found once is pushed again a slot later and accepts
+    #[tokio::test(start_paused = true)]
+    async fn straggler_accepts_within_a_slot() {
+        let state = make_test_state(GROUP_SIZE);
+        let straggler = state.current.committee[0].node;
+        let (api, attempts) = api_with_straggler(straggler, move |attempt| match attempt < 2 {
+            true => refused(ApiError::NotFound),
+            false => accepted(straggler),
+        });
+        let reputation = ephemeral_reputation();
+        let started = Instant::now();
+
+        let receipts = uploader_for(&state, reputation.clone())
+            .upload_all(api)
+            .await
+            .expect("quorum reached");
+        sleep(STRAGGLER_STEP / 2).await;
+
+        assert!(receipts.len() >= min_correct(GROUP_SIZE as u64) as usize);
+        assert_eq!(attempts.load(Ordering::Relaxed), 2);
+        assert!(started.elapsed() < STRAGGLER_STEP, "{:?}", started.elapsed());
+        let record = peer_record(&reputation, straggler).expect("straggler recorded");
+        assert_eq!(record.consecutive_failures, 0);
+    }
+
     // an owner that never ingests the register is left for recovery at no reputation cost
     #[tokio::test(start_paused = true)]
     async fn straggler_gives_up() {
@@ -700,8 +728,16 @@ mod tests {
         let pushed = attempts.load(Ordering::Relaxed);
         sleep(STRAGGLER_LIMIT).await;
 
-        let window = (STRAGGLER_LIMIT.as_millis() / STRAGGLER_STEP.as_millis()) as usize;
-        assert!(pushed >= window && pushed <= window + 1);
+        let retry = slice_retry_config();
+        let ladder = retry.max_retries.expect("bounded ladder") as usize;
+        let ladder_span: Duration = (0..ladder as u32)
+            .map(|attempt| (retry.base_delay * 2u32.saturating_pow(attempt)).min(retry.max_delay))
+            .sum();
+        let steps = |spent: Duration| {
+            (STRAGGLER_LIMIT.saturating_sub(spent).as_millis() / STRAGGLER_STEP.as_millis()) as usize
+        };
+        assert!(pushed >= 1 + ladder + steps(ladder_span), "{pushed} pushes");
+        assert!(pushed <= 2 + ladder + steps(ladder_span / 2), "{pushed} pushes");
         assert_eq!(attempts.load(Ordering::Relaxed), pushed);
         assert!(peer_record(&reputation, straggler).is_none());
     }
