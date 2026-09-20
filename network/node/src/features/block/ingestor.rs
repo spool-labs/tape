@@ -109,17 +109,17 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     /// near the tip, fall back to the serial path.
     async fn ingest_step(&mut self, next_slot: SlotNumber) -> Result<SlotNumber, NodeError> {
         let next = self.ingest_once(next_slot).await?;
-        self.record_edge(next.0.saturating_sub(1));
+        self.record_edge(SlotNumber(next.0.saturating_sub(1)));
         Ok(next)
     }
 
     /// Mark ingest current as far as `through`, the slot it has read up to, once the queue drains
-    fn record_edge(&self, through: u64) {
+    fn record_edge(&self, through: SlotNumber) {
         if !self.queue.is_empty() {
             return;
         }
         let progress = self.context.ingest.progress();
-        let edge = through.min(self.confirmed_tip.0);
+        let edge = through.0.min(self.confirmed_tip.0);
         if edge > progress.last_dispatched_slot() {
             progress.record_dispatched(edge);
         }
@@ -331,7 +331,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             self.context.metrics.inc_blocks_processed();
             progress.record_dispatched(block.slot.0);
             if let Some(time) = block.block_time {
-                progress.record_chain_time(time);
+                progress.record_chain_time(block.slot, time);
             }
             self.dispatch_log_count += 1;
             debug!(slot = block.slot.0, "dispatched parsed block");
