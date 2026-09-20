@@ -134,6 +134,78 @@ impl SolanaRpc {
         .unwrap_or(false)
     }
 
+    /// Read the chain's own verdict for every entry it answered as replayed
+    ///
+    /// A retried post replays transactions the chain already ran, and the
+    /// refusal says only that it ran them. The signature status says how each
+    /// one ended, so a refused transaction whose reply was lost stays refused.
+    /// An entry the chain holds no status for is left refused for the caller
+    /// to send again.
+    async fn settle_replayed(
+        &self,
+        sent: &mut [Result<Txid, RpcError>],
+        transactions: &[VersionedTransaction],
+    ) {
+        let mut replayed = Vec::new();
+        for (index, verdict) in sent.iter().enumerate() {
+            let Err(err) = verdict else { continue };
+            if !is_already_processed(err) {
+                continue;
+            }
+            let Some(signature) = transactions[index].signatures.first() else {
+                continue;
+            };
+            replayed.push((index, *signature));
+        }
+
+        if replayed.is_empty() {
+            return;
+        }
+
+        let signatures: Vec<Signature> = replayed.iter().map(|(_, sig)| *sig).collect();
+        let Ok(statuses) = self.signature_statuses(&signatures).await else {
+            return;
+        };
+
+        for ((index, signature), status) in replayed.into_iter().zip(statuses) {
+            // The chain has no status for it, so nothing here says it landed.
+            let Some(status) = status else { continue };
+            sent[index] = match status {
+                Ok(()) => Ok(signature.into()),
+                Err(error) => Err(RpcError::Transaction {
+                    message: error.to_string(),
+                    err: Some(error),
+                    simulated: false,
+                }),
+            };
+        }
+    }
+
+    /// The status the chain holds for each signature, in the order asked
+    async fn signature_statuses(
+        &self,
+        signatures: &[Signature],
+    ) -> Result<Vec<Option<Result<(), TransactionError>>>, RpcError> {
+        let signatures = Arc::new(signatures.to_vec());
+
+        self.with_retry("getSignatureStatuses", move |client| {
+            let signatures = signatures.clone();
+            async move {
+                let response = client
+                    .get_signature_statuses(&signatures)
+                    .await
+                    .map_err(|error| Self::convert_error(error, None))?;
+
+                Ok(response
+                    .value
+                    .into_iter()
+                    .map(|status| status.map(|status| status.status))
+                    .collect())
+            }
+        })
+        .await
+    }
+
     /// Get a reference to the configuration.
     pub fn config(&self) -> &RpcConfig {
         &self.config
@@ -722,9 +794,11 @@ enum SendBatchReply {
 /// True when the chain is reporting a transaction it has already run.
 ///
 /// A batch post that timed out or lost its answer is retried whole, so every
-/// transaction of it that did land comes back this way.
+/// transaction of it that did run comes back this way. agave and the tapesvm
+/// daemon word it differently, so both texts are matched.
 fn is_already_processed(err: &RpcError) -> bool {
-    err.to_string().contains("already processed")
+    let text = err.to_string();
+    text.contains("already processed") || text.contains("already been processed")
 }
 
 #[derive(serde::Deserialize)]
@@ -1123,18 +1197,7 @@ impl Rpc for SolanaRpc {
             })
             .await?;
 
-        // A retried post replays transactions the chain already ran. Their
-        // signatures are the ones we signed, so the entry reports what it
-        // reports on the first post: the transaction landed.
-        for (verdict, transaction) in sent.iter_mut().zip(transactions) {
-            if let Err(err) = verdict {
-                if is_already_processed(err) {
-                    if let Some(signature) = transaction.signatures.first() {
-                        *verdict = Ok((*signature).into());
-                    }
-                }
-            }
-        }
+        self.settle_replayed(&mut sent, transactions).await;
 
         Ok(sent)
     }
@@ -1357,7 +1420,13 @@ async fn serve_one(
     };
 
     let request: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-    let method = request
+    // A batch post is an array of calls, and every call of one batch is the
+    // same method here.
+    let call = match request.as_array().and_then(|calls| calls.first()) {
+        Some(first) => first,
+        None => &request,
+    };
+    let method = call
         .get("method")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
@@ -1468,6 +1537,93 @@ async fn an_empty_window_is_capped_by_the_member_that_listed_it() {
     assert_eq!(second.tip, Some(1_000));
     assert_eq!(lagging.served(), vec!["getBlocks".to_string(), "getSlot".to_string()]);
     assert_eq!(current.served(), vec!["getBlocks".to_string(), "getSlot".to_string()]);
+}
+
+/// One transaction with a signature the mock can answer for
+fn signed_transaction(byte: u8) -> VersionedTransaction {
+    VersionedTransaction {
+        signatures: vec![Signature::from([byte; 64])],
+        ..VersionedTransaction::default()
+    }
+}
+
+/// A chain that answers a replayed send, with this status for the signature
+fn replaying_member(status: serde_json::Value) -> impl Fn(&str) -> serde_json::Value + Send + Sync + 'static {
+    move |method: &str| match method {
+        "getSignatureStatuses" => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "context": { "slot": 100 }, "value": [status] },
+        }),
+        _ => serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": null }),
+    }
+}
+
+/// The batch reply agave sends for a transaction it has already run
+fn already_processed_batch() -> serde_json::Value {
+    serde_json::json!([{
+        "jsonrpc": "2.0",
+        "id": 0,
+        "error": {
+            "code": -32002,
+            "message": "This transaction has already been processed",
+        },
+    }])
+}
+
+// a replayed send that ran clean the first time reads as landed
+#[tokio::test]
+async fn a_replayed_send_that_landed_reads_as_landed() {
+    let landed = serde_json::json!({
+        "slot": 100,
+        "confirmations": serde_json::Value::Null,
+        "err": serde_json::Value::Null,
+        "status": { "Ok": serde_json::Value::Null },
+        "confirmationStatus": "confirmed",
+    });
+    let batch = already_processed_batch();
+    let member = MockEndpoint::start(move |method: &str| match method {
+        "sendTransaction" => batch.clone(),
+        other => replaying_member(landed.clone())(other),
+    })
+    .await;
+    let client = client_for(&[&member], EndpointStrategy::PreferPrimary);
+
+    let sent = client
+        .send_transactions(&[signed_transaction(7)])
+        .await
+        .expect("the batch is answered");
+
+    assert!(sent[0].is_ok(), "a clean replay is a landed entry: {sent:?}");
+}
+
+// a replayed send the chain refused the first time stays refused
+#[tokio::test]
+async fn a_replayed_send_that_failed_stays_refused() {
+    let refused = serde_json::json!({
+        "slot": 100,
+        "confirmations": serde_json::Value::Null,
+        "err": { "InstructionError": [0, { "Custom": 116 }] },
+        "status": { "Err": { "InstructionError": [0, { "Custom": 116 }] } },
+        "confirmationStatus": "confirmed",
+    });
+    let batch = already_processed_batch();
+    let member = MockEndpoint::start(move |method: &str| match method {
+        "sendTransaction" => batch.clone(),
+        other => replaying_member(refused.clone())(other),
+    })
+    .await;
+    let client = client_for(&[&member], EndpointStrategy::PreferPrimary);
+
+    let sent = client
+        .send_transactions(&[signed_transaction(9)])
+        .await
+        .expect("the batch is answered");
+
+    let Err(error) = &sent[0] else {
+        panic!("a refused first execution is not a landed entry: {sent:?}");
+    };
+    assert_eq!(error.custom_program_error(), Some(116));
 }
 
 // a member holding the window keeps its tip to itself, which saves the round trip
@@ -1628,6 +1784,16 @@ async fn a_listed_window_reads_no_tip() {
 
         assert!(is_already_processed(&refusal));
         assert!(!is_already_processed(&RpcError::Request("boom".to_string())));
+    }
+
+    // agave words it its own way, and a retried batch has to read that too
+    #[test]
+    fn agave_already_processed_reads_as_replayed() {
+        let refusal = RpcError::Request(
+            "RPC response error -32002: This transaction has already been processed".to_string(),
+        );
+
+        assert!(is_already_processed(&refusal));
     }
 
     // a reply short of the calls it answers fails the whole batch
