@@ -26,7 +26,7 @@ use crate::features::bootstrap::LiveStart;
 use crate::features::block::pending_blocks::{AppendOutcome, PendingBlocks};
 
 /// Bounds on the poll wait, so a measured slot time cannot spin or stall it
-const TIP_POLL_MIN_MS: u64 = 25;
+const TIP_POLL_MIN_MS: u64 = 2;
 const TIP_POLL_MAX_MS: u64 = 400;
 
 /// Minimum interval between INFO-level dispatch summaries. Per-block
@@ -108,6 +108,24 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     /// the gap through a fetch pipeline and applying blocks in slot order;
     /// near the tip, fall back to the serial path.
     async fn ingest_step(&mut self, next_slot: SlotNumber) -> Result<SlotNumber, NodeError> {
+        let next = self.ingest_once(next_slot).await?;
+        self.record_edge(SlotNumber(next.0.saturating_sub(1)));
+        Ok(next)
+    }
+
+    /// Mark ingest current as far as `through`, the slot it has read up to, once the queue drains
+    fn record_edge(&self, through: SlotNumber) {
+        if !self.queue.is_empty() {
+            return;
+        }
+        let progress = self.context.ingest.progress();
+        let edge = through.0.min(self.confirmed_tip.0);
+        if edge > progress.last_dispatched_slot() {
+            progress.record_dispatched(edge);
+        }
+    }
+
+    async fn ingest_once(&mut self, next_slot: SlotNumber) -> Result<SlotNumber, NodeError> {
         let tip = self
             .context
             .rpc
@@ -121,16 +139,19 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
 
         // Only produced slots: a skipped one answers "not available" until it roots
         let window_end = tip.min(next_slot.0 + CATCH_UP_WINDOW_SLOTS);
-        let produced = self
+        let window = self
             .context
             .rpc
-            .get_blocks(next_slot.0, window_end)
+            .get_block_window(next_slot.0, window_end)
             .await
             .map_err(|error| rpc_failed("get_blocks", error))?;
-        let Some(&last) = produced.last() else {
-            // Nothing listed yet: the backend is behind the tip it reported
+        let Some(&last) = window.produced.last() else {
+            // A member behind the window lists nothing for a range it lacks, so
+            // the tip it reports for the same pass is as far as this answer reaches.
+            let answered_tip = window.tip.unwrap_or(next_slot.0);
             sleep(self.tip_poll_delay()).await;
-            return Ok(next_slot);
+            // A window the chain lists nothing in holds nothing to ingest, so resume at its end
+            return Ok(SlotNumber(window_end.min(answered_tip).max(next_slot.0)));
         };
         let end_slot = SlotNumber(last);
 
@@ -140,7 +161,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         let mut blocks = fetch_blocks_ordered(
             self.context.clone(),
             self.cancel.clone(),
-            slots_to_fetch(next_slot.0, &produced),
+            slots_to_fetch(next_slot.0, &window.produced),
         );
 
         // Promote as the stream advances so consumers make progress across a
@@ -310,7 +331,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             self.context.metrics.inc_blocks_processed();
             progress.record_dispatched(block.slot.0);
             if let Some(time) = block.block_time {
-                progress.record_chain_time(time);
+                progress.record_chain_time(block.slot, time);
             }
             self.dispatch_log_count += 1;
             debug!(slot = block.slot.0, "dispatched parsed block");
@@ -438,7 +459,9 @@ mod tests {
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
-    use super::BlockIngestor;
+    use tape_core::types::SlotNumber;
+
+    use super::{BlockIngestor, CATCH_UP_WINDOW_SLOTS};
     use crate::features::bootstrap::LiveStart;
     use crate::chain::{submit_join_committee, submit_set_network_tls};
     use crate::core::channels::{downstream_channels, store_channel};
@@ -447,6 +470,39 @@ mod tests {
 
     const EPOCH: EpochNumber = EpochNumber(3);
     const NODE: usize = 24;
+
+    // a window the chain lists no block in moves ingest past it
+    #[tokio::test]
+    async fn empty_window_moves_ingest_on() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let start = SlotNumber(ctx.rpc.get_slot().await.expect("get tip") + 1);
+
+        // Far enough past the window that every slot in it is one the chain produced nothing at.
+        harness
+            .rpc()
+            .warp_to_slot(start.0 + CATCH_UP_WINDOW_SLOTS * 2)
+            .expect("warp past the window");
+
+        let (senders, _receivers) = downstream_channels();
+        let mut ingestor = BlockIngestor::new(
+            ctx.clone(),
+            LiveStart { slot: start, parent: None },
+            senders,
+            CancellationToken::new(),
+        );
+
+        assert_eq!(
+            ingestor.ingest_step(start).await.expect("one ingest step"),
+            SlotNumber(start.0 + CATCH_UP_WINDOW_SLOTS)
+        );
+    }
 
     #[tokio::test]
     async fn forwards_batch_after_later_confirmed_block() {

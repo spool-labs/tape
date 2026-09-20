@@ -3,9 +3,8 @@
 //! Uploads slices to storage nodes based on spool assignments from the
 //! on-chain committee. Each slice goes to the node that owns that spool.
 
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::join_all;
@@ -19,21 +18,55 @@ use tape_protocol::api::{Api, ApiError, CertifyRes, PutSliceReq, SlicePayload};
 use tape_protocol::ProtocolState;
 use tape_retry::{Backoff, RetryConfig, Retryable};
 use tokio::sync::{mpsc, Semaphore};
-use tokio::time::{sleep, Instant};
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, sleep_until, Instant};
 use tracing::{debug, info, warn};
 
 use crate::bootstrap::{counts_against_peer, Reputation};
 use crate::codec::encoder::SliceMerkleProof;
 use crate::error::UploadError;
 
-/// Longest a rate limited upload sleeps, whatever the server advertises.
+/// Longest a rate limited upload sleeps, whatever the server advertises
 const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
 
-/// How long a slice keeps pushing while its owner answers that it is not ready yet.
+/// How long a slice keeps pushing while its owner answers that it is not ready yet
 const STRAGGLER_LIMIT: Duration = Duration::from_secs(60);
 
-/// The beat a straggler pushes at once its retry ladder is spent.
+/// The beat a straggler pushes at once its retry ladder is spent
 const STRAGGLER_STEP: Duration = Duration::from_millis(250);
+
+/// Owners still pushing after their calls returned, process wide; the oldest gives way past this
+const MAX_STRAGGLERS: usize = 256;
+
+static STRAGGLERS: Mutex<StragglerRegistry> = Mutex::new(StragglerRegistry::new());
+
+/// The pushes that outlive their upload call, bounded in number and each already bounded in time
+struct StragglerRegistry {
+    pushes: VecDeque<JoinHandle<()>>,
+}
+
+impl StragglerRegistry {
+    const fn new() -> Self {
+        Self { pushes: VecDeque::new() }
+    }
+
+    /// Keep a push running past its call, aborting the oldest once the cap is reached
+    fn admit(&mut self, handle: JoinHandle<()>, cap: usize) {
+        self.pushes.retain(|push| !push.is_finished());
+        while self.pushes.len() >= cap {
+            match self.pushes.pop_front() {
+                Some(oldest) => oldest.abort(),
+                None => break,
+            }
+        }
+        self.pushes.push_back(handle);
+    }
+
+    #[cfg(test)]
+    fn live(&self) -> usize {
+        self.pushes.iter().filter(|push| !push.is_finished()).count()
+    }
+}
 
 /// A slice with its merkle proof, ready for upload.
 ///
@@ -72,6 +105,8 @@ pub struct DistributedUploader {
     group_member_count: usize,
     concurrency_limit: Arc<Semaphore>,
     reputation: Option<Arc<Reputation>>,
+    // one push task per owner; a call that gives up aborts them, a call that reached quorum hands them to the registry
+    stragglers: Mutex<Vec<JoinHandle<()>>>,
 }
 
 struct NodeUploadResult {
@@ -83,15 +118,17 @@ struct NodeUploadResult {
 
 impl NodeUploadResult {
     fn health(&self) -> NodeHealth {
-        if self.failed.is_empty() && self.not_responsible.is_empty() {
-            return NodeHealth::Stored;
-        }
         for (_, error) in &self.failed {
             if counts_against_peer(error) {
                 return NodeHealth::Unreachable;
             }
         }
-        NodeHealth::Unknown
+        // A spool the epoch has moved off says nothing about the owner, and an
+        // owner that stored a slice answered for the ones it still holds.
+        match self.stored.is_empty() {
+            true => NodeHealth::Unknown,
+            false => NodeHealth::Stored,
+        }
     }
 }
 
@@ -136,6 +173,7 @@ impl DistributedUploader {
             group_member_count,
             concurrency_limit: Arc::new(Semaphore::new(concurrency.max(1))),
             reputation: None,
+            stragglers: Mutex::new(Vec::new()),
         })
     }
 
@@ -149,8 +187,9 @@ impl DistributedUploader {
     ///
     /// Sends each slice to the correct spool owner based on the committee's
     /// spool assignment. Returns as soon as a certification quorum of members
-    /// and slices has landed; the remaining uploads keep running as detached
-    /// tasks and any that fail are left for the recovery worker to handle.
+    /// and slices has landed; the owners still behind keep pushing for as long
+    /// as this uploader lives, and any slice that never lands is left for the
+    /// recovery worker to handle.
     pub async fn upload_all<P: Api>(&self, peer_client: Arc<P>) -> Result<Vec<CertifyRes>, UploadError> {
         if self.group_peers.is_empty() {
             return Err(UploadError::NoNodesAvailable);
@@ -175,7 +214,8 @@ impl DistributedUploader {
         let required_members = min_correct(self.group_member_count as u64) as usize;
         let required_slices = min_correct(GROUP_SIZE as u64) as usize;
 
-        // Each owner uploads in a detached task so a quorum can complete the call while stragglers keep pushing.
+        // Each owner uploads in its own task, so a quorum completes the call
+        // while the owners behind it keep pushing.
         let (result_sender, mut result_receiver) = mpsc::unbounded_channel();
         let node_count = node_groups.len();
         for (node, spools) in node_groups {
@@ -202,7 +242,7 @@ impl DistributedUploader {
             };
             let reputation = self.reputation.clone();
 
-            tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 let started = Instant::now();
                 let result = upload_node_slices(
                     peer_client.as_ref(),
@@ -214,12 +254,16 @@ impl DistributedUploader {
                 )
                 .await;
                 if let Some(reputation) = reputation {
-                    if let Ok(outcome) = result.as_ref() {
-                        record_node_health(&reputation, node, started.elapsed(), outcome);
+                    match result.as_ref() {
+                        Ok(outcome) => {
+                            record_node_health(&reputation, node, started.elapsed(), outcome)
+                        }
+                        Err(_) => reputation.record_failure(node),
                     }
                 }
                 let _ = result_sender.send(result);
             });
+            self.track_straggler(handle);
         }
         drop(result_sender);
 
@@ -233,7 +277,21 @@ impl DistributedUploader {
         // track hash, so the rest are duplicates.
         let mut receipts: Vec<CertifyRes> = Vec::with_capacity(node_count);
 
-        while let Some(result) = result_receiver.recv().await {
+        // Waiting on every owner would hold the call for the whole straggler
+        // window, so a run that never reaches quorum stops at the ladder the
+        // pushes themselves spend.
+        let deadline = Instant::now() + quorum_wait_limit();
+        loop {
+            let received = tokio::select! {
+                // Safe: recv leaves an unread result queued.
+                received = result_receiver.recv() => received,
+                // Safe: the deadline is absolute, so a re-armed sleep is the same sleep.
+                _ = sleep_until(deadline) => break,
+            };
+            let Some(result) = received else {
+                break;
+            };
+
             match result {
                 Ok(node) => {
                     total_failed_slices += node.failed.len();
@@ -267,9 +325,13 @@ impl DistributedUploader {
                     required_slices,
                     "slice upload quorum reached, draining remaining uploads in the background"
                 );
+                self.release_stragglers();
                 return Ok(receipts);
             }
         }
+
+        // Nothing more will land for this call, so the pushes stop here.
+        self.abort_stragglers();
 
         // If more than f slices were rejected as NotResponsible, the epoch
         // has changed. A Byzantine minority (at most f nodes) cannot fake this.
@@ -300,9 +362,35 @@ impl DistributedUploader {
     pub fn slice_count(&self) -> usize {
         self.slices.len()
     }
+
+    fn track_straggler(&self, handle: JoinHandle<()>) {
+        if let Ok(mut stragglers) = self.stragglers.lock() {
+            stragglers.push(handle);
+        }
+    }
+
+    fn abort_stragglers(&self) {
+        let Ok(mut stragglers) = self.stragglers.lock() else {
+            return;
+        };
+        for handle in stragglers.drain(..) {
+            handle.abort();
+        }
+    }
+
+    /// Let the owners still pushing finish on their own clock, under the process wide cap
+    fn release_stragglers(&self) {
+        let Ok(mut stragglers) = self.stragglers.lock() else {
+            return;
+        };
+        let mut registry = STRAGGLERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for handle in stragglers.drain(..) {
+            registry.admit(handle, MAX_STRAGGLERS);
+        }
+    }
 }
 
-/// Record what one owner's answers say about it.
+/// Record what one owner's answers say about it
 fn record_node_health(
     reputation: &Reputation,
     node: Address,
@@ -382,7 +470,7 @@ fn should_retry_put_slice(error: &ApiError) -> bool {
     matches!(error, ApiError::NotFound) || error.is_retryable()
 }
 
-/// How long until the next push, or nothing when this slice is done trying.
+/// How long until the next push, or nothing when this slice is done trying
 fn next_push_delay(
     backoff: &mut Backoff,
     error: &ApiError,
@@ -411,6 +499,20 @@ fn next_push_delay(
 ///
 /// Ramping from 60 ms catches the ingest as soon as it happens and still
 /// settles to a polite cadence if a node is genuinely down rather than behind.
+/// Longest the call waits for a quorum once the pushes are in flight
+///
+/// The retry ladder below spends about twelve seconds on an owner that has not
+/// ingested the register, which is as long as a push can usefully wait. Past
+/// that the run has no quorum to report and the caller retries the whole write.
+fn quorum_wait_limit() -> Duration {
+    let config = slice_retry_config();
+    let mut total = Duration::ZERO;
+    for attempt in 0..config.max_retries.unwrap_or(0) {
+        total += (config.base_delay * 2u32.saturating_pow(attempt)).min(config.max_delay);
+    }
+    total
+}
+
 fn slice_retry_config() -> RetryConfig {
     RetryConfig {
         base_delay: Duration::from_millis(60),
@@ -675,10 +777,8 @@ mod tests {
         });
         let reputation = ephemeral_reputation();
 
-        let receipts = uploader_for(&state, reputation.clone())
-            .upload_all(api)
-            .await
-            .expect("quorum reached");
+        let uploader = uploader_for(&state, reputation.clone());
+        let receipts = uploader.upload_all(api).await.expect("quorum reached");
         sleep(STRAGGLER_LIMIT * 2).await;
 
         assert!(receipts.len() >= min_correct(GROUP_SIZE as u64) as usize);
@@ -699,10 +799,8 @@ mod tests {
         let reputation = ephemeral_reputation();
         let started = Instant::now();
 
-        let receipts = uploader_for(&state, reputation.clone())
-            .upload_all(api)
-            .await
-            .expect("quorum reached");
+        let uploader = uploader_for(&state, reputation.clone());
+        let receipts = uploader.upload_all(api).await.expect("quorum reached");
         sleep(STRAGGLER_STEP / 2).await;
 
         assert!(receipts.len() >= min_correct(GROUP_SIZE as u64) as usize);
@@ -720,10 +818,8 @@ mod tests {
         let (api, attempts) = api_with_straggler(straggler, |_| refused(ApiError::NotFound));
         let reputation = ephemeral_reputation();
 
-        uploader_for(&state, reputation.clone())
-            .upload_all(api)
-            .await
-            .expect("quorum reached");
+        let uploader = uploader_for(&state, reputation.clone());
+        uploader.upload_all(api).await.expect("quorum reached");
         sleep(STRAGGLER_LIMIT * 2).await;
         let pushed = attempts.load(Ordering::Relaxed);
         sleep(STRAGGLER_LIMIT).await;
@@ -751,15 +847,84 @@ mod tests {
             api_with_straggler(straggler, |_| refused(ApiError::ConnectionFailed("refused".into())));
         let reputation = ephemeral_reputation();
 
-        uploader_for(&state, reputation.clone())
-            .upload_all(api)
-            .await
-            .expect("quorum reached");
+        let uploader = uploader_for(&state, reputation.clone());
+        uploader.upload_all(api).await.expect("quorum reached");
         sleep(STRAGGLER_LIMIT * 2).await;
 
         assert!(attempts.load(Ordering::Relaxed) > 1);
         let record = peer_record(&reputation, straggler).expect("straggler recorded");
         assert_eq!(record.consecutive_failures, 1);
+    }
+
+    // the owners still pushing outlive the call and the uploader, up to the straggler limit
+    #[tokio::test(start_paused = true)]
+    async fn quorum_keeps_pushing() {
+        let state = make_test_state(GROUP_SIZE);
+        let straggler = state.current.committee[0].node;
+        let (api, attempts) = api_with_straggler(straggler, |_| refused(ApiError::NotFound));
+        let reputation = ephemeral_reputation();
+
+        let uploader = uploader_for(&state, reputation.clone());
+        uploader.upload_all(api).await.expect("quorum reached");
+        drop(uploader);
+        let pushed = attempts.load(Ordering::Relaxed);
+        sleep(STRAGGLER_LIMIT * 2).await;
+
+        assert!(attempts.load(Ordering::Relaxed) > pushed);
+    }
+
+    // the registry keeps the newest pushes and aborts the oldest past the cap
+    #[tokio::test]
+    async fn straggler_cap_aborts_the_oldest() {
+        let mut registry = StragglerRegistry::new();
+        let handles: Vec<JoinHandle<()>> = (0..3)
+            .map(|_| tokio::spawn(async { sleep(Duration::from_secs(60)).await }))
+            .collect();
+        for handle in handles {
+            registry.admit(handle, 2);
+        }
+        tokio::task::yield_now().await;
+
+        assert_eq!(registry.live(), 2);
+    }
+
+    // a run that never reaches quorum gives up on the retry ladder
+    #[tokio::test(start_paused = true)]
+    async fn no_quorum_gives_up() {
+        let state = make_test_state(GROUP_SIZE);
+        let api = Arc::new(MemoryApi::new(|_, _| refused(ApiError::NotFound)));
+        let started = Instant::now();
+
+        let uploader = uploader_for(&state, ephemeral_reputation());
+        let error = uploader.upload_all(api).await.expect_err("no quorum");
+
+        assert!(matches!(error, UploadError::InsufficientQuorum { .. }), "{error}");
+        assert!(started.elapsed() >= quorum_wait_limit(), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < quorum_wait_limit() + STRAGGLER_STEP,
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    // an owner whose spool moved off it still clears the failures it had
+    #[tokio::test(start_paused = true)]
+    async fn not_responsible_still_stored() {
+        let state = make_test_state(GROUP_SIZE / 2);
+        let straggler = state.current.committee[0].node;
+        let (api, _) = api_with_straggler(straggler, move |attempt| match attempt {
+            1 => refused(ApiError::NotResponsible),
+            _ => accepted(straggler),
+        });
+        let reputation = ephemeral_reputation();
+        reputation.record_failure(straggler);
+
+        let uploader = uploader_for(&state, reputation.clone());
+        uploader.upload_all(api).await.expect("quorum reached");
+        sleep(STRAGGLER_STEP).await;
+
+        let record = peer_record(&reputation, straggler).expect("owner recorded");
+        assert_eq!(record.consecutive_failures, 0);
     }
 
     // a quarantined owner costs exactly one push
@@ -773,10 +938,8 @@ mod tests {
             reputation.record_failure(down);
         }
 
-        uploader_for(&state, reputation.clone())
-            .upload_all(api)
-            .await
-            .expect("quorum reached");
+        let uploader = uploader_for(&state, reputation.clone());
+        uploader.upload_all(api).await.expect("quorum reached");
         sleep(STRAGGLER_LIMIT * 2).await;
 
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
