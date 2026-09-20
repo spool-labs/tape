@@ -118,17 +118,22 @@ async fn catch_up_epochs<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     let store = context.store.as_ref();
 
     while let Some(epoch) = next_pending_epoch(store, target_epoch)? {
-        run_epoch_sweep(context, config, epoch).await?;
+        // A sweep behind the tip leaves its epoch owed, so stop here and let the
+        // next tick retry it once the store has caught up.
+        if !run_epoch_sweep(context, config, epoch).await? {
+            break;
+        }
     }
 
     Ok(())
 }
 
+/// Sweep one epoch and report whether it finished as a completed epoch.
 async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &GcConfig,
     epoch: EpochNumber,
-) -> Result<(), NodeError> {
+) -> Result<bool, NodeError> {
     let store = context.store.as_ref();
     store
         .set_gc_started_epoch(epoch)
@@ -154,6 +159,7 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     debug!(
         node_id = context.node_id().0,
         epoch = epoch.0,
+        at_tip,
         tapes_deleted = sweep_stats.tapes_deleted,
         tracks_deleted = sweep_stats.tracks_deleted,
         slices_deleted = sweep_stats.slices_deleted,
@@ -180,9 +186,17 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
+    // Behind the tip the expiry and certify checks are no-ops, so the epoch is
+    // not done and the marker stays where it was.
+    if !at_tip {
+        return Ok(false);
+    }
+
     store
         .set_gc_completed_epoch(epoch)
-        .map_err(|error| NodeError::Store(format!("set_gc_completed_epoch: {error}")))
+        .map_err(|error| NodeError::Store(format!("set_gc_completed_epoch: {error}")))?;
+
+    Ok(true)
 }
 
 /// Whether the store has applied blocks to within the at-tip threshold of the finalized tip
@@ -274,7 +288,7 @@ mod tests {
 
     use tape_store_memory::MemoryStore;
     use tape_core::challenge::PeerRecord;
-    use tape_core::types::{EpochNumber, SpoolIndex};
+    use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
     use tape_crypto::Address;
     use tape_store::{TapeStore, ops::{ChallengeOps, MetaOps}};
     use tokio_util::sync::CancellationToken;
@@ -295,6 +309,13 @@ mod tests {
             .await
             .expect("build harness")
             .ctx_for(0)
+    }
+
+    /// Put the node's ingest and store cursor at the finalized tip.
+    fn put_at_durable_tip(context: &TestContext) {
+        let tip = SlotNumber(100);
+        context.ingest.progress().record_tip(tip.0);
+        context.store.set_sync_cursor(tip, None).expect("set sync cursor");
     }
 
     fn test_config() -> GcConfig {
@@ -347,6 +368,7 @@ mod tests {
     async fn marks_complete() {
         let context = test_context().await;
         let config = test_config();
+        put_at_durable_tip(&context);
 
         run_epoch_sweep(&context, &config, EpochNumber(3)).await.unwrap();
 
@@ -355,10 +377,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sweep_behind_tip_leaves_epoch_owed() {
+        let context = test_context().await;
+        let config = test_config();
+        let epoch = EpochNumber(3);
+
+        run_epoch_sweep(&context, &config, epoch)
+            .await
+            .expect("sweep behind the tip");
+
+        assert_eq!(context.store.get_gc_started_epoch().expect("started"), Some(epoch));
+        assert_eq!(context.store.get_gc_completed_epoch().expect("completed"), None);
+        assert_eq!(
+            next_pending_epoch(&context.store, epoch).expect("pending"),
+            Some(epoch)
+        );
+
+        put_at_durable_tip(&context);
+        run_epoch_sweep(&context, &config, epoch)
+            .await
+            .expect("sweep at the tip");
+
+        assert_eq!(context.store.get_gc_completed_epoch().expect("completed"), Some(epoch));
+        assert_eq!(next_pending_epoch(&context.store, epoch).expect("pending"), None);
+    }
+
+    #[tokio::test]
     async fn repeat_tick_in_one_epoch_runs_no_sweep() {
         let context = test_context().await;
         let config = test_config();
         let epoch = context.state().epoch();
+        put_at_durable_tip(&context);
         let peer = Address::new_unique();
         let spool = SpoolIndex(0);
 
