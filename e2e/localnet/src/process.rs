@@ -52,8 +52,6 @@ pub struct ProcessSupervisor {
     data_root: PathBuf,
     rpc_url: String,
     base_port: u16,
-    challenge: bool,
-    open_admission: bool,
     nodes: Vec<NodeHandle>,
 }
 
@@ -63,16 +61,12 @@ impl ProcessSupervisor {
         data_root: PathBuf,
         rpc_url: String,
         base_port: u16,
-        challenge: bool,
-        open_admission: bool,
     ) -> Self {
         Self {
             node_binary,
             data_root,
             rpc_url,
             base_port,
-            challenge,
-            open_admission,
             nodes: Vec::new(),
         }
     }
@@ -173,9 +167,7 @@ impl ProcessSupervisor {
         let port = self.base_port + id as u16;
         let plaintext_port = port + PLAINTEXT_PORT_OFFSET;
         let node_dir = self.data_root.join(format!("node-{id}"));
-        // An operator may point node-N at a drive with an empty directory or a link to one
-        let taken = std::fs::read_dir(&node_dir).map_or(false, |mut entries| entries.next().is_some());
-        if taken {
+        if node_dir.exists() {
             anyhow::bail!(
                 "node directory already exists for node {id}: {}",
                 node_dir.display()
@@ -208,8 +200,6 @@ impl ProcessSupervisor {
             &tls_path,
             &store_path,
             &self.rpc_url,
-            self.challenge,
-            self.open_admission,
         );
         std::fs::write(&config_path, yaml)
             .with_context(|| format!("write config: {}", config_path.display()))?;
@@ -411,8 +401,6 @@ fn write_bls_keypair(path: &Path, key: &BlsPrivateKey) -> Result<()> {
     std::fs::write(path, json).with_context(|| format!("write bls keypair: {}", path.display()))
 }
 
-const OPEN_ADMISSION: &str = "  admission:\n    anonymous_write_per_sec: 1000000000\n    anonymous_write_burst: 1000000000\n    anonymous_read_per_sec: 1000000000\n    anonymous_read_burst: 1000000000\n    probe_per_sec: 1000000000\n    probe_burst: 1000000000\n    trusted_metered_per_sec: 1000000000\n    trusted_metered_burst: 1000000000\n";
-
 fn build_node_yaml(
     id: usize,
     port: u16,
@@ -422,13 +410,7 @@ fn build_node_yaml(
     tls_path: &Path,
     store_path: &Path,
     rpc_url: &str,
-    challenge: bool,
-    open_admission: bool,
 ) -> String {
-    let admission = match open_admission {
-        true => OPEN_ADMISSION,
-        false => "",
-    };
     format!(
         r#"node:
   name: "localnet-node-{id}"
@@ -448,13 +430,13 @@ network:
 
 http:
   listen: "{LOCAL_HOST}:{plaintext_port}"
-{admission}
+
 https:
   listen: "0.0.0.0:{port}"
   identity_keypair: "{tls}"
 
 challenge:
-  enabled: {challenge}
+  enabled: true
 
 # Off on the harness: rounds and records still run, but the rig should not
 # condemn its own nodes.
@@ -498,8 +480,6 @@ mod tests {
             Path::new("/tmp/node-3/tls.json"),
             Path::new("/tmp/node-3/data"),
             "http://127.0.0.1:8899",
-            true,
-            true,
         );
 
         let config = NodeConfig::from_yaml_str(&yaml).expect("generated yaml parses");
