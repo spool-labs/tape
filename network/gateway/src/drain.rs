@@ -34,6 +34,8 @@ const FAILED_RETRY: Duration = Duration::from_secs(300);
 const CHAIN_BUSY_RETRY: Duration = Duration::from_millis(500);
 /// Consecutive permanent failures before an entry is parked.
 const MAX_ATTEMPTS: u32 = 3;
+/// An entry waits out this many busy refusals at the floor before it joins the transient curve.
+const MAX_BUSY_HOLDS: u32 = 20;
 /// How often one bucket's transient outage is logged, however many entries hit it.
 const OUTAGE_LOG_INTERVAL: Duration = Duration::from_secs(60);
 /// How often the delegate's SOL balance is read.
@@ -152,19 +154,39 @@ struct Retry {
     steps: u32,
     /// Permanent failures only; a transient one never parks the entry.
     attempts: u32,
+    /// Busy refusals in a row, so a chain with no writer stops getting 2 Hz retries.
+    busy_holds: u32,
     next_attempt: Instant,
 }
 
 impl Retry {
+    /// Fresh state for an entry with nothing held against it.
+    fn new() -> Self {
+        Self {
+            steps: 0,
+            attempts: 0,
+            busy_holds: 0,
+            next_attempt: Instant::now(),
+        }
+    }
+
     /// Push the next attempt out for one failure, returning the permanent-failure count.
     fn back_off(&mut self, failure: Failure) -> u32 {
         match failure {
             Failure::Busy => {
-                self.next_attempt = Instant::now() + CHAIN_BUSY_RETRY;
-                return self.attempts;
+                self.busy_holds = self.busy_holds.saturating_add(1);
+                if self.busy_holds <= MAX_BUSY_HOLDS {
+                    self.next_attempt = Instant::now() + CHAIN_BUSY_RETRY;
+                    return self.attempts;
+                }
+                self.steps = self.steps.saturating_add(1);
             }
-            Failure::Transient => self.steps = self.steps.saturating_add(1),
+            Failure::Transient => {
+                self.busy_holds = 0;
+                self.steps = self.steps.saturating_add(1);
+            }
             Failure::Permanent => {
+                self.busy_holds = 0;
                 self.steps = self.steps.saturating_add(1);
                 self.attempts = self.attempts.saturating_add(1);
             }
@@ -557,11 +579,9 @@ where
         let Ok(mut retries) = self.retries.lock() else {
             return 0;
         };
-        let retry = retries.entry((tape, key.to_vec())).or_insert(Retry {
-            steps: 0,
-            attempts: 0,
-            next_attempt: Instant::now(),
-        });
+        let retry = retries
+            .entry((tape, key.to_vec()))
+            .or_insert_with(Retry::new);
         retry.back_off(failure)
     }
 
@@ -724,11 +744,7 @@ mod tests {
     // a busy chain holds an entry at the floor, and the next transient failure starts the curve
     #[test]
     fn busy_holds_the_curve() {
-        let mut retry = Retry {
-            steps: 0,
-            attempts: 0,
-            next_attempt: Instant::now(),
-        };
+        let mut retry = Retry::new();
         for _ in 0..3 {
             assert_eq!(retry.back_off(Failure::Busy), 0);
         }
@@ -742,6 +758,32 @@ mod tests {
         assert_eq!(retry.attempts, 0);
         let transient_wait = retry.next_attempt.saturating_duration_since(Instant::now());
         assert!(transient_wait > CHAIN_BUSY_RETRY && transient_wait <= RETRY_MIN);
+    }
+
+    // a chain with no writer stops holding an entry at the floor, and a success starts it over
+    #[test]
+    fn busy_escalates() {
+        let mut retry = Retry::new();
+
+        for _ in 0..MAX_BUSY_HOLDS {
+            assert_eq!(retry.back_off(Failure::Busy), 0);
+        }
+        assert_eq!(retry.steps, 0, "the last hold stays at the floor");
+        let held = retry.next_attempt.saturating_duration_since(Instant::now());
+        assert!(held <= CHAIN_BUSY_RETRY);
+
+        retry.back_off(Failure::Busy);
+        assert_eq!(retry.steps, 1, "one past the ceiling joins the curve");
+        assert_eq!(retry.attempts, 0, "a busy chain never parks an entry");
+        let escalated = retry.next_attempt.saturating_duration_since(Instant::now());
+        assert!(escalated > CHAIN_BUSY_RETRY && escalated <= RETRY_MIN);
+
+        // a landed write drops the entry's retry state, so the next refusal starts at the floor
+        let mut settled = Retry::new();
+        settled.back_off(Failure::Busy);
+        assert_eq!(settled.steps, 0);
+        let restarted = settled.next_attempt.saturating_duration_since(Instant::now());
+        assert!(restarted <= CHAIN_BUSY_RETRY);
     }
 
     fn transaction_error(message: &str) -> TapedriveError {
