@@ -8,6 +8,7 @@ use solana_client::client_error::{ClientError, ClientErrorKind};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig, RpcSimulateTransactionConfig, RpcTransactionConfig};
 use solana_client::rpc_request::{RpcError as SolanaRpcError, RpcResponseErrorData};
+use solana_client::rpc_response::RpcSimulateTransactionResult;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
 use solana_pubkey::Pubkey;
@@ -594,6 +595,9 @@ struct JsonRpcError {
     code: i64,
     #[serde(default)]
     message: String,
+    /// What agave puts the failed transaction's own error in
+    #[serde(default)]
+    data: Option<serde_json::Value>,
 }
 
 /// Ask one endpoint for its membership and read which chain answered.
@@ -764,14 +768,7 @@ fn decode_send_entry(
     error: Option<JsonRpcError>,
 ) -> Result<Txid, RpcError> {
     if let Some(error) = error {
-        let client_error = ClientError::from(ClientErrorKind::RpcError(
-            SolanaRpcError::RpcResponseError {
-                code: error.code,
-                message: error.message,
-                data: RpcResponseErrorData::Empty,
-            },
-        ));
-        return Err(SolanaRpc::convert_error(client_error, None));
+        return Err(decode_entry_error(error));
     }
 
     let signature = result.ok_or_else(|| {
@@ -781,6 +778,38 @@ fn decode_send_entry(
         .map_err(|error| RpcError::Deserialization(format!("send signature: {error}")))?;
 
     Ok(signature.into())
+}
+
+/// Read one entry's refusal as the program verdict it holds.
+///
+/// agave puts the failed transaction's own error under `data`, and a daemon
+/// that executes the send outright puts it in the message. Either way the
+/// entry comes back as a transaction error, so no caller reads the text.
+fn decode_entry_error(error: JsonRpcError) -> RpcError {
+    let data = error
+        .data
+        .and_then(|data| serde_json::from_value::<RpcSimulateTransactionResult>(data).ok())
+        .map(RpcResponseErrorData::SendTransactionPreflightFailure)
+        .unwrap_or(RpcResponseErrorData::Empty);
+
+    let client_error = ClientError::from(ClientErrorKind::RpcError(
+        SolanaRpcError::RpcResponseError {
+            code: error.code,
+            message: error.message,
+            data,
+        },
+    ));
+
+    match SolanaRpc::convert_error(client_error, None) {
+        RpcError::Request(message) if tape_rpc::looks_like_transaction_error(&message) => {
+            RpcError::Transaction {
+                err: None,
+                message,
+                simulated: false,
+            }
+        }
+        converted => converted,
+    }
 }
 
 /// What a batch post answers with: one entry per call, or one refusal.
@@ -1767,12 +1796,33 @@ async fn a_listed_window_reads_no_tip() {
         let mut verdicts = decode_send_batch_response(body.as_bytes(), 3).expect("batch decodes");
 
         let rejected = verdicts.remove(1).expect_err("the middle entry was rejected");
+        // A daemon that runs the send answers with the verdict in the message
+        // and no data beside it, which is still a transaction error.
         assert!(
-            looks_like_transaction_error(&rejected.to_string()),
+            matches!(rejected, RpcError::Transaction { err: None, .. }),
             "the program's rejection has to survive into the entry: {rejected}"
         );
+        assert!(looks_like_transaction_error(&rejected.to_string()));
         assert!(verdicts[0].is_ok());
         assert!(verdicts[1].is_ok());
+    }
+
+    // agave puts the failed transaction's own error under the entry's data
+    #[test]
+    fn batch_entry_data_decodes_into_a_transaction_error() {
+        let body = br#"[{"jsonrpc":"2.0","id":0,"error":{"code":-32002,
+            "message":"Transaction simulation failed",
+            "data":{"err":{"InstructionError":[0,{"Custom":116}]},
+                    "logs":[],"accounts":null,"unitsConsumed":0}}}]"#;
+
+        let mut verdicts = decode_send_batch_response(body, 1).expect("batch decodes");
+
+        let rejected = verdicts.remove(0).expect_err("the entry was rejected");
+        assert!(matches!(
+            rejected,
+            RpcError::Transaction { err: Some(_), .. }
+        ));
+        assert_eq!(rejected.custom_program_error(), Some(116));
     }
 
     // a replayed transaction the chain already ran reads as that transaction landing
