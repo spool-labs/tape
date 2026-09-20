@@ -108,6 +108,24 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     /// the gap through a fetch pipeline and applying blocks in slot order;
     /// near the tip, fall back to the serial path.
     async fn ingest_step(&mut self, next_slot: SlotNumber) -> Result<SlotNumber, NodeError> {
+        let next = self.ingest_once(next_slot).await?;
+        self.record_edge(next.0.saturating_sub(1));
+        Ok(next)
+    }
+
+    /// Mark ingest current as far as `through`, the slot it has read up to, once the queue drains
+    fn record_edge(&self, through: u64) {
+        if !self.queue.is_empty() {
+            return;
+        }
+        let progress = self.context.ingest.progress();
+        let edge = through.min(self.confirmed_tip.0);
+        if edge > progress.last_dispatched_slot() {
+            progress.record_dispatched(edge);
+        }
+    }
+
+    async fn ingest_once(&mut self, next_slot: SlotNumber) -> Result<SlotNumber, NodeError> {
         let tip = self
             .context
             .rpc
@@ -128,9 +146,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             .await
             .map_err(|error| rpc_failed("get_blocks", error))?;
         let Some(&last) = produced.last() else {
-            // Nothing listed yet: the backend is behind the tip it reported
+            // A window the chain lists nothing in holds nothing to ingest, so resume at its end
             sleep(self.tip_poll_delay()).await;
-            return Ok(next_slot);
+            return Ok(SlotNumber(window_end));
         };
         let end_slot = SlotNumber(last);
 
@@ -438,7 +456,9 @@ mod tests {
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
-    use super::BlockIngestor;
+    use tape_core::types::SlotNumber;
+
+    use super::{BlockIngestor, CATCH_UP_WINDOW_SLOTS};
     use crate::features::bootstrap::LiveStart;
     use crate::chain::{submit_join_committee, submit_set_network_tls};
     use crate::core::channels::{downstream_channels, store_channel};
@@ -447,6 +467,39 @@ mod tests {
 
     const EPOCH: EpochNumber = EpochNumber(3);
     const NODE: usize = 24;
+
+    // a window the chain lists no block in moves ingest past it
+    #[tokio::test]
+    async fn empty_window_moves_ingest_on() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Active)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(NODE);
+        let start = SlotNumber(ctx.rpc.get_slot().await.expect("get tip") + 1);
+
+        // Far enough past the window that every slot in it is one the chain produced nothing at.
+        harness
+            .rpc()
+            .warp_to_slot(start.0 + CATCH_UP_WINDOW_SLOTS * 2)
+            .expect("warp past the window");
+
+        let (senders, _receivers) = downstream_channels();
+        let mut ingestor = BlockIngestor::new(
+            ctx.clone(),
+            LiveStart { slot: start, parent: None },
+            senders,
+            CancellationToken::new(),
+        );
+
+        assert_eq!(
+            ingestor.ingest_step(start).await.expect("one ingest step"),
+            SlotNumber(start.0 + CATCH_UP_WINDOW_SLOTS)
+        );
+    }
 
     #[tokio::test]
     async fn forwards_batch_after_later_confirmed_block() {
