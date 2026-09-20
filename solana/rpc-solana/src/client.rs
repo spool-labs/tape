@@ -566,8 +566,7 @@ fn decode_send_batch_response(
     let reply: SendBatchReply = serde_json::from_slice(body)
         .map_err(|error| RpcError::Deserialization(error.to_string()))?;
 
-    // A server that refuses the batch outright answers with one error object
-    // rather than an array.
+    // A server that refuses the batch outright answers with one error object.
     let envelopes = match reply {
         SendBatchReply::Batch(envelopes) => envelopes,
         SendBatchReply::Refusal(failure) => {
@@ -1279,7 +1278,7 @@ mod tests {
         assert!(!is_already_processed(&RpcError::Request("boom".to_string())));
     }
 
-    // a reply short of the calls it answers is a batch failure, not a per-entry one
+    // a reply short of the calls it answers fails the whole batch
     #[test]
     fn batch_reply_must_answer_every_call() {
         let first = Signature::from([1u8; 64]).to_string();

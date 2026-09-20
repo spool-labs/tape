@@ -1014,8 +1014,7 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
         }
 
         // Only the refused track goes the slow way. The ones behind it are
-        // still the mirror's to prove, so they go back into a run rather than
-        // following it onto the peer path one at a time.
+        // still the mirror's to prove, so they go back into a run.
         let track = item.written.track.track_number;
         let item = refused.remove(0);
         certify_chunk(
