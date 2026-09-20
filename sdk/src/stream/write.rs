@@ -1084,15 +1084,20 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
     pending: &[ChunkCertification],
     operation: Operation,
 ) -> Result<RunOutcome, TapedriveError> {
+    // An empty run proves nothing, so it pays for neither the mirror copy nor
+    // a blockhash.
+    if pending.is_empty() {
+        return Ok(RunOutcome { landed: 0, is_epoch_changed: false });
+    }
+
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
-    let blockhash = client.rpc().rpc().get_latest_blockhash().await?;
 
     // Built against a copy, so a refused entry leaves the caller's mirror at
     // the last certify the chain actually ran.
     let mut working = mirror.lock().await.clone();
     let mut built = Vec::with_capacity(pending.len());
-    let mut transactions = Vec::with_capacity(pending.len());
+    let mut instructions = Vec::with_capacity(pending.len());
     for item in pending {
         let certified = certified_track(&item.written.track);
         let Ok(proof) = working.proof_for(certified.track_number) else {
@@ -1105,14 +1110,26 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
             break;
         }
 
-        let certify_ix = build_certify_track_ix(
+        instructions.push(build_certify_track_ix(
             payer.pubkey().into(),
             tape_key.pubkey().into(),
             proof,
             EpochNumber(item.collected.epoch),
             item.collected.bitmap,
             item.collected.aggregated_signature,
-        );
+        ));
+        built.push(BuiltCertification { proof, certified });
+    }
+
+    // The blockhash comes after the proving, so a run the mirror can prove
+    // nothing of costs no round trip and signs against a fresher one.
+    if instructions.is_empty() {
+        return Ok(RunOutcome { landed: 0, is_epoch_changed: false });
+    }
+
+    let blockhash = client.rpc().rpc().get_latest_blockhash().await?;
+    let mut transactions = Vec::with_capacity(instructions.len());
+    for certify_ix in instructions {
         transactions.push(sign_transaction(
             payer,
             &[tape_signer],
@@ -1120,11 +1137,6 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
             &[certify_ix],
             blockhash,
         )?);
-        built.push(BuiltCertification { proof, certified });
-    }
-
-    if transactions.is_empty() {
-        return Ok(RunOutcome { landed: 0, is_epoch_changed: false });
     }
 
     let submit = client
@@ -1577,6 +1589,7 @@ mod tests {
     use rpc_litesvm::LiteSvmRpc;
     use tape_api::state::Tape;
     use tape_core::spooler::GroupIndex;
+    use tape_core::track::archive::TrackArchive;
     use tape_core::system::Member;
     use tape_core::track::types::{TrackState, TrackVisibility};
     use tape_core::types::coin::TAPE;
@@ -1615,6 +1628,22 @@ mod tests {
         ]);
 
         assert_eq!(submit_outcome(&verdicts), Outcome::Error);
+    }
+
+    // an empty run proves nothing, so it asks the client for nothing
+    #[tokio::test]
+    async fn an_empty_certify_run_asks_the_client_for_nothing() {
+        // This client holds no payer, so anything the run reads off it fails.
+        let client = manifest_client(CompressedTrack::zeroed());
+        let tape_key = TapeKey::generate();
+        let mirror = Mutex::new(ArchiveMirror::new(&TrackArchive::zeroed()));
+
+        let outcome = certify_run_once(&client, &tape_key, &mirror, &[], Operation::Upload)
+            .await
+            .expect("an empty run needs no payer");
+
+        assert_eq!(outcome.landed, 0);
+        assert!(!outcome.is_epoch_changed);
     }
 
     // a post the chain would not take at all is refused too
