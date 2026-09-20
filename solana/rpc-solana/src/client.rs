@@ -422,6 +422,15 @@ const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
     max_supported_transaction_version: Some(1),
 };
 
+/// Serialises to exactly the config `get_transaction` sends; commitment is
+/// filled in per call from the configured level.
+const TRANSACTION_CONFIG: RpcTransactionConfig = RpcTransactionConfig {
+    // Base64: the event comes out of the log messages, and the tapesvm daemon refuses json.
+    encoding: Some(UiTransactionEncoding::Base64),
+    commitment: None,
+    max_supported_transaction_version: Some(1),
+};
+
 /// Fetch one block, deserialising the response body a single time.
 ///
 /// The typed client walks the whole body into a `serde_json::Value` and back
@@ -849,11 +858,10 @@ impl Rpc for SolanaRpc {
         let txid = *txid;
         let signature: Signature = txid.into();
         let config = RpcTransactionConfig {
-            encoding: Some(UiTransactionEncoding::Json),
             commitment: Some(CommitmentConfig {
                 commitment: self.config.commitment,
             }),
-            max_supported_transaction_version: Some(1),
+            ..TRANSACTION_CONFIG
         };
 
         self.with_retry("getTransaction", move |client| async move {
@@ -1221,6 +1229,23 @@ mod tests {
         assert_eq!(params[1]["maxSupportedTransactionVersion"], 1);
         // Rendered by Display, so pin the wire spelling rather than trust it.
         assert_eq!(params[1]["commitment"], "confirmed");
+    }
+
+    // json is refused by the tapesvm daemon, which leaves the register event unreadable
+    #[test]
+    fn transaction_request_asks_for_base64() {
+        let config = RpcTransactionConfig {
+            commitment: Some(CommitmentConfig {
+                commitment: CommitmentLevel::Confirmed,
+            }),
+            ..TRANSACTION_CONFIG
+        };
+
+        let params = serde_json::to_value(config).expect("config encodes");
+
+        assert_eq!(params["encoding"], "base64");
+        assert_eq!(params["maxSupportedTransactionVersion"], 1);
+        assert_eq!(params["commitment"], "confirmed");
     }
 
     // a batch reply is placed by the id it answers, whatever order it arrives in
