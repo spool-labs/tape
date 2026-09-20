@@ -57,6 +57,9 @@ pub struct SolanaRpc {
     /// Used by getBlock, which owns its request so the body is deserialised
     /// once. Shared across endpoints, since reqwest pools per host.
     http: reqwest::Client,
+    /// Whether the backend runs a batch in array order, probed on first ask.
+    /// A backend does not change kind under a client, so one probe settles it.
+    batch_ordered: tokio::sync::OnceCell<bool>,
     /// Prometheus counters, absent when no registry is installed
     #[cfg(feature = "metrics")]
     metrics: Option<Arc<crate::metrics::RpcMetrics>>,
@@ -112,9 +115,23 @@ impl SolanaRpc {
             // Declared here anyway so this path does not depend on another
             // crate's feature list to keep decompressing getBlock.
             http: reqwest::Client::new(),
+            batch_ordered: tokio::sync::OnceCell::new(),
             #[cfg(feature = "metrics")]
             metrics,
         })
+    }
+
+    /// Whether the backend behind these endpoints runs a batch in array order
+    ///
+    /// A tapesvm daemon serves `getMembership`; an agave validator answers it
+    /// method not found. Anything that fails to answer at all is read as an
+    /// agave validator, which costs a batch nothing but the one round trip.
+    async fn probe_batch_order(&self) -> bool {
+        self.with_retry_at("getMembership", |index| {
+            probe_membership(&self.http, &self.config.endpoints[index])
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Get a reference to the configuration.
@@ -507,6 +524,60 @@ struct JsonRpcError {
     message: String,
 }
 
+/// Ask one endpoint for its membership and read which chain answered.
+///
+/// Transport and HTTP failures come back as errors so the caller fails over;
+/// a JSON-RPC refusal is an answer, and it says this is an agave validator.
+async fn probe_membership(http: &reqwest::Client, endpoint: &str) -> Result<bool, RpcError> {
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": MEMBERSHIP_METHOD,
+        "params": [],
+    });
+
+    let response = http
+        .post(endpoint)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| RpcError::Request(error.to_string()))?;
+
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| RpcError::Request(error.to_string()))?;
+
+    if !status.is_success() {
+        return Err(RpcError::Request(format!(
+            "{MEMBERSHIP_METHOD} http {}",
+            status.as_u16()
+        )));
+    }
+
+    Ok(serves_membership(&body))
+}
+
+/// True when a getMembership reply came from a daemon that serves it
+fn serves_membership(body: &[u8]) -> bool {
+    let reply: MembershipReply = match serde_json::from_slice(body) {
+        Ok(reply) => reply,
+        Err(_) => return false,
+    };
+
+    reply.error.is_none() && reply.result.is_some()
+}
+
+/// What a getMembership post answers with, read only for which half is filled.
+#[derive(serde::Deserialize)]
+struct MembershipReply {
+    #[serde(default)]
+    result: Option<serde_json::Value>,
+    #[serde(default)]
+    error: Option<JsonRpcError>,
+}
+
 /// Build the JSON-RPC batch body for a run of sends, one call per
 /// transaction with its index as the id.
 fn send_batch_request(
@@ -666,6 +737,9 @@ struct SendEnvelope {
     error: Option<JsonRpcError>,
 }
 
+/// The method only a tapesvm daemon serves, which is what tells the two apart
+const MEMBERSHIP_METHOD: &str = "getMembership";
+
 /// agave's getBlock error codes
 const JSON_RPC_SERVER_ERROR_BLOCK_NOT_AVAILABLE: i64 = -32004;
 const JSON_RPC_SERVER_ERROR_SLOT_SKIPPED: i64 = -32007;
@@ -757,8 +831,11 @@ impl Rpc for SolanaRpc {
         self.config.commitment
     }
 
-    fn executes_batches_in_order(&self) -> bool {
-        self.config.is_batch_ordered
+    async fn executes_batches_in_order(&self) -> bool {
+        *self
+            .batch_ordered
+            .get_or_init(|| self.probe_batch_order())
+            .await
     }
 
     async fn get_slot(&self) -> Result<u64, RpcError> {
@@ -1162,6 +1239,170 @@ mod tests {
     use tape_rpc::looks_like_transaction_error;
     use solana_instruction_error::InstructionError;
     use solana_transaction::TransactionError;
+    use crate::selector::EndpointStrategy;
+    use std::time::Duration;
+
+/// A stand-in JSON-RPC endpoint, answering one reply per method until dropped.
+///
+/// One request per connection, which is all reqwest needs to reach it.
+struct MockEndpoint {
+    url: String,
+    served: Arc<Mutex<Vec<String>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl MockEndpoint {
+    async fn start<Answer>(answer: Answer) -> Self
+    where
+        Answer: Fn(&str) -> serde_json::Value + Send + Sync + 'static,
+    {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("mock endpoint binds");
+        let url = format!("http://{}", listener.local_addr().expect("mock endpoint address"));
+        let served = Arc::new(Mutex::new(Vec::new()));
+        let answer = Arc::new(answer);
+
+        let task = tokio::spawn({
+            let served = served.clone();
+            async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    let answer = answer.clone();
+                    let served = served.clone();
+                    tokio::spawn(async move { serve_one(stream, answer, served).await });
+                }
+            }
+        });
+
+        Self { url, served, task }
+    }
+
+    /// Methods this endpoint answered, in the order they arrived
+    fn served(&self) -> Vec<String> {
+        self.served
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl Drop for MockEndpoint {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Read one JSON-RPC post off the connection, answer it, and close.
+async fn serve_one(
+    mut stream: tokio::net::TcpStream,
+    answer: Arc<dyn Fn(&str) -> serde_json::Value + Send + Sync>,
+    served: Arc<Mutex<Vec<String>>>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut buffer = Vec::new();
+    let mut scratch = [0u8; 4096];
+    let body = loop {
+        match stream.read(&mut scratch).await {
+            Ok(0) | Err(_) => return,
+            Ok(read) => buffer.extend_from_slice(&scratch[..read]),
+        }
+
+        let Some(head_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let head = String::from_utf8_lossy(&buffer[..head_end]).to_lowercase();
+        let length = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|raw| raw.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        let start = head_end + 4;
+        if buffer.len() >= start + length {
+            break buffer[start..start + length].to_vec();
+        }
+    };
+
+    let request: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+    let method = request
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    served
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(method.clone());
+
+    let payload = serde_json::to_vec(&answer(&method)).expect("mock reply encodes");
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        payload.len()
+    );
+    let _ = stream.write_all(head.as_bytes()).await;
+    let _ = stream.write_all(&payload).await;
+    let _ = stream.flush().await;
+}
+
+/// A client pointed at these mock endpoints, starting on the earliest one
+fn client_for(endpoints: &[&MockEndpoint], strategy: EndpointStrategy) -> SolanaRpc {
+    SolanaRpc::new(RpcConfig {
+        endpoints: endpoints.iter().map(|mock| mock.url.clone()).collect(),
+        strategy,
+        timeout: Duration::from_secs(5),
+        retry: crate::config::RpcRetryConfig {
+            max_retries: 0,
+            ..crate::config::RpcRetryConfig::default()
+        },
+        ..RpcConfig::default()
+    })
+    .expect("client builds")
+}
+
+/// What a tapesvm daemon answers a getMembership with
+fn tapesvm_reply(method: &str) -> serde_json::Value {
+    match method {
+        "getMembership" => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "version": 1, "members": [], "registered": [] },
+        }),
+        _ => serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": null }),
+    }
+}
+
+/// What an agave validator answers a method it does not have with
+fn agave_reply(method: &str) -> serde_json::Value {
+    match method {
+        "getMembership" => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32601, "message": "Method not found" },
+        }),
+        _ => serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": null }),
+    }
+}
+
+// a daemon that serves getMembership runs a batch in order
+#[tokio::test]
+async fn tapesvm_answer_takes_the_ordered_path() {
+    let mock = MockEndpoint::start(tapesvm_reply).await;
+    let client = client_for(&[&mock], EndpointStrategy::PreferPrimary);
+
+    assert!(client.executes_batches_in_order().await);
+    // The probe settles once, so a second ask costs no round trip.
+    assert!(client.executes_batches_in_order().await);
+    assert_eq!(mock.served(), vec!["getMembership".to_string()]);
+}
+
+// an agave validator answers a send before it executes, so its batch is unordered
+#[tokio::test]
+async fn agave_answer_stays_on_the_unordered_path() {
+    let mock = MockEndpoint::start(agave_reply).await;
+    let client = client_for(&[&mock], EndpointStrategy::PreferPrimary);
+
+    assert!(!client.executes_batches_in_order().await);
+}
 
     #[test]
     fn test_client_creation() {

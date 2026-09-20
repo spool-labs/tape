@@ -53,11 +53,12 @@ pub trait Rpc: Send + Sync {
 
     /// Whether a JSON-RPC batch runs strictly in array order on this backend
     ///
-    /// A chain the operator runs executes each call of a batch before it
-    /// answers the next, so transactions whose proofs were built in order can
-    /// be sent as one batch. The open Solana network guarantees neither, so
-    /// callers there keep sending one transaction at a time.
-    fn executes_batches_in_order(&self) -> bool {
+    /// A backend that executes each call of a batch before it answers the
+    /// next takes transactions whose proofs were built in order as one batch.
+    /// An agave validator answers a send before it executes, so a caller
+    /// there keeps sending one transaction at a time. The backend decides,
+    /// which may cost it a round trip the first time it is asked.
+    async fn executes_batches_in_order(&self) -> bool {
         false
     }
 

@@ -142,7 +142,6 @@ fn build_rpc_client(config: &NodeConfig) -> Result<RpcClient<SolanaRpc>, NodeErr
     let rpc_config = RpcConfig {
         endpoints: config.solana.rpc.clone(),
         strategy: config.solana.rpc_strategy,
-        is_batch_ordered: config.genesis_preset.is_own_hardware(),
         ..RpcConfig::default()
     };
 

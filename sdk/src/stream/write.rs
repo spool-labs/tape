@@ -988,7 +988,7 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
     pending: Vec<ChunkCertification>,
     operation: Operation,
 ) -> Result<(), TapedriveError> {
-    if !client.rpc().rpc().executes_batches_in_order() {
+    if !client.rpc().rpc().executes_batches_in_order().await {
         return certify_chunks_singly(client, tape_key, mirror, pending, operation).await;
     }
 

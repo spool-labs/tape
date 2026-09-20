@@ -426,7 +426,7 @@ impl Rpc for LiteSvmRpc {
         CommitmentLevel::Finalized
     }
 
-    fn executes_batches_in_order(&self) -> bool {
+    async fn executes_batches_in_order(&self) -> bool {
         true
     }
 
@@ -775,4 +775,15 @@ fn transaction_error(
     }
 
     format!("{}\n{}", error, logs.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // litesvm runs every call in the process that asked, so a batch keeps its order
+    #[tokio::test]
+    async fn litesvm_takes_the_ordered_path() {
+        assert!(LiteSvmRpc::new().executes_batches_in_order().await);
+    }
 }

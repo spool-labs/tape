@@ -1027,7 +1027,7 @@ async fn submit_registers<Blockchain: Rpc, Cluster: Api>(
     let tape_signer = tape_key.keypair();
     let mut signatures = Vec::with_capacity(instructions.len());
 
-    if !client.rpc().rpc().executes_batches_in_order() {
+    if !client.rpc().rpc().executes_batches_in_order().await {
         for instruction in instructions {
             signatures.push(
                 client
