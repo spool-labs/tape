@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
-use tape_rpc::{CommitmentLevel, Rpc};
+use tape_rpc::{CommitmentLevel, Rpc, RpcError};
 use tape_rpc_client::{parse_tape_error, sign_transaction};
 use tape_api::compute::CERTIFY_TRACK_CU;
 use tape_api::errors::TapeError;
@@ -23,6 +23,7 @@ use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::ContentType;
 use tape_core::types::{StorageUnits, TrackNumber};
 use tape_crypto::hash::hash;
+use tape_crypto::tx::Txid;
 use tape_crypto::Hash;
 use tape_protocol::Api;
 use tape_protocol::api::CertifyRes;
@@ -30,7 +31,7 @@ use tape_protocol::api::CertifyRes;
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
-use crate::metrics::{Operation, Phase};
+use crate::metrics::{Operation, Outcome, Phase};
 use crate::tapedrive::Tapedrive;
 use crate::track::write::{
     certified_track, certify_submit_with_retry, certify_with_retry, coded_identity,
@@ -1034,6 +1035,17 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
     Ok(())
 }
 
+/// How a submit ended, which is refused unless the chain took an entry.
+///
+/// A post the chain answered and refused every entry of moved nothing, so it
+/// counts the same as a post the chain would not take at all.
+fn submit_outcome<Failure>(verdicts: &Result<Vec<Result<Txid, RpcError>>, Failure>) -> Outcome {
+    match verdicts {
+        Ok(entries) if entries.iter().any(Result::is_ok) => Outcome::Ok,
+        _ => Outcome::Error,
+    }
+}
+
 /// What one run of the batch did.
 struct RunOutcome {
     landed: usize,
@@ -1119,7 +1131,7 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
         .timer(operation, Phase::CertifySubmit)
         .chunks(transactions.len() as u64);
     let verdicts = client.rpc().rpc().send_transactions(&transactions).await;
-    submit.finish_result(&verdicts);
+    submit.finish(submit_outcome(&verdicts));
     let verdicts = verdicts?;
 
     let mut landed = 0;
@@ -1578,6 +1590,41 @@ mod tests {
     use crate::track::write::content_etag_named;
 
     use super::*;
+
+    fn txid(byte: u8) -> Txid {
+        Txid::from([byte; 64])
+    }
+
+    // a run the chain took an entry of is a submit that moved something
+    #[test]
+    fn a_submit_with_a_landed_entry_reads_ok() {
+        let verdicts: Result<_, TapedriveError> = Ok(vec![
+            Err(RpcError::Request("refused".to_string())),
+            Ok(txid(1)),
+        ]);
+
+        assert_eq!(submit_outcome(&verdicts), Outcome::Ok);
+    }
+
+    // a run the chain refused every entry of moved nothing
+    #[test]
+    fn a_submit_with_every_entry_refused_reads_refused() {
+        let verdicts: Result<Vec<Result<Txid, RpcError>>, TapedriveError> = Ok(vec![
+            Err(RpcError::Request("refused".to_string())),
+            Err(RpcError::Request("refused".to_string())),
+        ]);
+
+        assert_eq!(submit_outcome(&verdicts), Outcome::Error);
+    }
+
+    // a post the chain would not take at all is refused too
+    #[test]
+    fn a_refused_post_reads_refused() {
+        let verdicts: Result<Vec<Result<Txid, RpcError>>, TapedriveError> =
+            Err(TapedriveError::Rpc(RpcError::Request("no".to_string())));
+
+        assert_eq!(submit_outcome(&verdicts), Outcome::Error);
+    }
 
     fn manifest_client(track: CompressedTrack) -> Tapedrive<LiteSvmRpc, MemoryApi> {
         let api = MemoryApi::new(move |_, request| {
