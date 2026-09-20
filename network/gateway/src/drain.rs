@@ -30,12 +30,8 @@ const RETRY_MIN: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 /// Retry interval once an entry has been marked failed.
 const FAILED_RETRY: Duration = Duration::from_secs(300);
-/// Retry delay while the chain is between writers.
-const CHAIN_BUSY_RETRY: Duration = Duration::from_millis(500);
 /// Consecutive permanent failures before an entry is parked.
 const MAX_ATTEMPTS: u32 = 3;
-/// An entry waits out this many busy refusals at the floor before it joins the transient curve.
-const MAX_BUSY_HOLDS: u32 = 20;
 /// How often one bucket's transient outage is logged, however many entries hit it.
 const OUTAGE_LOG_INTERVAL: Duration = Duration::from_secs(60);
 /// How often the delegate's SOL balance is read.
@@ -50,7 +46,6 @@ const PERMANENT_TRANSACTION_ERRORS: &[&str] = &[
     "insufficient capacity",
     "account already in use",
     "invalid account data for instruction",
-    "invalid instruction data",
 ];
 
 /// Transport and cluster failures the typed variants do not separate.
@@ -63,89 +58,61 @@ const TRANSIENT_TRANSACTION_ERRORS: &[&str] = &[
     "quorum",
 ];
 
-/// Chain messages that mean a write lease is changing hands.
-const CHAIN_BUSY_ERRORS: &[&str] = &["not the writer", "write token", "short of a quorum"];
-
-/// What a failure does to an entry's next attempt.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Failure {
-    /// The chain is between writers and takes the write again within milliseconds.
-    Busy,
-    /// Clears on its own once the cluster or a peer is back.
-    Transient,
-    /// Fails the same way until an operator acts.
-    Permanent,
-}
-
-/// Sort one failure into the class that decides its retry.
-fn classify(error: &TapedriveError) -> Failure {
+/// Whether an error will clear on its own once the cluster or a peer is back.
+fn is_transient(error: &TapedriveError) -> bool {
     match error {
-        TapedriveError::Rpc(rpc_error) => classify_rpc(rpc_error),
-        TapedriveError::Network(_) => Failure::Transient,
-        TapedriveError::Peer(_) => Failure::Transient,
-        TapedriveError::RateLimited { .. } => Failure::Transient,
-        TapedriveError::Io(_) => Failure::Transient,
-        TapedriveError::Certification(_) => Failure::Transient,
-        TapedriveError::Upload(_) => Failure::Transient,
-        TapedriveError::Download(_) => Failure::Transient,
-        TapedriveError::NotFound => Failure::Transient,
-        TapedriveError::InsufficientCapacity { .. } => Failure::Permanent,
-        TapedriveError::WriteConflict { .. } => Failure::Permanent,
-        TapedriveError::TrackPositionConflict { .. } => Failure::Permanent,
-        TapedriveError::CommitmentMismatch => Failure::Permanent,
-        TapedriveError::MissingPayer => Failure::Permanent,
-        TapedriveError::Encoding(_) => Failure::Permanent,
-        TapedriveError::InvalidArgument(_) => Failure::Permanent,
-        TapedriveError::Stream(_) => Failure::Permanent,
+        TapedriveError::Rpc(rpc_error) => is_transient_rpc(rpc_error),
+        TapedriveError::Network(_) => true,
+        TapedriveError::Peer(_) => true,
+        TapedriveError::RateLimited { .. } => true,
+        TapedriveError::Io(_) => true,
+        TapedriveError::Certification(_) => true,
+        TapedriveError::Upload(_) => true,
+        TapedriveError::Download(_) => true,
+        TapedriveError::NotFound => true,
+        TapedriveError::InsufficientCapacity { .. } => false,
+        TapedriveError::WriteConflict { .. } => false,
+        TapedriveError::TrackPositionConflict { .. } => false,
+        TapedriveError::CommitmentMismatch => false,
+        TapedriveError::MissingPayer => false,
+        TapedriveError::Encoding(_) => false,
+        TapedriveError::InvalidArgument(_) => false,
+        TapedriveError::Stream(_) => false,
     }
 }
 
-/// Sort one RPC failure.
-fn classify_rpc(error: &RpcError) -> Failure {
+/// Whether one RPC failure is transient.
+fn is_transient_rpc(error: &RpcError) -> bool {
     match error {
-        RpcError::Transaction { message, .. }
-        | RpcError::Request(message)
-        | RpcError::Internal(message) => classify_message(message),
-        RpcError::Timeout(_) => Failure::Transient,
-        RpcError::BlockNotAvailable => Failure::Transient,
-        RpcError::BlockPruned => Failure::Transient,
-        RpcError::AllEndpointsFailed { .. } => Failure::Transient,
-        RpcError::AccountNotFound(_) => Failure::Transient,
-        RpcError::TransactionNotFound(_) => Failure::Transient,
-        RpcError::BlockhashExpired => Failure::Transient,
-        RpcError::SlotSkipped => Failure::Permanent,
-        RpcError::Deserialization(_) => Failure::Permanent,
+        RpcError::Transaction { message, .. } => is_transient_message(message),
+        RpcError::Request(_) => true,
+        RpcError::Timeout(_) => true,
+        RpcError::BlockNotAvailable => true,
+        RpcError::BlockPruned => true,
+        RpcError::AllEndpointsFailed { .. } => true,
+        RpcError::AccountNotFound(_) => true,
+        RpcError::TransactionNotFound(_) => true,
+        RpcError::BlockhashExpired => true,
+        RpcError::SlotSkipped => false,
+        RpcError::Internal(_) => true,
+        RpcError::Deserialization(_) => false,
     }
 }
 
-/// Sort a chain failure by its message; an unrecognised one stays transient.
-fn classify_message(message: &str) -> Failure {
-    if is_chain_busy(message) {
-        return Failure::Busy;
-    }
+/// Classify a transaction failure by its message; unrecognised failures stay transient.
+fn is_transient_message(message: &str) -> bool {
     let message = message.to_lowercase();
     for permanent in PERMANENT_TRANSACTION_ERRORS {
         if message.contains(permanent) {
-            return Failure::Permanent;
+            return false;
         }
     }
     for transient in TRANSIENT_TRANSACTION_ERRORS {
         if message.contains(transient) {
-            return Failure::Transient;
-        }
-    }
-    Failure::Transient
-}
-
-/// Whether a chain message reports a write lease changing hands.
-fn is_chain_busy(message: &str) -> bool {
-    let message = message.to_lowercase();
-    for busy in CHAIN_BUSY_ERRORS {
-        if message.contains(busy) {
             return true;
         }
     }
-    false
+    true
 }
 
 /// Retry state for one entry.
@@ -154,47 +121,7 @@ struct Retry {
     steps: u32,
     /// Permanent failures only; a transient one never parks the entry.
     attempts: u32,
-    /// Busy refusals in a row, so a chain with no writer stops getting 2 Hz retries.
-    busy_holds: u32,
     next_attempt: Instant,
-}
-
-impl Retry {
-    /// Fresh state for an entry with nothing held against it.
-    fn new() -> Self {
-        Self {
-            steps: 0,
-            attempts: 0,
-            busy_holds: 0,
-            next_attempt: Instant::now(),
-        }
-    }
-
-    /// Push the next attempt out for one failure, returning the permanent-failure count.
-    fn back_off(&mut self, failure: Failure) -> u32 {
-        match failure {
-            Failure::Busy => {
-                self.busy_holds = self.busy_holds.saturating_add(1);
-                if self.busy_holds <= MAX_BUSY_HOLDS {
-                    self.next_attempt = Instant::now() + CHAIN_BUSY_RETRY;
-                    return self.attempts;
-                }
-                self.steps = self.steps.saturating_add(1);
-            }
-            Failure::Transient => {
-                self.busy_holds = 0;
-                self.steps = self.steps.saturating_add(1);
-            }
-            Failure::Permanent => {
-                self.busy_holds = 0;
-                self.steps = self.steps.saturating_add(1);
-                self.attempts = self.attempts.saturating_add(1);
-            }
-        }
-        let is_parked = matches!(failure, Failure::Permanent) && self.attempts >= MAX_ATTEMPTS;
-        self.next_attempt = Instant::now() + retry_delay(self.steps, is_parked);
-        self.attempts
-    }
 }
 
 /// What the drain reports about its own health.
@@ -526,14 +453,11 @@ where
         write: &PendingWrite,
         error: &TapedriveError,
     ) {
-        let failure = classify(error);
-        let attempts = self.back_off(tape, key, failure);
-        match failure {
-            Failure::Busy | Failure::Transient => {
-                self.log_outage(tape, error);
-                return;
-            }
-            Failure::Permanent => {}
+        let is_transient = is_transient(error);
+        let attempts = self.back_off(tape, key, is_transient);
+        if is_transient {
+            self.log_outage(tape, error);
+            return;
         }
 
         warn!(
@@ -575,14 +499,22 @@ where
     }
 
     /// Push the next attempt out, returning the consecutive permanent-failure count.
-    fn back_off(&self, tape: Address, key: &[u8], failure: Failure) -> u32 {
+    fn back_off(&self, tape: Address, key: &[u8], is_transient: bool) -> u32 {
         let Ok(mut retries) = self.retries.lock() else {
             return 0;
         };
-        let retry = retries
-            .entry((tape, key.to_vec()))
-            .or_insert_with(Retry::new);
-        retry.back_off(failure)
+        let retry = retries.entry((tape, key.to_vec())).or_insert(Retry {
+            steps: 0,
+            attempts: 0,
+            next_attempt: Instant::now(),
+        });
+        retry.steps = retry.steps.saturating_add(1);
+        if !is_transient {
+            retry.attempts = retry.attempts.saturating_add(1);
+        }
+        let is_parked = !is_transient && retry.attempts >= MAX_ATTEMPTS;
+        retry.next_attempt = Instant::now() + retry_delay(retry.steps, is_parked);
+        retry.attempts
     }
 
     /// Forget an entry's retry state once it stops needing one.
@@ -623,167 +555,41 @@ mod tests {
     // transport, cluster and peer failures clear on their own
     #[test]
     fn transient_errors() {
-        assert_eq!(
-            classify(&TapedriveError::Rpc(RpcError::Timeout(RETRY_MIN))),
-            Failure::Transient
-        );
-        assert_eq!(
-            classify(&TapedriveError::Rpc(RpcError::AllEndpointsFailed { attempts: 3 })),
-            Failure::Transient
-        );
-        assert_eq!(
-            classify(&TapedriveError::Rpc(RpcError::Request("502".into()))),
-            Failure::Transient
-        );
-        assert_eq!(
-            classify(&TapedriveError::Rpc(RpcError::Request("connection reset".into()))),
-            Failure::Transient
-        );
-        assert_eq!(
-            classify(&TapedriveError::Upload(UploadError::InsufficientQuorum {
-                got: 1,
-                need: 14,
-            })),
-            Failure::Transient
-        );
-        assert_eq!(
-            classify(&TapedriveError::Rpc(RpcError::BlockhashExpired)),
-            Failure::Transient
-        );
-        assert_eq!(classify(&TapedriveError::NotFound), Failure::Transient);
-        assert_eq!(classify(&transaction_error("Blockhash not found")), Failure::Transient);
-        assert_eq!(classify(&transaction_error("peer was unreachable")), Failure::Transient);
+        assert!(is_transient(&TapedriveError::Rpc(RpcError::Timeout(RETRY_MIN))));
+        assert!(is_transient(&TapedriveError::Rpc(RpcError::AllEndpointsFailed {
+            attempts: 3
+        })));
+        assert!(is_transient(&TapedriveError::Rpc(RpcError::Request("502".into()))));
+        assert!(is_transient(&TapedriveError::Upload(UploadError::InsufficientQuorum {
+            got: 1,
+            need: 14,
+        })));
+        assert!(is_transient(&TapedriveError::Rpc(RpcError::BlockhashExpired)));
+        assert!(is_transient(&TapedriveError::NotFound));
+        assert!(is_transient(&transaction_error("Blockhash not found")));
+        assert!(is_transient(&transaction_error("peer was unreachable")));
     }
 
     // funds, capacity and authorization failures need an operator
     #[test]
     fn permanent_errors() {
-        assert_eq!(
-            classify(&TapedriveError::InsufficientCapacity {
-                need: StorageUnits::from_bytes(2),
-                available: StorageUnits::from_bytes(1),
-            }),
-            Failure::Permanent
-        );
-        assert_eq!(
-            classify(&TapedriveError::InvalidArgument("name too long".into())),
-            Failure::Permanent
-        );
-        assert_eq!(
-            classify(&TapedriveError::InvalidArgument(
-                "queued object a.txt has no stored payload".into()
-            )),
-            Failure::Permanent
-        );
-        assert_eq!(classify(&TapedriveError::MissingPayer), Failure::Permanent);
-        assert_eq!(
-            classify(&TapedriveError::Rpc(RpcError::SlotSkipped)),
-            Failure::Permanent
-        );
-        assert_eq!(
-            classify(&transaction_error("Transfer: insufficient lamports 100, need 5000")),
-            Failure::Permanent
-        );
-        assert_eq!(
-            classify(&transaction_error(
-                "Error processing Instruction 0: invalid account data for instruction"
-            )),
-            Failure::Permanent
-        );
-        assert_eq!(
-            classify(&transaction_error("Allocate: account already in use")),
-            Failure::Permanent
-        );
-    }
-
-    // the chain refuses its own writes while its lease flaps, then takes them milliseconds later
-    #[test]
-    fn busy_errors() {
-        assert_eq!(
-            classify(&transaction_error("the log is short of a quorum")),
-            Failure::Busy
-        );
-        assert_eq!(
-            classify(&TapedriveError::Rpc(RpcError::Internal(
-                "nobody holds the write token".into()
-            ))),
-            Failure::Busy
-        );
-        assert_eq!(
-            classify(&TapedriveError::Rpc(RpcError::Request(
-                "RPC request failed: not the writer".into()
-            ))),
-            Failure::Busy
-        );
-        assert_eq!(
-            classify(&transaction_error("Transfer: insufficient funds 1, need 5000")),
-            Failure::Permanent
-        );
-        assert_eq!(classify(&transaction_error("request timed out")), Failure::Transient);
-    }
-
-    // a program refusal reaching the drain untyped still parks the entry
-    #[test]
-    fn program_refusal_parks() {
-        let refusal = "RPC error: RPC request failed: RPC response error -32002: Error processing \
-                       Instruction 0: invalid instruction data; Program 4iG5 failed: invalid \
-                       instruction data;  tape=7vQf";
-
-        assert_eq!(
-            classify(&TapedriveError::Rpc(RpcError::Request(refusal.into()))),
-            Failure::Permanent
-        );
-        assert_eq!(
-            classify(&TapedriveError::Rpc(RpcError::Internal(
-                "Transfer: insufficient funds 1, need 5000".into()
-            ))),
-            Failure::Permanent
-        );
-    }
-
-    // a busy chain holds an entry at the floor, and the next transient failure starts the curve
-    #[test]
-    fn busy_holds_the_curve() {
-        let mut retry = Retry::new();
-        for _ in 0..3 {
-            assert_eq!(retry.back_off(Failure::Busy), 0);
-        }
-        assert_eq!(retry.steps, 0, "a busy chain leaves the curve alone");
-        assert_eq!(retry.attempts, 0, "a busy chain never parks an entry");
-        let busy_wait = retry.next_attempt.saturating_duration_since(Instant::now());
-        assert!(busy_wait <= CHAIN_BUSY_RETRY);
-
-        retry.back_off(Failure::Transient);
-        assert_eq!(retry.steps, 1);
-        assert_eq!(retry.attempts, 0);
-        let transient_wait = retry.next_attempt.saturating_duration_since(Instant::now());
-        assert!(transient_wait > CHAIN_BUSY_RETRY && transient_wait <= RETRY_MIN);
-    }
-
-    // a chain with no writer stops holding an entry at the floor, and a success starts it over
-    #[test]
-    fn busy_escalates() {
-        let mut retry = Retry::new();
-
-        for _ in 0..MAX_BUSY_HOLDS {
-            assert_eq!(retry.back_off(Failure::Busy), 0);
-        }
-        assert_eq!(retry.steps, 0, "the last hold stays at the floor");
-        let held = retry.next_attempt.saturating_duration_since(Instant::now());
-        assert!(held <= CHAIN_BUSY_RETRY);
-
-        retry.back_off(Failure::Busy);
-        assert_eq!(retry.steps, 1, "one past the ceiling joins the curve");
-        assert_eq!(retry.attempts, 0, "a busy chain never parks an entry");
-        let escalated = retry.next_attempt.saturating_duration_since(Instant::now());
-        assert!(escalated > CHAIN_BUSY_RETRY && escalated <= RETRY_MIN);
-
-        // a landed write drops the entry's retry state, so the next refusal starts at the floor
-        let mut settled = Retry::new();
-        settled.back_off(Failure::Busy);
-        assert_eq!(settled.steps, 0);
-        let restarted = settled.next_attempt.saturating_duration_since(Instant::now());
-        assert!(restarted <= CHAIN_BUSY_RETRY);
+        assert!(!is_transient(&TapedriveError::InsufficientCapacity {
+            need: StorageUnits::from_bytes(2),
+            available: StorageUnits::from_bytes(1),
+        }));
+        assert!(!is_transient(&TapedriveError::InvalidArgument("name too long".into())));
+        assert!(!is_transient(&TapedriveError::InvalidArgument(
+            "queued object a.txt has no stored payload".into()
+        )));
+        assert!(!is_transient(&TapedriveError::MissingPayer));
+        assert!(!is_transient(&TapedriveError::Rpc(RpcError::SlotSkipped)));
+        assert!(!is_transient(&transaction_error(
+            "Transfer: insufficient lamports 100, need 5000"
+        )));
+        assert!(!is_transient(&transaction_error(
+            "Error processing Instruction 0: invalid account data for instruction"
+        )));
+        assert!(!is_transient(&transaction_error("Allocate: account already in use")));
     }
 
     fn transaction_error(message: &str) -> TapedriveError {

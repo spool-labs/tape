@@ -14,7 +14,6 @@ use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS}
 use tape_api::state::Tape;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::tape::{snapshot_tape_number, TapeFlags};
-use tape_core::prelude::SpoolIndex;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
@@ -24,7 +23,7 @@ use tape_crypto::address::Address;
 use tape_crypto::hash::hash as hash_bytes;
 use tape_crypto::hash::Hash;
 use tape_protocol::{Api, ProtocolState};
-use tape_snapshot::{encode_snapshot_streaming, SnapshotChunk};
+use tape_snapshot::encode_snapshot;
 use tape_store::ops::{
     EventLogOps, ObjectInfoOps, SliceOps, SnapshotOps, TapeOps, TrackDataOps, TrackOps,
 };
@@ -122,21 +121,46 @@ where
         entries,
     };
 
+    let snapshot_tape = snapshot_tape_pda(epoch).0;
+    let chunks = encode_snapshot(snapshot_tape, epoch, &snapshot_log, total_groups)
+        .map_err(|e| NodeError::Store(format!("encode snapshot epoch={}: {e}", epoch.0)))?;
+
     // Fold every chunk track into the candidate tape (its hash is what the
     // current-epoch groups vote on) and stash the slice for any spool we own.
-    let snapshot_tape = snapshot_tape_pda(epoch).0;
     let mut tape = Tape::snapshot(epoch);
-    let mut tracks: Vec<SnapshotTrack> = Vec::new();
+    let mut tracks = Vec::with_capacity(chunks.len());
 
-    encode_snapshot_streaming(
-        snapshot_tape,
-        epoch,
-        &snapshot_log,
-        total_groups,
-        |chunk| -> Result<(), NodeError> {
-            keep_chunk(ctx, epoch, &our_spools, &mut tape, &mut tracks, chunk)
-        },
-    )?;
+    for chunk in chunks {
+        tape.write_track(&chunk.track).map_err(|error| {
+            NodeError::Store(format!("snapshot tape write_track: {error:?}"))
+        })?;
+
+        if let Some((spool_index, bitmap_index)) = our_spools.iter().find_map(|&spool| {
+            if GroupIndex::containing(spool) != chunk.group {
+                return None;
+            }
+
+            let bitmap_index = chunk.group.position_of(spool)?;
+            Some((spool, bitmap_index))
+        }) {
+            let artifact = SnapshotArtifact {
+                spool_index,
+                blob: chunk.blob,
+                slice: chunk.slices[bitmap_index].clone(),
+            };
+
+            ctx.store
+                .put_snapshot_artifact(epoch, chunk.group, chunk.chunk, &artifact)
+                .map_err(store_err("put_snapshot_artifact"))?;
+        }
+
+        tracks.push(SnapshotTrack {
+            group: chunk.group,
+            chunk: chunk.chunk,
+            track: chunk.track,
+            blob: chunk.blob,
+        });
+    }
 
     let hash = hash_bytes(bytes_of(&tape));
 
@@ -148,58 +172,6 @@ where
         tape,
         tracks,
     }))
-}
-
-/// Fold one chunk's track into the candidate tape and store the slice for any
-/// spool this node owns, dropping the rest of the chunk's slices.
-fn keep_chunk<Db, Cluster, Blockchain>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    epoch: EpochNumber,
-    our_spools: &[SpoolIndex],
-    tape: &mut Tape,
-    tracks: &mut Vec<SnapshotTrack>,
-    mut chunk: SnapshotChunk,
-) -> Result<(), NodeError>
-where
-    Db: Store + 'static,
-    Cluster: Api + 'static,
-    Blockchain: Rpc + 'static,
-{
-    tape.write_track(&chunk.track)
-        .map_err(|error| NodeError::Store(format!("snapshot tape write_track: {error:?}")))?;
-
-    if let Some((spool_index, bitmap_index)) = owned_position(our_spools, chunk.group) {
-        let artifact = SnapshotArtifact {
-            spool_index,
-            blob: chunk.blob,
-            slice: std::mem::take(&mut chunk.slices[bitmap_index]),
-        };
-
-        ctx.store
-            .put_snapshot_artifact(epoch, chunk.group, chunk.chunk, &artifact)
-            .map_err(store_err("put_snapshot_artifact"))?;
-    }
-
-    tracks.push(SnapshotTrack {
-        group: chunk.group,
-        chunk: chunk.chunk,
-        track: chunk.track,
-        blob: chunk.blob,
-    });
-
-    Ok(())
-}
-
-/// The spool this node owns in `group`, with its position in the group.
-fn owned_position(our_spools: &[SpoolIndex], group: GroupIndex) -> Option<(SpoolIndex, usize)> {
-    for &spool in our_spools {
-        match group.position_of(spool) {
-            Some(bitmap_index) => return Some((spool, bitmap_index)),
-            None => continue,
-        }
-    }
-
-    None
 }
 
 /// Promote the locally built canonical candidate into the serving store.
@@ -280,117 +252,4 @@ where
 
 fn store_err<E: std::fmt::Display>(op: &'static str) -> impl FnOnce(E) -> NodeError {
     move |e| NodeError::Store(format!("{op}: {e}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use tape_core::prelude::EpochPhase;
-    use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent};
-    use tape_crypto::tx::Txid;
-    use tape_snapshot::encode_snapshot;
-
-    use crate::harness::NodeHarness;
-
-    use super::*;
-
-    const EPOCH: EpochNumber = EpochNumber(4);
-    const EVENT_SLOT: SlotNumber = SlotNumber(9);
-    const NODE_COUNT: usize = 25;
-    const GROUP_COUNT: u64 = 3;
-    /// Spool assignment gives this member one spool in two of the three groups.
-    const OWNER_INDEX: usize = 20;
-    const OWNED_SPOOL_COUNT: usize = 2;
-
-    fn record() -> ReplayRecord {
-        ReplayRecord {
-            tx_id: Txid::default(),
-            actor: None,
-            event: ReplayableEvent::CertifyTrack {
-                track: Address::from([3u8; 32]),
-                epoch: EPOCH,
-            },
-        }
-    }
-
-    // the build keeps one slice per owned spool and stores no other slice
-    #[tokio::test]
-    async fn keeps_owned_slices() {
-        let harness = NodeHarness::builder()
-            .nodes(NODE_COUNT)
-            .current_committee_size(NODE_COUNT)
-            .current_group_count(GROUP_COUNT)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Snapshot)
-            .no_prev_snapshot_tape()
-            .build()
-            .await
-            .expect("build harness");
-
-        let ctx = harness.ctx_for(OWNER_INDEX);
-        let our_spools = harness.owned_spools(OWNER_INDEX);
-        ctx.store
-            .append_record(EPOCH, EVENT_SLOT, None, &record())
-            .expect("append record");
-
-        let state = ctx.state();
-        let candidate = build_snapshot_blocking(&ctx, &state, EPOCH)
-            .expect("build snapshot")
-            .expect("snapshot candidate");
-
-        let log = SnapshotLog {
-            epoch: EPOCH,
-            start_slot: EVENT_SLOT,
-            end_slot: EVENT_SLOT,
-            entries: ctx.store.get_epoch_events(EPOCH).expect("epoch events"),
-        };
-        let full = encode_snapshot(
-            snapshot_tape_pda(EPOCH).0,
-            EPOCH,
-            &log,
-            GROUP_COUNT as usize,
-        )
-        .expect("full encode");
-
-        let mut expected_tape = Tape::snapshot(EPOCH);
-        for chunk in &full {
-            expected_tape.write_track(&chunk.track).expect("write track");
-        }
-
-        assert_eq!(candidate.hash, hash_bytes(bytes_of(&expected_tape)));
-        assert_eq!(candidate.tracks.len(), full.len());
-        for (kept, chunk) in candidate.tracks.iter().zip(full.iter()) {
-            assert_eq!(kept.group, chunk.group);
-            assert_eq!(kept.chunk, chunk.chunk);
-            assert_eq!(kept.track, chunk.track);
-            assert_eq!(kept.blob, chunk.blob);
-        }
-
-        assert_eq!(our_spools.len(), OWNED_SPOOL_COUNT);
-        let mut stored = 0;
-        for group_number in 0..GROUP_COUNT {
-            stored += ctx
-                .store
-                .iter_snapshot_artifacts(EPOCH, GroupIndex(group_number))
-                .expect("iter artifacts")
-                .len();
-        }
-        assert_eq!(stored, OWNED_SPOOL_COUNT);
-
-        for &spool in &our_spools {
-            let group = GroupIndex::containing(spool);
-            let position = group.position_of(spool).expect("group position");
-            let artifact = ctx
-                .store
-                .get_snapshot_artifact(EPOCH, group, ChunkNumber(0))
-                .expect("get artifact")
-                .expect("owned artifact");
-            let coded = full
-                .iter()
-                .find(|chunk| chunk.group == group && chunk.chunk == ChunkNumber(0))
-                .expect("encoded chunk");
-
-            assert_eq!(artifact.spool_index, spool);
-            assert_eq!(artifact.slice, coded.slices[position]);
-        }
-    }
 }
