@@ -9,6 +9,7 @@ pub struct LocalnetConfig {
     pub stake_amount: u64,
     pub spool_groups: u64,
     pub challenge: bool,
+    pub open_admission: bool,
 }
 
 impl Default for LocalnetConfig {
@@ -22,6 +23,7 @@ impl Default for LocalnetConfig {
             stake_amount: 100_000,
             spool_groups: 1,
             challenge: true,
+            open_admission: false,
         }
     }
 }

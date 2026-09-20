@@ -53,6 +53,7 @@ pub struct ProcessSupervisor {
     rpc_url: String,
     base_port: u16,
     challenge: bool,
+    open_admission: bool,
     nodes: Vec<NodeHandle>,
 }
 
@@ -63,6 +64,7 @@ impl ProcessSupervisor {
         rpc_url: String,
         base_port: u16,
         challenge: bool,
+        open_admission: bool,
     ) -> Self {
         Self {
             node_binary,
@@ -70,6 +72,7 @@ impl ProcessSupervisor {
             rpc_url,
             base_port,
             challenge,
+            open_admission,
             nodes: Vec::new(),
         }
     }
@@ -206,6 +209,7 @@ impl ProcessSupervisor {
             &store_path,
             &self.rpc_url,
             self.challenge,
+            self.open_admission,
         );
         std::fs::write(&config_path, yaml)
             .with_context(|| format!("write config: {}", config_path.display()))?;
@@ -407,6 +411,8 @@ fn write_bls_keypair(path: &Path, key: &BlsPrivateKey) -> Result<()> {
     std::fs::write(path, json).with_context(|| format!("write bls keypair: {}", path.display()))
 }
 
+const OPEN_ADMISSION: &str = "  admission:\n    anonymous_write_per_sec: 1000000000\n    anonymous_write_burst: 1000000000\n    anonymous_read_per_sec: 1000000000\n    anonymous_read_burst: 1000000000\n    probe_per_sec: 1000000000\n    probe_burst: 1000000000\n    trusted_metered_per_sec: 1000000000\n    trusted_metered_burst: 1000000000\n";
+
 fn build_node_yaml(
     id: usize,
     port: u16,
@@ -417,7 +423,12 @@ fn build_node_yaml(
     store_path: &Path,
     rpc_url: &str,
     challenge: bool,
+    open_admission: bool,
 ) -> String {
+    let admission = match open_admission {
+        true => OPEN_ADMISSION,
+        false => "",
+    };
     format!(
         r#"node:
   name: "localnet-node-{id}"
@@ -437,7 +448,7 @@ network:
 
 http:
   listen: "{LOCAL_HOST}:{plaintext_port}"
-
+{admission}
 https:
   listen: "0.0.0.0:{port}"
   identity_keypair: "{tls}"
@@ -487,6 +498,7 @@ mod tests {
             Path::new("/tmp/node-3/tls.json"),
             Path::new("/tmp/node-3/data"),
             "http://127.0.0.1:8899",
+            true,
             true,
         );
 
