@@ -20,7 +20,6 @@ use crate::context::NodeContext;
 use crate::core::atlas::short_label;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
-use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::replay::types::{RawTrack, ReplayBatch};
 use crate::features::store::apply::apply_slot;
 use crate::features::store::util::is_responsible_for_group;
@@ -136,11 +135,7 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluste
                         };
                     };
 
-                    persist_batch(
-                        self.context.store.as_ref(),
-                        self.context.pending.as_ref(),
-                        &batch,
-                    )?;
+                    persist_batch(self.context.store.as_ref(), &batch)?;
                     self.feed_atlas(&batch);
 
                     self.context.pending
@@ -186,19 +181,17 @@ pub enum RawTrackPolicy {
 
 pub fn persist_batch<Db: Store>(
     store: &TapeStore<Db>,
-    pending: &PendingTracks,
     batch: &ReplayBatch,
 ) -> Result<(), NodeError> {
-    persist_batch_with(store, pending, batch, RawTrackPolicy::OwnedGroups)
+    persist_batch_with(store, batch, RawTrackPolicy::OwnedGroups)
 }
 
 pub fn persist_batch_with<Db: Store>(
     store: &TapeStore<Db>,
-    pending: &PendingTracks,
     batch: &ReplayBatch,
     policy: RawTrackPolicy,
 ) -> Result<(), NodeError> {
-    apply_records(store, pending, batch.slot, batch.block_time, &batch.records)?;
+    apply_records(store, batch.slot, batch.block_time, &batch.records)?;
     persist_raw_tracks(store, &batch.raw_tracks, policy)?;
 
     store
@@ -208,13 +201,12 @@ pub fn persist_batch_with<Db: Store>(
 
 fn apply_records<Db: Store>(
     store: &TapeStore<Db>,
-    pending: &PendingTracks,
     slot: SlotNumber,
     block_time: Option<i64>,
     records: &[ReplayRecord],
 ) -> Result<(), NodeError> {
     let events: Vec<_> = records.iter().map(|record| record.event.clone()).collect();
-    apply_slot(store, pending, slot, block_time, &events)
+    apply_slot(store, slot, block_time, &events)
 }
 
 fn persist_raw_tracks<Db: Store>(
@@ -251,7 +243,6 @@ mod tests {
     use tape_store::TapeStore;
 
     use super::persist_batch;
-    use crate::features::block::pending_tracks::PendingTracks;
     use crate::features::replay::types::{RawTrack, ReplayBatch};
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -277,7 +268,7 @@ mod tests {
             raw_tracks: Vec::new(),
         };
 
-        persist_batch(&store, &PendingTracks::new(), &batch).unwrap();
+        persist_batch(&store, &batch).unwrap();
 
         assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(99)));
     }
@@ -308,7 +299,7 @@ mod tests {
             raw_tracks: Vec::new(),
         };
 
-        persist_batch(&store, &PendingTracks::new(), &batch).unwrap();
+        persist_batch(&store, &batch).unwrap();
         assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(77)));
     }
 
@@ -338,7 +329,7 @@ mod tests {
             }],
         };
 
-        persist_batch(&store, &PendingTracks::new(), &batch).unwrap();
+        persist_batch(&store, &batch).unwrap();
         assert_eq!(store.get_track_data(track).unwrap(), Some(BlobData::Inline(raw)));
         assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(78)));
     }
@@ -361,7 +352,7 @@ mod tests {
             }],
         };
 
-        persist_batch(&store, &PendingTracks::new(), &batch).unwrap();
+        persist_batch(&store, &batch).unwrap();
         assert_eq!(store.get_track_data(track).unwrap(), None);
         assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(79)));
     }

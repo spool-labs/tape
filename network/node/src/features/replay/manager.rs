@@ -45,7 +45,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> ReplayManager<Db, Cluster, Blockc
 
         let mut replay = ReplayEngine::new(
             self.context.store.as_ref(),
-            self.context.pending.as_ref(),
             self.context.state().epoch(),
         );
 

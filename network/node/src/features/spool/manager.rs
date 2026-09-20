@@ -17,10 +17,11 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::spool::types::{Action, ScanResult, TaskDone, TaskResult};
 use crate::features::spool::{recover, repair, scan, sync};
-use crate::features::store::apply::drain_deferred_repairs;
 
 const SPOOL_MANAGER_HEARTBEAT: Duration = Duration::from_secs(1);
 const LOCKED_SPOOL_RETENTION_EPOCHS: u64 = 4;
+/// One work check walks this many queued repairs looking for a due one
+const PENDING_WORK_WINDOW: usize = 64;
 
 pub struct SpoolManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -121,10 +122,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
                 // Periodic heartbeat
                 _ = tokio::time::sleep(SPOOL_MANAGER_HEARTBEAT) => {
-                    drain_deferred_repairs(
-                        self.context.store.as_ref(),
-                        self.context.pending.as_ref(),
-                    )?;
                     self.try_spawn(observed_epoch)?;
                 }
             }
@@ -434,19 +431,43 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 }
 
 
+/// The work a spool still owes, dropping the queued repairs whose slice has since arrived
 pub fn has_pending_work<Db: Store>(
     store: &tape_store::TapeStore<Db>,
     spool: SpoolIndex,
 ) -> Result<(bool, bool), NodeError> {
-    let has_repair = !store
-        .iter_pending_repairs(spool, 1)
-        .map_err(|e| NodeError::Store(format!("iter_pending_repairs({spool}): {e}")))?
-        .is_empty();
+    let has_repair = has_repair_due(store, spool)?;
     let has_recovery = !store
         .iter_pending_recoveries(spool, 1)
         .map_err(|e| NodeError::Store(format!("iter_pending_recoveries({spool}): {e}")))?
         .is_empty();
     Ok((has_repair, has_recovery))
+}
+
+/// Whether a repair is due, dropping every row whose slice this node has since stored
+fn has_repair_due<Db: Store>(
+    store: &tape_store::TapeStore<Db>,
+    spool: SpoolIndex,
+) -> Result<bool, NodeError> {
+    let queued = store
+        .iter_pending_repairs(spool, PENDING_WORK_WINDOW)
+        .map_err(|e| NodeError::Store(format!("iter_pending_repairs({spool}): {e}")))?;
+
+    for track in queued {
+        let is_held = store
+            .has_slice(spool, track)
+            .map_err(|e| NodeError::Store(format!("has_slice({spool}): {e}")))?;
+
+        if !is_held {
+            return Ok(true);
+        }
+
+        store
+            .remove_pending_repair(spool, track)
+            .map_err(|e| NodeError::Store(format!("remove_pending_repair({spool}): {e}")))?;
+    }
+
+    Ok(false)
 }
 
 fn action_for_status(

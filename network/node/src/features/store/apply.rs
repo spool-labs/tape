@@ -3,7 +3,6 @@ use tape_api::program::tapedrive::{blacklist_pda, history_pda, track_pda, SYSTEM
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::object::object_etag;
 use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
-use tape_core::system::SpoolStatus;
 use tape_core::tape::{
     blacklist_tape_number, history_tape_number, snapshot_tape_number, tape_index, tape_namespace,
     TapeFlags, TapeNamespace,
@@ -22,7 +21,6 @@ use tape_store::TapeStore;
 use tracing::warn;
 
 use crate::core::error::NodeError;
-use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::store::sample::put_sample;
 use crate::features::store::cleanup::{
     cleanup_track_slices, delete_tape_local, delete_track_local, remove_object_listing_for_track,
@@ -30,15 +28,17 @@ use crate::features::store::cleanup::{
 
 const DELETE_TAPE_BATCH_SIZE: usize = 100;
 
+/// A slice missing at certification waits this many slots before the repair path takes it
+const REPAIR_GRACE_SLOTS: SlotNumber = SlotNumber(12);
+
 pub fn apply_slot<Db: Store>(
     store: &TapeStore<Db>,
-    pending: &PendingTracks,
     slot: SlotNumber,
     block_time: Option<i64>,
     events: &[ReplayableEvent],
 ) -> Result<(), NodeError> {
     for event in events {
-        apply_event(store, pending, slot, block_time, event)?;
+        apply_event(store, slot, block_time, event)?;
     }
 
     Ok(())
@@ -46,7 +46,6 @@ pub fn apply_slot<Db: Store>(
 
 pub fn apply_event<Db: Store>(
     store: &TapeStore<Db>,
-    pending: &PendingTracks,
     slot: SlotNumber,
     block_time: Option<i64>,
     event: &ReplayableEvent,
@@ -56,7 +55,7 @@ pub fn apply_event<Db: Store>(
             put_track_object(store, replay, slot, block_time)?;
         }
         ReplayableEvent::CertifyTrack { track, epoch } => {
-            set_certified(store, pending, *track, *epoch)?;
+            set_certified(store, *track, *epoch, slot)?;
         }
         ReplayableEvent::DeleteTrack { track, .. } => {
             delete_track_local(store, *track, slot)?;
@@ -406,9 +405,9 @@ fn update_tape<Db: Store, Edit: FnOnce(&mut TapeInfo)>(
 
 fn set_certified<Db: Store>(
     store: &TapeStore<Db>,
-    pending: &PendingTracks,
     track: Address,
     epoch: EpochNumber,
+    certified_slot: SlotNumber,
 ) -> Result<(), NodeError> {
     // Both records or neither: object info stamped against a track never stored
     // leaves the pair disagreeing with nothing to repair it
@@ -440,7 +439,7 @@ fn set_certified<Db: Store>(
             )
             .map_err(store_error)?;
 
-        defer_certified_repairs(store, pending, track)?;
+        defer_certified_repairs(store, track, certified_slot)?;
     } else if let ObjectInfo::System {
         kind,
         track_address,
@@ -465,17 +464,18 @@ fn set_certified<Db: Store>(
     Ok(())
 }
 
-/// Hold back every slice of a freshly certified track this node is still missing
+/// Queue a repair for every slice of a freshly certified track this node misses, due once the grace is out
 fn defer_certified_repairs<Db: Store>(
     store: &TapeStore<Db>,
-    pending: &PendingTracks,
     track: Address,
+    certified_slot: SlotNumber,
 ) -> Result<(), NodeError> {
     let Some(track_info) = store.get_track(track).map_err(store_error)? else {
         return Ok(());
     };
 
     let group = track_info.group;
+    let ready_at = certified_slot.saturating_add(REPAIR_GRACE_SLOTS);
 
     for slice in 0..GROUP_SIZE {
         let spool = group.spool_at(slice);
@@ -492,40 +492,9 @@ fn defer_certified_repairs<Db: Store>(
             continue;
         }
 
-        pending.defer_repair(spool, track);
-    }
-
-    Ok(())
-}
-
-/// Turn every deferred slice whose grace has run out into a pending repair
-pub fn drain_deferred_repairs<Db: Store>(
-    store: &TapeStore<Db>,
-    pending: &PendingTracks,
-) -> Result<(), NodeError> {
-    for entry in pending.take_due_repairs() {
-        let Some(mut state) = store.get_spool_state(entry.spool).map_err(store_error)? else {
-            continue;
-        };
-
-        if state.is_locked() {
-            continue;
-        }
-
-        if store.has_slice(entry.spool, entry.track).map_err(store_error)? {
-            continue;
-        }
-
         store
-            .add_pending_repair(entry.spool, entry.track)
+            .defer_pending_repair(spool, track, ready_at)
             .map_err(store_error)?;
-
-        if state.status == SpoolStatus::Active {
-            state.set_status(SpoolStatus::Repair);
-            store
-                .set_spool_state(entry.spool, state)
-                .map_err(store_error)?;
-        }
     }
 
     Ok(())
@@ -559,8 +528,6 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
     use tape_core::encoding::EncodingProfile;
@@ -578,20 +545,39 @@ mod tests {
     use tape_crypto::address::Address;
     use tape_crypto::hash::hash;
     use tape_crypto::Hash;
+    use tape_store::columns::ALL_COLUMN_FAMILIES;
     use tape_store::ops::{
-        ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps,
+        MetaOps, ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps,
         TrackDataOps, TrackOps,
     };
     use tape_store::types::{ObjectInfo, TapeInfo};
     use tape_store::TapeStore;
-    use tokio::time::advance;
+    use tape_store_api::Store as _;
 
-    use crate::features::block::pending_tracks::{PendingTracks, REPAIR_GRACE};
+    use crate::features::spool::manager::has_pending_work;
 
-    use super::{apply_slot, drain_deferred_repairs};
+    use super::{apply_slot, REPAIR_GRACE_SLOTS};
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    /// Copy every row into a fresh store, the way a restart finds what it left behind
+    fn reopen(store: &TapeStore<MemoryStore>) -> TapeStore<MemoryStore> {
+        let fresh = test_store();
+
+        for column in ALL_COLUMN_FAMILIES {
+            let rows = store.inner().inner().iter(column).expect("iter column");
+            for (key, value) in rows {
+                fresh
+                    .inner()
+                    .inner()
+                    .put(column, &key, &value)
+                    .expect("put row");
+            }
+        }
+
+        fresh
     }
 
     fn make_blob_track(tape: Address, track_number: TrackNumber, epoch: EpochNumber) -> ReplayableEvent {
@@ -688,7 +674,6 @@ mod tests {
     #[test]
     fn writes_state() {
         let store = test_store();
-        let pending = PendingTracks::new();
         let slot = SlotNumber(55);
         let tape = Address::new_unique();
         let authority = Address::new_unique();
@@ -717,7 +702,7 @@ mod tests {
             },
         ];
 
-        apply_slot(&store, &pending, slot, None, &events).unwrap();
+        apply_slot(&store, slot, None, &events).unwrap();
 
         assert_eq!(
             store.get_tape(tape).unwrap(),
@@ -764,7 +749,6 @@ mod tests {
     #[test]
     fn materializes_listing() {
         let store = test_store();
-        let pending = PendingTracks::new();
         let slot = SlotNumber(57);
         let block_time = Some(1_700_000_057);
         let tape = Address::new_unique();
@@ -806,7 +790,7 @@ mod tests {
             track_event,
         ];
 
-        apply_slot(&store, &pending, slot, block_time, &events).unwrap();
+        apply_slot(&store, slot, block_time, &events).unwrap();
 
         let page = store
             .list_objects(tape, b"photos/", None, None, 100)
@@ -828,7 +812,6 @@ mod tests {
 
         apply_slot(
             &store,
-            &pending,
             SlotNumber(58),
             None,
             &[ReplayableEvent::DeleteTrack {
@@ -845,7 +828,6 @@ mod tests {
     #[test]
     fn writes_raw_state() {
         let store = test_store();
-        let pending = PendingTracks::new();
         let slot = SlotNumber(56);
         let tape = Address::new_unique();
         let track_number = TrackNumber(10);
@@ -853,7 +835,6 @@ mod tests {
 
         apply_slot(
             &store,
-            &pending,
             slot,
             None,
             &[make_raw_track(tape, track_number, EpochNumber(7))],
@@ -881,7 +862,6 @@ mod tests {
     #[test]
     fn deletes_track() {
         let store = test_store();
-        let pending = PendingTracks::new();
         let slot = SlotNumber(21);
         let track = Address::new_unique();
         let tape = Address::new_unique();
@@ -907,7 +887,6 @@ mod tests {
 
         apply_slot(
             &store,
-            &pending,
             slot,
             None,
             &[ReplayableEvent::DeleteTrack {
@@ -934,7 +913,6 @@ mod tests {
     #[test]
     fn invalidates_track() {
         let store = test_store();
-        let pending = PendingTracks::new();
         let slot = SlotNumber(34);
         let track = Address::new_unique();
         let tape = Address::new_unique();
@@ -960,7 +938,6 @@ mod tests {
 
         apply_slot(
             &store,
-            &pending,
             SlotNumber(55),
             None,
             &[ReplayableEvent::InvalidateTrack {
@@ -994,7 +971,6 @@ mod tests {
     #[test]
     fn extends_tape() {
         let store = test_store();
-        let pending = PendingTracks::new();
         let tape = Address::new_unique();
         let authority = Address::new_unique();
 
@@ -1023,7 +999,7 @@ mod tests {
             },
         ];
 
-        apply_slot(&store, &pending, SlotNumber(60), None, &events).expect("apply events");
+        apply_slot(&store, SlotNumber(60), None, &events).expect("apply events");
 
         assert_eq!(
             store.get_tape(tape).expect("get tape"),
@@ -1043,12 +1019,10 @@ mod tests {
     #[test]
     fn extend_unknown_tape() {
         let store = test_store();
-        let pending = PendingTracks::new();
         let tape = Address::new_unique();
 
         let result = apply_slot(
             &store,
-            &pending,
             SlotNumber(61),
             None,
             &[ReplayableEvent::ExtendTape {
@@ -1065,11 +1039,10 @@ mod tests {
         assert!(store.get_tape(tape).expect("get tape").is_none());
     }
 
-    // a certify with the slice missing writes no repair and waits out the grace
-    #[tokio::test(start_paused = true)]
-    async fn certify_defers_repair() {
+    // a certify with the slice missing queues a repair the grace holds back
+    #[test]
+    fn certify_defers_repair() {
         let store = test_store();
-        let pending = PendingTracks::new();
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
@@ -1081,80 +1054,111 @@ mod tests {
             .expect("set spool state");
         stage_certify(&store, track, tape, group, slot);
 
-        apply_slot(&store, &pending, slot, None, &[certify(track)]).expect("apply slot");
-
-        assert!(!store.has_pending_repair(spool_id, track).expect("has pending repair"));
-        assert_eq!(pending.deferred_repair_count(), 1);
-        assert_eq!(
-            store.get_spool_state(spool_id).expect("get state").expect("state").status,
-            SpoolStatus::Active
-        );
-    }
-
-    // a slice that lands inside the grace drops the deferred repair
-    #[tokio::test(start_paused = true)]
-    async fn arrival_cancels_repair() {
-        let store = test_store();
-        let pending = PendingTracks::new();
-        let slot = SlotNumber(10);
-        let track = Address::new_unique();
-        let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
-        let spool_id = group.spool_at(0);
-
-        store
-            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(3)))
-            .expect("set spool state");
-        stage_certify(&store, track, tape, group, slot);
-
-        apply_slot(&store, &pending, slot, None, &[certify(track)]).expect("apply slot");
-        store
-            .put_slice(spool_id, track, vec![0xAB; 64])
-            .expect("put slice");
-        advance(REPAIR_GRACE + Duration::from_secs(1)).await;
-        drain_deferred_repairs(&store, &pending).expect("drain");
-
-        assert!(!store.has_pending_repair(spool_id, track).expect("has pending repair"));
-        assert_eq!(pending.deferred_repair_count(), 0);
-        assert_eq!(
-            store.get_spool_state(spool_id).expect("get state").expect("state").status,
-            SpoolStatus::Active
-        );
-    }
-
-    // a slice still missing when the grace ends becomes a pending repair
-    #[tokio::test(start_paused = true)]
-    async fn certify_enqueues_repair() {
-        let store = test_store();
-        let pending = PendingTracks::new();
-        let slot = SlotNumber(10);
-        let track = Address::new_unique();
-        let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
-        let spool_id = group.spool_at(0);
-
-        store
-            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(3)))
-            .expect("set spool state");
-        stage_certify(&store, track, tape, group, slot);
-
-        apply_slot(&store, &pending, slot, None, &[certify(track)]).expect("apply slot");
-        advance(REPAIR_GRACE + Duration::from_secs(1)).await;
-        drain_deferred_repairs(&store, &pending).expect("drain");
+        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
 
         assert!(store.has_pending_repair(spool_id, track).expect("has pending repair"));
-        assert_eq!(pending.deferred_repair_count(), 0);
+        assert!(store
+            .iter_pending_repairs(spool_id, 10)
+            .expect("iter pending repairs")
+            .is_empty());
         assert_eq!(
             store.get_spool_state(spool_id).expect("get state").expect("state").status,
-            SpoolStatus::Repair
+            SpoolStatus::Active
         );
     }
 
-    // a certify for a slice this node already holds defers nothing
-    #[tokio::test(start_paused = true)]
-    async fn certify_noop_when_slice_present() {
+    // a slice that lands inside the grace drops the queued repair
+    #[test]
+    fn arrival_cancels_repair() {
         let store = test_store();
-        let pending = PendingTracks::new();
+        let slot = SlotNumber(10);
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
+        let group = GroupIndex::from(7);
+        let spool_id = group.spool_at(0);
+
+        store
+            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(3)))
+            .expect("set spool state");
+        stage_certify(&store, track, tape, group, slot);
+
+        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
+        store
+            .put_slice(spool_id, track, vec![0xAB; 64])
+            .expect("put slice");
+        store
+            .set_sync_cursor(slot.saturating_add(REPAIR_GRACE_SLOTS), None)
+            .expect("set sync cursor");
+
+        assert_eq!(
+            has_pending_work(&store, spool_id).expect("pending work"),
+            (false, false)
+        );
+        assert!(!store.has_pending_repair(spool_id, track).expect("has pending repair"));
+    }
+
+    // a slice still missing when the grace ends becomes a repair the spool can run
+    #[test]
+    fn certify_enqueues_repair() {
+        let store = test_store();
+        let slot = SlotNumber(10);
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
+        let group = GroupIndex::from(7);
+        let spool_id = group.spool_at(0);
+
+        store
+            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(3)))
+            .expect("set spool state");
+        stage_certify(&store, track, tape, group, slot);
+
+        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
+        store
+            .set_sync_cursor(slot.saturating_add(REPAIR_GRACE_SLOTS), None)
+            .expect("set sync cursor");
+
+        assert_eq!(
+            store.iter_pending_repairs(spool_id, 10).expect("iter pending repairs"),
+            vec![track]
+        );
+        assert_eq!(
+            has_pending_work(&store, spool_id).expect("pending work"),
+            (true, false)
+        );
+    }
+
+    // a repair deferred at certify outlives the process that queued it
+    #[test]
+    fn deferred_repair_survives_restart() {
+        let store = test_store();
+        let slot = SlotNumber(10);
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
+        let group = GroupIndex::from(7);
+        let spool_id = group.spool_at(0);
+
+        store
+            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(3)))
+            .expect("set spool state");
+        stage_certify(&store, track, tape, group, slot);
+
+        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
+
+        let restarted = reopen(&store);
+        restarted
+            .set_sync_cursor(slot.saturating_add(REPAIR_GRACE_SLOTS), None)
+            .expect("set sync cursor");
+
+        assert_eq!(
+            restarted.iter_pending_repairs(spool_id, 10).expect("iter pending repairs"),
+            vec![track]
+        );
+    }
+
+    // a certify for a slice this node already holds queues nothing
+    #[test]
+    fn certify_noop_when_slice_present() {
+        let store = test_store();
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
@@ -1169,9 +1173,8 @@ mod tests {
             .put_slice(spool_id, track, vec![0xAB; 64])
             .expect("put slice");
 
-        apply_slot(&store, &pending, slot, None, &[certify(track)]).expect("apply slot");
+        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
 
-        assert_eq!(pending.deferred_repair_count(), 0);
         assert!(!store.has_pending_repair(spool_id, track).expect("has pending repair"));
         assert_eq!(
             store.get_spool_state(spool_id).expect("get state").expect("state").status,
@@ -1179,11 +1182,10 @@ mod tests {
         );
     }
 
-    // a certify defers nothing when this node holds no spool in the group
-    #[tokio::test(start_paused = true)]
-    async fn certify_noop_when_not_owner() {
+    // a certify queues nothing when this node holds no spool in the group
+    #[test]
+    fn certify_noop_when_not_owner() {
         let store = test_store();
-        let pending = PendingTracks::new();
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
@@ -1191,8 +1193,11 @@ mod tests {
 
         stage_certify(&store, track, tape, group, slot);
 
-        apply_slot(&store, &pending, slot, None, &[certify(track)]).expect("apply slot");
+        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
 
-        assert_eq!(pending.deferred_repair_count(), 0);
+        for slice in 0..GROUP_SIZE {
+            let spool = group.spool_at(slice);
+            assert!(!store.has_pending_repair(spool, track).expect("has pending repair"));
+        }
     }
 }
