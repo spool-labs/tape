@@ -4,6 +4,7 @@ use tape_rpc::RpcError;
 use tape_blocks::ParseError;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_retry::Retryable;
+use tape_snapshot::SnapshotError;
 use tokio::task::JoinError;
 
 use crate::core::types::{ChannelName, ServiceName};
@@ -30,6 +31,9 @@ pub enum NodeError {
 
     #[error("storage error: {0}")]
     Store(String),
+
+    #[error("snapshot encode failed: {0}")]
+    Snapshot(#[from] SnapshotError),
 
     #[error("failed to publish protocol state")]
     StatePublish,

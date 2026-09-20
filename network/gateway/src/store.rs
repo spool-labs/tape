@@ -108,7 +108,7 @@ mod tests {
     use tape_core::types::SlotNumber;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
-    use tape_node::features::replay::types::{RawTrack, ReplayBatch};
+        use tape_node::features::replay::types::{RawTrack, ReplayBatch};
     use tape_store::ops::{MetaOps, TrackDataOps};
     use tape_store::TapeStore;
 
