@@ -52,6 +52,7 @@ pub struct ProcessSupervisor {
     data_root: PathBuf,
     rpc_url: String,
     base_port: u16,
+    challenge: bool,
     nodes: Vec<NodeHandle>,
 }
 
@@ -61,12 +62,14 @@ impl ProcessSupervisor {
         data_root: PathBuf,
         rpc_url: String,
         base_port: u16,
+        challenge: bool,
     ) -> Self {
         Self {
             node_binary,
             data_root,
             rpc_url,
             base_port,
+            challenge,
             nodes: Vec::new(),
         }
     }
@@ -200,6 +203,7 @@ impl ProcessSupervisor {
             &tls_path,
             &store_path,
             &self.rpc_url,
+            self.challenge,
         );
         std::fs::write(&config_path, yaml)
             .with_context(|| format!("write config: {}", config_path.display()))?;
@@ -410,6 +414,7 @@ fn build_node_yaml(
     tls_path: &Path,
     store_path: &Path,
     rpc_url: &str,
+    challenge: bool,
 ) -> String {
     format!(
         r#"node:
@@ -436,7 +441,7 @@ https:
   identity_keypair: "{tls}"
 
 challenge:
-  enabled: true
+  enabled: {challenge}
 
 # Off on the harness: rounds and records still run, but the rig should not
 # condemn its own nodes.
@@ -480,6 +485,7 @@ mod tests {
             Path::new("/tmp/node-3/tls.json"),
             Path::new("/tmp/node-3/data"),
             "http://127.0.0.1:8899",
+            true,
         );
 
         let config = NodeConfig::from_yaml_str(&yaml).expect("generated yaml parses");
