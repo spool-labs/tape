@@ -5,6 +5,7 @@
 //! deterministic epoch cutoff.
 
 use thiserror::Error;
+use tracing::debug;
 
 use tape_store_api::Store;
 use tape_core::encoding::EncodingType;
@@ -57,6 +58,7 @@ pub struct AssignmentGroupWeights {
 ///   - skip invalidated/deleted/uncertified/current-epoch tracks;
 ///   - skip tapes with end_epoch <= target_epoch;
 ///   - return zero for empty/new groups;
+///   - skip a coded track whose blob metadata has not arrived yet;
 ///   - derive blob per-spool footprint from BlobEncoding encoding metadata, not total logical track size.
 pub fn group_sizes<Db: Store>(
     store: &TapeStore<Db>,
@@ -185,7 +187,10 @@ fn active_track_footprint<Db: Store>(
         return Ok(None);
     }
 
-    let footprint = track_footprint(store, track, metadata)?;
+    let Some(footprint) = track_footprint(store, track, metadata)? else {
+        return Ok(None);
+    };
+
     Ok(Some(ActiveTrackFootprint {
         track,
         tape: metadata.tape,
@@ -194,22 +199,30 @@ fn active_track_footprint<Db: Store>(
     }))
 }
 
+/// One track's footprint, or nothing while its blob metadata is missing
 fn track_footprint<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
     metadata: &CompressedTrack,
-) -> Result<StorageUnits, AssignmentSizeError> {
+) -> Result<Option<StorageUnits>, AssignmentSizeError> {
     if metadata.is_inline() {
-        return Ok(metadata.size);
+        return Ok(Some(metadata.size));
     }
 
     if !metadata.is_coded() {
         return Err(invalid_track(track, "unknown track kind"));
     }
 
-    let data = store.get_track_data(track).map_err(store_error)?;
-    let Some(BlobData::Coded(blob)) = data else {
-        return Err(invalid_track(track, "missing blob metadata"));
+    let blob = match store.get_track_data(track).map_err(store_error)? {
+        Some(BlobData::Coded(blob)) => blob,
+        Some(BlobData::Inline(_)) => {
+            return Err(invalid_track(track, "inline blob data on a coded track"));
+        }
+        // The footprint needs the encoding, and a peer fetch fills it in later.
+        None => {
+            debug!(track = %track, "assignment: coded track has no blob metadata yet");
+            return Ok(None);
+        }
     };
 
     if blob.size != metadata.size {
@@ -222,7 +235,7 @@ fn track_footprint<Db: Store>(
         return Err(invalid_track(track, "blob commitment is invalid"));
     }
 
-    blob_footprint(track, blob)
+    blob_footprint(track, blob).map(Some)
 }
 
 fn blob_footprint(track: Address, blob: BlobEncoding) -> Result<StorageUnits, AssignmentSizeError> {
@@ -292,12 +305,13 @@ fn invalid_track(track: Address, reason: impl Into<String>) -> AssignmentSizeErr
 
 #[cfg(test)]
 mod tests {
+    use bytemuck::Zeroable;
     use tape_store_memory::MemoryStore;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::Hash;
-    use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
+    use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
 
     use super::*;
@@ -330,6 +344,12 @@ mod tests {
             group,
             value_hash: Hash::new_unique(),
         }
+    }
+
+    fn coded_track(tape: Address, group: GroupIndex, size: StorageUnits) -> CompressedTrack {
+        let mut track = raw_track(tape, group, size);
+        track.kind = TrackKind::Coded as u64;
+        track
     }
 
     fn valid_object(track: Address, registered_epoch: EpochNumber, slot: SlotNumber) -> ObjectInfo {
@@ -428,5 +448,77 @@ mod tests {
         assert_eq!(sizes[0], StorageUnits::zero());
         assert_eq!(sizes[1], user_size);
         assert_eq!(sizes[2], StorageUnits::zero());
+    }
+
+    // a coded track counts nothing while its blob metadata is missing
+    #[test]
+    fn coded_without_blob() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let inline_track = Address::new_unique();
+        let coded = Address::new_unique();
+        let size = StorageUnits::from_bytes(256);
+
+        store
+            .put_tape(tape, tape_info(EpochNumber(20)))
+            .expect("tape stored");
+        store
+            .put_track(inline_track, raw_track(tape, GroupIndex(0), size))
+            .expect("inline track stored");
+        store
+            .put_track(coded, coded_track(tape, GroupIndex(1), size))
+            .expect("coded track stored");
+        store
+            .put_object_info(
+                inline_track,
+                valid_object(inline_track, EpochNumber(8), SlotNumber(1)),
+            )
+            .expect("inline object info stored");
+        store
+            .put_object_info(coded, valid_object(coded, EpochNumber(8), SlotNumber(1)))
+            .expect("coded object info stored");
+
+        let weights =
+            group_weights(&store, EpochNumber(10), EpochNumber(11), 2).expect("weights build");
+
+        assert_eq!(weights.sizes[0], size);
+        assert_eq!(weights.sizes[1], StorageUnits::zero());
+        assert_eq!(weights.tracks.len(), 1);
+        assert_eq!(weights.tracks[0].track, inline_track);
+    }
+
+    // a stored blob whose size disagrees with the track row is refused
+    #[test]
+    fn blob_size_mismatch() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+        let mut blob = BlobEncoding::zeroed();
+        blob.size = StorageUnits::from_bytes(512);
+
+        store
+            .put_tape(tape, tape_info(EpochNumber(20)))
+            .expect("tape stored");
+        store
+            .put_track(
+                track,
+                coded_track(tape, GroupIndex(0), StorageUnits::from_bytes(256)),
+            )
+            .expect("track stored");
+        store
+            .put_track_data(track, BlobData::Coded(blob))
+            .expect("blob stored");
+        store
+            .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
+            .expect("object info stored");
+
+        let error = group_weights(&store, EpochNumber(10), EpochNumber(11), 1)
+            .expect_err("mismatch refused");
+
+        assert!(matches!(
+            error,
+            AssignmentSizeError::InvalidTrack { ref reason, .. }
+                if reason == "blob size does not match track metadata"
+        ));
     }
 }
