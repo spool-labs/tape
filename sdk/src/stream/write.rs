@@ -1078,11 +1078,8 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
 /// counts the same as a post the chain would not take at all.
 fn submit_outcome<Failure>(verdicts: &Result<Vec<Result<Txid, RpcError>>, Failure>) -> Outcome {
     match verdicts {
-        Ok(entries) => match entries.iter().any(Result::is_ok) {
-            true => Outcome::Ok,
-            false => Outcome::Error,
-        },
-        Err(_) => Outcome::Error,
+        Ok(entries) if entries.iter().any(Result::is_ok) => Outcome::Ok,
+        _ => Outcome::Error,
     }
 }
 
@@ -1192,20 +1189,22 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
     let mut is_epoch_changed = false;
     for (index, (verdict, build)) in verdicts.into_iter().zip(&built).enumerate() {
         if let Err(err) = verdict {
-            let verdict = parse_tape_error(&err);
-            // A track certified before the run reached it leaves the chain
-            // holding the leaf the mirror is about to write, so the run goes on.
-            if !matches!(verdict, Some(TapeError::AlreadyCertified)) {
-                is_epoch_changed = matches!(verdict, Some(TapeError::EpochChanged));
-                warn!(
-                    index,
-                    entries = built.len(),
-                    track = build.certified.track_number.as_u64(),
-                    ?verdict,
-                    %err,
-                    "certify run refused",
-                );
-                break;
+            match parse_tape_error(&err) {
+                // The track was certified before the run reached it, so the
+                // chain holds the leaf the mirror is about to write.
+                Some(TapeError::AlreadyCertified) => {}
+                verdict => {
+                    is_epoch_changed = matches!(verdict, Some(TapeError::EpochChanged));
+                    warn!(
+                        index,
+                        entries = built.len(),
+                        track = build.certified.track_number.as_u64(),
+                        ?verdict,
+                        %err,
+                        "certify run refused",
+                    );
+                    break;
+                }
             }
         }
 

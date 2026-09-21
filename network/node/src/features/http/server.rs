@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::serve::ListenerExt;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::{Request, State};
@@ -15,7 +14,6 @@ use axum::routing::{get, post};
 use axum::{BoxError, Router};
 
 use axum_server::Handle;
-use axum_server::accept::NoDelayAcceptor;
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use tape_peer_tls::{build_server_config_with_peer_auth, cert_san_ips, install_default_provider};
 
@@ -314,7 +312,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         let server_config = build_server_config_with_peer_auth(self.context.tls_keypair(), &san_ips)
             .map_err(|e| NodeError::Config(format!("tls server config: {e}")))?;
         let rustls_config = RustlsConfig::from_config(server_config);
-        let acceptor = PeerIdentityAcceptor::new(RustlsAcceptor::new(rustls_config).acceptor(NoDelayAcceptor::new()));
+        let acceptor = PeerIdentityAcceptor::new(RustlsAcceptor::new(rustls_config));
 
         let shared_router = self.build_router();
         let auth_state = AppState {
@@ -352,7 +350,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     Ok(listener) => {
                         info!(listen = %http_listen, "http listener bound");
                         let _ = axum::serve(
-                            listener.tap_io(|io| { let _ = io.set_nodelay(true); }),
+                            listener,
                             http_router.into_make_service_with_connect_info::<SocketAddr>(),
                         )
                             .with_graceful_shutdown(async move {

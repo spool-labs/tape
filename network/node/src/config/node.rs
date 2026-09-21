@@ -288,84 +288,84 @@ impl NodeConfig {
 
         self.gateway.validate_blacklists().map_err(ConfigError::Invalid)?;
 
-        if let Some(admission) = &self.http.admission {
-            if admission.anonymous_write_per_sec == 0 {
+        if self.http.admission.anonymous_write_per_sec == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.anonymous_write_per_sec must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.anonymous_write_burst == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.anonymous_write_burst must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.anonymous_read_per_sec == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.anonymous_read_per_sec must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.anonymous_read_burst == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.anonymous_read_burst must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.probe_per_sec == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.probe_per_sec must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.probe_burst == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.probe_burst must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.trusted_metered_per_sec == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.trusted_metered_per_sec must be greater than zero".into(),
+            ));
+        }
+
+        if self.http.admission.trusted_metered_burst == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.trusted_metered_burst must be greater than zero".into(),
+            ));
+        }
+
+        for tier in &self.http.admission.stake_tiers {
+            if tier.per_sec == 0 || tier.burst == 0 {
                 return Err(ConfigError::Invalid(
-                    "http.admission.anonymous_write_per_sec must be greater than zero".into(),
+                    "http.admission.stake_tiers rates must be greater than zero".into(),
                 ));
             }
+        }
 
-            if admission.anonymous_write_burst == 0 {
-                return Err(ConfigError::Invalid(
-                    "http.admission.anonymous_write_burst must be greater than zero".into(),
-                ));
-            }
+        let ascending = self
+            .http
+            .admission
+            .stake_tiers
+            .windows(2)
+            .all(|pair| pair[0].min_stake < pair[1].min_stake);
+        if !ascending {
+            return Err(ConfigError::Invalid(
+                "http.admission.stake_tiers must ascend by stake".into(),
+            ));
+        }
 
-            if admission.anonymous_read_per_sec == 0 {
-                return Err(ConfigError::Invalid(
-                    "http.admission.anonymous_read_per_sec must be greater than zero".into(),
-                ));
-            }
+        if self.http.admission.over_budget_penalty_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.over_budget_penalty_secs must be greater than zero".into(),
+            ));
+        }
 
-            if admission.anonymous_read_burst == 0 {
-                return Err(ConfigError::Invalid(
-                    "http.admission.anonymous_read_burst must be greater than zero".into(),
-                ));
-            }
-
-            if admission.probe_per_sec == 0 {
-                return Err(ConfigError::Invalid(
-                    "http.admission.probe_per_sec must be greater than zero".into(),
-                ));
-            }
-
-            if admission.probe_burst == 0 {
-                return Err(ConfigError::Invalid(
-                    "http.admission.probe_burst must be greater than zero".into(),
-                ));
-            }
-
-            if admission.trusted_metered_per_sec == 0 {
-                return Err(ConfigError::Invalid(
-                    "http.admission.trusted_metered_per_sec must be greater than zero".into(),
-                ));
-            }
-
-            if admission.trusted_metered_burst == 0 {
-                return Err(ConfigError::Invalid(
-                    "http.admission.trusted_metered_burst must be greater than zero".into(),
-                ));
-            }
-
-            for tier in &admission.stake_tiers {
-                if tier.per_sec == 0 || tier.burst == 0 {
-                    return Err(ConfigError::Invalid(
-                        "http.admission.stake_tiers rates must be greater than zero".into(),
-                    ));
-                }
-            }
-
-            let ascending = admission
-                .stake_tiers
-                .windows(2)
-                .all(|pair| pair[0].min_stake < pair[1].min_stake);
-            if !ascending {
-                return Err(ConfigError::Invalid(
-                    "http.admission.stake_tiers must ascend by stake".into(),
-                ));
-            }
-
-            if admission.over_budget_penalty_secs == 0 {
-                return Err(ConfigError::Invalid(
-                    "http.admission.over_budget_penalty_secs must be greater than zero".into(),
-                ));
-            }
-
-            if admission.stale_entry_secs == 0 {
-                return Err(ConfigError::Invalid(
-                    "http.admission.stale_entry_secs must be greater than zero".into(),
-                ));
-            }
+        if self.http.admission.stale_entry_secs == 0 {
+            return Err(ConfigError::Invalid(
+                "http.admission.stale_entry_secs must be greater than zero".into(),
+            ));
         }
 
         if let Some(host) = &self.network.host {
@@ -589,17 +589,16 @@ metrics:
         assert_eq!(config.http.concurrency, 1024);
         assert_eq!(config.http.slice_max_bytes, 2 * 1024 * 1024);
         assert_eq!(config.http.peer_max_bytes, 512 * 1024);
-        let admission = config.http.admission.as_ref().expect("admission block parses");
-        assert_eq!(admission.anonymous_write_per_sec, 2);
-        assert_eq!(admission.anonymous_write_burst, 3);
-        assert_eq!(admission.anonymous_read_per_sec, 11);
-        assert_eq!(admission.anonymous_read_burst, 22);
-        assert_eq!(admission.probe_per_sec, 33);
-        assert_eq!(admission.probe_burst, 44);
-        assert_eq!(admission.trusted_metered_per_sec, 200);
-        assert_eq!(admission.trusted_metered_burst, 400);
-        assert_eq!(admission.over_budget_penalty_secs, 9);
-        assert_eq!(admission.stale_entry_secs, 90);
+        assert_eq!(config.http.admission.anonymous_write_per_sec, 2);
+        assert_eq!(config.http.admission.anonymous_write_burst, 3);
+        assert_eq!(config.http.admission.anonymous_read_per_sec, 11);
+        assert_eq!(config.http.admission.anonymous_read_burst, 22);
+        assert_eq!(config.http.admission.probe_per_sec, 33);
+        assert_eq!(config.http.admission.probe_burst, 44);
+        assert_eq!(config.http.admission.trusted_metered_per_sec, 200);
+        assert_eq!(config.http.admission.trusted_metered_burst, 400);
+        assert_eq!(config.http.admission.over_budget_penalty_secs, 9);
+        assert_eq!(config.http.admission.stale_entry_secs, 90);
         assert_eq!(config.https.listen.to_string(), "0.0.0.0:3430");
         assert_eq!(config.https.identity_keypair, PathBuf::from("/etc/tape/tls.json"));
         assert!(!config.https.auto_update);

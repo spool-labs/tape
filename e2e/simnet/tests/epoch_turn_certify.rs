@@ -2,17 +2,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use rpc_litesvm::LiteSvmRpc;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::prelude::CompressedTrack;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits};
-use tape_crypto::Address;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
-use tape_peer_http::HttpApi;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::metrics::{InMemory, Operation, Phase};
 use tape_sdk::object::ObjectBatchItem;
-use tape_sdk::tapedrive::Tapedrive;
 
 const TARGET_GROUPS: u64 = 1;
 
@@ -161,10 +156,10 @@ fn batch_phase_count(metrics: &InMemory, phase: Phase) -> u64 {
 }
 
 async fn wait_for_certified_track(
-    sdk: &Tapedrive<LiteSvmRpc, HttpApi>,
-    track: &Address,
+    sdk: &tape_sdk::tapedrive::Tapedrive<rpc_litesvm::LiteSvmRpc, tape_peer_http::HttpApi>,
+    track: &tape_crypto::Address,
     timeout: Duration,
-) -> CompressedTrack {
+) -> tape_core::prelude::CompressedTrack {
     let start = Instant::now();
     loop {
         let current = sdk.get_track(track).await.expect("fetch batch track");

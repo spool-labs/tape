@@ -15,6 +15,7 @@ use tape_protocol::api::{
 };
 use tape_store::ops::{SliceOps, SpoolOps, TrackOps};
 
+use crate::features::blacklist::blacklist_entries_for_node;
 use crate::features::http::auth::ActivePeer;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
@@ -48,15 +49,12 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     // The blacklist is the same set for every row, and reading it per row read
     // the whole thing per row. The track metadata comes back in one call too.
-    let refused = state
-        .context
-        .blacklist
-        .entries(
-            state.context.store.as_ref(),
-            state.context.node_address(),
-            current_epoch,
-        )
-        .map_err(store_error)?;
+    let refused = blacklist_entries_for_node(
+        state.context.store.as_ref(),
+        state.context.node_address(),
+        current_epoch,
+    )
+    .map_err(store_error)?;
     let mut addresses: Vec<Address> = Vec::with_capacity(slices.len());
     for (track_address, _) in &slices {
         addresses.push(*track_address);
