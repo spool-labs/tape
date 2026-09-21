@@ -143,15 +143,15 @@ mod tests {
             ],
         };
 
-        persist_batch(&store, &batch).unwrap();
+        persist_batch(&store, &batch).expect("persist batch");
 
-        assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(42)));
+        assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(42)));
         assert_eq!(
-            store.get_track_data(first).unwrap(),
+            store.get_track_data(first).expect("first track data"),
             Some(BlobData::Inline(vec![1, 2, 3]))
         );
         assert_eq!(
-            store.get_track_data(second).unwrap(),
+            store.get_track_data(second).expect("second track data"),
             Some(BlobData::Inline(vec![4, 5, 6]))
         );
     }
