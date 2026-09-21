@@ -47,7 +47,6 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     if refuses_object(
         state.context.store.as_ref(),
-        &state.context.blacklist,
         state.context.node_address(),
         epoch,
         track_key,
