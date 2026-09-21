@@ -21,7 +21,7 @@ use solana_transaction_status::{
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use tape_rpc::{Rpc, RpcError, SimulationResult};
+use tape_rpc::{BlockWindow, Rpc, RpcError, SimulationResult};
 use tape_crypto::address::Address;
 use tape_blocks::wire::Block;
 use tape_crypto::tx::Txid;
@@ -928,6 +928,39 @@ impl Rpc for SolanaRpc {
         .await
     }
 
+    /// Both calls run on one endpoint, so the tip that caps an empty window
+    /// comes from the member that listed it.
+    async fn get_block_window(&self, start: u64, end: u64) -> Result<BlockWindow, RpcError> {
+        let commitment = CommitmentConfig {
+            commitment: self.config.commitment,
+        };
+
+        self.with_retry_at("getBlocks", |index| {
+            let client = self.clients[index].clone();
+            async move {
+                let produced = client
+                    .get_blocks_with_commitment(start, Some(end), commitment)
+                    .await
+                    .map_err(|error| Self::convert_error(error, None))?;
+
+                if !produced.is_empty() {
+                    return Ok(BlockWindow { produced, tip: None });
+                }
+
+                let tip = client
+                    .get_slot()
+                    .await
+                    .map_err(|error| Self::convert_error(error, None))?;
+
+                Ok(BlockWindow {
+                    produced,
+                    tip: Some(tip),
+                })
+            }
+        })
+        .await
+    }
+
     async fn get_transaction(
         &self,
         txid: &Txid,
@@ -1402,6 +1435,59 @@ async fn agave_answer_stays_on_the_unordered_path() {
     let client = client_for(&[&mock], EndpointStrategy::PreferPrimary);
 
     assert!(!client.executes_batches_in_order().await);
+}
+
+/// A member that holds no block in the window and reports this tip
+fn empty_member(tip: u64) -> impl Fn(&str) -> serde_json::Value + Send + Sync + 'static {
+    move |method: &str| match method {
+        "getBlocks" => serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": [] }),
+        "getSlot" => serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": tip }),
+        _ => serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": null }),
+    }
+}
+
+// the tip capping an empty window comes from the member that listed it
+#[tokio::test]
+async fn an_empty_window_is_capped_by_the_member_that_listed_it() {
+    let lagging = MockEndpoint::start(empty_member(1_000)).await;
+    let current = MockEndpoint::start(empty_member(5_096)).await;
+    let client = client_for(&[&lagging, &current], EndpointStrategy::RoundRobin);
+
+    let first = client
+        .get_block_window(1_000, 5_096)
+        .await
+        .expect("the window is listed");
+    let second = client
+        .get_block_window(1_000, 5_096)
+        .await
+        .expect("the window is listed");
+
+    // Round robin starts the first pass on the second endpoint, so the two
+    // passes read one member each.
+    assert_eq!(first.tip, Some(5_096));
+    assert_eq!(second.tip, Some(1_000));
+    assert_eq!(lagging.served(), vec!["getBlocks".to_string(), "getSlot".to_string()]);
+    assert_eq!(current.served(), vec!["getBlocks".to_string(), "getSlot".to_string()]);
+}
+
+// a member holding the window keeps its tip to itself, which saves the round trip
+#[tokio::test]
+async fn a_listed_window_reads_no_tip() {
+    let member = MockEndpoint::start(|method: &str| match method {
+        "getBlocks" => serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": [1_001, 1_002] }),
+        _ => serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": 5_096 }),
+    })
+    .await;
+    let client = client_for(&[&member], EndpointStrategy::PreferPrimary);
+
+    let window = client
+        .get_block_window(1_000, 5_096)
+        .await
+        .expect("the window is listed");
+
+    assert_eq!(window.produced, vec![1_001, 1_002]);
+    assert_eq!(window.tip, None);
+    assert_eq!(member.served(), vec!["getBlocks".to_string()]);
 }
 
     #[test]

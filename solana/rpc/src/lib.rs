@@ -31,7 +31,7 @@ pub mod skip;
 
 // Core exports
 pub use error::{RpcError, looks_like_transaction_error};
-pub use rpc::{Rpc, SimulationResult};
+pub use rpc::{BlockWindow, Rpc, SimulationResult};
 
 // Re-export async_trait for implementors
 pub use async_trait::async_trait;

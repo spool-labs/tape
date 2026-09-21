@@ -29,6 +29,16 @@ pub struct SimulationResult {
     pub units_consumed: Option<u64>,
 }
 
+/// One window of produced slots, answered by one member.
+#[derive(Debug, Clone, Default)]
+pub struct BlockWindow {
+    /// Slots the member holds a block for, ascending
+    pub produced: Vec<u64>,
+
+    /// The answering member's own tip, filled in when it listed nothing
+    pub tip: Option<u64>,
+}
+
 /// Core RPC trait for Solana operations
 ///
 /// This trait mirrors the Store pattern from `tapedrive/archive/store/`.
@@ -90,6 +100,22 @@ pub trait Rpc: Send + Sync {
 
     /// Slots in start..=end with a block at the configured commitment, ascending
     async fn get_blocks(&self, start: u64, end: u64) -> Result<Vec<u64>, RpcError>;
+
+    /// The same listing, plus the tip of the member that answered it
+    ///
+    /// A member behind the window lists nothing for slots it lacks, and its
+    /// own tip is how far a caller may skip on that answer. The tip comes
+    /// back only for an empty window, which is the only time it decides
+    /// anything.
+    async fn get_block_window(&self, start: u64, end: u64) -> Result<BlockWindow, RpcError> {
+        let produced = self.get_blocks(start, end).await?;
+        let tip = match produced.is_empty() {
+            true => Some(self.get_slot().await?),
+            false => None,
+        };
+
+        Ok(BlockWindow { produced, tip })
+    }
 
     /// Get the lowest slot the node still has a confirmed block for. Slots
     /// below this have been pruned from the ledger and can never be fetched.
