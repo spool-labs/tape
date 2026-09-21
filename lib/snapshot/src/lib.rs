@@ -18,7 +18,9 @@ pub use decode::{
     assemble_snapshot_log, decode_chunk_payload, snapshot_track_group_count,
     validate_snapshot_track_list, K_INNER,
 };
-pub use encode::{encode_chunk, encode_snapshot, BuiltChunk, SnapshotChunk};
+pub use encode::{
+    encode_chunk, encode_snapshot, encode_snapshot_streaming, BuiltChunk, SnapshotChunk,
+};
 pub use verify::verify_snapshot_track_set;
 
 use thiserror::Error;

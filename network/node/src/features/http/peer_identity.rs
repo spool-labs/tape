@@ -6,7 +6,7 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use axum_server::accept::Accept;
+use axum_server::accept::{Accept, NoDelayAcceptor};
 use axum_server::tls_rustls::RustlsAcceptor;
 use tape_peer_tls::decode_ed25519_spki;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -70,25 +70,25 @@ fn identity_from_certs(
 /// attaches a [`PeerIdentity`] to every request on that connection.
 #[derive(Clone)]
 pub struct PeerIdentityAcceptor {
-    inner: RustlsAcceptor,
+    inner: RustlsAcceptor<NoDelayAcceptor>,
 }
 
 impl PeerIdentityAcceptor {
-    pub fn new(inner: RustlsAcceptor) -> Self {
+    pub fn new(inner: RustlsAcceptor<NoDelayAcceptor>) -> Self {
         Self { inner }
     }
 }
 
 impl<I, S> Accept<I, S> for PeerIdentityAcceptor
 where
-    RustlsAcceptor: Accept<I, S>,
-    <RustlsAcceptor as Accept<I, S>>::Stream: AsAny,
-    <RustlsAcceptor as Accept<I, S>>::Future: Send,
+    RustlsAcceptor<NoDelayAcceptor>: Accept<I, S>,
+    <RustlsAcceptor<NoDelayAcceptor> as Accept<I, S>>::Stream: AsAny,
+    <RustlsAcceptor<NoDelayAcceptor> as Accept<I, S>>::Future: Send,
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     S: Send + 'static,
 {
-    type Stream = <RustlsAcceptor as Accept<I, S>>::Stream;
-    type Service = InjectPeerIdentity<<RustlsAcceptor as Accept<I, S>>::Service>;
+    type Stream = <RustlsAcceptor<NoDelayAcceptor> as Accept<I, S>>::Stream;
+    type Service = InjectPeerIdentity<<RustlsAcceptor<NoDelayAcceptor> as Accept<I, S>>::Service>;
     type Future = Pin<
         Box<
             dyn Future<

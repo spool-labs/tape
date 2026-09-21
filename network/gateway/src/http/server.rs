@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::serve::ListenerExt;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::StatusCode;
@@ -234,7 +235,7 @@ where
 
         info!(listen = %listen, "gateway http listener bound");
 
-        axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
+        axum::serve(listener.tap_io(|io| { let _ = io.set_nodelay(true); }), router.into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(async move {
                 self.cancel.cancelled().await;
             })
@@ -364,7 +365,7 @@ where
 
         let cancel = self.cancel.clone();
         let serve_result =
-            axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
+            axum::serve(listener.tap_io(|io| { let _ = io.set_nodelay(true); }), router.into_make_service_with_connect_info::<SocketAddr>())
                 .with_graceful_shutdown(async move {
                     cancel.cancelled().await;
                 })
@@ -441,7 +442,7 @@ where
 
         info!(listen = %listen, "gateway s3 admin control-plane listener bound");
 
-        axum::serve(listener, router.into_make_service())
+        axum::serve(listener.tap_io(|io| { let _ = io.set_nodelay(true); }), router.into_make_service())
             .with_graceful_shutdown(async move {
                 self.cancel.cancelled().await;
             })

@@ -17,7 +17,7 @@
 //!
 //! ## Spool Columns (NOT epoch-namespaced)
 //! - `spool_status`: Spool status (SpoolIndexKey -> SpoolStatus)
-//! - `spool_pending_repair`: Pending repair (SliceKey -> ())
+//! - `spool_pending_repair`: Pending repair (SliceKey -> ready slot)
 //! - `spool_pending_recovery`: Pending recovery (SliceKey -> ())
 //! - `spool_sync_cursor`: Sync cursor (SpoolIndexKey -> Address)
 //!
