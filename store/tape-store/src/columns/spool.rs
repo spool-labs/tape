@@ -1,13 +1,12 @@
 //! Spool column families for spool tracking (NOT epoch-namespaced)
 //!
 //! - SpoolStatusCol: spool_id -> SpoolStatus
-//! - SpoolPendingRepairCol: (spool_id, track_address) -> ready slot
+//! - SpoolPendingRepairCol: (spool_id, track_address) -> ()
 //! - SpoolPendingRecoveryCol: (spool_id, track_address) -> ()
 //! - SpoolSyncCursorCol: spool_id -> the peer's opaque sweep mark
 
 use tape_store_api::Column;
 use tape_core::system::SpoolState;
-use tape_core::types::SlotNumber;
 
 use crate::types::{SliceKey, SpoolIndexKey};
 
@@ -23,16 +22,16 @@ impl Column for SpoolStatusCol {
     type Value = SpoolState;
 }
 
-/// Pending repair queue
+/// Pending repair queue (presence-only)
 ///
 /// Key: SliceKey (34 bytes: spool_id BE + track_address)
-/// Value: the first slot the repair may run in, so a deferred row survives a restart
+/// Value: () (presence indicates pending)
 pub struct SpoolPendingRepairCol;
 
 impl Column for SpoolPendingRepairCol {
     const CF_NAME: &'static str = "spool_pending_repair";
     type Key = SliceKey;
-    type Value = SlotNumber;
+    type Value = ();
 }
 
 /// Pending recovery queue (presence-only)

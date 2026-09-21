@@ -4,21 +4,10 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::watch;
 
-use tape_core::types::SlotNumber;
-
 /// Threshold at which a node is considered caught up to the durable ingest
 /// edge. The block ingestor dispatch cursor is allowed to lag the finalized
 /// tip by up to this many slots and still report `AtTip`.
 pub const AT_TIP_THRESHOLD_SLOTS: u64 = 5;
-
-/// The same slack as chain time, so a chain with a shorter slot gets the slots that come to it
-pub const AT_TIP_SLACK_MS: u64 = AT_TIP_THRESHOLD_SLOTS * 400;
-
-/// The shortest slot any chain here runs, which floors a measured slot time
-pub const MIN_SLOT_MS: u64 = 10;
-
-/// The most slots the slack comes to, which is what it buys at the shortest slot
-pub const AT_TIP_MAX_SLOTS: u64 = AT_TIP_SLACK_MS / MIN_SLOT_MS;
 
 /// If no block fetch attempt or tip read has occurred for this long, the
 /// monitor reports `Stalled`. Independent from any retry-loop pacing.
@@ -62,8 +51,6 @@ pub struct IngestProgress {
     /// Slot and chain timestamp the measured slot rate is counted from.
     rate_base_slot: AtomicU64,
     rate_base_time: AtomicI64,
-    /// The last slot a block arrived for, which is the other end of the rate.
-    rate_last_slot: AtomicU64,
     queue_len: AtomicU64,
     started: Instant,
 }
@@ -88,7 +75,6 @@ impl IngestProgress {
             chain_time: AtomicI64::new(CHAIN_TIME_UNSET),
             rate_base_slot: AtomicU64::new(0),
             rate_base_time: AtomicI64::new(CHAIN_TIME_UNSET),
-            rate_last_slot: AtomicU64::new(0),
             queue_len: AtomicU64::new(0),
             started: Instant::now(),
         }
@@ -122,14 +108,10 @@ impl IngestProgress {
 
     /// Record a dispatched block's timestamp, which is the chain's own clock.
     /// Rolls the slot-rate baseline once it falls too far behind.
-    ///
-    /// The rate counts block to block, so the empty slots an idle chain skips
-    /// over never shorten the slot time this measures.
-    pub fn record_chain_time(&self, slot: SlotNumber, unix_seconds: i64) {
+    pub fn record_chain_time(&self, unix_seconds: i64) {
         self.chain_time.store(unix_seconds, Ordering::Relaxed);
 
-        let slot = slot.0;
-        self.rate_last_slot.store(slot, Ordering::Relaxed);
+        let slot = self.last_dispatched_slot();
         let base_slot = self.rate_base_slot.load(Ordering::Relaxed);
         let unset = self.rate_base_time.load(Ordering::Relaxed) == CHAIN_TIME_UNSET;
         if unset || slot < base_slot || slot.saturating_sub(base_slot) > RATE_WINDOW_SLOTS {
@@ -153,12 +135,12 @@ impl IngestProgress {
         if base_time == CHAIN_TIME_UNSET || now_time == CHAIN_TIME_UNSET {
             return None;
         }
-        let slots = self.rate_last_slot.load(Ordering::Relaxed).checked_sub(base_slot)?;
+        let slots = self.last_dispatched_slot().checked_sub(base_slot)?;
         let seconds = now_time.checked_sub(base_time)?;
         if slots < RATE_MIN_SLOTS || seconds <= 0 {
             return None;
         }
-        Some((seconds as u64 * 1_000 / slots).max(MIN_SLOT_MS))
+        Some((seconds as u64 * 1_000 / slots).max(1))
     }
 
     pub fn last_attempt_ms(&self) -> u64 {
@@ -248,16 +230,6 @@ impl IngestBus {
         self.current().is_at_tip()
     }
 
-    /// Slots the slack comes to at the measured slot time, held between the
-    /// slot count itself and what the slack buys at the shortest slot
-    pub fn at_tip_slots(&self) -> u64 {
-        match self.progress.slot_ms() {
-            Some(slot_ms) => (AT_TIP_SLACK_MS / slot_ms.max(1))
-                .clamp(AT_TIP_THRESHOLD_SLOTS, AT_TIP_MAX_SLOTS),
-            None => AT_TIP_THRESHOLD_SLOTS,
-        }
-    }
-
     /// Compute the next `IngestState` from current progress. Pure function
     /// of the atomics — exposed for the monitor task and unit tests.
     pub fn compute(&self) -> IngestState {
@@ -276,7 +248,7 @@ impl IngestBus {
         }
 
         let lag_slots = last_tip.saturating_sub(last_dispatched);
-        if lag_slots <= self.at_tip_slots() {
+        if lag_slots <= AT_TIP_THRESHOLD_SLOTS {
             IngestState::AtTip
         } else {
             IngestState::Catching { lag_slots }
@@ -293,47 +265,6 @@ impl Default for IngestBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // a chain with a shorter slot gets the slots its own slot time comes to
-    #[test]
-    fn at_tip_slack_follows_the_measured_slot_time() {
-        let bus = IngestBus::new();
-        assert_eq!(bus.at_tip_slots(), AT_TIP_THRESHOLD_SLOTS);
-
-        let progress = bus.progress();
-        progress.record_dispatched(0);
-        progress.record_chain_time(SlotNumber(0), 0);
-        progress.record_dispatched(100);
-        progress.record_chain_time(SlotNumber(100), 1);
-
-        assert_eq!(progress.slot_ms(), Some(10));
-        assert_eq!(bus.at_tip_slots(), AT_TIP_SLACK_MS / 10);
-    }
-
-    // an idle chain advances the edge over empty slots without shortening its slot
-    #[test]
-    fn an_idle_chain_keeps_its_measured_slot_time() {
-        let bus = IngestBus::new();
-        let progress = bus.progress();
-
-        // Two hundred slots of blocks, one second apart, which is a 5 ms slot
-        // floored to the shortest slot a chain runs.
-        progress.record_dispatched(0);
-        progress.record_chain_time(SlotNumber(0), 0);
-        progress.record_dispatched(200);
-        progress.record_chain_time(SlotNumber(200), 1);
-        assert_eq!(progress.slot_ms(), Some(MIN_SLOT_MS));
-        assert_eq!(bus.at_tip_slots(), AT_TIP_MAX_SLOTS);
-
-        // The chain goes idle: ingest reads empty slots and advances its edge
-        // over them, and no block arrives to move chain time.
-        for edge in 201..=2_000 {
-            progress.record_dispatched(edge);
-        }
-
-        assert_eq!(progress.slot_ms(), Some(MIN_SLOT_MS));
-        assert_eq!(bus.at_tip_slots(), AT_TIP_MAX_SLOTS);
-    }
 
     #[test]
     fn fresh_bus_reports_catching_with_max_lag() {
