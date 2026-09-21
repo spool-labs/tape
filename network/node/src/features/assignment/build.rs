@@ -19,12 +19,11 @@ use tape_protocol::{Api, ProtocolState};
 use tape_spooler::migrate_dhondt;
 use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::blacklist::{BlacklistEntries, blacklist_entries_for_assignment};
-use crate::features::assignment::size::{ActiveTrackFootprint, GroupWeights, group_weights};
+use crate::features::assignment::size::{ActiveTrackFootprint, group_weights};
 
 #[derive(Debug, Clone)]
 pub struct AssignmentCandidate {
@@ -97,15 +96,8 @@ pub fn build_assignment_blocking<Db: Store>(
         )));
     }
 
-    let weights = match group_weights(store, state.epoch(), next_epoch.id, target_groups)
-        .map_err(|e| NodeError::Store(format!("assignment size calculation: {e}")))?
-    {
-        GroupWeights::Ready(weights) => weights,
-        GroupWeights::Pending { track } => {
-            warn!(%track, "assignment: skipping the round until the track's blob metadata lands");
-            return Ok(None);
-        }
-    };
+    let weights = group_weights(store, state.epoch(), next_epoch.id, target_groups)
+        .map_err(|e| NodeError::Store(format!("assignment size calculation: {e}")))?;
 
     let owners = current_owners(state, target_groups)?;
     let spool_count = SpoolCount((target_groups * GROUP_SIZE) as u64);

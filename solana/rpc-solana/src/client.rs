@@ -700,7 +700,7 @@ fn send_batch_request(
 ) -> Result<serde_json::Value, RpcError> {
     let mut calls = Vec::with_capacity(transactions.len());
     for (index, transaction) in transactions.iter().enumerate() {
-        let encoded = wincode_tx::serialize(transaction)
+        let encoded = wincode::serialize(transaction)
             .map_err(|error| RpcError::Internal(format!("encode transaction: {error}")))?;
         calls.push(serde_json::json!({
             "jsonrpc": "2.0",
@@ -1583,7 +1583,7 @@ async fn serve_status(status: u16, body: &'static str) -> (String, tokio::task::
     (url, task)
 }
 
-// one post handler serves every raw call, and a refusal carries the method it refused
+// one post handler serves every raw call, so each names itself in its refusal
 #[tokio::test]
 async fn a_refused_post_holds_its_method_and_status() {
     let (url, task) = serve_status(429, "slow down").await;
@@ -1969,21 +1969,6 @@ async fn a_listed_window_reads_no_tip() {
         assert_eq!(request[1]["method"], "sendTransaction");
         assert_eq!(request[1]["params"][1]["encoding"], "base64");
         assert_eq!(request[1]["params"][1]["skipPreflight"], true);
-    }
-
-    // a batch entry's base64 holds the wire bytes the typed client sends, which
-    // is what the endpoint reads a transaction back out of
-    #[test]
-    fn batch_entry_encodes_the_transaction() {
-        let transaction = signed_transaction(3);
-
-        let request = send_batch_request(&[transaction.clone()]).expect("encodes");
-
-        let encoded = request[0]["params"][0].as_str().expect("base64 parameter");
-        let bytes = base64::decode(encoded).expect("base64 decodes");
-        let decoded: VersionedTransaction =
-            wincode_tx::deserialize(&bytes).expect("wire bytes decode");
-        assert_eq!(decoded, transaction);
     }
 
     #[test]

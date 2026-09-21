@@ -56,8 +56,6 @@ impl Orchestrator {
             config.data_dir.clone(),
             config.rpc_url.clone(),
             config.base_port,
-            config.challenge,
-            config.open_admission,
         );
         let existing_nodes = processes
             .load_existing_nodes()
