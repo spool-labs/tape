@@ -67,28 +67,7 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, 
                 _ = self.cancel.cancelled() => return Ok(()),
                 _ = ticker.tick() => {
                     let current_epoch = self.context.state().epoch();
-
-                    // On the tick, not the epoch sweep. A deleted track's slices
-                    // only have to outlive the rounds that can still ask for
-                    // them, and waiting for the sweep would hold them for an
-                    // epoch, which on mainnet is a week.
-                    let slot = SlotNumber(self.context.ingest.progress().last_dispatched_slot());
-                    match sweep_deleted_slices(self.context.store.as_ref(), slot) {
-                        Ok(swept) if swept.tracks > 0 => debug!(
-                            tracks = swept.tracks,
-                            slices = swept.slices,
-                            "gc: forgot deleted tracks past the round horizon"
-                        ),
-                        Ok(_) => {}
-                        Err(error) => warn!(%error, "gc: deleted-track sweep failed"),
-                    }
-
-                    if next_pending_epoch(self.context.store.as_ref(), current_epoch)?.is_some() {
-                        catch_up_epochs(&self.context, &self.config, current_epoch).await?;
-                    } else {
-                        run_epoch_sweep(&self.context, &self.config, current_epoch).await?;
-                    }
-
+                    run_tick(&self.context, &self.config, current_epoch).await?;
                     observed_epoch = current_epoch;
                 }
                 changed = state_rx.changed() => {
@@ -107,6 +86,27 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, 
     }
 }
 
+async fn run_tick<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    config: &GcConfig,
+    current_epoch: EpochNumber,
+) -> Result<(), NodeError> {
+    // every tick, since a deleted track only has to outlive the rounds that can still ask for it
+    let slot = SlotNumber(context.ingest.progress().last_dispatched_slot());
+    match sweep_deleted_slices(context.store.as_ref(), slot) {
+        Ok(swept) if swept.tracks > 0 => debug!(
+            tracks = swept.tracks,
+            slices = swept.slices,
+            "gc: forgot deleted tracks past the round horizon"
+        ),
+        Ok(_) => {}
+        Err(error) => warn!(%error, "gc: deleted-track sweep failed"),
+    }
+
+    // Only epochs the markers still owe. A completed epoch is never swept twice.
+    catch_up_epochs(context, config, current_epoch).await
+}
+
 /// Run any epoch sweeps still owed according to the persisted GC progress markers.
 async fn catch_up_epochs<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -116,17 +116,21 @@ async fn catch_up_epochs<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     let store = context.store.as_ref();
 
     while let Some(epoch) = next_pending_epoch(store, target_epoch)? {
-        run_epoch_sweep(context, config, epoch).await?;
+        // a sweep behind the tip leaves its epoch owed, so the next tick retries it
+        if !run_epoch_sweep(context, config, epoch).await? {
+            break;
+        }
     }
 
     Ok(())
 }
 
+/// Sweep one epoch and report whether it finished as a completed epoch.
 async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &GcConfig,
     epoch: EpochNumber,
-) -> Result<(), NodeError> {
+) -> Result<bool, NodeError> {
     let store = context.store.as_ref();
     store
         .set_gc_started_epoch(epoch)
@@ -152,6 +156,7 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     debug!(
         node_id = context.node_id().0,
         epoch = epoch.0,
+        at_tip,
         tapes_deleted = sweep_stats.tapes_deleted,
         tracks_deleted = sweep_stats.tracks_deleted,
         slices_deleted = sweep_stats.slices_deleted,
@@ -178,9 +183,16 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
+    // behind the tip the expiry and certify checks are no-ops, so the marker stays put
+    if !at_tip {
+        return Ok(false);
+    }
+
     store
         .set_gc_completed_epoch(epoch)
-        .map_err(|error| NodeError::Store(format!("set_gc_completed_epoch: {error}")))
+        .map_err(|error| NodeError::Store(format!("set_gc_completed_epoch: {error}")))?;
+
+    Ok(true)
 }
 
 /// Whether the store has applied blocks to within the at-tip threshold of the finalized tip
@@ -271,11 +283,13 @@ mod tests {
     use std::time::Duration;
 
     use tape_store_memory::MemoryStore;
-    use tape_core::types::EpochNumber;
-    use tape_store::{TapeStore, ops::MetaOps};
+    use tape_core::challenge::PeerRecord;
+    use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
+    use tape_crypto::Address;
+    use tape_store::{TapeStore, ops::{ChallengeOps, MetaOps}};
     use tokio_util::sync::CancellationToken;
 
-    use super::{GcManager, next_pending_epoch, run_epoch_sweep};
+    use super::{GcManager, next_pending_epoch, run_epoch_sweep, run_tick};
     use crate::config::store::GcConfig;
     use crate::harness::{NodeHarness, TestContext};
 
@@ -291,6 +305,13 @@ mod tests {
             .await
             .expect("build harness")
             .ctx_for(0)
+    }
+
+    /// Put the node's ingest and store cursor at the finalized tip.
+    fn put_at_durable_tip(context: &TestContext) {
+        let tip = SlotNumber(100);
+        context.ingest.progress().record_tip(tip.0);
+        context.store.set_sync_cursor(tip, None).expect("set sync cursor");
     }
 
     fn test_config() -> GcConfig {
@@ -343,11 +364,69 @@ mod tests {
     async fn marks_complete() {
         let context = test_context().await;
         let config = test_config();
+        put_at_durable_tip(&context);
 
         run_epoch_sweep(&context, &config, EpochNumber(3)).await.unwrap();
 
         assert_eq!(context.store.get_gc_started_epoch().unwrap(), Some(EpochNumber(3)));
         assert_eq!(context.store.get_gc_completed_epoch().unwrap(), Some(EpochNumber(3)));
+    }
+
+    #[tokio::test]
+    async fn sweep_behind_tip_leaves_epoch_owed() {
+        let context = test_context().await;
+        let config = test_config();
+        let epoch = EpochNumber(3);
+
+        run_epoch_sweep(&context, &config, epoch)
+            .await
+            .expect("sweep behind the tip");
+
+        assert_eq!(context.store.get_gc_started_epoch().expect("started"), Some(epoch));
+        assert_eq!(context.store.get_gc_completed_epoch().expect("completed"), None);
+        assert_eq!(
+            next_pending_epoch(&context.store, epoch).expect("pending"),
+            Some(epoch)
+        );
+
+        put_at_durable_tip(&context);
+        run_epoch_sweep(&context, &config, epoch)
+            .await
+            .expect("sweep at the tip");
+
+        assert_eq!(context.store.get_gc_completed_epoch().expect("completed"), Some(epoch));
+        assert_eq!(next_pending_epoch(&context.store, epoch).expect("pending"), None);
+    }
+
+    #[tokio::test]
+    async fn repeat_tick_in_one_epoch_runs_no_sweep() {
+        let context = test_context().await;
+        let config = test_config();
+        let epoch = context.state().epoch();
+        put_at_durable_tip(&context);
+        let peer = Address::new_unique();
+        let spool = SpoolIndex(0);
+
+        // a record no owner answers for survives a tick only when that tick ran no sweep
+        context
+            .store
+            .put_peer_record(peer, spool, PeerRecord::default())
+            .expect("put peer record");
+
+        run_tick(&context, &config, epoch).await.expect("first tick");
+
+        assert_eq!(context.store.get_gc_completed_epoch().expect("completed"), Some(epoch));
+        assert_eq!(next_pending_epoch(&context.store, epoch).expect("pending"), None);
+        assert!(context.store.iter_peer_records().expect("records").is_empty());
+
+        context
+            .store
+            .put_peer_record(peer, spool, PeerRecord::default())
+            .expect("put peer record again");
+
+        run_tick(&context, &config, epoch).await.expect("second tick");
+
+        assert_eq!(context.store.iter_peer_records().expect("records").len(), 1);
     }
 
     #[tokio::test]
