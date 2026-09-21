@@ -12,7 +12,6 @@ use axum::middleware::{from_fn_with_state, Next};
 use axum::response::Response;
 use axum::routing::get;
 use axum::{Json, Router};
-use axum_server::accept::NoDelayAcceptor;
 use axum_server::tls_rustls::{RustlsAcceptor, RustlsConfig};
 use axum_server::Handle;
 use tape_peer_tls::{build_server_config_with_peer_auth, cert_san_ips};
@@ -45,9 +44,9 @@ where
     let san_ips = cert_san_ips(listen.ip());
     let server_config = build_server_config_with_peer_auth(context.tls_keypair(), &san_ips)
         .map_err(|error| NodeError::Config(format!("observe tls config: {error}")))?;
-    let acceptor = PeerIdentityAcceptor::new(
-        RustlsAcceptor::new(RustlsConfig::from_config(server_config)).acceptor(NoDelayAcceptor::new()),
-    );
+    let acceptor = PeerIdentityAcceptor::new(RustlsAcceptor::new(RustlsConfig::from_config(
+        server_config,
+    )));
 
     let router = Router::new()
         .route(OBSERVE_ATLAS_PATH, get(recent::<Db, Cluster, Blockchain>))

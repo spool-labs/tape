@@ -51,14 +51,6 @@ struct Cli {
 
     #[arg(long, default_value_t = 1)]
     spool_groups: u64,
-
-    /// Leave the challenge mechanism off on every node
-    #[arg(long)]
-    no_challenge: bool,
-
-    /// Let every node admit any caller at any rate
-    #[arg(long)]
-    open_admission: bool,
 }
 
 fn main() -> ExitCode {
@@ -100,8 +92,6 @@ async fn async_main() -> ExitCode {
         sol_airdrop: cli.sol_airdrop,
         stake_amount: cli.stake_amount,
         spool_groups: cli.spool_groups,
-        should_challenge: !cli.no_challenge,
-        is_admission_open: cli.open_admission,
         ..LocalnetConfig::default()
     };
 
