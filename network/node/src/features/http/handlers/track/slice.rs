@@ -69,6 +69,7 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     if refuses_object(
         state.context.store.as_ref(),
+        &state.context.blacklist,
         state.context.node_address(),
         state.context.state().epoch(),
         track_key,
@@ -132,6 +133,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     if refuses_object(
         state.context.store.as_ref(),
+        &state.context.blacklist,
         state.context.node_address(),
         epoch,
         track_key,
