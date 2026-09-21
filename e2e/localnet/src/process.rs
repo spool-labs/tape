@@ -52,8 +52,6 @@ pub struct ProcessSupervisor {
     data_root: PathBuf,
     rpc_url: String,
     base_port: u16,
-    should_challenge: bool,
-    is_admission_open: bool,
     nodes: Vec<NodeHandle>,
 }
 
@@ -63,16 +61,12 @@ impl ProcessSupervisor {
         data_root: PathBuf,
         rpc_url: String,
         base_port: u16,
-        should_challenge: bool,
-        is_admission_open: bool,
     ) -> Self {
         Self {
             node_binary,
             data_root,
             rpc_url,
             base_port,
-            should_challenge,
-            is_admission_open,
             nodes: Vec::new(),
         }
     }
@@ -173,16 +167,7 @@ impl ProcessSupervisor {
         let port = self.base_port + id as u16;
         let plaintext_port = port + PLAINTEXT_PORT_OFFSET;
         let node_dir = self.data_root.join(format!("node-{id}"));
-        // An operator may point node-N at a drive with an empty directory or a link to one
-        let is_taken = match std::fs::read_dir(&node_dir) {
-            Ok(mut entries) => entries.next().is_some(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("read node dir: {}", node_dir.display()))
-            }
-        };
-        if is_taken {
+        if node_dir.exists() {
             anyhow::bail!(
                 "node directory already exists for node {id}: {}",
                 node_dir.display()
@@ -215,8 +200,6 @@ impl ProcessSupervisor {
             &tls_path,
             &store_path,
             &self.rpc_url,
-            self.should_challenge,
-            self.is_admission_open,
         );
         std::fs::write(&config_path, yaml)
             .with_context(|| format!("write config: {}", config_path.display()))?;
@@ -418,31 +401,6 @@ fn write_bls_keypair(path: &Path, key: &BlsPrivateKey) -> Result<()> {
     std::fs::write(path, json).with_context(|| format!("write bls keypair: {}", path.display()))
 }
 
-/// Rate and burst every admission bucket gets when the harness opens admission,
-/// past anything a run on one laptop can drive.
-const OPEN_ADMISSION_RATE: u64 = 1_000_000_000;
-
-/// The keys that block sets, each to `OPEN_ADMISSION_RATE`.
-const OPEN_ADMISSION_KEYS: [&str; 8] = [
-    "anonymous_write_per_sec",
-    "anonymous_write_burst",
-    "anonymous_read_per_sec",
-    "anonymous_read_burst",
-    "probe_per_sec",
-    "probe_burst",
-    "trusted_metered_per_sec",
-    "trusted_metered_burst",
-];
-
-/// The http.admission block that admits every caller at any rate.
-fn open_admission_block() -> String {
-    let mut block = String::from("  admission:\n");
-    for key in OPEN_ADMISSION_KEYS {
-        block.push_str(&format!("    {key}: {OPEN_ADMISSION_RATE}\n"));
-    }
-    block
-}
-
 fn build_node_yaml(
     id: usize,
     port: u16,
@@ -452,13 +410,7 @@ fn build_node_yaml(
     tls_path: &Path,
     store_path: &Path,
     rpc_url: &str,
-    should_challenge: bool,
-    is_admission_open: bool,
 ) -> String {
-    let admission = match is_admission_open {
-        true => open_admission_block(),
-        false => String::new(),
-    };
     format!(
         r#"node:
   name: "localnet-node-{id}"
@@ -478,13 +430,13 @@ network:
 
 http:
   listen: "{LOCAL_HOST}:{plaintext_port}"
-{admission}
+
 https:
   listen: "0.0.0.0:{port}"
   identity_keypair: "{tls}"
 
 challenge:
-  enabled: {should_challenge}
+  enabled: true
 
 # Off on the harness: rounds and records still run, but the rig should not
 # condemn its own nodes.
@@ -528,8 +480,6 @@ mod tests {
             Path::new("/tmp/node-3/tls.json"),
             Path::new("/tmp/node-3/data"),
             "http://127.0.0.1:8899",
-            true,
-            true,
         );
 
         let config = NodeConfig::from_yaml_str(&yaml).expect("generated yaml parses");
