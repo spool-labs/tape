@@ -1,9 +1,9 @@
 #![cfg(feature = "rocks")]
 
-//! Count-path microbenchmark for `count_tracks`: keys-only scan
-//! (`iter_keys_prefix`) vs the old value-reading scan (`iter_from(..).count()`)
-//! over the BlockBased `track` CF. Both the node's and gateway's `/v1/stats`
-//! count tracks this way.
+//! Count-path microbenchmark over the BlockBased `track` CF: keys-only scan
+//! (`iter_keys_prefix`) against the value-reading scan (`iter_from(..).count()`).
+//! `count_tracks`, behind the node's and gateway's `/v1/stats`, asks the engine
+//! for the count and pays neither scan where the engine keeps counters.
 //!
 //! Three arms. The rocks and split arms are the layout a node runs: `track` is a
 //! metadata family on the RocksDB meta volume, so those two rows should agree.
