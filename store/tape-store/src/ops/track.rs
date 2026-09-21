@@ -93,12 +93,8 @@ impl<S: Store> TrackOps for TapeStore<S> {
     }
 
     fn count_tracks(&self) -> Result<usize> {
-        // Keys-only: count without deserializing/copying every track value.
-        Ok(self
-            .inner()
-            .inner()
-            .iter_keys_prefix(TrackCol::CF_NAME, &[])?
-            .len())
+        // The reel answers a whole-column count from its counters.
+        Ok(self.inner().inner().count_prefix(TrackCol::CF_NAME, &[])? as usize)
     }
 
     fn sweep_tracks(

@@ -148,8 +148,13 @@ impl SolanaRpc {
     /// one ended, so a refused transaction whose reply was lost stays refused.
     /// An entry the chain holds no status for is left refused for the caller
     /// to send again.
+    ///
+    /// The status read stays on the endpoint the batch went to. Any other
+    /// endpoint holds its own history, and an entry it has never seen would
+    /// come back refused after it had already landed.
     async fn settle_replayed(
         &self,
+        endpoint: usize,
         sent: &mut [Result<Txid, RpcError>],
         transactions: &[VersionedTransaction],
     ) {
@@ -170,7 +175,7 @@ impl SolanaRpc {
         }
 
         let signatures: Vec<Signature> = replayed.iter().map(|(_, sig)| *sig).collect();
-        let Ok(statuses) = self.signature_statuses(&signatures).await else {
+        let Ok(statuses) = self.signature_statuses_at(endpoint, &signatures).await else {
             return;
         };
 
@@ -188,29 +193,46 @@ impl SolanaRpc {
         }
     }
 
-    /// The status the chain holds for each signature, in the order asked
-    async fn signature_statuses(
+    /// The status one endpoint holds for each signature, in the order asked
+    ///
+    /// Retries stay on that endpoint, since a failover would answer from
+    /// another node's history.
+    async fn signature_statuses_at(
         &self,
+        endpoint: usize,
         signatures: &[Signature],
     ) -> Result<Vec<Option<Result<(), TransactionError>>>, RpcError> {
-        let signatures = Arc::new(signatures.to_vec());
+        let client = self.clients[endpoint].clone();
+        let mut backoff = tape_retry::Backoff::new(self.config.retry.to_retry_config());
 
-        self.with_retry("getSignatureStatuses", move |client| {
-            let signatures = signatures.clone();
-            async move {
-                let response = client
-                    .get_signature_statuses(&signatures)
-                    .await
-                    .map_err(|error| Self::convert_error(error, None))?;
+        loop {
+            let attempt = tokio::time::timeout(
+                self.config.timeout,
+                client.get_signature_statuses(signatures),
+            )
+            .await;
 
-                Ok(response
-                    .value
-                    .into_iter()
-                    .map(|status| status.map(|status| status.status))
-                    .collect())
+            let error = match attempt {
+                Ok(Ok(response)) => {
+                    return Ok(response
+                        .value
+                        .into_iter()
+                        .map(|status| status.map(|status| status.status))
+                        .collect())
+                }
+                Ok(Err(error)) => Self::convert_error(error, None),
+                Err(_elapsed) => RpcError::Timeout(self.config.timeout),
+            };
+
+            if !error.is_retriable() {
+                return Err(error);
             }
-        })
-        .await
+
+            match backoff.next_delay() {
+                Some(delay) => tokio::time::sleep(delay).await,
+                None => return Err(error),
+            }
+        }
     }
 
     /// Get a reference to the configuration.
@@ -303,6 +325,21 @@ impl SolanaRpc {
         Call: Fn(usize) -> CallFuture,
         CallFuture: Future<Output = Result<Value, RpcError>>,
     {
+        let (value, _endpoint) = self.with_retry_where(method, call).await?;
+        Ok(value)
+    }
+
+    /// Same again, also reporting which endpoint answered, for a caller whose
+    /// follow-up read only makes sense against that one.
+    async fn with_retry_where<Value, Call, CallFuture>(
+        &self,
+        method: &str,
+        call: Call,
+    ) -> Result<(Value, usize), RpcError>
+    where
+        Call: Fn(usize) -> CallFuture,
+        CallFuture: Future<Output = Result<Value, RpcError>>,
+    {
         #[cfg(feature = "metrics")]
         let timer = tape_metrics::OperationTimer::new();
 
@@ -317,7 +354,7 @@ impl SolanaRpc {
                         metrics.record_request(method, "success", timer.elapsed_secs());
                     }
 
-                    return Ok(value);
+                    return Ok((value, cursor.index()));
                 }
                 Ok(Err(error)) => {
                     self.handle_error(method, error, &mut backoff, &mut cursor)
@@ -663,7 +700,7 @@ fn send_batch_request(
 ) -> Result<serde_json::Value, RpcError> {
     let mut calls = Vec::with_capacity(transactions.len());
     for (index, transaction) in transactions.iter().enumerate() {
-        let encoded = wincode::serialize(transaction)
+        let encoded = wincode_tx::serialize(transaction)
             .map_err(|error| RpcError::Internal(format!("encode transaction: {error}")))?;
         calls.push(serde_json::json!({
             "jsonrpc": "2.0",
@@ -784,16 +821,18 @@ fn decode_entry_error(error: JsonRpcError) -> RpcError {
         },
     ));
 
-    match SolanaRpc::convert_error(client_error, None) {
-        RpcError::Request(message) if tape_rpc::looks_like_transaction_error(&message) => {
-            RpcError::Transaction {
+    let converted = SolanaRpc::convert_error(client_error, None);
+    if let RpcError::Request(message) = &converted {
+        if tape_rpc::looks_like_transaction_error(message) {
+            return RpcError::Transaction {
                 err: None,
-                message,
+                message: message.clone(),
                 simulated: false,
-            }
+            };
         }
-        converted => converted,
     }
+
+    converted
 }
 
 /// What a batch post answers with: one entry per call, or one refusal.
@@ -1199,8 +1238,8 @@ impl Rpc for SolanaRpc {
         let body = send_batch_request(transactions)?;
         let count = transactions.len();
 
-        let mut sent = self
-            .with_retry_at("sendTransaction:batch", |index| {
+        let (mut sent, endpoint) = self
+            .with_retry_where("sendTransaction:batch", |index| {
                 send_batch(
                     &self.http,
                     &self.config.endpoints[index],
@@ -1210,7 +1249,7 @@ impl Rpc for SolanaRpc {
             })
             .await?;
 
-        self.settle_replayed(&mut sent, transactions).await;
+        self.settle_replayed(endpoint, &mut sent, transactions).await;
 
         Ok(sent)
     }
@@ -1544,7 +1583,7 @@ async fn serve_status(status: u16, body: &'static str) -> (String, tokio::task::
     (url, task)
 }
 
-// one post handler serves every raw call, so each names itself in its refusal
+// one post handler serves every raw call, and a refusal carries the method it refused
 #[tokio::test]
 async fn a_refused_post_holds_its_method_and_status() {
     let (url, task) = serve_status(429, "slow down").await;
@@ -1682,6 +1721,40 @@ async fn a_replayed_send_that_failed_stays_refused() {
         panic!("a refused first execution is not a landed entry: {sent:?}");
     };
     assert_eq!(error.custom_program_error(), Some(116));
+}
+
+// the endpoint that answered the batch also answers for its replayed entries
+#[tokio::test]
+async fn a_replayed_send_reads_its_own_endpoint() {
+    let landed = serde_json::json!({
+        "slot": 100,
+        "confirmations": serde_json::Value::Null,
+        "err": serde_json::Value::Null,
+        "status": { "Ok": serde_json::Value::Null },
+        "confirmationStatus": "confirmed",
+    });
+    let batch = already_processed_batch();
+    // The ring's next endpoint ran none of these transactions, so it holds no
+    // status for them.
+    let other = MockEndpoint::start(replaying_member(serde_json::Value::Null)).await;
+    let member = MockEndpoint::start(move |method: &str| match method {
+        "sendTransaction" => batch.clone(),
+        asked => replaying_member(landed.clone())(asked),
+    })
+    .await;
+    let client = client_for(&[&other, &member], EndpointStrategy::RoundRobin);
+
+    let sent = client
+        .send_transactions(&[signed_transaction(11)])
+        .await
+        .expect("the batch is answered");
+
+    assert!(sent[0].is_ok(), "a clean replay is a landed entry: {sent:?}");
+    assert_eq!(
+        member.served(),
+        vec!["sendTransaction".to_string(), "getSignatureStatuses".to_string()]
+    );
+    assert!(other.served().is_empty(), "{:?}", other.served());
 }
 
 // a member holding the window keeps its tip to itself, which saves the round trip
@@ -1896,6 +1969,21 @@ async fn a_listed_window_reads_no_tip() {
         assert_eq!(request[1]["method"], "sendTransaction");
         assert_eq!(request[1]["params"][1]["encoding"], "base64");
         assert_eq!(request[1]["params"][1]["skipPreflight"], true);
+    }
+
+    // a batch entry's base64 holds the wire bytes the typed client sends, which
+    // is what the endpoint reads a transaction back out of
+    #[test]
+    fn batch_entry_encodes_the_transaction() {
+        let transaction = signed_transaction(3);
+
+        let request = send_batch_request(&[transaction.clone()]).expect("encodes");
+
+        let encoded = request[0]["params"][0].as_str().expect("base64 parameter");
+        let bytes = base64::decode(encoded).expect("base64 decodes");
+        let decoded: VersionedTransaction =
+            wincode_tx::deserialize(&bytes).expect("wire bytes decode");
+        assert_eq!(decoded, transaction);
     }
 
     #[test]

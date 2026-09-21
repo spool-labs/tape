@@ -3,8 +3,7 @@
 //! Uploads slices to storage nodes based on spool assignments from the
 //! on-chain committee. Each slice goes to the node that owns that spool.
 
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -35,6 +34,39 @@ const STRAGGLER_LIMIT: Duration = Duration::from_secs(60);
 
 /// The beat a straggler pushes at once its retry ladder is spent
 const STRAGGLER_STEP: Duration = Duration::from_millis(250);
+
+/// Owners still pushing after their calls returned, process wide; the oldest gives way past this
+const MAX_STRAGGLERS: usize = 256;
+
+static STRAGGLERS: Mutex<StragglerRegistry> = Mutex::new(StragglerRegistry::new());
+
+/// The pushes that outlive their upload call, bounded in number and each already bounded in time
+struct StragglerRegistry {
+    pushes: VecDeque<JoinHandle<()>>,
+}
+
+impl StragglerRegistry {
+    const fn new() -> Self {
+        Self { pushes: VecDeque::new() }
+    }
+
+    /// Keep a push running past its call, aborting the oldest once the cap is reached
+    fn admit(&mut self, handle: JoinHandle<()>, cap: usize) {
+        self.pushes.retain(|push| !push.is_finished());
+        while self.pushes.len() >= cap {
+            match self.pushes.pop_front() {
+                Some(oldest) => oldest.abort(),
+                None => break,
+            }
+        }
+        self.pushes.push_back(handle);
+    }
+
+    #[cfg(test)]
+    fn live(&self) -> usize {
+        self.pushes.iter().filter(|push| !push.is_finished()).count()
+    }
+}
 
 /// A slice with its merkle proof, ready for upload.
 ///
@@ -73,8 +105,7 @@ pub struct DistributedUploader {
     group_member_count: usize,
     concurrency_limit: Arc<Semaphore>,
     reputation: Option<Arc<Reputation>>,
-    // One push task per owner, aborted when the call gives up or the uploader
-    // drops, so no slice keeps sleeping on a caller that has moved on.
+    // one push task per owner; a call that gives up aborts them, a call that reached quorum hands them to the registry
     stragglers: Mutex<Vec<JoinHandle<()>>>,
 }
 
@@ -294,6 +325,7 @@ impl DistributedUploader {
                     required_slices,
                     "slice upload quorum reached, draining remaining uploads in the background"
                 );
+                self.release_stragglers();
                 return Ok(receipts);
             }
         }
@@ -345,11 +377,16 @@ impl DistributedUploader {
             handle.abort();
         }
     }
-}
 
-impl Drop for DistributedUploader {
-    fn drop(&mut self) {
-        self.abort_stragglers();
+    /// Let the owners still pushing finish on their own clock, under the process wide cap
+    fn release_stragglers(&self) {
+        let Ok(mut stragglers) = self.stragglers.lock() else {
+            return;
+        };
+        let mut registry = STRAGGLERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for handle in stragglers.drain(..) {
+            registry.admit(handle, MAX_STRAGGLERS);
+        }
     }
 }
 
@@ -819,9 +856,9 @@ mod tests {
         assert_eq!(record.consecutive_failures, 1);
     }
 
-    // dropping the uploader stops the owners still pushing
+    // the owners still pushing outlive the call and the uploader, up to the straggler limit
     #[tokio::test(start_paused = true)]
-    async fn drop_stops_pushes() {
+    async fn quorum_keeps_pushing() {
         let state = make_test_state(GROUP_SIZE);
         let straggler = state.current.committee[0].node;
         let (api, attempts) = api_with_straggler(straggler, |_| refused(ApiError::NotFound));
@@ -833,7 +870,22 @@ mod tests {
         let pushed = attempts.load(Ordering::Relaxed);
         sleep(STRAGGLER_LIMIT * 2).await;
 
-        assert_eq!(attempts.load(Ordering::Relaxed), pushed);
+        assert!(attempts.load(Ordering::Relaxed) > pushed);
+    }
+
+    // the registry keeps the newest pushes and aborts the oldest past the cap
+    #[tokio::test]
+    async fn straggler_cap_aborts_the_oldest() {
+        let mut registry = StragglerRegistry::new();
+        let handles: Vec<JoinHandle<()>> = (0..3)
+            .map(|_| tokio::spawn(async { sleep(Duration::from_secs(60)).await }))
+            .collect();
+        for handle in handles {
+            registry.admit(handle, 2);
+        }
+        tokio::task::yield_now().await;
+
+        assert_eq!(registry.live(), 2);
     }
 
     // a run that never reaches quorum gives up on the retry ladder
