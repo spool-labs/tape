@@ -139,20 +139,16 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
 
         // Only produced slots: a skipped one answers "not available" until it roots
         let window_end = tip.min(next_slot.0 + CATCH_UP_WINDOW_SLOTS);
-        let produced = self
+        let window = self
             .context
             .rpc
-            .get_blocks(next_slot.0, window_end)
+            .get_block_window(next_slot.0, window_end)
             .await
             .map_err(|error| rpc_failed("get_blocks", error))?;
-        let Some(&last) = produced.last() else {
-            // A member behind the window lists nothing for a range it lacks, so read the tip again
-            let answered_tip = self
-                .context
-                .rpc
-                .get_slot()
-                .await
-                .map_err(|error| rpc_failed("get_slot", error))?;
+        let Some(&last) = window.produced.last() else {
+            // A member behind the window lists nothing for a range it lacks, so
+            // the tip it reports for the same pass is as far as this answer reaches.
+            let answered_tip = window.tip.unwrap_or(next_slot.0);
             sleep(self.tip_poll_delay()).await;
             // A window the chain lists nothing in holds nothing to ingest, so resume at its end
             return Ok(SlotNumber(window_end.min(answered_tip).max(next_slot.0)));
@@ -165,7 +161,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         let mut blocks = fetch_blocks_ordered(
             self.context.clone(),
             self.cancel.clone(),
-            slots_to_fetch(next_slot.0, &produced),
+            slots_to_fetch(next_slot.0, &window.produced),
         );
 
         // Promote as the stream advances so consumers make progress across a
