@@ -1078,8 +1078,11 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
 /// counts the same as a post the chain would not take at all.
 fn submit_outcome<Failure>(verdicts: &Result<Vec<Result<Txid, RpcError>>, Failure>) -> Outcome {
     match verdicts {
-        Ok(entries) if entries.iter().any(Result::is_ok) => Outcome::Ok,
-        _ => Outcome::Error,
+        Ok(entries) => match entries.iter().any(Result::is_ok) {
+            true => Outcome::Ok,
+            false => Outcome::Error,
+        },
+        Err(_) => Outcome::Error,
     }
 }
 
@@ -1189,22 +1192,20 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
     let mut is_epoch_changed = false;
     for (index, (verdict, build)) in verdicts.into_iter().zip(&built).enumerate() {
         if let Err(err) = verdict {
-            match parse_tape_error(&err) {
-                // The track was certified before the run reached it, so the
-                // chain holds the leaf the mirror is about to write.
-                Some(TapeError::AlreadyCertified) => {}
-                verdict => {
-                    is_epoch_changed = matches!(verdict, Some(TapeError::EpochChanged));
-                    warn!(
-                        index,
-                        entries = built.len(),
-                        track = build.certified.track_number.as_u64(),
-                        ?verdict,
-                        %err,
-                        "certify run refused",
-                    );
-                    break;
-                }
+            let verdict = parse_tape_error(&err);
+            // A track certified before the run reached it leaves the chain
+            // holding the leaf the mirror is about to write, so the run goes on.
+            if !matches!(verdict, Some(TapeError::AlreadyCertified)) {
+                is_epoch_changed = matches!(verdict, Some(TapeError::EpochChanged));
+                warn!(
+                    index,
+                    entries = built.len(),
+                    track = build.certified.track_number.as_u64(),
+                    ?verdict,
+                    %err,
+                    "certify run refused",
+                );
+                break;
             }
         }
 
@@ -1640,7 +1641,11 @@ mod tests {
     use peer_memory::MemoryApi;
     use rpc_litesvm::LiteSvmRpc;
     use tape_api::state::Tape;
+    use tape_core::bls::BlsSignature;
+    use tape_crypto::ed25519::Keypair;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
+    use tape_core::types::bitmap::SpoolBitmap;
     use tape_core::track::archive::TrackArchive;
     use tape_core::system::Member;
     use tape_core::track::types::{TrackState, TrackVisibility};
@@ -1682,20 +1687,34 @@ mod tests {
         assert_eq!(submit_outcome(&verdicts), Outcome::Error);
     }
 
-    // an empty run proves nothing, so it asks the client for nothing
+    // a run with nothing to prove asks the chain for nothing
     #[tokio::test]
     async fn an_empty_certify_run_asks_the_client_for_nothing() {
-        // This client holds no payer, so anything the run reads off it fails.
-        let client = manifest_client(CompressedTrack::zeroed());
+        // Every send expires the litesvm blockhash, so the blockhash standing
+        // afterwards is what says the run stayed off the chain.
+        let client = payer_client();
         let tape_key = TapeKey::generate();
         let mirror = Mutex::new(ArchiveMirror::new(&TrackArchive::zeroed()));
+        let before = blockhash(&client).await;
 
-        let outcome = certify_run_once(&client, &tape_key, &mirror, &[], Operation::Upload)
+        let empty = certify_run_once(&client, &tape_key, &mirror, &[], Operation::Upload)
             .await
-            .expect("an empty run needs no payer");
+            .expect("an empty run needs no chain");
+
+        assert_eq!(empty.landed, 0);
+        assert!(!empty.is_epoch_changed);
+        assert_eq!(blockhash(&client).await, before);
+
+        // The mirror holds no leaf for this chunk, so the run proves nothing of
+        // it and still asks the chain for nothing.
+        let unprovable = vec![chunk_certification(TrackNumber(7))];
+        let outcome = certify_run_once(&client, &tape_key, &mirror, &unprovable, Operation::Upload)
+            .await
+            .expect("an unprovable run needs no chain");
 
         assert_eq!(outcome.landed, 0);
         assert!(!outcome.is_epoch_changed);
+        assert_eq!(blockhash(&client).await, before);
     }
 
     // a batch answer holding a verdict per sent transaction is read
@@ -1722,6 +1741,43 @@ mod tests {
             Err(TapedriveError::Rpc(RpcError::Request("no".to_string())));
 
         assert_eq!(submit_outcome(&verdicts), Outcome::Error);
+    }
+
+    async fn blockhash(client: &Tapedrive<LiteSvmRpc, MemoryApi>) -> String {
+        client
+            .rpc()
+            .rpc()
+            .get_latest_blockhash()
+            .await
+            .expect("litesvm blockhash")
+            .to_string()
+    }
+
+    /// One stored chunk waiting to certify, at a track number the caller picks
+    fn chunk_certification(track_number: TrackNumber) -> ChunkCertification {
+        let mut track = CompressedTrack::zeroed();
+        track.track_number = track_number;
+        ChunkCertification {
+            written: WrittenTrack { address: Address::new_unique(), track },
+            collected: CollectedSignatures {
+                aggregated_signature: BlsSignature::zeroed(),
+                bitmap: SpoolBitmap::zeroed(),
+                signature_count: 0,
+                spool_count: GROUP_SIZE,
+                epoch: 1,
+                responses: Vec::new(),
+                failures: Vec::new(),
+                early_exit: false,
+            },
+            receipts: Vec::new(),
+        }
+    }
+
+    /// A client that can pay, so a run reaches the chain unless it returns first
+    fn payer_client() -> Tapedrive<LiteSvmRpc, MemoryApi> {
+        let mut client = manifest_client(CompressedTrack::zeroed());
+        client.payer = Some(Keypair::new(&mut rand::thread_rng()));
+        client
     }
 
     fn manifest_client(track: CompressedTrack) -> Tapedrive<LiteSvmRpc, MemoryApi> {

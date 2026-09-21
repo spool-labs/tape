@@ -16,7 +16,7 @@ use tracing::{debug, warn};
 
 use tape_core::types::coin::{Coin, TAPE};
 
-use crate::config::http::{AdmissionConfig, StakeTier};
+use crate::config::http::{AdmissionConfig, AdmissionPolicy, StakeTier};
 use crate::features::http::forwarded::caller_ip;
 use crate::features::http::auth::{ActivePeer, StakedPeer};
 use crate::features::http::state::AppState;
@@ -62,14 +62,24 @@ struct BucketState {
 
 pub struct AdmissionLimiter {
     config: AdmissionConfig,
+    /// Off on a chain the operator runs, where every caller is the operator's own
+    metered: bool,
     buckets: Mutex<HashMap<BucketKey, BucketState>>,
     checks: AtomicUsize,
 }
 
 impl AdmissionLimiter {
-    pub fn new(config: AdmissionConfig) -> Self {
+    pub fn new(policy: AdmissionPolicy) -> Self {
+        // An open node still classifies callers, so the atlas keeps telling
+        // anonymous traffic from peer calls.
+        let (config, metered) = match policy {
+            AdmissionPolicy::Open => (AdmissionConfig::default(), false),
+            AdmissionPolicy::Metered(config) => (config, true),
+        };
+
         Self {
             config,
+            metered,
             buckets: Mutex::new(HashMap::new()),
             checks: AtomicUsize::new(0),
         }
@@ -85,6 +95,10 @@ impl AdmissionLimiter {
     /// committee peer and a staked caller each share one bucket across
     /// modes; only anonymous callers split write from read budgets.
     pub fn check(&self, mode: AdmissionMode, caller: AdmissionCaller) -> AdmissionDecision {
+        if !self.metered {
+            return AdmissionDecision::Allowed;
+        }
+
         let (class, per_sec, burst) = self.bucket_params(mode, caller);
         self.check_bucket(class, caller, per_sec, burst)
     }
@@ -396,9 +410,28 @@ mod tests {
         );
     }
 
+    // an open limiter keeps admitting the same caller past any burst
+    #[test]
+    fn open_policy_admits_every_caller() {
+        let limiter = AdmissionLimiter::new(AdmissionPolicy::Open);
+        let caller = AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+
+        for _ in 0..1_000 {
+            assert_eq!(
+                limiter.check(AdmissionMode::DirectWrite, caller),
+                AdmissionDecision::Allowed
+            );
+        }
+
+        assert_eq!(
+            limiter.check(AdmissionMode::Probe, AdmissionCaller::Peer(Address::from([1u8; 32]))),
+            AdmissionDecision::Allowed
+        );
+    }
+
     #[test]
     fn anonymous_write_is_bucketed_per_ip() {
-        let limiter = AdmissionLimiter::new(test_config());
+        let limiter = AdmissionLimiter::new(AdmissionPolicy::Metered(test_config()));
         let first = AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
         let second = AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
 
@@ -418,7 +451,7 @@ mod tests {
 
     #[test]
     fn trusted_metered_bucket_is_keyed_by_peer() {
-        let limiter = AdmissionLimiter::new(test_config());
+        let limiter = AdmissionLimiter::new(AdmissionPolicy::Metered(test_config()));
         let first = AdmissionCaller::Peer(Address::from([1u8; 32]));
         let second = AdmissionCaller::Peer(Address::from([2u8; 32]));
 
@@ -438,7 +471,7 @@ mod tests {
 
     #[test]
     fn anonymous_read_is_bucketed_per_ip() {
-        let limiter = AdmissionLimiter::new(test_config());
+        let limiter = AdmissionLimiter::new(AdmissionPolicy::Metered(test_config()));
         let first = AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
         let second = AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
 
@@ -458,7 +491,7 @@ mod tests {
 
     #[test]
     fn probe_bucket_is_keyed_by_caller() {
-        let limiter = AdmissionLimiter::new(test_config());
+        let limiter = AdmissionLimiter::new(AdmissionPolicy::Metered(test_config()));
         let anonymous = AdmissionCaller::Anonymous(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
         let peer = AdmissionCaller::Peer(Address::from([3u8; 32]));
 
@@ -490,7 +523,7 @@ mod tests {
     // staked callers are bucketed per node at their tier's rates
     #[test]
     fn staked_write_is_bucketed_per_node() {
-        let limiter = AdmissionLimiter::new(test_config());
+        let limiter = AdmissionLimiter::new(AdmissionPolicy::Metered(test_config()));
         let first = AdmissionCaller::Staked(Address::from([4u8; 32]), 0);
         let second = AdmissionCaller::Staked(Address::from([5u8; 32]), 0);
 
@@ -505,7 +538,7 @@ mod tests {
     // a second-tier caller gets the second tier's burst, not the first's
     #[test]
     fn tier_rates_follow_the_matched_tier() {
-        let limiter = AdmissionLimiter::new(test_config());
+        let limiter = AdmissionLimiter::new(AdmissionPolicy::Metered(test_config()));
         let caller = AdmissionCaller::Staked(Address::from([6u8; 32]), 1);
 
         assert_eq!(limiter.check(AdmissionMode::DirectWrite, caller), AdmissionDecision::Allowed);
