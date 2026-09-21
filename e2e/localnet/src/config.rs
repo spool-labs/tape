@@ -8,6 +8,8 @@ pub struct LocalnetConfig {
     pub sol_airdrop: u64,
     pub stake_amount: u64,
     pub spool_groups: u64,
+    pub should_challenge: bool,
+    pub is_admission_open: bool,
 }
 
 impl Default for LocalnetConfig {
@@ -20,6 +22,8 @@ impl Default for LocalnetConfig {
             sol_airdrop: 50_000_000_000,
             stake_amount: 100_000,
             spool_groups: 1,
+            should_challenge: true,
+            is_admission_open: false,
         }
     }
 }
