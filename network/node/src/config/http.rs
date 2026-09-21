@@ -5,6 +5,7 @@ use tape_core::types::coin::{Coin, TAPE};
 use tape_protocol::api::SLICE_BODY_LIMIT;
 
 use tape_forwarded::cidr::CidrBlock;
+use tape_rpc::ChainKind;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct NetworkConfig {
@@ -49,9 +50,10 @@ pub struct HttpConfig {
     #[serde(default = "default_peer_max_bytes")]
     pub peer_max_bytes: usize,
 
-    /// Cheap node-side admission controls for metered public routes.
+    /// Cheap node-side admission controls for metered public routes. With no
+    /// block here, the chain this node runs on decides.
     #[serde(default)]
-    pub admission: AdmissionConfig,
+    pub admission: Option<AdmissionConfig>,
 }
 
 impl Default for HttpConfig {
@@ -62,9 +64,35 @@ impl Default for HttpConfig {
             concurrency: default_concurrency(),
             slice_max_bytes: default_slice_max_bytes(),
             peer_max_bytes: default_peer_max_bytes(),
-            admission: AdmissionConfig::default(),
+            admission: None,
         }
     }
+}
+
+impl HttpConfig {
+    /// What this node admits, once startup has resolved the chain it runs on
+    ///
+    /// A node on a chain the operator runs serves the operator's own clients,
+    /// so it admits every caller. On the open network the buckets stay on. An
+    /// http.admission block in the yaml wins over both.
+    pub fn admission(&self, chain: ChainKind) -> Admission {
+        match &self.admission {
+            Some(explicit) => Admission::Metered(explicit.clone()),
+            None => match chain {
+                ChainKind::Own => Admission::Open,
+                ChainKind::Shared => Admission::Metered(AdmissionConfig::default()),
+            },
+        }
+    }
+}
+
+/// What a node admits on the chain it resolved at startup
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Admission {
+    /// Every caller is admitted at any rate
+    Open,
+    /// Token buckets by caller class, at these rates
+    Metered(AdmissionConfig),
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -246,4 +274,51 @@ where
 {
     let value = String::deserialize(deserializer)?;
     value.parse().map_err(serde::de::Error::custom)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn metered(admission: &Admission) -> &AdmissionConfig {
+        match admission {
+            Admission::Metered(config) => config,
+            Admission::Open => panic!("expected metered admission"),
+        }
+    }
+
+    // a tapesvm daemon or an in-process litesvm is the operator's own chain,
+    // and a node there serves the operator's own clients
+    #[test]
+    fn own_chain_admits_every_caller() {
+        let http = HttpConfig::default();
+
+        assert_eq!(http.admission(ChainKind::Own), Admission::Open);
+    }
+
+    // an agave validator is the open network, where the buckets stay on
+    #[test]
+    fn shared_chain_keeps_the_metered_defaults() {
+        let http = HttpConfig::default();
+
+        let policy = http.admission(ChainKind::Shared);
+        assert_eq!(metered(&policy), &AdmissionConfig::default());
+        assert_eq!(metered(&policy).anonymous_write_per_sec, 16);
+    }
+
+    // an operator that wrote the rates down gets them on either chain
+    #[test]
+    fn the_yaml_block_wins_on_both_chains() {
+        let explicit = AdmissionConfig {
+            anonymous_write_per_sec: 3,
+            ..AdmissionConfig::default()
+        };
+        let http = HttpConfig {
+            admission: Some(explicit.clone()),
+            ..HttpConfig::default()
+        };
+
+        assert_eq!(metered(&http.admission(ChainKind::Own)), &explicit);
+        assert_eq!(metered(&http.admission(ChainKind::Shared)), &explicit);
+    }
 }

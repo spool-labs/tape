@@ -37,6 +37,7 @@ use crate::core::error::NodeError;
 use crate::core::ingest::{IngestBus, IngestState};
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
+use crate::features::blacklist::BlacklistCache;
 use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::challenge::attest_queue::AttestQueue;
 use crate::features::challenge::sample_cache::SampleSets;
@@ -65,6 +66,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub ingest: IngestBus,
     pub bootstrap: BootstrapBus,
     pub pending: Arc<PendingTracks>,
+    pub blacklist: Arc<BlacklistCache>,
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
     pub admission: Arc<AdmissionLimiter>,
@@ -497,7 +499,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             .map_err(|error| NodeError::Config(format!("challenge interval: {error:?}")))?;
         let node_id = Self::resolve_node_id(&self.rpc, &self.keypair).await?;
         let (node_address, _) = node_pda(self.keypair.address());
-        let admission = Arc::new(AdmissionLimiter::new(self.config.http.admission.clone()));
+        let chain = self.rpc.rpc().chain_kind().await;
+        let admitted = self.config.http.admission(chain);
+        tracing::info!(?chain, ?admitted, "http admission resolved");
+        let admission = Arc::new(AdmissionLimiter::new(admitted));
         let challenge_tripwire = Arc::new(Tripwire::new(
             self.config.challenge.realign_after_blank_rounds,
         ));
@@ -523,6 +528,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             ingest: IngestBus::default(),
             bootstrap: BootstrapBus::default(),
             pending: Arc::new(PendingTracks::new()),
+            blacklist: Arc::new(BlacklistCache::default()),
             peer_manager: self.peer_manager,
             api: self.api,
             admission,

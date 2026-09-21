@@ -1,5 +1,6 @@
 use core::mem::size_of;
 use std::collections::HashSet;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use bytemuck::try_from_bytes;
 use tape_store_api::Store;
@@ -10,7 +11,7 @@ use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, StorageUnits};
 use tape_crypto::Address;
 use tape_store::ops::{ObjectInfoOps, TapeOps, TapeTrackScan};
-use tape_store::types::{ObjectInfo, SystemObjectKind};
+use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -23,28 +24,96 @@ pub enum BlacklistEntries {
     Pending { track: Address },
 }
 
+/// This node's refusal set, held per epoch and rebuilt when its blacklist tape moves
+#[derive(Default)]
+pub struct BlacklistCache {
+    inner: RwLock<Option<Built>>,
+}
+
+#[derive(Clone)]
+struct Built {
+    node: Address,
+    epoch: EpochNumber,
+    tape: Option<TapeInfo>,
+    entries: Arc<HashSet<BlacklistEntry>>,
+}
+
+impl BlacklistCache {
+    /// This node's refusal set for the epoch
+    pub fn entries<Db: Store>(
+        &self,
+        store: &TapeStore<Db>,
+        node: Address,
+        epoch: EpochNumber,
+    ) -> Result<Arc<HashSet<BlacklistEntry>>, NodeError> {
+        let built = self.built_for(node, epoch);
+        // The pda derives from the node, so a cached build holds this same one.
+        let blacklist = blacklist_pda(node).0;
+
+        let tape = store
+            .get_tape(blacklist)
+            .map_err(|error| NodeError::Store(format!("blacklist tape lookup: {error}")))?;
+
+        match built {
+            Some(built) if built.tape == tape => Ok(built.entries),
+            Some(_) | None => self.build(store, node, epoch, blacklist, tape),
+        }
+    }
+
+    fn built_for(&self, node: Address, epoch: EpochNumber) -> Option<Built> {
+        let guard = self.read();
+        match guard.as_ref() {
+            Some(built) if built.node == node && built.epoch == epoch => Some(built.clone()),
+            Some(_) | None => None,
+        }
+    }
+
+    fn build<Db: Store>(
+        &self,
+        store: &TapeStore<Db>,
+        node: Address,
+        epoch: EpochNumber,
+        blacklist: Address,
+        tape: Option<TapeInfo>,
+    ) -> Result<Arc<HashSet<BlacklistEntry>>, NodeError> {
+        let entries = match collect_blacklist_entries(store, blacklist, tape.as_ref(), epoch, None)? {
+            BlacklistEntries::Ready(entries) => Arc::new(entries),
+            BlacklistEntries::Pending { track } => {
+                return Err(NodeError::Store(format!(
+                    "missing blacklist track data for {track}"
+                )))
+            }
+        };
+
+        *self.write() = Some(Built {
+            node,
+            epoch,
+            tape,
+            entries: entries.clone(),
+        });
+
+        Ok(entries)
+    }
+
+    fn read(&self) -> RwLockReadGuard<'_, Option<Built>> {
+        self.inner.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, Option<Built>> {
+        self.inner.write().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
 pub fn refuses_object<Db: Store>(
     store: &TapeStore<Db>,
+    cache: &BlacklistCache,
     node: Address,
     epoch: EpochNumber,
     track: Address,
     tape: Address,
 ) -> Result<bool, NodeError> {
-    let entries = blacklist_entries_for_node(store, node, epoch)?;
+    let entries = cache.entries(store, node, epoch)?;
     Ok(entries.contains(&BlacklistEntry::track(track)) || entries.contains(&BlacklistEntry::tape(tape)))
-}
-
-pub fn blacklist_entries_for_node<Db: Store>(
-    store: &TapeStore<Db>,
-    node: Address,
-    epoch: EpochNumber,
-) -> Result<HashSet<BlacklistEntry>, NodeError> {
-    match read_blacklist_entries(store, node, epoch, None)? {
-        BlacklistEntries::Ready(entries) => Ok(entries),
-        BlacklistEntries::Pending { track } => Err(NodeError::Store(format!(
-            "missing blacklist track data for {track}"
-        ))),
-    }
 }
 
 pub fn blacklist_entries_for_assignment<Db: Store>(
@@ -53,24 +122,27 @@ pub fn blacklist_entries_for_assignment<Db: Store>(
     voting_epoch: EpochNumber,
     target_epoch: EpochNumber,
 ) -> Result<BlacklistEntries, NodeError> {
-    read_blacklist_entries(store, node, target_epoch, Some(voting_epoch))
+    let blacklist = blacklist_pda(node).0;
+    let tape = store
+        .get_tape(blacklist)
+        .map_err(|error| NodeError::Store(format!("blacklist tape lookup: {error}")))?;
+
+    collect_blacklist_entries(store, blacklist, tape.as_ref(), target_epoch, Some(voting_epoch))
 }
 
-fn read_blacklist_entries<Db: Store>(
+fn collect_blacklist_entries<Db: Store>(
     store: &TapeStore<Db>,
-    node: Address,
+    blacklist: Address,
+    tape: Option<&TapeInfo>,
     active_epoch: EpochNumber,
     cutoff_epoch: Option<EpochNumber>,
 ) -> Result<BlacklistEntries, NodeError> {
-    let blacklist = blacklist_pda(node).0;
-    let Some(tape) = store
-        .get_tape(blacklist)
-        .map_err(|error| NodeError::Store(format!("blacklist tape lookup: {error}")))?
-    else {
-        return Ok(BlacklistEntries::Ready(HashSet::new()));
+    let is_live = match tape {
+        Some(tape) => tape.end_epoch > active_epoch,
+        None => false,
     };
 
-    if tape.end_epoch <= active_epoch {
+    if !is_live {
         return Ok(BlacklistEntries::Ready(HashSet::new()));
     }
 
@@ -80,10 +152,15 @@ fn read_blacklist_entries<Db: Store>(
         .next_track(store)
         .map_err(|error| NodeError::Store(format!("blacklist track scan: {error}")))?
     {
-        if let Some(cutoff_epoch) = cutoff_epoch {
-            if !blacklist_track_is_before_cutoff(store, scanned.address, cutoff_epoch)? {
-                continue;
+        let is_in_window = match cutoff_epoch {
+            Some(cutoff_epoch) => {
+                blacklist_track_is_before_cutoff(store, scanned.address, cutoff_epoch)?
             }
+            None => true,
+        };
+
+        if !is_in_window {
+            continue;
         }
 
         let Some(data) = &scanned.data else {
@@ -183,4 +260,161 @@ fn blacklist_track_is_before_cutoff<Db: Store>(
     };
 
     Ok(registered_epoch < cutoff_epoch && certified_epoch < cutoff_epoch)
+}
+
+#[cfg(test)]
+mod tests {
+    use bytemuck::bytes_of;
+    use tape_api::program::tapedrive::track_pda;
+    use tape_core::spooler::GroupIndex;
+    use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
+    use tape_core::types::{TapeNumber, TrackNumber};
+    use tape_store::ops::{TrackDataOps, TrackOps};
+    use tape_store_memory::MemoryStore;
+
+    use super::*;
+
+    const EPOCH: EpochNumber = EpochNumber(4);
+
+    fn test_store() -> TapeStore<MemoryStore> {
+        TapeStore::new(MemoryStore::new())
+    }
+
+    /// Writes one entry onto the node's blacklist tape the way a replayed add leaves it.
+    fn seed_entry(
+        store: &TapeStore<MemoryStore>,
+        node: Address,
+        track_number: TrackNumber,
+        entry: BlacklistEntry,
+    ) -> Address {
+        let blacklist = blacklist_pda(node).0;
+        let track_address = track_pda(blacklist, track_number).0;
+
+        store
+            .put_tape(
+                blacklist,
+                TapeInfo::new(
+                    TapeNumber(1),
+                    0,
+                    EpochNumber(u64::MAX),
+                    TrackNumber(track_number.0 + 1),
+                ),
+            )
+            .expect("seed blacklist tape");
+
+        store
+            .put_track(
+                track_address,
+                CompressedTrack {
+                    tape: blacklist,
+                    track_number,
+                    key: entry.key(),
+                    kind: TrackKind::Inline as u64,
+                    state: TrackState::Certified as u64,
+                    visibility: TrackVisibility::Public as u64,
+                    size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
+                    group: GroupIndex(0),
+                    value_hash: entry.key(),
+                },
+            )
+            .expect("seed blacklist track");
+
+        store
+            .put_track_data(track_address, BlobData::Inline(bytes_of(&entry).to_vec()))
+            .expect("seed blacklist track data");
+
+        track_address
+    }
+
+    fn refuses(
+        store: &TapeStore<MemoryStore>,
+        cache: &BlacklistCache,
+        node: Address,
+        epoch: EpochNumber,
+        track: Address,
+    ) -> Result<bool, NodeError> {
+        refuses_object(store, cache, node, epoch, track, Address::new_unique())
+    }
+
+    // a second call in the same epoch answers without reading the entry's track data
+    #[test]
+    fn holds_the_set() {
+        let store = test_store();
+        let node = Address::new_unique();
+        let target = Address::new_unique();
+        let entry_track = seed_entry(&store, node, TrackNumber(0), BlacklistEntry::track(target));
+        let cache = BlacklistCache::default();
+
+        assert!(refuses(&store, &cache, node, EPOCH, target).expect("first call"));
+
+        store
+            .delete_track_data(entry_track)
+            .expect("drop the entry data");
+
+        assert!(refuses(&store, &cache, node, EPOCH, target).expect("second call"));
+        assert!(
+            refuses(&store, &BlacklistCache::default(), node, EPOCH, target).is_err(),
+            "the entry data is what a fresh cache has to read"
+        );
+    }
+
+    // an entry written after the first call refuses on the next one
+    #[test]
+    fn new_entry() {
+        let store = test_store();
+        let node = Address::new_unique();
+        let first = Address::new_unique();
+        let second = Address::new_unique();
+        seed_entry(&store, node, TrackNumber(0), BlacklistEntry::track(first));
+        let cache = BlacklistCache::default();
+
+        assert!(!refuses(&store, &cache, node, EPOCH, second).expect("first call"));
+
+        seed_entry(&store, node, TrackNumber(1), BlacklistEntry::track(second));
+
+        assert!(refuses(&store, &cache, node, EPOCH, second).expect("second call"));
+        assert!(refuses(&store, &cache, node, EPOCH, first).expect("earlier entry"));
+    }
+
+    // the epoch advancing builds the set again
+    #[test]
+    fn next_epoch() {
+        let store = test_store();
+        let node = Address::new_unique();
+        let target = Address::new_unique();
+        let entry_track = seed_entry(&store, node, TrackNumber(0), BlacklistEntry::track(target));
+        let cache = BlacklistCache::default();
+
+        assert!(refuses(&store, &cache, node, EPOCH, target).expect("first epoch"));
+
+        store.delete_track(entry_track).expect("drop the entry");
+        store
+            .delete_track_data(entry_track)
+            .expect("drop the entry data");
+
+        assert!(
+            !refuses(&store, &cache, node, EpochNumber(EPOCH.0 + 1), target).expect("next epoch"),
+            "the set was answered from the epoch before"
+        );
+    }
+
+    // a tape entry refuses every track on that tape, and an empty set refuses nothing
+    #[test]
+    fn tape_entry() {
+        let store = test_store();
+        let node = Address::new_unique();
+        let tape = Address::new_unique();
+        seed_entry(&store, node, TrackNumber(0), BlacklistEntry::tape(tape));
+        let cache = BlacklistCache::default();
+
+        let track = Address::new_unique();
+        assert!(refuses_object(&store, &cache, node, EPOCH, track, tape).expect("tape entry"));
+        assert!(
+            !refuses_object(&store, &cache, node, EPOCH, track, Address::new_unique())
+                .expect("other tape")
+        );
+
+        let other_node = Address::new_unique();
+        assert!(!refuses(&store, &cache, other_node, EPOCH, track).expect("node with no tape"));
+    }
 }
