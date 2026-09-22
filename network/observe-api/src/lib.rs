@@ -601,7 +601,8 @@ pub struct ChallengeGrid {
     #[serde(default)]
     pub max_consecutive_misses: u64,
     /// Milliseconds from the entropy block to its certificate having gossiped,
-    /// which is the width a timeline draws one round in.
+    /// which is the width a timeline draws one round in. The slots a round
+    /// spends searching for that block are behind it, so they are not counted.
     #[serde(default)]
     pub round_span_ms: u64,
     /// Milliseconds after the block by which a proof must arrive.
@@ -620,6 +621,9 @@ pub struct ChallengeGrid {
     /// Measured slot time. Every millisecond field above is this times a slot count.
     #[serde(default)]
     pub slot_ms: u64,
+    /// Slots a round searches for its entropy block.
+    #[serde(default)]
+    pub span_slots: u64,
     /// Slots from a round opening to its certificate having gossiped.
     #[serde(default)]
     pub round_width_slots: u64,
@@ -703,9 +707,7 @@ pub struct RoundId {
 /// Lifetime challenge round counters for this node.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct ChallengeRounds {
-    /// Rounds this node recorded, one per group it holds a spool in. It answers
-    /// the ones it reached in time, so two nodes on the same chain count the same
-    /// openings however far apart they sit from the tip.
+    /// Rounds this node opened and answered for its own spool.
     pub opened: u64,
     /// Spool outcomes settled as certified.
     pub settled_certified: u64,
@@ -713,13 +715,9 @@ pub struct ChallengeRounds {
     pub settled_missed: u64,
     /// Incoming answers refused at the door.
     pub answers_refused: u64,
-    /// Rounds charged to nobody: an unconfirmed block, an empty sample set, or
-    /// an opening this node reached behind the tip.
+    /// Rounds whose entropy block never confirmed, charged to nobody.
     #[serde(default)]
     pub voided: u64,
-    /// Round openings the chain skipped, void on every node alike.
-    #[serde(default)]
-    pub skipped: u64,
     /// Rounds dropped because their candidate block lost.
     #[serde(default)]
     pub discarded: u64,
