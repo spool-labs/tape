@@ -6,7 +6,7 @@ use futures::StreamExt;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::challenge::schedule::{
-    MAX_PENDING_ROUNDS, SETTLE_DEADLINE_SLOTS, round_width_slots,
+    MAX_PENDING_ROUNDS, SETTLE_DEADLINE_SLOTS, Schedule, round_width_slots,
 };
 use tape_core::erasure::group_for_spool;
 use tape_core::system::EpochPhase;
@@ -36,14 +36,15 @@ use crate::features::state::realign::{RealignCause, spawn_realign};
 const BROADCAST_CONCURRENCY: usize = 8;
 
 // Capture settlement inputs when the round opens because settlement may cross
-// an epoch boundary. Unconfirmed or unaskable rounds are void rather than
-// charging every spool in the group a miss.
+// an epoch boundary. A round nobody could answer is void, which charges nobody,
+// where a verdict would charge every spool in the group a miss.
 struct OpenRound {
     round: Round,
     spools: Vec<Asked>,
     opened_slot: SlotNumber,
     confirmed: bool,
     askable: bool,
+    is_ready: bool,
     is_suspect: bool,
 }
 
@@ -116,12 +117,6 @@ where
     }
 
     async fn on_produced(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
-        // Never take part off stale state: a node still catching up would read an
-        // old committee and answer for spools nobody owns any more.
-        if !self.context.is_at_tip() {
-            return Ok(());
-        }
-
         let state = self.context.state();
 
         // Retain the epoch's grid while its rounds can still settle, including
@@ -139,9 +134,6 @@ where
         let Some(schedule) = self.context.schedules.get(state.epoch()) else {
             return Ok(());
         };
-        let Some(number) = schedule.round_at(block.slot) else {
-            return Ok(());
-        };
 
         let epoch = state.epoch();
         let mine = state.member_spools(self.context.node_address());
@@ -150,9 +142,20 @@ where
         }
 
         // A spool this node no longer holds is one it can no longer settle, so
-        // its group's pending round is dropped rather than settled.
+        // its group's pending round is dropped without a verdict.
         let held: Vec<GroupIndex> = mine.iter().map(|spool| group_for_spool(*spool)).collect();
         self.open_rounds.retain(|group, _| held.contains(group));
+
+        self.void_skipped(&schedule, &block);
+
+        let Some(number) = schedule.round_at(block.slot) else {
+            return Ok(());
+        };
+
+        // Readiness bounds taking part and nothing else. The round below records
+        // this block whatever it says, so every node that ingests the chain holds
+        // the same question for the round.
+        let is_ready = self.is_ready_at(block.slot);
 
         for spool in mine {
             let group = group_for_spool(spool);
@@ -163,21 +166,8 @@ where
                 block: block.blockhash,
             };
 
-            // Match on the round, not on the block. A window spans several slots
-            // and each carries a different hash, so comparing whole rounds would
-            // treat every slot in the window as a new round: it would re-open the
-            // round three more times and settle the previous one a slot after it
-            // opened, before any attestation could have arrived. The first block
-            // in the window seeds the round and the rest is already answered.
+            // Past its deadline already, so it settles instead of vanishing.
             let pending = self.open_rounds.entry(group).or_default();
-            let reopening = pending.back().is_some_and(|open| {
-                (open.round.epoch, open.round.round) == (round.epoch, round.round)
-            });
-            if reopening {
-                continue;
-            }
-
-            // Past its deadline already, so it settles rather than vanishing.
             let stale = (pending.len() >= MAX_PENDING_ROUNDS)
                 .then(|| pending.pop_front())
                 .flatten();
@@ -198,7 +188,10 @@ where
                     .collect(),
                 opened_slot: block.slot,
                 confirmed: false,
-                askable: has_sample_set(&self.context, &round),
+                // A round this node cannot take part in charges nobody, so the
+                // group scan the set costs is skipped along with it.
+                askable: is_ready && has_sample_set(&self.context, &round),
+                is_ready,
                 is_suspect: self.context.challenge_tripwire.is_realigning(),
             });
             self.first_round.entry(epoch).or_insert(number);
@@ -218,7 +211,9 @@ where
                 block.blockhash,
             );
 
-            self.answer_and_broadcast(&state, &round, spool).await;
+            if is_ready {
+                self.answer_and_broadcast(&state, &round, spool).await;
+            }
         }
 
         // Retire behind the oldest round any group still has open, not behind
@@ -244,6 +239,37 @@ where
         Ok(())
     }
 
+    /// Whether this node reached a round's opening in time to take part in it.
+    ///
+    /// Read inline from the chain tip as the block arrives, in slots, so the
+    /// round's own block is never in question. A node that reaches the opening
+    /// after the round's settlement deadline has passed can neither certify a
+    /// peer nor be certified, and the ingest monitor's 500 ms tick is too coarse
+    /// to decide a two-slot answer window on.
+    fn is_ready_at(&self, slot: SlotNumber) -> bool {
+        let progress = self.context.ingest.progress();
+        let tip = progress.known_tip().unwrap_or(slot.as_u64());
+        tip.saturating_sub(slot.as_u64()) < SETTLE_DEADLINE_SLOTS
+    }
+
+    /// Counts the round openings the chain skipped, which charge nobody anywhere.
+    ///
+    /// A block and its parent are consecutive in the chain's own history, so
+    /// every node that ingests the block reads the same openings as skipped and
+    /// opens none of them. Only openings inside the settlement horizon are
+    /// counted: an older one was void before this node could have reached it.
+    fn void_skipped(&self, schedule: &Schedule, block: &ParsedBlock) {
+        let horizon = block.slot.as_u64().saturating_sub(SETTLE_DEADLINE_SLOTS);
+        let from = SlotNumber(block.parent_slot.as_u64().max(horizon));
+        for number in schedule.skipped_rounds(from, block.slot) {
+            self.context
+                .challenge_counters
+                .skipped
+                .fetch_add(1, Ordering::Relaxed);
+            debug!(round = number.0, "challenge: round void, its slot produced no block");
+        }
+    }
+
     /// Verified rounds whose block confirmed, voids those that waited too long.
     /// Oldest first, so it stops at the first round still waiting.
     fn settle_confirmed(&mut self, now: SlotNumber) {
@@ -263,43 +289,44 @@ where
         }
     }
 
-    /// Verify one round: what the group made of every spool it was asked about.
-    fn settle_round(&mut self, open: &OpenRound) -> Option<bool> {
-
-        // A round whose entropy block never confirmed is void. Nobody owed an
-        // answer on a branch that lost, so nobody is charged for one.
+    /// Why this round charges nobody, or nothing when the group can be judged.
+    fn void_cause(&self, open: &OpenRound) -> Option<(TraceClose, &'static str)> {
+        // Nobody owed an answer on a branch that lost.
         if !open.confirmed {
-            self.context
-                .challenge_counters
-                .voided
-                .fetch_add(1, Ordering::Relaxed);
-            self.close_trace(&open.round, TraceClose::Unconfirmed);
-            debug!(group = open.round.group.0, "challenge: round voided, entropy block never confirmed");
-            return None;
+            return Some((TraceClose::Unconfirmed, "entropy block never confirmed"));
+        }
+
+        // This node reached the opening too late to collect an answer, and a
+        // verdict off nothing charges every spool in the group a miss.
+        if !open.is_ready {
+            return Some((TraceClose::Nothing, "reached the opening behind the tip"));
         }
 
         // Evidence opened under a suspect view, or still pending when another
-        // group trips the view, cannot safely be used to verify an owner.
+        // group trips the view, cannot safely verify an owner.
         if open.is_suspect || self.context.challenge_tripwire.is_realigning() {
-            self.context
-                .challenge_counters
-                .voided
-                .fetch_add(1, Ordering::Relaxed);
-            self.close_trace(&open.round, TraceClose::Nothing);
-            debug!(group = open.round.group.0, "challenge: round voided while realigning");
-            return None;
+            return Some((TraceClose::Nothing, "realigning"));
         }
 
         // Nor did anyone owe an answer to a question the group had no data to
         // ask. Every owner declines the draw and every observer would otherwise
         // charge every one of them a miss, which is the whole group at once.
         if !open.askable {
+            return Some((TraceClose::Nothing, "the group's sample set was empty"));
+        }
+
+        None
+    }
+
+    /// Verify one round: what the group made of every spool it was asked about.
+    fn settle_round(&mut self, open: &OpenRound) -> Option<bool> {
+        if let Some((close, why)) = self.void_cause(open) {
             self.context
                 .challenge_counters
                 .voided
                 .fetch_add(1, Ordering::Relaxed);
-            self.close_trace(&open.round, TraceClose::Nothing);
-            debug!(group = open.round.group.0, "challenge: round voided, group had an empty sample set");
+            self.close_trace(&open.round, close);
+            debug!(group = open.round.group.0, why, "challenge: round voided");
             return None;
         }
 
@@ -442,8 +469,8 @@ where
             self.context.attest_queue.discard_block(*hash);
         }
 
-        // Count the rounds dropped, not the blocks rolled. A window is four
-        // slots of an interval a hundred times longer, so almost no rolled
+        // Count the rounds dropped instead of the blocks rolled: one slot of an
+        // interval a hundred times longer opens a round, so almost no rolled
         // block seeded one.
         let before: usize = self.open_rounds.values().map(VecDeque::len).sum();
         for pending in self.open_rounds.values_mut() {
@@ -588,7 +615,6 @@ pub fn group_mates(state: &ProtocolState, me: Address) -> Vec<Address> {
 
 #[cfg(test)]
 mod tests {
-    use tape_core::challenge::schedule::SPAN_SLOTS;
     use tape_core::erasure::GROUP_SIZE;
 
     use super::*;
@@ -596,9 +622,18 @@ mod tests {
     use crate::features::block::ingestor::ParsedBlock;
     use crate::harness::{NodeHarness, TestContext};
 
+    /// Nodes the harness seats, more than one group holds.
+    const NODES: usize = 25;
+
+    /// Far enough behind the tip that a round can no longer settle here.
+    const FAR_BEHIND_SLOTS: u64 = SETTLE_DEADLINE_SLOTS * 4;
+
+    type TestManager =
+        ChallengeManager<tape_store_memory::MemoryStore, peer_memory::MemoryApi, rpc_litesvm::LiteSvmRpc>;
+
     async fn harness() -> NodeHarness {
         NodeHarness::builder()
-            .nodes(25)
+            .nodes(NODES)
             .no_prev_snapshot_tape()
             .build()
             .await
@@ -609,11 +644,11 @@ mod tests {
         Address::from(harness.node(index).node_address.to_bytes())
     }
 
-    /// A context at the tip, in an active epoch, on a grid that holds rounds.
-    async fn ready_context() -> TestContext {
-        let harness = harness().await;
-        let ctx: TestContext = harness.ctx_for(0);
-
+    /// Put a context in an active epoch on a grid that holds rounds.
+    ///
+    /// The ingest monitor is left saying the opposite of what the round path
+    /// reads, so nothing below can pass through the watch channel.
+    fn seat(ctx: &TestContext) {
         let mut state = (*ctx.state()).clone();
         state.current.epoch.start_slot = SlotNumber(13_000);
         let mut previous = state.current.clone();
@@ -622,42 +657,78 @@ mod tests {
         state.previous = Some(previous);
         state.current.epoch.state.phase = EpochPhase::Active as u64;
         ctx.set_state(state).expect("publish");
-        ctx.ingest.publish(IngestState::AtTip);
+
+        let first = schedule(ctx).first_slot();
+        ctx.ingest.progress().record_tip(first.as_u64());
+        ctx.ingest.publish(IngestState::Catching { lag_slots: u64::MAX });
+    }
+
+    /// A context at the tip, in an active epoch, on a grid that holds rounds.
+    async fn ready_context() -> TestContext {
+        let harness = harness().await;
+        let ctx: TestContext = harness.ctx_for(0);
+        seat(&ctx);
 
         ctx
     }
 
-    fn schedule(ctx: &TestContext) -> tape_core::challenge::schedule::Schedule {
+    /// Two seated contexts from one harness, each holding a spool.
+    async fn seated_pair() -> (TestContext, TestContext) {
+        let harness = harness().await;
+        let mut seated: Vec<TestContext> = Vec::new();
+        for index in 0..NODES {
+            let ctx: TestContext = harness.ctx_for(index);
+            if ctx.state().member_spools(ctx.node_address()).is_empty() {
+                continue;
+            }
+            seat(&ctx);
+            seated.push(ctx);
+            if seated.len() == 2 {
+                break;
+            }
+        }
+
+        let second = seated.pop().expect("a second seated node");
+        let first = seated.pop().expect("a first seated node");
+        (first, second)
+    }
+
+    fn schedule(ctx: &TestContext) -> Schedule {
         let state = ctx.state();
         ctx.schedules.observe(&state, state.current.epoch.start_slot);
         ctx.schedules.get(state.epoch()).expect("a usable grid")
     }
 
-    fn manager_for(ctx: &TestContext) -> ChallengeManager<
-        tape_store_memory::MemoryStore,
-        peer_memory::MemoryApi,
-        rpc_litesvm::LiteSvmRpc,
-    > {
+    fn manager_for(ctx: &TestContext) -> TestManager {
         let (_tx, rx) = mpsc::channel(4);
         ChallengeManager::new(ctx.clone(), rx, CancellationToken::new())
     }
 
-    fn first_round_block(ctx: &TestContext) -> Arc<ParsedBlock> {
-        let schedule = schedule(ctx);
+    /// The only round one manager holds open.
+    fn only_round(manager: &TestManager) -> &OpenRound {
+        let pending = manager.open_rounds.values().next().expect("one group");
+        pending.front().expect("a round opened")
+    }
+
+    fn block_at(slot: SlotNumber, blockhash: Hash) -> Arc<ParsedBlock> {
         Arc::new(ParsedBlock {
-            slot: schedule.first_slot(),
-            blockhash: Hash([0x11; 32]),
+            slot,
+            parent_slot: SlotNumber(slot.as_u64() - 1),
+            blockhash,
             ..ParsedBlock::default()
         })
     }
 
+    fn first_round_block(ctx: &TestContext) -> Arc<ParsedBlock> {
+        block_at(schedule(ctx).first_slot(), Hash([0x11; 32]))
+    }
+
     fn second_round_block(ctx: &TestContext) -> Arc<ParsedBlock> {
         let schedule = schedule(ctx);
-        Arc::new(ParsedBlock {
-            slot: SlotNumber(schedule.first_slot().0 + schedule.interval_slots),
-            blockhash: Hash([0x22; 32]),
-            ..ParsedBlock::default()
-        })
+        block_at(
+            SlotNumber(schedule.first_slot().0 + schedule.interval_slots),
+            Hash([0x22; 32]),
+        )
     }
 
     // a suspended node stops weighing its peers, and goes on answering for its
@@ -760,89 +831,146 @@ mod tests {
         assert!(ctx.challenge_counters.opened.load(Ordering::Relaxed) > 0);
     }
 
+    // only the opening slot seeds a round: the slot after it belongs to no
+    // round, and a late block does not move the next scheduled opening
     #[tokio::test]
-    async fn uses_second_slot() {
+    async fn only_the_opening_slot() {
         let ctx = ready_context().await;
         let mut manager = manager_for(&ctx);
-        let schedule = schedule(&ctx);
-        let block = Arc::new(ParsedBlock {
-            slot: SlotNumber(schedule.first_slot().as_u64() + 1),
-            blockhash: Hash([0x33; 32]),
-            ..ParsedBlock::default()
-        });
+        let first = first_round_block(&ctx);
 
-        // The first slot has no block, so the next slot supplies the entropy.
         manager
-            .on_produced(block.clone())
+            .on_produced(first.clone())
             .await
-            .expect("produce the second slot");
+            .expect("produce the opening");
 
         assert_eq!(manager.open_rounds.len(), 1);
-        let pending = manager.open_rounds.values().next().expect("one group");
-        assert_eq!(pending.len(), 1);
-        let open = pending.front().expect("round opened");
-        assert_eq!(open.round.round, RoundNumber(0));
-        assert_eq!(open.round.block, block.blockhash);
-        assert_eq!(open.opened_slot, block.slot);
+        assert_eq!(only_round(&manager).round.round, RoundNumber(0));
+        assert_eq!(only_round(&manager).round.block, first.blockhash);
+        assert_eq!(only_round(&manager).opened_slot, first.slot);
 
-        // A late entropy block does not move the next scheduled opening.
+        let after = block_at(SlotNumber(first.slot.as_u64() + 1), Hash([0x33; 32]));
+        manager
+            .on_produced(after)
+            .await
+            .expect("produce the slot after");
+
+        let pending = manager.open_rounds.values().next().expect("one group");
+        assert_eq!(pending.len(), 1, "a slot between openings opened a round");
+
         let next = second_round_block(&ctx);
         manager
             .on_produced(next.clone())
             .await
-            .expect("produce the next round");
+            .expect("produce the next opening");
 
+        // The preset's interval is wider than the settlement deadline, so round
+        // zero has already settled by the time round one opens.
         let pending = manager.open_rounds.values().next().expect("one group");
-        assert_eq!(pending.len(), 2);
         let open = pending.back().expect("next round opened");
         assert_eq!(open.round.round, RoundNumber(1));
         assert_eq!(open.round.block, next.blockhash);
         assert_eq!(open.opened_slot, next.slot);
         assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 2);
+        assert_eq!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
     }
 
+    // a node behind the tip records the round on the same block as one at the
+    // tip, and only its own answer waits for it to catch up
     #[tokio::test]
-    async fn skips_empty_window() {
+    async fn behind_records_the_same_block() {
+        let (ahead, behind) = seated_pair().await;
+        let block = first_round_block(&ahead);
+        behind
+            .ingest
+            .progress()
+            .record_tip(block.slot.as_u64() + FAR_BEHIND_SLOTS);
+
+        let mut at_tip = manager_for(&ahead);
+        let mut lagging = manager_for(&behind);
+        at_tip.on_produced(block.clone()).await.expect("produced");
+        lagging.on_produced(block.clone()).await.expect("produced");
+
+        assert_eq!(only_round(&at_tip).round.block, block.blockhash);
+        assert_eq!(only_round(&lagging).round.block, block.blockhash);
+        assert_eq!(
+            only_round(&lagging).round.round,
+            only_round(&at_tip).round.round
+        );
+        assert_eq!(
+            only_round(&lagging).opened_slot,
+            only_round(&at_tip).opened_slot
+        );
+        assert!(only_round(&at_tip).is_ready);
+        assert!(!only_round(&lagging).is_ready, "a node far behind answered");
+
+        // The round it recorded charges nobody: it answered nothing and
+        // collected nothing, and a verdict here is a miss for every peer.
+        for open in lagging.open_rounds.values_mut().flatten() {
+            open.confirmed = true;
+            open.askable = true;
+        }
+        lagging.settle_confirmed(SlotNumber(block.slot.as_u64() + SETTLE_DEADLINE_SLOTS));
+
+        assert_eq!(behind.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
+        assert!(behind.challenge_counters.voided.load(Ordering::Relaxed) > 0);
+    }
+
+    // readiness is read once, when the opening arrives, so a round already open
+    // finishes even if the node falls behind while it runs
+    #[tokio::test]
+    async fn an_open_round_outlives_a_catch_up() {
         let ctx = ready_context().await;
         let mut manager = manager_for(&ctx);
-        let schedule = schedule(&ctx);
-        let window_end = schedule.first_slot().as_u64() + SPAN_SLOTS;
-        let next = second_round_block(&ctx);
+        let block = first_round_block(&ctx);
 
-        // No blocks were produced inside the first round's entropy window.
-        for slot in window_end..next.slot.as_u64() {
-            let block = Arc::new(ParsedBlock {
-                slot: SlotNumber(slot),
-                blockhash: Hash([0x33; 32]),
-                ..ParsedBlock::default()
-            });
-            manager
-                .on_produced(block)
-                .await
-                .expect("produce a block between rounds");
+        manager.on_produced(block.clone()).await.expect("produced");
+        ctx.ingest
+            .progress()
+            .record_tip(block.slot.as_u64() + FAR_BEHIND_SLOTS);
+        for open in manager.open_rounds.values_mut().flatten() {
+            open.confirmed = true;
+            open.askable = true;
+        }
+        manager.settle_confirmed(SlotNumber(block.slot.as_u64() + round_width_slots()));
+
+        assert_eq!(
+            ctx.challenge_counters.voided.load(Ordering::Relaxed),
+            0,
+            "a round open before the lag was thrown away"
+        );
+        assert!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed) > 0);
+    }
+
+    // the chain skipped the round's opening slot, so the round is void on the
+    // node at the tip and on the one behind it alike: nobody opens it, nobody
+    // answers it, and nobody is charged for it
+    #[tokio::test]
+    async fn a_skipped_opening_voids_the_round() {
+        let (ahead, behind) = seated_pair().await;
+        let first = schedule(&ahead).first_slot().as_u64();
+        behind
+            .ingest
+            .progress()
+            .record_tip(first + FAR_BEHIND_SLOTS);
+
+        // The opening produced nothing, which the next block's parent says.
+        let block = Arc::new(ParsedBlock {
+            slot: SlotNumber(first + 1),
+            parent_slot: SlotNumber(first - 1),
+            blockhash: Hash([0x33; 32]),
+            ..ParsedBlock::default()
+        });
+
+        for ctx in [&ahead, &behind] {
+            let mut manager = manager_for(ctx);
+            manager.on_produced(block.clone()).await.expect("produced");
 
             assert!(manager.open_rounds.is_empty());
             assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 0);
+            assert_eq!(ctx.challenge_counters.skipped.load(Ordering::Relaxed), 1);
+            assert_eq!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
         }
-
-        manager
-            .on_produced(next.clone())
-            .await
-            .expect("produce the next round");
-
-        assert_eq!(manager.open_rounds.len(), 1);
-        let pending = manager.open_rounds.values().next().expect("one group");
-        assert_eq!(pending.len(), 1);
-        let open = pending.front().expect("round opened");
-        assert_eq!(open.round.round, RoundNumber(1));
-        assert_eq!(open.round.block, next.blockhash);
-        assert_eq!(open.opened_slot, next.slot);
-        assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 1);
-        assert_eq!(ctx.challenge_counters.own_missed.load(Ordering::Relaxed), 0);
-        assert_eq!(
-            ctx.challenge_counters.settled_missed.load(Ordering::Relaxed),
-            0
-        );
     }
 
     // a node challenges everyone else holding a position in its group, once

@@ -10,7 +10,7 @@ use tape_store_api::{Column, Store, StoreVolume};
 use tape_core::bft::has_honest_signer;
 use tape_core::challenge::schedule::{
     ATTESTATION_WINDOW_SLOTS, CONFIRMATION_SLOTS, PROOF_DEADLINE_SLOTS, SAMPLE_LOOKBACK_SLOTS,
-    SETTLE_DEADLINE_SLOTS, SLOT_MS, SPAN_SLOTS,
+    SETTLE_DEADLINE_SLOTS, SLOT_MS,
     round_width_slots,
 };
 use tape_core::erasure::GROUP_SIZE;
@@ -842,6 +842,7 @@ fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
         settled_missed: counters.settled_missed.load(Ordering::Relaxed),
         answers_refused: counters.refusals.total(),
         voided: counters.voided.load(Ordering::Relaxed),
+        skipped: counters.skipped.load(Ordering::Relaxed),
         discarded: counters.discarded.load(Ordering::Relaxed),
         own_certified: counters.own_certified.load(Ordering::Relaxed),
         own_missed: counters.own_missed.load(Ordering::Relaxed),
@@ -1086,7 +1087,7 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         min_opportunities: context.config.eviction.policy.min_opportunities,
         rate_floor_bps: context.config.eviction.policy.minimum_success_rate_bps.0,
         max_consecutive_misses: context.config.eviction.policy.max_consecutive_misses,
-        round_span_ms: (round_width_slots() - SPAN_SLOTS) * slot_ms,
+        round_span_ms: round_width_slots() * slot_ms,
         proof_deadline_ms: PROOF_DEADLINE_SLOTS * slot_ms,
         attest_deadline_ms: (CONFIRMATION_SLOTS + ATTESTATION_WINDOW_SLOTS) * slot_ms,
         round_cadence_ms: schedule
@@ -1095,7 +1096,6 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .unwrap_or_default(),
         quorum: agreement_threshold(GROUP_SIZE) as u64,
         slot_ms,
-        span_slots: SPAN_SLOTS,
         round_width_slots: round_width_slots(),
         cadence_slots: schedule.as_ref().map(|s| s.interval_slots).unwrap_or_default(),
         settle_deadline_slots: SETTLE_DEADLINE_SLOTS,
