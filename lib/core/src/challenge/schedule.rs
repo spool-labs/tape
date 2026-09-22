@@ -54,14 +54,16 @@ pub const SETTLE_DEADLINE_SLOTS: u64 = FINALITY_SLOTS + 8;
 /// is the round width. A cap below that sheds rounds before they can root.
 pub const MAX_PENDING_ROUNDS: usize = (SETTLE_DEADLINE_SLOTS / round_width_slots() + 3) as usize;
 
-/// Minimum spacing needed for the round's collection and gossip window.
+/// Slots a round runs from its opening to its verdict, and the floor on the
+/// interval, since one group's rounds cannot overlap.
+///
+/// The proof arrives inside `PROOF_DEADLINE_SLOTS`, the signatures over it follow
+/// inside `ATTESTATION_WINDOW_SLOTS`, and the certificate gossips inside
+/// `CERTIFICATE_GOSSIP_SLOTS`. Devnet's measured certificate p50 is 384 ms, 2.3
+/// slots at 166 ms, so a shorter span records misses that a later certificate
+/// has to upgrade.
 pub const fn round_width_slots() -> u64 {
-    let tail = if PROOF_DEADLINE_SLOTS > ATTESTATION_WINDOW_SLOTS {
-        PROOF_DEADLINE_SLOTS
-    } else {
-        ATTESTATION_WINDOW_SLOTS
-    };
-    tail + CERTIFICATE_GOSSIP_SLOTS
+    PROOF_DEADLINE_SLOTS + ATTESTATION_WINDOW_SLOTS + CERTIFICATE_GOSSIP_SLOTS
 }
 
 /// Rounds a wall-clock span covers at one cadence, to the nearest and at least one.

@@ -1006,7 +1006,7 @@ challenge:
             assert_eq!(config.challenge_interval_slots(), 40);
         }
 
-        for interval in [0, 1, 2] {
+        for interval in [0, 1, 4] {
             let yaml = format!(
                 r#"
 challenge:

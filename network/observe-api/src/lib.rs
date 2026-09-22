@@ -601,8 +601,7 @@ pub struct ChallengeGrid {
     #[serde(default)]
     pub max_consecutive_misses: u64,
     /// Milliseconds from the entropy block to its certificate having gossiped,
-    /// which is the width a timeline draws one round in. The slots a round
-    /// spends searching for that block are behind it, so they are not counted.
+    /// which is the width a timeline draws one round in.
     #[serde(default)]
     pub round_span_ms: u64,
     /// Milliseconds after the block by which a proof must arrive.
