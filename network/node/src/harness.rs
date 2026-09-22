@@ -273,7 +273,7 @@ impl NodeHarnessBuilder {
         self
     }
 
-    /// Put every node's challenge grid on this interval instead of the preset's.
+    /// Put every node's challenge grid on this interval, overriding the preset.
     pub fn challenge_interval(mut self, slots: u64) -> Self {
         self.challenge_interval_slots = Some(slots);
         self

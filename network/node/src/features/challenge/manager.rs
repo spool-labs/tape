@@ -166,7 +166,7 @@ where
                 block: block.blockhash,
             };
 
-            // Past its deadline already, so it settles instead of vanishing.
+            // Past its deadline already, so settle it on the way out.
             let pending = self.open_rounds.entry(group).or_default();
             let stale = (pending.len() >= MAX_PENDING_ROUNDS)
                 .then(|| pending.pop_front())
@@ -469,9 +469,8 @@ where
             self.context.attest_queue.discard_block(*hash);
         }
 
-        // Count the rounds dropped instead of the blocks rolled: one slot of an
-        // interval a hundred times longer opens a round, so almost no rolled
-        // block seeded one.
+        // The count is rounds dropped. One slot of an interval a hundred times
+        // longer opens a round, so almost no rolled block seeded one.
         let before: usize = self.open_rounds.values().map(VecDeque::len).sum();
         for pending in self.open_rounds.values_mut() {
             pending.retain(|open| {
@@ -622,7 +621,7 @@ mod tests {
     use crate::features::block::ingestor::ParsedBlock;
     use crate::harness::{NodeHarness, TestContext};
 
-    /// Nodes the harness seats, more than one group holds.
+    /// Nodes the harness seats: five more than one group holds.
     const NODES: usize = 25;
 
     /// Far enough behind the tip that a round can no longer settle here.
