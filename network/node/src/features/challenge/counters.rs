@@ -10,6 +10,8 @@ pub struct ChallengeCounters {
     pub settled_missed: AtomicU64,
     pub refusals: RefusalCounters,
     pub voided: AtomicU64,
+    /// Round openings the chain skipped, void on every node alike.
+    pub skipped: AtomicU64,
     pub discarded: AtomicU64,
     pub own_certified: AtomicU64,
     pub own_missed: AtomicU64,

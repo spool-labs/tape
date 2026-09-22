@@ -621,9 +621,6 @@ pub struct ChallengeGrid {
     /// Measured slot time. Every millisecond field above is this times a slot count.
     #[serde(default)]
     pub slot_ms: u64,
-    /// Slots a round searches for its entropy block.
-    #[serde(default)]
-    pub span_slots: u64,
     /// Slots from a round opening to its certificate having gossiped.
     #[serde(default)]
     pub round_width_slots: u64,
@@ -715,9 +712,13 @@ pub struct ChallengeRounds {
     pub settled_missed: u64,
     /// Incoming answers refused at the door.
     pub answers_refused: u64,
-    /// Rounds whose entropy block never confirmed, charged to nobody.
+    /// Rounds charged to nobody: an unconfirmed block, an empty sample set, or
+    /// an opening this node reached behind the tip.
     #[serde(default)]
     pub voided: u64,
+    /// Round openings the chain skipped, void on every node alike.
+    #[serde(default)]
+    pub skipped: u64,
     /// Rounds dropped because their candidate block lost.
     #[serde(default)]
     pub discarded: u64,
