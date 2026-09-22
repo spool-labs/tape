@@ -336,7 +336,6 @@ where
             settled_missed: counters.settled_missed.load(std::sync::atomic::Ordering::Relaxed),
             answers_refused: counters.refusals.total(),
             voided: counters.voided.load(std::sync::atomic::Ordering::Relaxed),
-            skipped: counters.skipped.load(std::sync::atomic::Ordering::Relaxed),
             discarded: counters.discarded.load(std::sync::atomic::Ordering::Relaxed),
             own_certified: counters.own_certified.load(std::sync::atomic::Ordering::Relaxed),
             own_missed: counters.own_missed.load(std::sync::atomic::Ordering::Relaxed),
