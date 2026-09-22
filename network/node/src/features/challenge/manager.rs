@@ -245,7 +245,7 @@ where
     /// round's own block is never in question. A node that reaches the opening
     /// after the round's settlement deadline has passed can neither certify a
     /// peer nor be certified, and the ingest monitor's 500 ms tick is too coarse
-    /// to decide a two-slot answer window on.
+    /// for a round five slots wide.
     fn is_ready_at(&self, slot: SlotNumber) -> bool {
         let progress = self.context.ingest.progress();
         let tip = progress.known_tip().unwrap_or(slot.as_u64());

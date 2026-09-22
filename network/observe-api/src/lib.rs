@@ -703,7 +703,9 @@ pub struct RoundId {
 /// Lifetime challenge round counters for this node.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct ChallengeRounds {
-    /// Rounds this node opened and answered for its own spool.
+    /// Rounds this node recorded, one per group it holds a spool in. It answers
+    /// the ones it reached in time, so two nodes on the same chain count the same
+    /// openings however far apart they sit from the tip.
     pub opened: u64,
     /// Spool outcomes settled as certified.
     pub settled_certified: u64,
