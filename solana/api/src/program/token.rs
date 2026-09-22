@@ -3,7 +3,7 @@ use solana_program::pubkey::Pubkey;
 use tape_crypto::address::Address;
 use crate::program::metaplex;
 
-tape_solana::declare_id!("5TSWmdgb3r3R7c9Uu5HxgyePhmJa31FCEDBDjkvTmvJE");
+tape_solana::declare_id!("HQPDe3NvR6dKiKJzZsa7uAU9NWU2DyxzPCg6Bsteu2NZ");
 
 pub const PROGRAM_ID: [u8; 32] = 
     unsafe { *(&id() as *const Pubkey as *const [u8; 32]) };
