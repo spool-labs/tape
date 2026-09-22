@@ -4,7 +4,7 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use tape_rpc::{CommitmentLevel, EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError};
-use tape_rpc_client::{parse_tape_error, sign_transaction};
+use tape_rpc_client::parse_tape_error;
 use tape_api::compute::{CERTIFY_TRACK_CU, TRACK_WRITE_CU};
 use tape_api::errors::TapeError;
 use tape_api::event::TrackWritten;
@@ -639,58 +639,6 @@ pub(crate) struct SentBlob {
     visibility: TrackVisibility,
 }
 
-/// A register transaction built against the tape and not yet sent.
-pub(crate) struct PreparedRegister {
-    instruction: Instruction,
-    payload: RegisterPayload,
-    bytes: u64,
-}
-
-/// What a register's track row is made of once its event comes back.
-enum RegisterPayload {
-    Raw {
-        key: Hash,
-        kind: u64,
-        state: u64,
-        visibility: TrackVisibility,
-        size: StorageUnits,
-        value_hash: Hash,
-    },
-    Blob {
-        blob: Box<BlobEncoding>,
-        key: Hash,
-        plan: Box<UploadPlan>,
-        visibility: TrackVisibility,
-    },
-}
-
-/// A sent register, whichever shape it registered.
-pub(crate) enum SentRegister {
-    Raw(SentRaw),
-    Blob(Box<SentBlob>),
-}
-
-impl RegisterPayload {
-    fn into_sent(self, signature: Txid) -> SentRegister {
-        match self {
-            RegisterPayload::Raw { key, kind, state, visibility, size, value_hash } => {
-                SentRegister::Raw(SentRaw {
-                    signature,
-                    key,
-                    kind,
-                    state,
-                    visibility,
-                    size,
-                    value_hash,
-                })
-            }
-            RegisterPayload::Blob { blob, key, plan, visibility } => SentRegister::Blob(Box::new(
-                SentBlob { signature, blob: *blob, key, plan: *plan, visibility },
-            )),
-        }
-    }
-}
-
 /// How to handle a resume where the existing track holds different content.
 pub(crate) enum OnConflict {
     /// The identity was reused for different data; refuse (one-call write).
@@ -939,24 +887,25 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
     })
 }
 
-/// Build the register transaction for an inline track.
-pub(crate) fn prepare_raw_register<Blockchain: Rpc, Cluster: Api>(
+pub(crate) async fn register_raw_processed<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
     raw: &[u8],
+    operation: Operation,
     visibility: TrackVisibility,
-) -> Result<PreparedRegister, TapedriveError> {
+) -> Result<SentRaw, TapedriveError> {
     let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
     let data = BlobDataSlice::Inline(raw);
     let meta = data
         .meta()
         .ok_or_else(|| TapedriveError::InvalidArgument("invalid inline blob".into()))?;
     let key = track_key(name, &data);
     let object = track_object(name, content_type, logical_size);
-    let instruction = build_track_write_ix(
+    let write_ix = build_track_write_ix(
         payer.pubkey().into(),
         tape_key.pubkey().into(),
         tape_key.address(),
@@ -968,121 +917,33 @@ pub(crate) fn prepare_raw_register<Blockchain: Rpc, Cluster: Api>(
     )
     .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?;
 
-    Ok(PreparedRegister {
-        instruction,
-        payload: RegisterPayload::Raw {
-            key,
-            kind: meta.kind as u64,
-            state: meta.state as u64,
-            visibility,
-            size: meta.size,
-            value_hash: meta.value_hash,
-        },
-        bytes: raw.len() as u64,
-    })
-}
-
-/// Send a run of register transactions in the order they were built.
-///
-/// A chain that runs a JSON-RPC batch in order takes the whole run in one
-/// round trip, signed against one blockhash; anywhere else they go one at a
-/// time, exactly as a lone register does.
-pub(crate) async fn send_registers<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
-    registers: Vec<PreparedRegister>,
-    operation: Operation,
-) -> Result<Vec<SentRegister>, TapedriveError> {
-    let mut instructions = Vec::with_capacity(registers.len());
-    let mut payloads = Vec::with_capacity(registers.len());
-    let mut bytes = 0;
-    for register in registers {
-        instructions.push(register.instruction);
-        payloads.push(register.payload);
-        bytes += register.bytes;
-    }
-
     let register = client
         .timer(operation, Phase::Register)
-        .bytes(bytes)
-        .chunks(payloads.len() as u64);
-    let sent = submit_registers(client, tape_key, instructions).await;
-    register.finish_result(&sent);
-
-    let mut out = Vec::with_capacity(payloads.len());
-    for (payload, signature) in payloads.into_iter().zip(sent?) {
-        out.push(payload.into_sent(signature));
-    }
-
-    Ok(out)
-}
-
-/// Submit the run and hand back a signature per register, in order.
-async fn submit_registers<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
-    instructions: Vec<Instruction>,
-) -> Result<Vec<Txid>, TapedriveError> {
-    let payer = client.payer()?;
-    let tape_signer = tape_key.keypair();
-    let mut signatures = Vec::with_capacity(instructions.len());
-
-    if !client.rpc().rpc().executes_batches_in_order().await {
-        for instruction in instructions {
-            signatures.push(
-                client
-                    .rpc()
-                    .send_instructions_with_signers_and_compute_unit_limit(
-                        payer,
-                        TRACK_WRITE_CU,
-                        vec![instruction],
-                        &[tape_signer],
-                        CommitmentLevel::Processed,
-                        true,
-                    )
-                    .await?,
-            );
-        }
-
-        return Ok(signatures);
-    }
-
-    let blockhash = client.rpc().rpc().get_latest_blockhash().await?;
-    let mut transactions = Vec::with_capacity(instructions.len());
-    for instruction in instructions {
-        transactions.push(sign_transaction(
+        .bytes(raw.len() as u64)
+        .chunks(1);
+    let sent = client
+        .rpc()
+        .send_instructions_with_signers_and_compute_unit_limit(
             payer,
-            &[tape_signer],
             TRACK_WRITE_CU,
-            &[instruction],
-            blockhash,
-        )?);
-    }
+            vec![write_ix],
+            &[tape_signer],
+            CommitmentLevel::Processed,
+            true,
+        )
+        .await;
+    register.finish_result(&sent);
+    let signature = sent?;
 
-    for (index, sent) in client
-        .rpc()
-        .rpc()
-        .send_transactions(&transactions)
-        .await?
-        .into_iter()
-        .enumerate()
-    {
-        match sent {
-            Ok(signature) => signatures.push(signature),
-            Err(err) => {
-                warn!(
-                    index,
-                    entries = transactions.len(),
-                    verdict = ?parse_tape_error(&err),
-                    %err,
-                    "register run refused",
-                );
-                return Err(TapedriveError::Rpc(err));
-            }
-        }
-    }
-
-    Ok(signatures)
+    Ok(SentRaw {
+        signature,
+        key,
+        kind: meta.kind as u64,
+        state: meta.state as u64,
+        visibility,
+        size: meta.size,
+        value_hash: meta.value_hash,
+    })
 }
 
 pub(crate) async fn resolve_sent_raw<Blockchain: Rpc, Cluster: Api>(
@@ -1230,40 +1091,9 @@ pub(crate) async fn resolve_sent_blob<Blockchain: Rpc, Cluster: Api>(
     ))
 }
 
-/// Build the register transaction for an encoded blob.
-pub(crate) fn prepare_blob_register<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
-    name: &[u8],
-    content_type: ContentType,
-    logical_size: StorageUnits,
-    plan: UploadPlan,
-    visibility: TrackVisibility,
-) -> Result<PreparedRegister, TapedriveError> {
-    let payer = client.payer()?;
-    let bytes = plan.storage_units.to_bytes();
-    let (instruction, blob, key) = build_blob_write(
-        payer.pubkey().into(),
-        tape_key,
-        name,
-        content_type,
-        logical_size,
-        &plan,
-        visibility,
-    )?;
-
-    Ok(PreparedRegister {
-        instruction,
-        payload: RegisterPayload::Blob {
-            blob: Box::new(blob),
-            key,
-            plan: Box::new(plan),
-            visibility,
-        },
-        bytes,
-    })
-}
-
+/// Send an encoded blob's register transaction, returning once it is
+/// processed on the current fork. The next register can be sent immediately;
+/// resolve_sent_blob carries the confirmed-level wait.
 pub(crate) async fn register_blob_processed<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -1274,23 +1104,38 @@ pub(crate) async fn register_blob_processed<Blockchain: Rpc, Cluster: Api>(
     operation: Operation,
     visibility: TrackVisibility,
 ) -> Result<SentBlob, TapedriveError> {
-    let register = prepare_blob_register(
-        client,
+    let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
+    let (write_ix, blob, key) =
+        build_blob_write(
+        payer.pubkey().into(),
         tape_key,
         name,
         content_type,
         logical_size,
-        plan,
+        &plan,
         visibility,
     )?;
-    let sent = send_registers(client, tape_key, vec![register], operation).await?;
 
-    match sent.into_iter().next() {
-        Some(SentRegister::Blob(sent)) => Ok(*sent),
-        Some(SentRegister::Raw(_)) | None => Err(TapedriveError::InvalidArgument(
-            "coded register came back as another shape".into(),
-        )),
-    }
+    let register_timer = client
+        .timer(operation, Phase::Register)
+        .bytes(plan.storage_units.to_bytes())
+        .chunks(1);
+    let result = client
+        .rpc()
+        .send_instructions_with_signers_and_compute_unit_limit(
+            payer,
+            TRACK_WRITE_CU,
+            vec![write_ix],
+            &[tape_signer],
+            CommitmentLevel::Processed,
+            true,
+        )
+        .await;
+    register_timer.finish_result(&result);
+    let signature = result?;
+
+    Ok(SentBlob { signature, blob, key, plan, visibility })
 }
 
 async fn send_blob<Blockchain: Rpc, Cluster: Api>(
@@ -2061,26 +1906,14 @@ pub(crate) async fn certify_submit_with_retry<Blockchain: Rpc, Cluster: Api>(
     }
 }
 
-/// True when the program refused because the chain's epoch moved past the one
-/// the transaction addresses its group account by
-pub(crate) fn is_epoch_changed(err: &TapedriveError) -> bool {
-    match err {
-        TapedriveError::Rpc(rpc) => {
-            matches!(parse_tape_error(rpc), Some(TapeError::EpochChanged))
-        }
-        _ => false,
-    }
-}
-
 /// True when a rejection invalidates the collected signatures themselves,
 /// rather than the proof or the transaction attempt.
 pub(crate) fn needs_fresh_signatures(err: &TapedriveError) -> bool {
-    if is_epoch_changed(err) {
-        return true;
-    }
-
     match err {
-        TapedriveError::Rpc(rpc) => matches!(parse_tape_error(rpc), Some(TapeError::BadSignature)),
+        TapedriveError::Rpc(rpc) => matches!(
+            parse_tape_error(rpc),
+            Some(TapeError::BadSignature | TapeError::EpochChanged)
+        ),
         _ => false,
     }
 }
@@ -2162,7 +1995,7 @@ mod tests {
 
     use super::{
         check_plan_matches, content_etag, content_etag_named, ensure_expected_track_position,
-        hash, inline_write_fits, is_epoch_changed, needs_fresh_signatures, prepare_plan,
+        hash, inline_write_fits, needs_fresh_signatures, prepare_plan,
         should_retry_certification, RpcError, TapeError, TrackNumber, MAX_INLINE_WRITE,
     };
     use tape_api::instruction::build_track_write_ix;
@@ -2340,26 +2173,5 @@ mod tests {
         assert!(!needs_fresh_signatures(&TapedriveError::Peer(
             ApiError::StaleTrackProof,
         )));
-    }
-
-    // the epoch turning under a certify reads apart from every other refusal
-    #[test]
-    fn epoch_turn_verdict() {
-        let turned = TapedriveError::Rpc(RpcError::Request(
-            "RPC response error: Error processing Instruction 1: custom program error: 0x34"
-                .to_string(),
-        ));
-        let bad_proof = TapedriveError::Rpc(RpcError::Request(
-            "RPC response error: Error processing Instruction 1: custom program error: 0x70"
-                .to_string(),
-        ));
-
-        assert!(is_epoch_changed(&turned));
-        assert!(!is_epoch_changed(&bad_proof));
-        assert!(!is_epoch_changed(&TapedriveError::NotFound));
-
-        // both still retry, so the run only changes which way it retries
-        assert!(should_retry_certification(&turned));
-        assert!(should_retry_certification(&bad_proof));
     }
 }

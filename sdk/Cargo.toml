@@ -65,7 +65,7 @@ rand = { workspace = true }
 bytemuck = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tape-store = { path = "../store/tape-store" }
 tape-metrics = { workspace = true }
 tape-store-memory = { path = "../store/store-memory" }

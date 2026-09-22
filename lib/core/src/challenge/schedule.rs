@@ -8,7 +8,9 @@
 use crate::types::{RoundNumber, SlotNumber};
 use core::ops::Range;
 
-/// Solana slot time. Everything here counts in slots, so this only converts.
+/// Fallback slot time before ingest has measured the live rate. Devnet runs at
+/// 166 ms and mainnet at 250 ms heading to 200; this only bounds `SENDER_IDLE`
+/// and fills the board until a rate is observed.
 pub const SLOT_MS: u64 = 400;
 
 /// Slots a round searches for its entropy block before it voids.

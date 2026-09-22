@@ -268,9 +268,9 @@ mod tests {
             raw_tracks: Vec::new(),
         };
 
-        persist_batch(&store, &batch).expect("persist batch");
+        persist_batch(&store, &batch).unwrap();
 
-        assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(99)));
+        assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(99)));
     }
 
     #[test]
@@ -299,8 +299,8 @@ mod tests {
             raw_tracks: Vec::new(),
         };
 
-        persist_batch(&store, &batch).expect("persist batch");
-        assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(77)));
+        persist_batch(&store, &batch).unwrap();
+        assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(77)));
     }
 
     #[test]
@@ -315,7 +315,7 @@ mod tests {
                 group.spool_at(0),
                 SpoolState::new(SpoolStatus::Active, EpochNumber(1)),
             )
-            .expect("set spool state");
+            .unwrap();
 
         let batch = ReplayBatch {
             slot: SlotNumber(78),
@@ -329,9 +329,9 @@ mod tests {
             }],
         };
 
-        persist_batch(&store, &batch).expect("persist batch");
-        assert_eq!(store.get_track_data(track).expect("track data"), Some(BlobData::Inline(raw)));
-        assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(78)));
+        persist_batch(&store, &batch).unwrap();
+        assert_eq!(store.get_track_data(track).unwrap(), Some(BlobData::Inline(raw)));
+        assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(78)));
     }
 
     #[test]
@@ -352,8 +352,8 @@ mod tests {
             }],
         };
 
-        persist_batch(&store, &batch).expect("persist batch");
-        assert_eq!(store.get_track_data(track).expect("track data"), None);
-        assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(79)));
+        persist_batch(&store, &batch).unwrap();
+        assert_eq!(store.get_track_data(track).unwrap(), None);
+        assert_eq!(store.get_sync_cursor().unwrap(), Some(SlotNumber(79)));
     }
 }
