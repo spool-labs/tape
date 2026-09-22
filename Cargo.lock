@@ -2957,7 +2957,7 @@ dependencies = [
 
 [[package]]
 name = "exchange-program"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bytemuck",
  "bytemuck_derive",
@@ -5264,7 +5264,7 @@ dependencies = [
 
 [[package]]
 name = "peer-memory"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "async-trait",
  "tape-core",
@@ -5965,7 +5965,7 @@ dependencies = [
 
 [[package]]
 name = "rpc-cache"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -6005,7 +6005,7 @@ dependencies = [
 
 [[package]]
 name = "rpc-litesvm"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "agave-feature-set",
  "async-trait",
@@ -9568,7 +9568,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "staking-program"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bytemuck",
  "bytemuck_derive",
@@ -9751,7 +9751,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "tape"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -9784,7 +9784,7 @@ dependencies = [
 
 [[package]]
 name = "tape-admin"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bytemuck",
  "clap",
@@ -9816,7 +9816,7 @@ dependencies = [
 
 [[package]]
 name = "tape-api"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "array-const-fn-init",
  "bytemuck",
@@ -9833,14 +9833,14 @@ dependencies = [
 
 [[package]]
 name = "tape-atlas"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "wincode 0.5.5",
 ]
 
 [[package]]
 name = "tape-atlas-web"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "dioxus 0.6.3",
  "js-sys",
@@ -9858,7 +9858,7 @@ checksum = "a9b3fce14bc6ba0c53705bc2cd9afa08e11d102a94c9bf65f03751b394f4af24"
 
 [[package]]
 name = "tape-blacklist"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -9870,7 +9870,7 @@ dependencies = [
 
 [[package]]
 name = "tape-blocks"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "base64 0.13.1",
  "bs58",
@@ -9894,7 +9894,7 @@ dependencies = [
 
 [[package]]
 name = "tape-chain-harness"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -9920,7 +9920,7 @@ dependencies = [
 
 [[package]]
 name = "tape-cli-common"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -9938,7 +9938,7 @@ dependencies = [
 
 [[package]]
 name = "tape-collector"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -9966,7 +9966,7 @@ dependencies = [
 
 [[package]]
 name = "tape-core"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bytemuck",
  "num_enum",
@@ -9981,7 +9981,7 @@ dependencies = [
 
 [[package]]
 name = "tape-crypto"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "ark-bn254 0.5.0",
  "ark-ec 0.5.0",
@@ -10017,7 +10017,7 @@ dependencies = [
 
 [[package]]
 name = "tape-cue"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -10035,7 +10035,7 @@ dependencies = [
 
 [[package]]
 name = "tape-dashboard"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "base64 0.13.1",
  "dioxus 0.6.3",
@@ -10051,7 +10051,7 @@ dependencies = [
 
 [[package]]
 name = "tape-e2e-devnet"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -10083,7 +10083,7 @@ dependencies = [
 
 [[package]]
 name = "tape-e2e-localnet"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -10125,7 +10125,7 @@ dependencies = [
 
 [[package]]
 name = "tape-e2e-simnet"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -10172,7 +10172,7 @@ dependencies = [
 
 [[package]]
 name = "tape-forwarded"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "http",
  "serde",
@@ -10180,7 +10180,7 @@ dependencies = [
 
 [[package]]
 name = "tape-gateway"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -10222,7 +10222,7 @@ dependencies = [
 
 [[package]]
 name = "tape-grind"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "clap",
  "solana-pubkey 4.2.1",
@@ -10232,7 +10232,7 @@ dependencies = [
 
 [[package]]
 name = "tape-loadgen"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -10242,7 +10242,7 @@ dependencies = [
 
 [[package]]
 name = "tape-measure"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -10267,14 +10267,14 @@ dependencies = [
 
 [[package]]
 name = "tape-metrics"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "prometheus",
 ]
 
 [[package]]
 name = "tape-moderation"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -10310,7 +10310,7 @@ dependencies = [
 
 [[package]]
 name = "tape-network"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -10342,7 +10342,7 @@ dependencies = [
 
 [[package]]
 name = "tape-node"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -10411,7 +10411,7 @@ dependencies = [
 
 [[package]]
 name = "tape-observe-api"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -10421,7 +10421,7 @@ dependencies = [
 
 [[package]]
 name = "tape-peer-http"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -10442,7 +10442,7 @@ dependencies = [
 
 [[package]]
 name = "tape-peer-manager"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "arc-swap",
  "bytemuck",
@@ -10460,7 +10460,7 @@ dependencies = [
 
 [[package]]
 name = "tape-peer-tls"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "rand 0.8.5",
  "rcgen",
@@ -10477,7 +10477,7 @@ dependencies = [
 
 [[package]]
 name = "tape-protocol"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -10503,7 +10503,7 @@ dependencies = [
 
 [[package]]
 name = "tape-rack"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "tape-core",
  "tape-crypto",
@@ -10512,7 +10512,7 @@ dependencies = [
 
 [[package]]
 name = "tape-recover-assignment"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "clap",
  "futures",
@@ -10575,7 +10575,7 @@ dependencies = [
 
 [[package]]
 name = "tape-retry"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "rand 0.8.5",
  "tokio",
@@ -10585,7 +10585,7 @@ dependencies = [
 
 [[package]]
 name = "tape-rpc"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "async-trait",
  "solana-account 4.3.2",
@@ -10604,7 +10604,7 @@ dependencies = [
 
 [[package]]
 name = "tape-rpc-client"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -10638,7 +10638,7 @@ dependencies = [
 
 [[package]]
 name = "tape-rpc-solana"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -10666,7 +10666,7 @@ dependencies = [
 
 [[package]]
 name = "tape-sdk"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "arc-swap",
  "axum",
@@ -10715,7 +10715,7 @@ checksum = "ecfcb393a3304db7c48a8ce2f3a51aa9188ce00ae6bb2c9e03dcd0f3fc3d6da9"
 
 [[package]]
 name = "tape-slicer"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bytemuck",
  "clay-codes",
@@ -10734,7 +10734,7 @@ dependencies = [
 
 [[package]]
 name = "tape-snapshot"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bytemuck",
  "lz4_flex",
@@ -10746,7 +10746,7 @@ dependencies = [
 
 [[package]]
 name = "tape-solana"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bytemuck",
  "num_enum",
@@ -10760,7 +10760,7 @@ dependencies = [
 
 [[package]]
 name = "tape-spooler"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "tape-core",
  "tape-crypto",
@@ -10768,7 +10768,7 @@ dependencies = [
 
 [[package]]
 name = "tape-store"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bytemuck",
  "rocksdb",
@@ -10789,7 +10789,7 @@ dependencies = [
 
 [[package]]
 name = "tape-store-api"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "serde",
  "tape-metrics",
@@ -10801,7 +10801,7 @@ dependencies = [
 
 [[package]]
 name = "tape-store-memory"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "tape-metrics",
  "tape-store-api",
@@ -10810,7 +10810,7 @@ dependencies = [
 
 [[package]]
 name = "tape-store-reel"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "libc",
  "lz4_flex",
@@ -10830,7 +10830,7 @@ dependencies = [
 
 [[package]]
 name = "tape-store-rocks"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "fs2",
  "rocksdb",
@@ -10840,7 +10840,7 @@ dependencies = [
 
 [[package]]
 name = "tape-test"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "mollusk-svm",
  "mollusk-svm-programs-token",
@@ -10862,7 +10862,7 @@ dependencies = [
 
 [[package]]
 name = "tapedrive-explorer"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -10903,7 +10903,7 @@ dependencies = [
 
 [[package]]
 name = "tapedrive-program"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bytemuck",
  "bytemuck_derive",
@@ -11066,7 +11066,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "token-program"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "bytemuck",
  "bytemuck_derive",
