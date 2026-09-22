@@ -251,6 +251,9 @@ env_logger = "0.11"
 # storage-specific
 wincode = "0.1"
 wincode-derive = "0.1"
+# The transaction wire codec: solana-transaction serializes with wincode 0.5, so
+# anything that builds a send body by hand has to encode with that version.
+wincode-tx = { package = "wincode", version = "0.5" }
 
 # network-specific
 futures = "0.3"
