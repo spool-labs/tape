@@ -846,7 +846,7 @@ mod tests {
     // one slot seeds a round at every cadence a fleet may run: the slot after an
     // opening belongs to no round, and a late block leaves the next opening alone
     #[tokio::test]
-    async fn only_the_opening_slot() {
+    async fn opens_on_its_slot() {
         for interval in INTERVALS {
             let ctx = ready_context_at(Some(interval)).await;
             let mut manager = manager_for(&ctx);
@@ -899,13 +899,13 @@ mod tests {
     // a node behind the tip records the round on the same block as one at the
     // tip, and only its own answer waits for it to catch up
     #[tokio::test]
-    async fn behind_records_the_same_block() {
+    async fn lagging_same_block() {
         for interval in INTERVALS {
-            behind_records_one_cadence(interval).await;
+            lagging_at(interval).await;
         }
     }
 
-    async fn behind_records_one_cadence(interval: u64) {
+    async fn lagging_at(interval: u64) {
         let (ahead, behind) = seated_pair(Some(interval)).await;
         let block = first_round_block(&ahead);
         behind
@@ -946,7 +946,7 @@ mod tests {
     // readiness is read once, when the opening arrives, so a round already open
     // finishes even if the node falls behind while it runs
     #[tokio::test]
-    async fn an_open_round_outlives_a_catch_up() {
+    async fn outlives_a_catch_up() {
         let ctx = ready_context().await;
         let mut manager = manager_for(&ctx);
         let block = first_round_block(&ctx);
@@ -973,13 +973,13 @@ mod tests {
     // node at the tip and on the one behind it alike: nobody opens it, nobody
     // answers it, and nobody is charged for it
     #[tokio::test]
-    async fn a_skipped_opening_voids_the_round() {
+    async fn skipped_opening_voids() {
         for interval in INTERVALS {
-            a_skipped_opening_at(interval).await;
+            skipped_at(interval).await;
         }
     }
 
-    async fn a_skipped_opening_at(interval: u64) {
+    async fn skipped_at(interval: u64) {
         let (ahead, behind) = seated_pair(Some(interval)).await;
         let first = schedule(&ahead).first_slot().as_u64();
         behind
