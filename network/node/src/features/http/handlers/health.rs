@@ -6,12 +6,15 @@ use axum::http::StatusCode;
 use axum::Json;
 use tracing::debug;
 
+use tape_core::types::SlotNumber;
 use tape_rpc::Rpc;
 use tape_store_api::{DiskVolume, Store, StoreVolume};
 use tape_protocol::{Api, api::{NodeStats, VolumeStats}};
 use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
 
+use crate::context::NodeContext;
 use crate::core::bootstrap::BootstrapSnapshot;
+use crate::core::ingest::IngestState;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
 
@@ -33,6 +36,8 @@ pub struct HealthResponse {
     pub status: HealthStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bootstrap: Option<BootstrapProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingest: Option<IngestStall>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -40,6 +45,16 @@ pub struct HealthResponse {
 pub enum HealthStatus {
     Ready,
     Bootstrapping,
+    Stalled,
+}
+
+/// Ingest cursor positions while the node reports `Stalled`
+#[derive(Debug, serde::Serialize)]
+pub struct IngestStall {
+    pub tip_slot: SlotNumber,
+    pub fetch_slot: SlotNumber,
+    pub dispatched_slot: SlotNumber,
+    pub queue_len: u64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -75,22 +90,50 @@ impl From<BootstrapSnapshot> for BootstrapProgress {
 pub async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
 ) -> (StatusCode, Json<HealthResponse>) {
-    if state.context.bootstrap.is_ready() {
+    let (status, body) = health_of(&state.context);
+    (status, Json(body))
+}
+
+/// Readiness of a node or gateway: still bootstrapping, ingest stalled, or ready
+pub fn health_of<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> (StatusCode, HealthResponse) {
+    if !context.bootstrap.is_ready() {
         return (
-            StatusCode::OK,
-            Json(HealthResponse {
-                status: HealthStatus::Ready,
+            StatusCode::SERVICE_UNAVAILABLE,
+            HealthResponse {
+                status: HealthStatus::Bootstrapping,
+                bootstrap: Some(context.bootstrap.snapshot().into()),
+                ingest: None,
+            },
+        );
+    }
+
+    if matches!(context.ingest_state(), IngestState::Stalled { .. }) {
+        let progress = context.ingest.progress();
+        let (tip_slot, dispatched_slot, _) = progress.tip_and_lag();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            HealthResponse {
+                status: HealthStatus::Stalled,
                 bootstrap: None,
-            }),
+                ingest: Some(IngestStall {
+                    tip_slot: SlotNumber(tip_slot),
+                    fetch_slot: SlotNumber(progress.last_fetch_slot()),
+                    dispatched_slot: SlotNumber(dispatched_slot),
+                    queue_len: progress.queue_len(),
+                }),
+            },
         );
     }
 
     (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(HealthResponse {
-            status: HealthStatus::Bootstrapping,
-            bootstrap: Some(state.context.bootstrap.snapshot().into()),
-        }),
+        StatusCode::OK,
+        HealthResponse {
+            status: HealthStatus::Ready,
+            bootstrap: None,
+            ingest: None,
+        },
     )
 }
 
@@ -223,10 +266,15 @@ fn store_error(error: impl Display) -> RouteError {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use axum::extract::State;
     use axum::http::StatusCode;
 
+    use tape_core::types::SlotNumber;
+
     use super::{health, stats, HealthStatus};
+    use crate::core::ingest::IngestState;
     use crate::features::http::state::AppState;
     use crate::harness::{NodeHarness, TestContext};
 
@@ -266,6 +314,29 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(matches!(body.0.status, HealthStatus::Ready));
         assert!(body.0.bootstrap.is_none());
+    }
+
+    // a stalled ingest answers 503 with the cursor positions
+    #[tokio::test]
+    async fn health_when_stalled() {
+        let ctx = test_context().await;
+        ctx.bootstrap.mark_ready();
+        let progress = ctx.ingest.progress();
+        progress.record_tip(1000);
+        progress.record_fetch(999);
+        progress.record_dispatched(500);
+        progress.record_queue_len(499);
+        ctx.ingest.publish(IngestState::Stalled { since: Instant::now() });
+
+        let (status, body) = health(State(AppState { context: ctx.clone() })).await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(matches!(body.0.status, HealthStatus::Stalled));
+        let stall = body.0.ingest.expect("stall detail");
+        assert_eq!(stall.tip_slot, SlotNumber(1000));
+        assert_eq!(stall.fetch_slot, SlotNumber(999));
+        assert_eq!(stall.dispatched_slot, SlotNumber(500));
+        assert_eq!(stall.queue_len, 499);
     }
 
     #[tokio::test]

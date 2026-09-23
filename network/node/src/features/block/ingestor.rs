@@ -59,8 +59,6 @@ pub struct BlockIngestor<Db: Store, Cluster: Api, Blockchain: Rpc> {
     senders: DownstreamSenders,
     cancel: CancellationToken,
     queue: PendingBlocks,
-    /// Promotion gate: confirmed, which only reverts if a third of the stake is slashable
-    confirmed_tip: SlotNumber,
     dispatch_log_at: Instant,
     dispatch_log_count: u64,
 }
@@ -80,7 +78,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             senders,
             cancel,
             queue: PendingBlocks::new(start.parent),
-            confirmed_tip: SlotNumber(0),
             dispatch_log_at: Instant::now(),
             dispatch_log_count: 0,
         }
@@ -89,6 +86,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     pub async fn run(mut self) -> Result<(), NodeError> {
         let mut next_slot = self.start_slot;
         let cancel = self.cancel.clone();
+        self.context
+            .ingest
+            .progress()
+            .start_live(next_slot.0.saturating_sub(1));
 
         loop {
             tokio::select! {
@@ -102,18 +103,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
 
     /// Run one ingest step and return the next slot to fetch.
     ///
-    /// A serial fetch cannot outpace slot production on high-latency RPC
-    /// links, so promotion would starve: the queue tail never passes the
-    /// confirmed tip. Far behind the confirmed tip, catch up by streaming
-    /// the gap through a fetch pipeline and applying blocks in slot order;
-    /// near the tip, fall back to the serial path.
+    /// Far behind the confirmed tip, catch up by streaming the gap through
+    /// a fetch pipeline and applying blocks in slot order; near the tip,
+    /// fall back to the serial path.
     async fn ingest_step(&mut self, next_slot: SlotNumber) -> Result<SlotNumber, NodeError> {
-        let tip = self
-            .context
-            .rpc
-            .get_slot()
-            .await
-            .map_err(|error| rpc_failed("get_slot", error))?;
+        let tip = self.refresh_tip().await?;
 
         if tip.saturating_sub(next_slot.0) < FETCH_PIPELINE_DEPTH as u64 {
             return self.fetch_parse_and_dispatch(next_slot, tip).await;
@@ -134,9 +128,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         };
         let end_slot = SlotNumber(last);
 
-        // Refresh before streaming so blocks already behind the confirmed
-        // tip promote immediately instead of waiting for a later block.
-        self.refresh_confirmed_tip().await?;
         let mut blocks = fetch_blocks_ordered(
             self.context.clone(),
             self.cancel.clone(),
@@ -153,15 +144,26 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             since_promote += 1;
             if since_promote >= FETCH_PIPELINE_DEPTH {
                 since_promote = 0;
-                self.refresh_confirmed_tip().await?;
+                self.refresh_tip().await?;
                 self.promote().await?;
             }
         }
         drop(blocks);
 
-        self.refresh_confirmed_tip().await?;
         self.promote().await?;
         Ok(end_slot.next())
+    }
+
+    /// Sample the tip and record it, so lag and readiness stay current through a long catch-up
+    async fn refresh_tip(&self) -> Result<u64, NodeError> {
+        let tip = self
+            .context
+            .rpc
+            .get_slot()
+            .await
+            .map_err(|error| rpc_failed("get_slot", error))?;
+        self.context.ingest.progress().record_tip(tip);
+        Ok(tip)
     }
 
     /// Wait before re-asking for a tip, from the measured slot time
@@ -184,10 +186,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         slot: SlotNumber,
         tip: u64,
     ) -> Result<SlotNumber, NodeError> {
-        self.refresh_confirmed_tip().await?;
-
-        // Ingest readiness is measured against confirmed_tip, because
-        // promoted/durable consumers intentionally lag confirmed.
         let next = if slot.0 > tip {
             sleep(self.tip_poll_delay()).await;
             slot
@@ -205,25 +203,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         Ok(next)
     }
 
-    async fn refresh_confirmed_tip(&mut self) -> Result<(), NodeError> {
-        let tip = self
-            .context
-            .rpc
-            .get_confirmed_slot()
-            .await
-            .map_err(|error| rpc_failed("get_confirmed_slot", error))?;
-        self.confirmed_tip = SlotNumber(tip);
-        self.context.ingest.progress().record_tip(tip);
-        Ok(())
-    }
-
     /// Append `block` to the pending queue, applying its track events to
     /// pending in-memory state. On a confirmed reorg the rolled-back pending
     /// entries are removed; a break below the promoted head stops the node.
     async fn enqueue(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
         let slot = block.slot;
-        let confirmed_when_fetched = slot <= self.confirmed_tip;
-        let outcome = self.queue.append(Arc::clone(&block), confirmed_when_fetched);
+        let outcome = self.queue.append(Arc::clone(&block));
         match outcome {
             AppendOutcome::Appended => {
                 self.context.pending.apply_block(&block);
@@ -263,7 +248,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                     "block_ingestor: chain break before any promotion, queue cleared"
                 );
                 // Queue is empty now; the next append skips the chain check.
-                let _ = self.queue.append(Arc::clone(&block), confirmed_when_fetched);
+                let _ = self.queue.append(Arc::clone(&block));
                 self.context.pending.apply_block(&block);
             }
         }
@@ -294,18 +279,14 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             })
     }
 
-    /// Promote every queue head whose slot is at or below the confirmed tip,
-    /// provided the queue has also seen a later confirmed block. Each promoted
-    /// block is fanned out to the existing consumers; pending track entries are
-    /// dropped later by StoreManager after durable state has caught up.
+    /// Promote every queued block: each was fetched at confirmed commitment,
+    /// so it is confirmed on arrival. Each promoted block is fanned out to the
+    /// existing consumers; pending track entries are dropped later by
+    /// StoreManager after durable state has caught up.
     async fn promote(&mut self) -> Result<(), NodeError> {
         let progress = self.context.ingest.progress();
 
-        while self.queue.front_promotable(self.confirmed_tip) {
-            let block = self
-                .queue
-                .pop_front()
-                .expect("queue non-empty per front_promotable");
+        while let Some(block) = self.queue.pop_front() {
             self.fanout(&block).await?;
             self.context.metrics.inc_blocks_processed();
             progress.record_dispatched(block.slot.0);
@@ -433,48 +414,51 @@ mod tests {
 
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::system::EpochPhase;
-    use tape_core::types::EpochNumber;
+    use tape_core::types::{EpochNumber, SlotNumber};
     use tape_store::ops::EventLogOps;
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
     use super::BlockIngestor;
-    use crate::features::bootstrap::LiveStart;
     use crate::chain::{submit_join_committee, submit_set_network_tls};
     use crate::core::channels::{downstream_channels, store_channel};
+    use crate::features::block::fetch::FETCH_PIPELINE_DEPTH;
+    use crate::features::bootstrap::LiveStart;
     use crate::features::replay::manager::ReplayManager;
-    use crate::harness::NodeHarness;
+    use crate::harness::{NodeHarness, TestContext};
 
     const EPOCH: EpochNumber = EpochNumber(3);
     const NODE: usize = 24;
 
-    #[tokio::test]
-    async fn forwards_batch_after_later_confirmed_block() {
-        let harness = NodeHarness::builder()
+    async fn harness() -> NodeHarness {
+        NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
             .phase(EpochPhase::Active)
             .build()
             .await
-            .expect("build harness");
-        let ctx = harness.ctx_for(NODE);
-        let confirmed_tip = ctx.rpc.get_slot().await.expect("get confirmed tip");
+            .expect("build harness")
+    }
 
-        // Block 1: the JoinCommittee we want to verify gets fanned out.
-        submit_join_committee(&ctx)
+    /// Record a JoinCommittee block for `ctx` and return its slot
+    async fn join_block(harness: &NodeHarness, ctx: &TestContext) -> SlotNumber {
+        let confirmed_tip = ctx.rpc.get_slot().await.expect("get confirmed tip");
+        submit_join_committee(ctx)
             .await
             .expect("submit join committee");
         harness
             .rpc()
             .warp_to_slot(confirmed_tip + 1)
             .expect("confirm join block");
-        let join_slot = harness.produced_slot(&[confirmed_tip, confirmed_tip + 1])
+        harness
+            .produced_slot(&[confirmed_tip, confirmed_tip + 1])
             .await
-            .expect("discover join slot");
+            .expect("discover join slot")
+    }
 
-        // Block 2: a subsequent transaction at a later confirmed slot.
-        // SetNetworkTls is cheap, idempotent, and may fail at the program
-        // level; either way it produces a recorded block at the next slot.
+    /// Record one more block after `slot` and return its slot. SetNetworkTls
+    /// is cheap and may fail at the program level; either way it records a block.
+    async fn later_block(harness: &NodeHarness, ctx: &TestContext, slot: SlotNumber) -> SlotNumber {
         let _ = submit_set_network_tls(
             &ctx.rpc,
             ctx.signer(),
@@ -484,18 +468,20 @@ mod tests {
         .await;
         harness
             .rpc()
-            .warp_to_slot(join_slot.0 + 2)
+            .warp_to_slot(slot.0 + 2)
             .expect("confirm later block");
-        let later_slot = harness.produced_slot(&[join_slot.0 + 1, join_slot.0 + 2])
-            .await
-            .expect("discover later confirmed slot");
-
-        // Pin confirmed just below the join slot so the join block is fetched
-        // ahead of it and must wait for a later confirmed block.
         harness
-            .rpc()
-            .set_confirmed_tip(join_slot.0 - 1)
-            .expect("set confirmed tip");
+            .produced_slot(&[slot.0 + 1, slot.0 + 2])
+            .await
+            .expect("discover later slot")
+    }
+
+    // the field stall: a block at the fetch tip must promote with nothing behind it
+    #[tokio::test]
+    async fn lone_tip_block() {
+        let harness = harness().await;
+        let ctx = harness.ctx_for(NODE);
+        let join_slot = join_block(&harness, &ctx).await;
 
         let (senders, receivers) = downstream_channels();
         let (store_tx, mut store_rx) = store_channel();
@@ -514,30 +500,10 @@ mod tests {
             CancellationToken::new(),
         );
 
-        // First fetch: queues the join block but cannot promote yet because
-        // the ingestor has not seen a later confirmed block.
-        let tip = ctx.rpc.get_slot().await.expect("get tip");
         ingestor
-            .fetch_parse_and_dispatch(join_slot, tip)
+            .ingest_step(join_slot)
             .await
             .expect("dispatch join slot");
-        assert!(
-            timeout(Duration::from_millis(100), store_rx.recv())
-                .await
-                .is_err(),
-            "join block should not promote before a later confirmed block is queued"
-        );
-
-        // Advance confirmed to the join slot, then queue the later block,
-        // which lets the join block promote.
-        harness
-            .rpc()
-            .set_confirmed_tip(join_slot.0)
-            .expect("advance confirmed tip");
-        ingestor
-            .fetch_parse_and_dispatch(later_slot, tip)
-            .await
-            .expect("dispatch later confirmed slot");
 
         let batch = timeout(Duration::from_secs(1), store_rx.recv())
             .await
@@ -556,41 +522,19 @@ mod tests {
         let entries = ctx.store.get_epoch_events(EPOCH).expect("get epoch events");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].slot, join_slot);
-        assert!(matches!(
-            entries[0].records.as_slice(),
-            [record] if matches!(&record.event, ReplayableEvent::JoinCommittee { .. })
-        ));
     }
 
+    // a gap wider than the fetch pipeline streams through the catch-up window and promotes in order
     #[tokio::test]
-    async fn already_confirmed_block_dispatches_immediately() {
-        let harness = NodeHarness::builder()
-            .nodes(25)
-            .epoch(EPOCH)
-            .phase(EpochPhase::Active)
-            .build()
-            .await
-            .expect("build harness");
+    async fn catch_up_gap() {
+        let harness = harness().await;
         let ctx = harness.ctx_for(NODE);
-        let confirmed_tip = ctx.rpc.get_slot().await.expect("get confirmed tip");
-
-        submit_join_committee(&ctx)
-            .await
-            .expect("submit join committee");
+        let join_slot = join_block(&harness, &ctx).await;
+        let later_slot = later_block(&harness, &ctx, join_slot).await;
         harness
             .rpc()
-            .warp_to_slot(confirmed_tip + 1)
-            .expect("confirm join block");
-        let join_slot = harness.produced_slot(&[confirmed_tip, confirmed_tip + 1])
-            .await
-            .expect("discover join slot");
-
-        // Finality has already passed the join slot when it is fetched, so
-        // it dispatches without waiting for a later confirmed block.
-        harness
-            .rpc()
-            .set_confirmed_tip(join_slot.0)
-            .expect("set confirmed tip");
+            .warp_to_slot(later_slot.0 + FETCH_PIPELINE_DEPTH as u64)
+            .expect("move the tip past the pipeline depth");
 
         let (senders, receivers) = downstream_channels();
         let (store_tx, mut store_rx) = store_channel();
@@ -609,11 +553,10 @@ mod tests {
             CancellationToken::new(),
         );
 
-        let tip = ctx.rpc.get_slot().await.expect("get tip");
-        ingestor
-            .fetch_parse_and_dispatch(join_slot, tip)
+        let next = ingestor
+            .ingest_step(join_slot)
             .await
-            .expect("dispatch join slot");
+            .expect("catch up through the window");
 
         let batch = timeout(Duration::from_secs(1), store_rx.recv())
             .await
@@ -623,11 +566,14 @@ mod tests {
         replay_task.abort();
         let _ = replay_task.await;
 
+        assert!(next > later_slot);
+        let progress = ctx.ingest.progress();
+        assert_eq!(SlotNumber(progress.last_dispatched_slot()).next(), next);
+        assert_eq!(progress.queue_len(), 0);
         assert_eq!(batch.slot, join_slot);
         assert!(matches!(
             batch.records.as_slice(),
             [record] if matches!(&record.event, ReplayableEvent::JoinCommittee { .. })
         ));
     }
-
 }

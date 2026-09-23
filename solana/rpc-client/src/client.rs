@@ -1,5 +1,5 @@
 use tape_rpc_solana::{RpcConfig, SolanaRpc};
-use tape_rpc::{BlockWindow, EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError};
+use tape_rpc::{EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError};
 use tape_blocks::wire::Block;
 use tape_crypto::tx::Txid;
 
@@ -100,15 +100,6 @@ impl<R: Rpc> RpcClient<R> {
     /// Slots in start..=end that have a block, ascending
     pub async fn get_blocks(&self, start: u64, end: u64) -> Result<Vec<u64>, RpcError> {
         self.rpc.get_blocks(start, end).await
-    }
-
-    /// The same listing, plus the tip of the member that answered it
-    pub async fn get_block_window(
-        &self,
-        start: u64,
-        end: u64,
-    ) -> Result<BlockWindow, RpcError> {
-        self.rpc.get_block_window(start, end).await
     }
 
     /// Get the lowest slot the node still has a confirmed block for.
