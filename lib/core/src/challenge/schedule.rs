@@ -5,7 +5,8 @@
 //! r of an epoch opens at one slot every owner knows in advance, and the
 //! block the chain produced at that slot is its entropy, so the schedule still
 //! reveals no sample ahead of time. A slot the chain skipped leaves its round
-//! void for everyone. Nodes only open rounds while their epoch is Active.
+//! void for everyone. A round opens only when the blocks before its opening
+//! leave the epoch Active.
 
 use crate::types::{RoundNumber, SlotNumber};
 

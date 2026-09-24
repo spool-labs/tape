@@ -27,6 +27,7 @@ use crate::features::block::ingestor::ParsedBlock;
 use crate::features::challenge::audit::{
     Round, build_answer, group_members, has_sample_set, spawn_attest,
 };
+use crate::features::challenge::chain_phase::{ChainPhase, PhaseLedger};
 use crate::features::challenge::fold::fold_outcome;
 use crate::features::challenge::trace::{MarkKind, TraceClose};
 use crate::features::eviction::queue::Opened;
@@ -68,6 +69,7 @@ pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     chain_rx: mpsc::Receiver<ChainEvent>,
     cancel: CancellationToken,
+    phase: PhaseLedger,
     open_rounds: HashMap<GroupIndex, VecDeque<OpenRound>>,
     first_round: HashMap<EpochNumber, RoundNumber>,
     certified_in: HashSet<(EpochNumber, SpoolIndex)>,
@@ -84,10 +86,18 @@ where
         chain_rx: mpsc::Receiver<ChainEvent>,
         cancel: CancellationToken,
     ) -> Self {
+        // Built before ingest has promoted a block, so the state still holds the
+        // bootstrap checkpoint the lane's first block follows.
+        let state = context.state();
+        let phase = PhaseLedger::new(ChainPhase {
+            epoch: state.epoch(),
+            phase: state.phase(),
+        });
         Self {
             context,
             chain_rx,
             cancel,
+            phase,
             open_rounds: HashMap::new(),
             first_round: HashMap::new(),
             certified_in: HashSet::new(),
@@ -117,6 +127,10 @@ where
     }
 
     async fn on_produced(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
+        // The phase the blocks before this one left. Protocol state takes a
+        // block later and on another task, so gating on it let two nodes on the
+        // same chain differ about a round that opened beside a phase change.
+        let chain = self.phase.advance(&block);
         let state = self.context.state();
 
         // Retain the epoch's grid while its rounds can still settle, including
@@ -127,15 +141,21 @@ where
         // verdict on every round it opened.
         self.settle_confirmed(block.slot);
 
-        if state.phase() != EpochPhase::Active {
+        if chain.phase != EpochPhase::Active {
             return Ok(());
         }
 
-        let Some(schedule) = self.context.schedules.get(state.epoch()) else {
+        // Membership comes from the state, so it has to be on the round's
+        // epoch. A state still behind it or already past it takes no part.
+        if state.epoch() != chain.epoch {
+            return Ok(());
+        }
+
+        let Some(schedule) = self.context.schedules.get(chain.epoch) else {
             return Ok(());
         };
 
-        let epoch = state.epoch();
+        let epoch = chain.epoch;
         let mine = state.member_spools(self.context.node_address());
         if mine.is_empty() {
             return Ok(());
@@ -464,6 +484,7 @@ where
     }
 
     fn on_rolled(&mut self, hashes: &[Hash]) {
+        self.phase.rolled(hashes);
         for hash in hashes {
             self.context.round_buffer.discard_block(*hash);
             self.context.attest_queue.discard_block(*hash);
@@ -499,6 +520,7 @@ where
     }
 
     fn on_confirmed(&mut self, hash: Hash) {
+        self.phase.confirmed(hash);
         for open in self.open_rounds.values_mut().flatten() {
             if open.round.block == hash {
                 open.confirmed = true;
@@ -614,6 +636,9 @@ pub fn group_mates(state: &ProtocolState, me: Address) -> Vec<Address> {
 
 #[cfg(test)]
 mod tests {
+    use bytemuck::Zeroable;
+    use tape_api::event::{EpochCommitted, SnapshotFinalized};
+    use tape_blocks::ParsedInstruction;
     use tape_core::erasure::GROUP_SIZE;
 
     use super::*;
@@ -729,6 +754,50 @@ mod tests {
             blockhash,
             ..ParsedBlock::default()
         })
+    }
+
+    /// A block at a slot holding the given instructions.
+    fn block_with(
+        slot: SlotNumber,
+        blockhash: Hash,
+        instructions: Vec<ParsedInstruction>,
+    ) -> Arc<ParsedBlock> {
+        Arc::new(ParsedBlock {
+            slot,
+            parent_slot: SlotNumber(slot.as_u64() - 1),
+            blockhash,
+            instructions,
+            ..ParsedBlock::default()
+        })
+    }
+
+    /// The epoch moving to Closing, as the chain records it.
+    fn commit_epoch(epoch: EpochNumber) -> ParsedInstruction {
+        ParsedInstruction::CommitEpoch {
+            event: EpochCommitted {
+                epoch,
+                ..EpochCommitted::zeroed()
+            },
+        }
+    }
+
+    /// The previous epoch's snapshot finalizing, which makes this epoch Active.
+    fn finalize_snapshot(epoch: EpochNumber) -> ParsedInstruction {
+        let previous = EpochNumber(epoch.as_u64() - 1);
+        ParsedInstruction::FinalizeSnapshot {
+            epoch: previous,
+            event: SnapshotFinalized {
+                epoch: previous,
+                ..SnapshotFinalized::zeroed()
+            },
+        }
+    }
+
+    /// Move one node's own protocol state, as its state manager would.
+    fn set_phase(ctx: &TestContext, phase: EpochPhase) {
+        let mut state = (*ctx.state()).clone();
+        state.current.epoch.state.phase = phase as u64;
+        ctx.set_state(state).expect("publish");
     }
 
     fn first_round_block(ctx: &TestContext) -> Arc<ParsedBlock> {
@@ -1004,6 +1073,100 @@ mod tests {
             assert_eq!(ctx.challenge_counters.skipped.load(Ordering::Relaxed), 1);
             assert_eq!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
         }
+    }
+
+    // the chain committed the epoch in the block before an opening, so a node
+    // whose state has taken that block and one whose state has not both pass the
+    // round by
+    #[tokio::test]
+    async fn closing_flip_agrees() {
+        let (ahead, behind) = seated_pair(None).await;
+        let opening = first_round_block(&ahead);
+        let commit = block_with(
+            SlotNumber(opening.slot.as_u64() - 1),
+            Hash([0x44; 32]),
+            vec![commit_epoch(ahead.state().epoch())],
+        );
+
+        for (ctx, is_applied) in [(&ahead, true), (&behind, false)] {
+            let mut manager = manager_for(ctx);
+            manager.on_produced(commit.clone()).await.expect("produced");
+            if is_applied {
+                set_phase(ctx, EpochPhase::Closing);
+            }
+            manager.on_produced(opening.clone()).await.expect("produced");
+
+            assert!(manager.open_rounds.is_empty(), "applied: {is_applied}");
+            assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    // the chain finalized the snapshot in the block before an opening, so the
+    // round opens on a node whose state has taken that block and on one whose
+    // state has not
+    #[tokio::test]
+    async fn active_flip_agrees() {
+        let (ahead, behind) = seated_pair(None).await;
+        for ctx in [&ahead, &behind] {
+            set_phase(ctx, EpochPhase::Snapshot);
+        }
+        let opening = first_round_block(&ahead);
+        let finalize = block_with(
+            SlotNumber(opening.slot.as_u64() - 1),
+            Hash([0x55; 32]),
+            vec![finalize_snapshot(ahead.state().epoch())],
+        );
+
+        for (ctx, is_applied) in [(&ahead, true), (&behind, false)] {
+            let mut manager = manager_for(ctx);
+            manager.on_produced(finalize.clone()).await.expect("produced");
+            if is_applied {
+                set_phase(ctx, EpochPhase::Active);
+            }
+            manager.on_produced(opening.clone()).await.expect("produced");
+
+            assert_eq!(only_round(&manager).round.round, RoundNumber(0), "applied: {is_applied}");
+            assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    // a commit inside the opening block lands after the block was produced, so
+    // the round it seeds still opens and the next opening falls in Closing
+    #[tokio::test]
+    async fn commit_in_opening() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+        let opening = first_round_block(&ctx);
+        let committing = block_with(
+            opening.slot,
+            opening.blockhash,
+            vec![commit_epoch(ctx.state().epoch())],
+        );
+
+        manager.on_produced(committing).await.expect("produced");
+
+        assert_eq!(only_round(&manager).round.round, RoundNumber(0));
+        assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 1);
+
+        manager.on_produced(second_round_block(&ctx)).await.expect("produced");
+
+        assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 1);
+    }
+
+    // a state already on the next epoch holds another epoch's membership, so the
+    // node takes no part in a round the chain still opens in this one
+    #[tokio::test]
+    async fn state_ahead() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+        let mut state = (*ctx.state()).clone();
+        state.current.epoch.id = state.epoch().next();
+        ctx.set_state(state).expect("publish");
+
+        manager.on_produced(first_round_block(&ctx)).await.expect("produced");
+
+        assert!(manager.open_rounds.is_empty());
+        assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 0);
     }
 
     // a node challenges everyone else holding a position in its group, once
