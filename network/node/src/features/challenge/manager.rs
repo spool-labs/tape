@@ -45,7 +45,6 @@ struct OpenRound {
     opened_slot: SlotNumber,
     confirmed: bool,
     askable: bool,
-    is_ready: bool,
     is_suspect: bool,
 }
 
@@ -232,7 +231,6 @@ where
                 opened_slot: block.slot,
                 confirmed: false,
                 askable: has_sample_set(&self.context, &round),
-                is_ready: true,
                 is_suspect: self.context.challenge_tripwire.is_realigning(),
             });
             self.context
@@ -339,12 +337,6 @@ where
         // Nobody owed an answer on a branch that lost.
         if !open.confirmed {
             return Some((TraceClose::Unconfirmed, "entropy block never confirmed"));
-        }
-
-        // This node reached the opening too late to collect an answer, and a
-        // verdict off nothing charges every spool in the group a miss.
-        if !open.is_ready {
-            return Some((TraceClose::Nothing, "reached the opening behind the tip"));
         }
 
         // Evidence opened under a suspect view, or still pending when another
