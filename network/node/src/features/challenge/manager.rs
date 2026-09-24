@@ -72,6 +72,9 @@ pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     open_rounds: HashMap<GroupIndex, VecDeque<OpenRound>>,
     first_round: HashMap<EpochNumber, RoundNumber>,
     certified_in: HashSet<(EpochNumber, SpoolIndex)>,
+    /// Openings counted as discarded when their block lost, so the chain that
+    /// won skipping the same slot counts nothing more.
+    rolled_rounds: HashSet<(EpochNumber, RoundNumber)>,
 }
 
 impl<Db, Cluster, Blockchain> ChallengeManager<Db, Cluster, Blockchain>
@@ -100,6 +103,7 @@ where
             open_rounds: HashMap::new(),
             first_round: HashMap::new(),
             certified_in: HashSet::new(),
+            rolled_rounds: HashSet::new(),
         }
     }
 
@@ -170,7 +174,7 @@ where
         let held: Vec<GroupIndex> = mine.iter().map(|spool| group_for_spool(*spool)).collect();
         self.open_rounds.retain(|group, _| held.contains(group));
 
-        self.void_skipped(&schedule, &block, held.len() as u64);
+        self.void_skipped(&schedule, epoch, &block, held.len() as u64);
 
         let Some(number) = schedule.round_at(block.slot) else {
             return Ok(());
@@ -180,10 +184,13 @@ where
         // so its grace counts from the first opening it saw, which is later
         // than its peers' anchor and only lengthens the grace.
         self.first_round.entry(epoch).or_insert(number);
+        // The chain put a block back at a lost opening, which opens afresh.
+        self.rolled_rounds.remove(&(epoch, number));
         // Two epochs is everything a settling round can reach back to.
         let keep = epoch.as_u64().saturating_sub(1);
         self.first_round.retain(|held, _| held.as_u64() >= keep);
         self.certified_in.retain(|(held, _)| held.as_u64() >= keep);
+        self.rolled_rounds.retain(|(held, _)| held.as_u64() >= keep);
 
         // Readiness bounds taking part and nothing else: the round is the
         // chain's either way. A node that reached the opening too late can
@@ -302,10 +309,21 @@ where
     /// every node that ingests the block reads the same openings as skipped and
     /// opens none of them. Only openings inside the settlement horizon are
     /// counted: an older one was void before this node could have reached it.
-    fn void_skipped(&self, schedule: &Schedule, block: &ParsedBlock, groups: u64) {
+    /// An opening this node saw on a block that lost already counted as
+    /// discarded, so it counts nothing here.
+    fn void_skipped(
+        &mut self,
+        schedule: &Schedule,
+        epoch: EpochNumber,
+        block: &ParsedBlock,
+        groups: u64,
+    ) {
         let horizon = block.slot.as_u64().saturating_sub(SETTLE_DEADLINE_SLOTS);
         let from = SlotNumber(block.parent_slot.as_u64().max(horizon));
         for number in schedule.skipped_rounds(from, block.slot) {
+            if self.rolled_rounds.remove(&(epoch, number)) {
+                continue;
+            }
             self.context
                 .challenge_counters
                 .skipped
@@ -511,11 +529,13 @@ where
         // The count is rounds dropped. One slot of an interval a hundred times
         // longer opens a round, so almost no rolled block seeded one.
         let before: usize = self.open_rounds.values().map(VecDeque::len).sum();
+        let mut lost: Vec<(EpochNumber, RoundNumber)> = Vec::new();
         for pending in self.open_rounds.values_mut() {
             pending.retain(|open| {
                 if !hashes.contains(&open.round.block) {
                     return true;
                 }
+                lost.push((open.round.epoch, open.round.round));
                 // The trace closes with the block it opened on and re-opens on
                 // whatever the chain puts in that block's place.
                 self.context.round_traces.close(
@@ -535,6 +555,7 @@ where
                 .discarded
                 .fetch_add(dropped as u64, Ordering::Relaxed);
         }
+        self.rolled_rounds.extend(lost);
     }
 
     fn on_confirmed(&mut self, hash: Hash) {
@@ -1237,6 +1258,28 @@ mod tests {
             ctx.challenge_counters.skipped.load(Ordering::Relaxed),
             groups.len() as u64
         );
+    }
+
+    // an opening whose block lost counts once, as discarded, when the chain
+    // that replaced it produced nothing at that slot
+    #[tokio::test]
+    async fn rolled_counts_once() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+        let opening = first_round_block(&ctx);
+
+        manager.on_produced(opening.clone()).await.expect("produced");
+        manager.on_rolled(&[opening.blockhash]);
+        let replacement = Arc::new(ParsedBlock {
+            slot: SlotNumber(opening.slot.as_u64() + 1),
+            parent_slot: SlotNumber(opening.slot.as_u64() - 1),
+            blockhash: Hash([0x77; 32]),
+            ..ParsedBlock::default()
+        });
+        manager.on_produced(replacement).await.expect("produced");
+
+        assert_eq!(ctx.challenge_counters.discarded.load(Ordering::Relaxed), 1);
+        assert_eq!(ctx.challenge_counters.skipped.load(Ordering::Relaxed), 0);
     }
 
     // a node challenges everyone else holding a position in its group, once

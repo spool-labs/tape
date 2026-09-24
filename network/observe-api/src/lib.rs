@@ -717,7 +717,8 @@ pub struct ChallengeRounds {
     #[serde(default)]
     pub voided: u64,
     /// Round openings the chain skipped, void on every node alike, one per
-    /// group this node holds a spool in.
+    /// group this node holds a spool in. An opening this node saw on a block
+    /// that lost counts under `discarded` alone.
     #[serde(default)]
     pub skipped: u64,
     /// Rounds dropped because their candidate block lost.
