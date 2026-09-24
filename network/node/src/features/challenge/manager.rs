@@ -170,7 +170,7 @@ where
         let held: Vec<GroupIndex> = mine.iter().map(|spool| group_for_spool(*spool)).collect();
         self.open_rounds.retain(|group, _| held.contains(group));
 
-        self.void_skipped(&schedule, &block);
+        self.void_skipped(&schedule, &block, held.len() as u64);
 
         let Some(number) = schedule.round_at(block.slot) else {
             return Ok(());
@@ -295,20 +295,21 @@ where
         tip.saturating_sub(slot.as_u64()) < SETTLE_DEADLINE_SLOTS
     }
 
-    /// Counts the round openings the chain skipped, which charge nobody anywhere.
+    /// Counts the round openings the chain skipped, which charge nobody anywhere,
+    /// once for each group this node holds a spool in, as an opened round is.
     ///
     /// A block and its parent are consecutive in the chain's own history, so
     /// every node that ingests the block reads the same openings as skipped and
     /// opens none of them. Only openings inside the settlement horizon are
     /// counted: an older one was void before this node could have reached it.
-    fn void_skipped(&self, schedule: &Schedule, block: &ParsedBlock) {
+    fn void_skipped(&self, schedule: &Schedule, block: &ParsedBlock, groups: u64) {
         let horizon = block.slot.as_u64().saturating_sub(SETTLE_DEADLINE_SLOTS);
         let from = SlotNumber(block.parent_slot.as_u64().max(horizon));
         for number in schedule.skipped_rounds(from, block.slot) {
             self.context
                 .challenge_counters
                 .skipped
-                .fetch_add(1, Ordering::Relaxed);
+                .fetch_add(groups, Ordering::Relaxed);
             debug!(round = number.0, "challenge: round void, its slot produced no block");
         }
     }
@@ -1198,6 +1199,44 @@ mod tests {
 
             assert_eq!(manager.first_round.get(&epoch), Some(&RoundNumber(1)));
         }
+    }
+
+    // a skipped opening is void in every group this node holds a spool in, so
+    // it counts once per group, the way an opened round does
+    #[tokio::test]
+    async fn skipped_per_group() {
+        let harness = NodeHarness::builder()
+            .nodes(NODES)
+            .current_group_count(2)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let ctx: TestContext = harness.ctx_for(0);
+        seat(&ctx);
+        let mut groups: Vec<GroupIndex> = ctx
+            .state()
+            .member_spools(ctx.node_address())
+            .into_iter()
+            .map(group_for_spool)
+            .collect();
+        groups.sort_unstable();
+        groups.dedup();
+        assert!(groups.len() > 1, "the harness seated this node in one group only");
+
+        let first = schedule(&ctx).first_slot().as_u64();
+        let block = Arc::new(ParsedBlock {
+            slot: SlotNumber(first + 1),
+            parent_slot: SlotNumber(first - 1),
+            blockhash: Hash([0x33; 32]),
+            ..ParsedBlock::default()
+        });
+        manager_for(&ctx).on_produced(block).await.expect("produced");
+
+        assert_eq!(
+            ctx.challenge_counters.skipped.load(Ordering::Relaxed),
+            groups.len() as u64
+        );
     }
 
     // a node challenges everyone else holding a position in its group, once
