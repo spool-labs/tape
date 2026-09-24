@@ -186,10 +186,19 @@ where
         self.first_round.retain(|held, _| held.as_u64() >= keep);
         self.certified_in.retain(|(held, _)| held.as_u64() >= keep);
 
-        // Readiness bounds taking part and nothing else. The round below records
-        // this block whatever it says, so every node that ingests the chain holds
-        // the same question for the round.
-        let is_ready = self.is_ready_at(block.slot);
+        // Readiness bounds taking part and nothing else: the round is the
+        // chain's either way. A node that reached the opening too late can
+        // neither answer nor judge it, so it counts the round void and builds
+        // nothing for it. The opening block is past rooting by then, so no
+        // rollback can take the count back.
+        if !self.is_ready_at(block.slot) {
+            self.context
+                .challenge_counters
+                .voided
+                .fetch_add(held.len() as u64, Ordering::Relaxed);
+            debug!(round = number.0, "challenge: round void, its opening reached behind the tip");
+            return Ok(());
+        }
 
         for spool in mine {
             let group = group_for_spool(spool);
@@ -222,10 +231,8 @@ where
                     .collect(),
                 opened_slot: block.slot,
                 confirmed: false,
-                // A round this node cannot take part in charges nobody, so the
-                // group scan the set costs is skipped along with it.
-                askable: is_ready && has_sample_set(&self.context, &round),
-                is_ready,
+                askable: has_sample_set(&self.context, &round),
+                is_ready: true,
                 is_suspect: self.context.challenge_tripwire.is_realigning(),
             });
             self.context
@@ -240,9 +247,7 @@ where
                 block.blockhash,
             );
 
-            if is_ready {
-                self.answer_and_broadcast(&state, &round, spool).await;
-            }
+            self.answer_and_broadcast(&state, &round, spool).await;
         }
 
         // Retire behind the oldest round any group still has open, not behind
@@ -985,10 +990,11 @@ mod tests {
         }
     }
 
-    // a node behind the tip records the round on the same block as one at the
-    // tip, and only its own answer waits for it to catch up
+    // a node that reaches an opening too late to take part counts the round
+    // void at once and builds nothing for it, while a node at the tip opens it
+    // on the block, and both anchor the epoch's grace on the same round
     #[tokio::test]
-    async fn lagging_same_block() {
+    async fn lagging_voids() {
         for interval in INTERVALS {
             lagging_at(interval).await;
         }
@@ -996,6 +1002,7 @@ mod tests {
 
     async fn lagging_at(interval: u64) {
         let (ahead, behind) = seated_pair(Some(interval)).await;
+        let epoch = ahead.state().epoch();
         let block = first_round_block(&ahead);
         behind
             .ingest
@@ -1008,28 +1015,14 @@ mod tests {
         lagging.on_produced(block.clone()).await.expect("produced");
 
         assert_eq!(only_round(&at_tip).round.block, block.blockhash);
-        assert_eq!(only_round(&lagging).round.block, block.blockhash);
-        assert_eq!(
-            only_round(&lagging).round.round,
-            only_round(&at_tip).round.round
-        );
-        assert_eq!(
-            only_round(&lagging).opened_slot,
-            only_round(&at_tip).opened_slot
-        );
-        assert!(only_round(&at_tip).is_ready);
-        assert!(!only_round(&lagging).is_ready, "a node far behind answered");
+        assert_eq!(ahead.challenge_counters.opened.load(Ordering::Relaxed), 1);
 
-        // The round it recorded charges nobody: it answered nothing and
-        // collected nothing, and a verdict here is a miss for every peer.
-        for open in lagging.open_rounds.values_mut().flatten() {
-            open.confirmed = true;
-            open.askable = true;
-        }
-        lagging.settle_confirmed(SlotNumber(block.slot.as_u64() + SETTLE_DEADLINE_SLOTS));
-
+        assert!(lagging.open_rounds.is_empty(), "a node far behind built a round");
+        assert!(behind.round_traces.snapshot().is_empty(), "a node far behind traced a round");
+        assert_eq!(behind.challenge_counters.opened.load(Ordering::Relaxed), 0);
+        assert_eq!(behind.challenge_counters.voided.load(Ordering::Relaxed), 1);
         assert_eq!(behind.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
-        assert!(behind.challenge_counters.voided.load(Ordering::Relaxed) > 0);
+        assert_eq!(lagging.first_round.get(&epoch), at_tip.first_round.get(&epoch));
     }
 
     // readiness is read once, when the opening arrives, so a round already open

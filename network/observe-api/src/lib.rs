@@ -703,9 +703,7 @@ pub struct RoundId {
 /// Lifetime challenge round counters for this node.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct ChallengeRounds {
-    /// Rounds this node recorded, one per group it holds a spool in. It answers
-    /// the ones it reached in time, so two nodes on the same chain count the same
-    /// openings however far apart they sit from the tip.
+    /// Rounds this node took part in, one per group it holds a spool in.
     pub opened: u64,
     /// Spool outcomes settled as certified.
     pub settled_certified: u64,
@@ -713,8 +711,9 @@ pub struct ChallengeRounds {
     pub settled_missed: u64,
     /// Incoming answers refused at the door.
     pub answers_refused: u64,
-    /// Rounds charged to nobody: an unconfirmed block, an empty sample set, or
-    /// an opening this node reached behind the tip.
+    /// Rounds charged to nobody, one per group this node holds a spool in: an
+    /// unconfirmed block, an empty sample set, or an opening this node reached
+    /// too late to take part in, which it counts here and opens nothing for.
     #[serde(default)]
     pub voided: u64,
     /// Round openings the chain skipped, void on every node alike.
