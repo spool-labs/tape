@@ -30,11 +30,7 @@ const MILLIS_PER_SECOND: u64 = 1_000;
 /// round, and settlement is the actual bound.
 pub const PROOF_DEADLINE_SLOTS: u64 = 2;
 
-/// Confirmation allowance shown by the observation timeline. Signing does not
-/// wait on this allowance; finality determines whether a round can be judged.
-pub const CONFIRMATION_SLOTS: u64 = 1;
-
-/// Slots the signature window stays open once confirmation has passed.
+/// Slots the signature window stays open once the proof deadline has passed.
 pub const ATTESTATION_WINDOW_SLOTS: u64 = 2;
 
 /// Slots allowed for an aggregated certificate to reach the group.
@@ -64,16 +60,23 @@ pub const SAMPLE_LOOKBACK_SLOTS: u64 = SETTLE_DEADLINE_SLOTS + FINALITY_SLOTS;
 /// is the round width. A cap below that sheds rounds before they can root.
 pub const MAX_PENDING_ROUNDS: usize = (SETTLE_DEADLINE_SLOTS / round_width_slots() + 3) as usize;
 
+/// Slots from a round's opening block to the end of its signature window.
+///
+/// The proof arrives inside `PROOF_DEADLINE_SLOTS` and the signatures over it
+/// follow inside `ATTESTATION_WINDOW_SLOTS`, back to back from the block.
+pub const fn attest_deadline_slots() -> u64 {
+    PROOF_DEADLINE_SLOTS + ATTESTATION_WINDOW_SLOTS
+}
+
 /// Slots a round runs from its opening to its verdict, and the floor on the
 /// interval, since one group's rounds cannot overlap.
 ///
-/// The proof arrives inside `PROOF_DEADLINE_SLOTS`, the signatures over it follow
-/// inside `ATTESTATION_WINDOW_SLOTS`, and the certificate gossips inside
-/// `CERTIFICATE_GOSSIP_SLOTS`. Devnet's measured certificate p50 is 384 ms, 2.3
-/// slots at 166 ms, so a shorter span records misses that a later certificate
-/// has to upgrade.
+/// The signature window closes at `attest_deadline_slots`, and the certificate
+/// gossips inside `CERTIFICATE_GOSSIP_SLOTS` after it. Devnet's measured
+/// certificate p50 is 384 ms, 2.3 slots at 166 ms, so a shorter span records
+/// misses that a later certificate has to upgrade.
 pub const fn round_width_slots() -> u64 {
-    PROOF_DEADLINE_SLOTS + ATTESTATION_WINDOW_SLOTS + CERTIFICATE_GOSSIP_SLOTS
+    attest_deadline_slots() + CERTIFICATE_GOSSIP_SLOTS
 }
 
 /// The fewest whole rounds that last a wall-clock span at one cadence, and at

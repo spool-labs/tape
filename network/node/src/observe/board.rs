@@ -9,9 +9,8 @@ use tape_rpc::Rpc;
 use tape_store_api::{Column, Store, StoreVolume};
 use tape_core::bft::has_honest_signer;
 use tape_core::challenge::schedule::{
-    ATTESTATION_WINDOW_SLOTS, CONFIRMATION_SLOTS, PROOF_DEADLINE_SLOTS, SAMPLE_LOOKBACK_SLOTS,
-    SETTLE_DEADLINE_SLOTS, SLOT_MS,
-    round_width_slots,
+    PROOF_DEADLINE_SLOTS, SAMPLE_LOOKBACK_SLOTS, SETTLE_DEADLINE_SLOTS, SLOT_MS,
+    attest_deadline_slots, round_width_slots,
 };
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::bitmap::BitmapRead;
@@ -1089,7 +1088,9 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
         max_consecutive_misses: context.config.eviction.policy.max_consecutive_misses,
         round_span_ms: round_width_slots() * slot_ms,
         proof_deadline_ms: PROOF_DEADLINE_SLOTS * slot_ms,
-        attest_deadline_ms: (CONFIRMATION_SLOTS + ATTESTATION_WINDOW_SLOTS) * slot_ms,
+        // Measured from the block like the span, so the signature window sits
+        // where the round width puts it: after the proof, before the gossip.
+        attest_deadline_ms: attest_deadline_slots() * slot_ms,
         round_cadence_ms: schedule
             .as_ref()
             .map(|schedule| schedule.interval_slots * slot_ms)
@@ -1176,6 +1177,7 @@ fn recent_round_ids<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 #[cfg(test)]
 mod tests {
+    use tape_core::challenge::schedule::{ATTESTATION_WINDOW_SLOTS, CERTIFICATE_GOSSIP_SLOTS};
     use tape_core::types::SpoolBitmap;
     use tape_core::types::bitmap::BitmapWrite;
 
@@ -1219,6 +1221,26 @@ mod tests {
 
         state.current.groups[0].synced.set(7);
         assert_eq!(synced_groups(&state), 1);
+    }
+
+    // the timeline marks sit where the round width counts them from the block:
+    // the proof deadline, then the signature window, then the gossip to the span
+    #[tokio::test]
+    async fn timeline_marks() {
+        let context = test_context().await;
+
+        let grid = build(&context).challenge;
+
+        assert!(grid.proof_deadline_ms < grid.attest_deadline_ms);
+        assert!(grid.attest_deadline_ms < grid.round_span_ms);
+        assert_eq!(
+            grid.round_span_ms - grid.attest_deadline_ms,
+            CERTIFICATE_GOSSIP_SLOTS * grid.slot_ms
+        );
+        assert_eq!(
+            grid.attest_deadline_ms - grid.proof_deadline_ms,
+            ATTESTATION_WINDOW_SLOTS * grid.slot_ms
+        );
     }
 
     // the network view carries the clock the charts bucket by

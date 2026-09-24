@@ -607,7 +607,9 @@ pub struct ChallengeGrid {
     /// Milliseconds after the block by which a proof must arrive.
     #[serde(default)]
     pub proof_deadline_ms: u64,
-    /// Milliseconds after the block by which attestations must be signed.
+    /// Milliseconds after the block by which attestations must be signed: the
+    /// proof deadline and then the signature window, as the round width counts
+    /// them.
     #[serde(default)]
     pub attest_deadline_ms: u64,
     /// Milliseconds between one round opening and the next, so a reader can say
