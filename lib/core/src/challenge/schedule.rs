@@ -21,14 +21,6 @@ pub const SLOT_MS: u64 = 400;
 /// Milliseconds in a second, for turning a configured span into slot time.
 const MILLIS_PER_SECOND: u64 = 1_000;
 
-/// Slots before a round's opening that the sample set is cut at.
-///
-/// A round opens on the block at its slot, ahead of what any owner has written
-/// to its store, and that store trails the ingest head by a finality window.
-/// Cutting at the opening would leave a write inside that gap in one owner's set
-/// and outside another's. Cutting behind it puts the whole gap inside everyone's.
-pub const SAMPLE_LOOKBACK_SLOTS: u64 = 64;
-
 /// Proof-collection allowance used to size the round and display its timeline.
 ///
 /// Sized to clear honest global propagation, not to catch a fetch. The measured
@@ -56,6 +48,17 @@ pub const FINALITY_SLOTS: u64 = 32;
 
 /// Slots a round waits on its entropy block before it is void.
 pub const SETTLE_DEADLINE_SLOTS: u64 = FINALITY_SLOTS + 8;
+
+/// Slots before a round's opening that the sample set is cut at.
+///
+/// A round opens on the block at its slot, ahead of what any owner has written
+/// to its store. A node takes part in a round up to `SETTLE_DEADLINE_SLOTS`
+/// behind the tip, and its store trails its own ingest head, so the cut sits a
+/// finality window behind that bound. Cutting at the opening would leave a
+/// write inside the gap in one owner's set and outside another's; cutting this
+/// far back puts the whole gap inside everyone's. A node whose store has still
+/// not reached the cut builds no set for the round until it has.
+pub const SAMPLE_LOOKBACK_SLOTS: u64 = SETTLE_DEADLINE_SLOTS + FINALITY_SLOTS;
 
 /// Rounds a group may hold at once: the deadline at the tightest cadence, which
 /// is the round width. A cap below that sheds rounds before they can root.

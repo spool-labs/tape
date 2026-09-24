@@ -629,8 +629,9 @@ pub struct ChallengeGrid {
     /// Slots a round waits on its entropy block before it is void.
     #[serde(default)]
     pub settle_deadline_slots: u64,
-    /// Slots the sample set is cut behind a round. Covers the spread between
-    /// owners' frontiers, which is wall-clock, so fast slots shrink it.
+    /// Slots the sample set is cut behind a round: the furthest a node can sit
+    /// behind the tip and still take part, plus a finality window for its store
+    /// to trail its ingest head.
     #[serde(default)]
     pub sample_lookback_slots: u64,
     /// One row per peer, worst first so an outlier is the top row.

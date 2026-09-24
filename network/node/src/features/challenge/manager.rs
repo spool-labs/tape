@@ -366,9 +366,11 @@ where
 
         // Nor did anyone owe an answer to a question the group had no data to
         // ask. Every owner declines the draw and every observer would otherwise
-        // charge every one of them a miss, which is the whole group at once.
+        // charge every one of them a miss, which is the whole group at once. A
+        // store short of the round's cut holds no set either, and judging off
+        // it would charge the group for a question this node never held.
         if !open.askable {
-            return Some((TraceClose::Nothing, "the group's sample set was empty"));
+            return Some((TraceClose::Nothing, "no sample set to draw from"));
         }
 
         None
