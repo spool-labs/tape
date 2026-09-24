@@ -4,7 +4,7 @@ use axum::Json;
 use serde::Serialize;
 use tape_rpc::Rpc;
 use tape_store_api::{DiskVolume, Store, StoreVolume};
-use tape_node::features::http::handlers::health::{health_of, HealthResponse};
+use tape_node::features::http::handlers::health::{HealthResponse, HealthStatus};
 use tape_protocol::Api;
 use tape_protocol::api::{NodeStats, VolumeStats};
 use tape_store::TapeStore;
@@ -40,8 +40,23 @@ pub async fn s3_info<Db: Store, Cluster: Api, Blockchain: Rpc>(
 pub async fn health<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
 ) -> (StatusCode, Json<HealthResponse>) {
-    let (status, body) = health_of(&state.context);
-    (status, Json(body))
+    if state.context.bootstrap.is_ready() {
+        return (
+            StatusCode::OK,
+            Json(HealthResponse {
+                status: HealthStatus::Ready,
+                bootstrap: None,
+            }),
+        );
+    }
+
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(HealthResponse {
+            status: HealthStatus::Bootstrapping,
+            bootstrap: Some(state.context.bootstrap.snapshot().into()),
+        }),
+    )
 }
 
 /// Map a backend disk volume to its wire representation.

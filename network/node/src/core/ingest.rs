@@ -5,20 +5,18 @@ use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 /// Threshold at which a node is considered caught up to the durable ingest
-/// edge. The block ingestor dispatch cursor is allowed to lag the confirmed
+/// edge. The block ingestor dispatch cursor is allowed to lag the finalized
 /// tip by up to this many slots and still report `AtTip`.
 pub const AT_TIP_THRESHOLD_SLOTS: u64 = 5;
 
-/// How long the monitor waits before reporting `Stalled`
-///
-/// Counted from the last fetch attempt or tip read and, behind the tip,
-/// from the last dispatch. Independent from any retry-loop pacing.
+/// If no block fetch attempt or tip read has occurred for this long, the
+/// monitor reports `Stalled`. Independent from any retry-loop pacing.
 pub const STALL_THRESHOLD: Duration = Duration::from_secs(30);
 
 /// How often the monitor task recomputes `IngestState` from progress.
 pub const MONITOR_TICK: Duration = Duration::from_millis(500);
 
-/// Where the block ingestor is, relative to the confirmed dispatch edge.
+/// Where the block ingestor is, relative to the finalized dispatch edge.
 #[derive(Debug, Clone, Copy)]
 pub enum IngestState {
     Catching { lag_slots: u64 },
@@ -46,7 +44,6 @@ impl IngestState {
 #[derive(Debug)]
 pub struct IngestProgress {
     last_attempt_ms: AtomicU64,
-    last_dispatch_ms: AtomicU64,
     last_dispatched_slot: AtomicU64,
     last_known_tip: AtomicU64,
     last_fetch_slot: AtomicU64,
@@ -69,10 +66,9 @@ const RATE_WINDOW_SLOTS: u64 = 512;
 const RATE_MIN_SLOTS: u64 = 64;
 
 impl IngestProgress {
-    fn new(started: Instant) -> Self {
+    fn new() -> Self {
         Self {
             last_attempt_ms: AtomicU64::new(u64::MAX),
-            last_dispatch_ms: AtomicU64::new(0),
             last_dispatched_slot: AtomicU64::new(0),
             last_known_tip: AtomicU64::new(u64::MAX),
             last_fetch_slot: AtomicU64::new(0),
@@ -80,16 +76,8 @@ impl IngestProgress {
             rate_base_slot: AtomicU64::new(0),
             rate_base_time: AtomicI64::new(CHAIN_TIME_UNSET),
             queue_len: AtomicU64::new(0),
-            started,
+            started: Instant::now(),
         }
-    }
-
-    /// Seed the cursors at the bootstrap handoff and start the dispatch clock,
-    /// so a long bootstrap does not count against the stall window
-    pub fn start_live(&self, last_dispatched_slot: u64) {
-        self.last_dispatched_slot.store(last_dispatched_slot, Ordering::Relaxed);
-        self.last_fetch_slot.store(last_dispatched_slot, Ordering::Relaxed);
-        self.last_dispatch_ms.store(self.elapsed_ms(), Ordering::Relaxed);
     }
 
     pub fn record_attempt(&self) {
@@ -97,7 +85,8 @@ impl IngestProgress {
             .store(self.elapsed_ms(), Ordering::Relaxed);
     }
 
-    /// Record a block fetch attempt at `slot`
+    /// Record a block fetch attempt at `slot`. Keeps the fetch cursor
+    /// observable while promotion still holds dispatch back.
     pub fn record_fetch(&self, slot: u64) {
         self.last_fetch_slot.store(slot, Ordering::Relaxed);
         self.record_attempt();
@@ -114,8 +103,6 @@ impl IngestProgress {
 
     pub fn record_dispatched(&self, slot: u64) {
         self.last_dispatched_slot.store(slot, Ordering::Relaxed);
-        self.last_dispatch_ms
-            .store(self.elapsed_ms(), Ordering::Relaxed);
         self.record_attempt();
     }
 
@@ -158,11 +145,6 @@ impl IngestProgress {
 
     pub fn last_attempt_ms(&self) -> u64 {
         self.last_attempt_ms.load(Ordering::Relaxed)
-    }
-
-    /// Progress clock at the last dispatch; zero before the first one
-    pub fn last_dispatch_ms(&self) -> u64 {
-        self.last_dispatch_ms.load(Ordering::Relaxed)
     }
 
     pub fn last_dispatched_slot(&self) -> u64 {
@@ -219,17 +201,12 @@ pub struct IngestBus {
 
 impl IngestBus {
     pub fn new() -> Self {
-        Self::started_at(Instant::now())
-    }
-
-    /// A bus whose progress clock began at `started`, so tests can age it
-    pub fn started_at(started: Instant) -> Self {
         let initial = IngestState::Catching { lag_slots: u64::MAX };
         let (tx, _rx) = watch::channel(initial);
 
         Self {
             tx,
-            progress: Arc::new(IngestProgress::new(started)),
+            progress: Arc::new(IngestProgress::new()),
         }
     }
 
@@ -266,20 +243,16 @@ impl IngestBus {
         }
 
         let stall_threshold_ms = STALL_THRESHOLD.as_millis() as u64;
-        let lag_slots = last_tip.saturating_sub(last_dispatched);
-        let is_behind = lag_slots > AT_TIP_THRESHOLD_SLOTS;
-        let is_attempt_stale = now.saturating_sub(last_attempt) > stall_threshold_ms;
-        // Behind the tip the fetch cursor alone keeps the attempt clock fresh,
-        // so the dispatch clock is checked on its own
-        let is_dispatch_stale =
-            now.saturating_sub(self.progress.last_dispatch_ms()) > stall_threshold_ms;
-        if is_attempt_stale || (is_behind && is_dispatch_stale) {
+        if now.saturating_sub(last_attempt) > stall_threshold_ms {
             return IngestState::Stalled { since: Instant::now() };
         }
-        if !is_behind {
-            return IngestState::AtTip;
+
+        let lag_slots = last_tip.saturating_sub(last_dispatched);
+        if lag_slots <= AT_TIP_THRESHOLD_SLOTS {
+            IngestState::AtTip
+        } else {
+            IngestState::Catching { lag_slots }
         }
-        IngestState::Catching { lag_slots }
     }
 }
 
@@ -292,10 +265,6 @@ impl Default for IngestBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn aged_bus() -> IngestBus {
-        IngestBus::started_at(Instant::now() - STALL_THRESHOLD * 2)
-    }
 
     #[test]
     fn fresh_bus_reports_catching_with_max_lag() {
@@ -347,60 +316,5 @@ mod tests {
         progress.record_dispatched(1000 - AT_TIP_THRESHOLD_SLOTS - 1);
 
         assert!(matches!(bus.compute(), IngestState::Catching { .. }));
-    }
-
-    // a stale attempt clock stalls even at the tip
-    #[test]
-    fn stale_attempt() {
-        let bus = aged_bus();
-        let progress = bus.progress();
-
-        progress.record_tip(1000);
-        progress.record_dispatched(998);
-        progress.last_attempt_ms.store(0, Ordering::Relaxed);
-
-        assert!(matches!(bus.compute(), IngestState::Stalled { .. }));
-    }
-
-    // behind the tip, fetching keeps the attempt clock fresh and only a dispatch clears the stall
-    #[test]
-    fn stale_dispatch() {
-        let bus = aged_bus();
-        let progress = bus.progress();
-
-        progress.record_tip(1000);
-        progress.record_fetch(999);
-
-        assert!(matches!(bus.compute(), IngestState::Stalled { .. }));
-
-        progress.record_dispatched(900);
-
-        assert!(matches!(bus.compute(), IngestState::Catching { lag_slots: 100 }));
-    }
-
-    // at the tip a quiet dispatch clock still reads AtTip
-    #[test]
-    fn quiet_at_tip() {
-        let bus = aged_bus();
-        let progress = bus.progress();
-
-        progress.record_tip(1000);
-        progress.last_dispatched_slot.store(1000, Ordering::Relaxed);
-
-        assert!(matches!(bus.compute(), IngestState::AtTip));
-    }
-
-    // the handoff seeds the cursors and starts the dispatch clock fresh
-    #[test]
-    fn live_start() {
-        let bus = aged_bus();
-        let progress = bus.progress();
-
-        progress.start_live(900);
-        progress.record_tip(1000);
-        progress.record_fetch(901);
-
-        assert_eq!(progress.last_dispatched_slot(), 900);
-        assert!(matches!(bus.compute(), IngestState::Catching { lag_slots: 100 }));
     }
 }
