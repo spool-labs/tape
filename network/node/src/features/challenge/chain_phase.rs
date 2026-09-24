@@ -21,6 +21,15 @@ pub struct ChainPhase {
     pub phase: EpochPhase,
 }
 
+/// What one block meant for the chain's phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockPhase {
+    /// The phase every block before this one left, which the block was produced in.
+    pub produced_in: ChainPhase,
+    /// The epoch this block made Active, when it finalized the snapshot that does.
+    pub turned_active: Option<EpochNumber>,
+}
+
 /// Every phase change the chain has made, as its blocks arrive.
 pub struct PhaseLedger {
     /// The phase after the newest block folded in.
@@ -39,17 +48,27 @@ impl PhaseLedger {
         }
     }
 
-    /// The phase every block before this one left, which is the phase the block
-    /// was produced in, then folds the block's own changes in.
-    pub fn advance(&mut self, block: &ParsedBlock) -> ChainPhase {
+    /// Folds one block's changes in and says what the block meant.
+    ///
+    /// A snapshot finalizing marks the turn into Active even when the start
+    /// phase already read Active, since a state fetched ahead of the lane's
+    /// first block can say so before the chain has got there.
+    pub fn advance(&mut self, block: &ParsedBlock) -> BlockPhase {
         let produced_in = self.now;
+        let mut turned_active = None;
         for instruction in &block.instructions {
             if let Some(next) = transition(self.now, instruction) {
                 self.undo.push((block.blockhash, self.now));
                 self.now = next;
+                if next.phase == EpochPhase::Active {
+                    turned_active = Some(next.epoch);
+                }
             }
         }
-        produced_in
+        BlockPhase {
+            produced_in,
+            turned_active,
+        }
     }
 
     /// Takes back every change the lost blocks made.
@@ -205,14 +224,27 @@ mod tests {
         let committed = block(12, vec![commit(EPOCH)]);
         let advanced = block(14, vec![advance(EpochNumber(8))]);
 
-        assert_eq!(ledger.advance(&finalized), at(EpochPhase::Snapshot));
-        assert_eq!(ledger.advance(&block(11, Vec::new())), at(EpochPhase::Active));
-        assert_eq!(ledger.advance(&committed), at(EpochPhase::Active));
-        assert_eq!(ledger.advance(&block(13, Vec::new())), at(EpochPhase::Closing));
+        let turn = ledger.advance(&finalized);
+        assert_eq!(turn.produced_in, at(EpochPhase::Snapshot));
+        assert_eq!(turn.turned_active, Some(EPOCH));
+        assert_eq!(ledger.advance(&block(11, Vec::new())).produced_in, at(EpochPhase::Active));
+        assert_eq!(ledger.advance(&committed).produced_in, at(EpochPhase::Active));
+        assert_eq!(ledger.advance(&block(13, Vec::new())).produced_in, at(EpochPhase::Closing));
 
         ledger.advance(&advanced);
-        let next = ledger.advance(&block(15, Vec::new()));
+        let next = ledger.advance(&block(15, Vec::new())).produced_in;
         assert_eq!(next, ChainPhase { epoch: EpochNumber(8), phase: EpochPhase::Sync });
+    }
+
+    // a finalized snapshot marks the turn into Active even when the start phase
+    // already said Active, as a state fetched ahead of the blocks can
+    #[test]
+    fn turn_from_ahead() {
+        let mut ledger = PhaseLedger::new(at(EpochPhase::Active));
+
+        let turn = ledger.advance(&block(10, vec![finalize(EpochNumber(6))]));
+
+        assert_eq!(turn.turned_active, Some(EPOCH));
     }
 
     // a change meant for another epoch leaves the chain where it was
@@ -221,9 +253,10 @@ mod tests {
         let mut ledger = PhaseLedger::new(at(EpochPhase::Active));
 
         ledger.advance(&block(10, vec![commit(EpochNumber(6))]));
-        ledger.advance(&block(11, vec![finalize(EPOCH)]));
+        let other = ledger.advance(&block(11, vec![finalize(EPOCH)]));
 
-        assert_eq!(ledger.advance(&block(12, Vec::new())), at(EpochPhase::Active));
+        assert_eq!(other.turned_active, None);
+        assert_eq!(ledger.advance(&block(12, Vec::new())).produced_in, at(EpochPhase::Active));
     }
 
     // a block that loses takes its change back, and one that promotes keeps it
@@ -234,11 +267,11 @@ mod tests {
 
         ledger.advance(&committed);
         ledger.rolled(&[committed.blockhash]);
-        assert_eq!(ledger.advance(&block(11, Vec::new())), at(EpochPhase::Active));
+        assert_eq!(ledger.advance(&block(11, Vec::new())).produced_in, at(EpochPhase::Active));
 
         ledger.advance(&block(12, vec![commit(EPOCH)]));
         ledger.confirmed(Hash([12; 32]));
         ledger.rolled(&[Hash([12; 32])]);
-        assert_eq!(ledger.advance(&block(13, Vec::new())), at(EpochPhase::Closing));
+        assert_eq!(ledger.advance(&block(13, Vec::new())).produced_in, at(EpochPhase::Closing));
     }
 }

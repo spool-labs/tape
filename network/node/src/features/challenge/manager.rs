@@ -130,12 +130,17 @@ where
         // The phase the blocks before this one left. Protocol state takes a
         // block later and on another task, so gating on it let two nodes on the
         // same chain differ about a round that opened beside a phase change.
-        let chain = self.phase.advance(&block);
+        let seen = self.phase.advance(&block);
+        let chain = seen.produced_in;
         let state = self.context.state();
 
         // Retain the epoch's grid while its rounds can still settle, including
         // after the phase or membership changes.
         self.context.schedules.observe(&state, block.slot);
+
+        if let Some(epoch) = seen.turned_active {
+            self.anchor_grace(epoch, block.slot);
+        }
 
         // Before the phase gate: an epoch that left Active still owes a
         // verdict on every round it opened.
@@ -171,6 +176,15 @@ where
         let Some(number) = schedule.round_at(block.slot) else {
             return Ok(());
         };
+
+        // A node that started after the chain turned Active never saw the turn,
+        // so its grace counts from the first opening it saw, which is later
+        // than its peers' anchor and only lengthens the grace.
+        self.first_round.entry(epoch).or_insert(number);
+        // Two epochs is everything a settling round can reach back to.
+        let keep = epoch.as_u64().saturating_sub(1);
+        self.first_round.retain(|held, _| held.as_u64() >= keep);
+        self.certified_in.retain(|(held, _)| held.as_u64() >= keep);
 
         // Readiness bounds taking part and nothing else. The round below records
         // this block whatever it says, so every node that ingests the chain holds
@@ -214,11 +228,6 @@ where
                 is_ready,
                 is_suspect: self.context.challenge_tripwire.is_realigning(),
             });
-            self.first_round.entry(epoch).or_insert(number);
-            // Two epochs is everything a settling round can reach back to.
-            let keep = epoch.as_u64().saturating_sub(1);
-            self.first_round.retain(|held, _| held.as_u64() >= keep);
-            self.certified_in.retain(|(held, _)| held.as_u64() >= keep);
             self.context
                 .challenge_counters
                 .opened
@@ -257,6 +266,17 @@ where
         }
 
         Ok(())
+    }
+
+    /// Anchors an epoch's handover grace on its first round opening after the
+    /// block that turned it Active, the same round on every node that ingested
+    /// that block whatever it held or how far behind the tip it ran.
+    fn anchor_grace(&mut self, epoch: EpochNumber, turned_at: SlotNumber) {
+        let Some(schedule) = self.context.schedules.get(epoch) else {
+            return;
+        };
+        let first = schedule.round_from(SlotNumber(turned_at.as_u64() + 1));
+        self.first_round.insert(epoch, first);
     }
 
     /// Whether this node reached a round's opening in time to take part in it.
@@ -1167,6 +1187,32 @@ mod tests {
 
         assert!(manager.open_rounds.is_empty());
         assert_eq!(ctx.challenge_counters.opened.load(Ordering::Relaxed), 0);
+    }
+
+    // a node that started from a state already Active ahead of its blocks
+    // anchors its grace where its peers do, on the first opening after the
+    // chain turned Active
+    #[tokio::test]
+    async fn grace_anchor_agrees() {
+        let (steady, restarted) = seated_pair(None).await;
+        set_phase(&steady, EpochPhase::Snapshot);
+        let epoch = steady.state().epoch();
+        let before = first_round_block(&steady);
+        let turn = block_with(
+            SlotNumber(before.slot.as_u64() + 1),
+            Hash([0x66; 32]),
+            vec![finalize_snapshot(epoch)],
+        );
+        let after = second_round_block(&steady);
+
+        for ctx in [&steady, &restarted] {
+            let mut manager = manager_for(ctx);
+            for block in [&before, &turn, &after] {
+                manager.on_produced(block.clone()).await.expect("produced");
+            }
+
+            assert_eq!(manager.first_round.get(&epoch), Some(&RoundNumber(1)));
+        }
     }
 
     // a node challenges everyone else holding a position in its group, once

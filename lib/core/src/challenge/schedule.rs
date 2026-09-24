@@ -156,15 +156,18 @@ impl Schedule {
         parent_slot: SlotNumber,
         slot: SlotNumber,
     ) -> impl Iterator<Item = RoundNumber> {
-        let first = self.round_from(parent_slot.as_u64().saturating_add(1));
-        let end = self.round_from(slot.as_u64());
-        (first..end).map(RoundNumber)
+        let first = self.round_from(SlotNumber(parent_slot.as_u64().saturating_add(1)));
+        let end = self.round_from(slot);
+        (first.as_u64()..end.as_u64()).map(RoundNumber)
     }
 
     /// The first round opening at or after a slot.
-    fn round_from(&self, slot: u64) -> u64 {
-        slot.saturating_sub(self.first_slot.as_u64())
-            .div_ceil(self.interval_slots)
+    pub fn round_from(&self, slot: SlotNumber) -> RoundNumber {
+        RoundNumber(
+            slot.as_u64()
+                .saturating_sub(self.first_slot.as_u64())
+                .div_ceil(self.interval_slots),
+        )
     }
 
     /// Include a partial interval when admitting rounds that can still settle.
@@ -250,6 +253,19 @@ mod tests {
             assert_eq!(schedule.round_at(SlotNumber(base + 1)), None);
             assert_eq!(schedule.round_at(SlotNumber(base - 1)), None);
         }
+    }
+
+    // the first round from a slot is the one opening there, or the next one
+    #[test]
+    fn first_round_from() {
+        let schedule = Schedule::for_epoch(SlotNumber(100), 25).expect("a grid");
+        let first = schedule.first_slot().as_u64();
+
+        assert_eq!(schedule.round_from(SlotNumber(first - 30)), RoundNumber(0));
+        assert_eq!(schedule.round_from(SlotNumber(first)), RoundNumber(0));
+        assert_eq!(schedule.round_from(SlotNumber(first + 1)), RoundNumber(1));
+        assert_eq!(schedule.round_from(SlotNumber(first + 25)), RoundNumber(1));
+        assert_eq!(schedule.round_from(SlotNumber(first + 26)), RoundNumber(2));
     }
 
     // a block and its parent say which openings the chain produced nothing at
