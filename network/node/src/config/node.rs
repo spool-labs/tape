@@ -143,6 +143,33 @@ impl GenesisPreset {
         }
     }
 
+    /// Seconds a spool that changed hands has to fetch what it was handed.
+    ///
+    /// Eight rounds at each preset's own cadence, the count every preset ran
+    /// with when the grace was stated in rounds. Devnet's figure falls midway
+    /// through its eighth round, so a slot time a few percent off keeps the count.
+    pub fn challenge_handover_grace_seconds(self) -> u64 {
+        match self {
+            Self::Mainnet => 480,
+            Self::Devnet => 225,
+            Self::Localnet => 80,
+            Self::Simnet => 80,
+        }
+    }
+
+    /// Seconds of blank rounds in a row before the node re-reads protocol state.
+    ///
+    /// Three rounds at each preset's own cadence, well inside the default
+    /// eviction policy's thirty consecutive misses.
+    pub fn challenge_realign_after_blank_seconds(self) -> u64 {
+        match self {
+            Self::Mainnet => 180,
+            Self::Devnet => 75,
+            Self::Localnet => 30,
+            Self::Simnet => 30,
+        }
+    }
+
     pub fn config(self) -> GenesisConfig {
         match self {
             GenesisPreset::Mainnet => GenesisConfig::mainnet(),
@@ -163,15 +190,24 @@ impl NodeConfig {
 
     /// Rounds a spool that changed hands has to fetch what it was handed.
     pub fn challenge_handover_grace_rounds(&self) -> u64 {
-        self.challenge_rounds_in(self.challenge.handover_grace_seconds)
+        let seconds = self
+            .challenge
+            .handover_grace_seconds
+            .unwrap_or_else(|| self.genesis_preset.challenge_handover_grace_seconds());
+        self.challenge_rounds_in(seconds)
     }
 
     /// Blank rounds in a row before the node re-reads protocol state.
     pub fn challenge_realign_after_blank_rounds(&self) -> u64 {
-        self.challenge_rounds_in(self.challenge.realign_after_blank_seconds)
+        let seconds = self
+            .challenge
+            .realign_after_blank_seconds
+            .unwrap_or_else(|| self.genesis_preset.challenge_realign_after_blank_seconds());
+        self.challenge_rounds_in(seconds)
     }
 
-    /// Rounds a wall-clock span covers at this network's cadence.
+    /// The fewest whole rounds that last a wall-clock span at this network's
+    /// cadence.
     fn challenge_rounds_in(&self, seconds: u64) -> u64 {
         rounds_in_seconds(
             seconds,
@@ -209,12 +245,12 @@ impl NodeConfig {
             .validate()
             .map_err(|error| ConfigError::Invalid(format!("eviction.policy.{error}")))?;
 
-        if self.challenge.realign_after_blank_seconds == 0 {
+        if self.challenge.realign_after_blank_seconds == Some(0) {
             return Err(ConfigError::Invalid(
                 "challenge.realign_after_blank_seconds must be greater than zero".into(),
             ));
         }
-        if self.challenge.handover_grace_seconds == 0 {
+        if self.challenge.handover_grace_seconds == Some(0) {
             return Err(ConfigError::Invalid(
                 "challenge.handover_grace_seconds must be greater than zero".into(),
             ));
@@ -943,13 +979,15 @@ eviction:
         }
     }
 
-    // the grace and realign spans are wall clock, and each becomes the rounds it
-    // covers at the network's own cadence
+    // each preset's grace and realign spans are wall clock, and each becomes
+    // the fewest whole rounds that last it at that preset's own cadence
     #[test]
     fn challenge_spans_become_round_counts() {
         let spans = [
+            ("mainnet", 300, 200, 8, 3),
             ("devnet", 180, 166, 8, 3),
-            ("mainnet", 300, 200, 4, 2),
+            ("localnet", 25, 400, 8, 3),
+            ("simnet", 10, 1_000, 8, 3),
         ];
 
         for (preset, interval, slot_ms, grace, realign) in spans {
@@ -958,8 +996,8 @@ eviction:
 
             assert_eq!(config.challenge_interval_slots(), interval);
             assert_eq!(config.genesis_preset.slot_ms(), slot_ms);
-            assert_eq!(config.challenge_handover_grace_rounds(), grace);
-            assert_eq!(config.challenge_realign_after_blank_rounds(), realign);
+            assert_eq!(config.challenge_handover_grace_rounds(), grace, "{preset}");
+            assert_eq!(config.challenge_realign_after_blank_rounds(), realign, "{preset}");
         }
 
         // The tighter grid the fleet ran for a month covers the same spans in
@@ -970,19 +1008,20 @@ challenge:
   interval_slots: 7
 "#;
         let config = NodeConfig::from_yaml_str(yaml).expect("valid interval");
-        assert_eq!(config.challenge_handover_grace_rounds(), 207);
-        assert_eq!(config.challenge_realign_after_blank_rounds(), 77);
+        assert_eq!(config.challenge_handover_grace_rounds(), 194);
+        assert_eq!(config.challenge_realign_after_blank_rounds(), 65);
 
-        // A stated span wins over the default at the same cadence.
+        // A stated span wins over the preset at the same cadence, and a part
+        // round counts in full.
         let yaml = r#"
 genesis_preset: devnet
 challenge:
-  handover_grace_seconds: 60
-  realign_after_blank_seconds: 30
+  handover_grace_seconds: 240
+  realign_after_blank_seconds: 90
 "#;
         let config = NodeConfig::from_yaml_str(yaml).expect("valid spans");
-        assert_eq!(config.challenge_handover_grace_rounds(), 2);
-        assert_eq!(config.challenge_realign_after_blank_rounds(), 1);
+        assert_eq!(config.challenge_handover_grace_rounds(), 9);
+        assert_eq!(config.challenge_realign_after_blank_rounds(), 4);
 
         for zero in ["handover_grace_seconds", "realign_after_blank_seconds"] {
             let yaml = format!("challenge:\n  {zero}: 0");

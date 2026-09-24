@@ -17,6 +17,9 @@ use crate::types::{RoundNumber, SlotNumber};
 /// spans convert at. Simnet's chain clock also counts this much per slot.
 pub const SLOT_MS: u64 = 400;
 
+/// Milliseconds in a second, for turning a configured span into slot time.
+const MILLIS_PER_SECOND: u64 = 1_000;
+
 /// Slots before a round's opening that the sample set is cut at.
 ///
 /// A round opens on the block at its slot, ahead of what any owner has written
@@ -69,15 +72,17 @@ pub const fn round_width_slots() -> u64 {
     PROOF_DEADLINE_SLOTS + ATTESTATION_WINDOW_SLOTS + CERTIFICATE_GOSSIP_SLOTS
 }
 
-/// Rounds a wall-clock span covers at one cadence, to the nearest and at least one.
+/// The fewest whole rounds that last a wall-clock span at one cadence, and at
+/// least one.
 ///
 /// Every threshold the challenge path compares is a round count, so a cadence
 /// change would otherwise move the wall-clock meaning of each one by the same
-/// factor. Configuration states the span and derives the count here.
+/// factor. Configuration states the span and derives the count here. A span is
+/// the least time a threshold grants, so a part round counts as a whole one.
 pub fn rounds_in_seconds(seconds: u64, interval_slots: u64, slot_ms: u64) -> u64 {
     let round_ms = interval_slots.saturating_mul(slot_ms).max(1);
-    let span_ms = seconds.saturating_mul(1_000);
-    ((span_ms + round_ms / 2) / round_ms).max(1)
+    let span_ms = seconds.saturating_mul(MILLIS_PER_SECOND);
+    span_ms.div_ceil(round_ms).max(1)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,13 +274,16 @@ mod tests {
         assert_eq!(skipped(first - 40, first + 1), vec![RoundNumber(0)]);
     }
 
-    // a span in seconds becomes the rounds it covers at the network's cadence
+    // a span in seconds becomes the fewest whole rounds that last it, so a part
+    // round counts in full and an exact fit adds nothing
     #[test]
     fn rounds_cover_a_span() {
-        assert_eq!(rounds_in_seconds(240, 180, 166), 8);
-        assert_eq!(rounds_in_seconds(90, 180, 166), 3);
-        assert_eq!(rounds_in_seconds(240, 300, 200), 4);
+        assert_eq!(rounds_in_seconds(120, 300, 200), 2);
+        assert_eq!(rounds_in_seconds(121, 300, 200), 3);
         assert_eq!(rounds_in_seconds(90, 300, 200), 2);
+        assert_eq!(rounds_in_seconds(240, 180, 166), 9);
+        assert_eq!(rounds_in_seconds(225, 180, 166), 8);
+        assert_eq!(rounds_in_seconds(75, 180, 166), 3);
         assert_eq!(rounds_in_seconds(1, 300, 200), 1);
         assert_eq!(rounds_in_seconds(0, 300, 200), 1);
     }
