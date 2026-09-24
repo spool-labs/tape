@@ -293,9 +293,10 @@ where
     ///
     /// Read inline from the chain tip as the block arrives, in slots, so the
     /// round's own block is never in question. A node that reaches the opening
-    /// after the round's settlement deadline has passed can neither certify a
-    /// peer nor be certified, and the ingest monitor's 500 ms tick is too coarse
-    /// for a round five slots wide.
+    /// `SETTLE_DEADLINE_SLOTS` or more behind the tip finds the round's
+    /// settlement deadline already come, and can neither certify a peer nor be
+    /// certified. The ingest monitor's 500 ms tick is too coarse for a round
+    /// five slots wide.
     fn is_ready_at(&self, slot: SlotNumber) -> bool {
         let progress = self.context.ingest.progress();
         let tip = progress.known_tip().unwrap_or(slot.as_u64());
@@ -1282,6 +1283,22 @@ mod tests {
 
         assert_eq!(ctx.challenge_counters.discarded.load(Ordering::Relaxed), 1);
         assert_eq!(ctx.challenge_counters.skipped.load(Ordering::Relaxed), 0);
+    }
+
+    // a node one slot short of the settlement deadline behind an opening still
+    // takes part, and one a full deadline behind has none left to take part in
+    #[tokio::test]
+    async fn ready_boundary() {
+        let ctx = ready_context().await;
+        let manager = manager_for(&ctx);
+        let opening = schedule(&ctx).first_slot();
+        let progress = ctx.ingest.progress();
+
+        progress.record_tip(opening.as_u64() + SETTLE_DEADLINE_SLOTS - 1);
+        assert!(manager.is_ready_at(opening));
+
+        progress.record_tip(opening.as_u64() + SETTLE_DEADLINE_SLOTS);
+        assert!(!manager.is_ready_at(opening));
     }
 
     // a node challenges everyone else holding a position in its group, once
