@@ -458,7 +458,7 @@ mod tests {
     }
 
     async fn plan_for(size: usize) -> (Hash, UploadPlan) {
-        let computed = content_etag(&pattern(size)).await.expect("etag");
+        let computed = content_etag(pattern(size)).await.expect("etag");
         (computed.etag, computed.plan.expect("coded plan"))
     }
 

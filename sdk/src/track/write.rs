@@ -369,6 +369,18 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         content_type: ContentType,
         data: &[u8],
     ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
+        self.write_owned_blob(tape_key, name.as_ref(), content_type, data.to_vec())
+            .await
+    }
+
+    /// Register a named blob track, moving its bytes into the encode
+    pub(crate) async fn write_owned_blob(
+        &self,
+        tape_key: &TapeKey,
+        name: &[u8],
+        content_type: ContentType,
+        data: Vec<u8>,
+    ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
         let timer = self
             .timer(Operation::WriteBlob, Phase::Total)
             .bytes(data.len() as u64);
@@ -376,7 +388,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let result = submit_blob(
             self,
             tape_key,
-            name.as_ref(),
+            name,
             content_type,
             data,
             Operation::WriteBlob,
@@ -473,22 +485,27 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 /// Encoding runs in full for coded sizes, so this trades CPU for detecting
 /// unchanged content before paying for a write. A caller that then writes can
 /// hand the returned plan back rather than encoding twice.
-pub async fn content_etag(data: &[u8]) -> Result<ContentEtag, TapedriveError> {
+pub async fn content_etag<Data>(data: Data) -> Result<ContentEtag, TapedriveError>
+where
+    Data: AsRef<[u8]> + Send + 'static,
+{
     content_etag_named(b"", data).await
 }
 
 /// `content_etag` for a named write: the object trailer shares the inline
 /// budget with the payload, so a name can push a payload that would be inline
 /// unnamed onto the coded path, and the etag must follow that decision.
-pub async fn content_etag_named(name: &[u8], data: &[u8]) -> Result<ContentEtag, TapedriveError> {
-    if inline_write_fits(name, data.len()) {
+pub async fn content_etag_named<Data>(name: &[u8], data: Data) -> Result<ContentEtag, TapedriveError>
+where
+    Data: AsRef<[u8]> + Send + 'static,
+{
+    if inline_write_fits(name, data.as_ref().len()) {
         return Ok(ContentEtag {
-            etag: hash(data),
+            etag: hash(data.as_ref()),
             plan: None,
         });
     }
-    let owned = data.to_vec();
-    match tokio::task::spawn_blocking(move || prepare_checked_plan(owned)).await {
+    match tokio::task::spawn_blocking(move || prepare_checked_plan(data.as_ref())).await {
         Ok(plan) => {
             let plan = plan?;
             Ok(ContentEtag {
@@ -685,14 +702,14 @@ impl ObjectWrite {
 }
 
 /// Encode `data` and hash it, so a write can check the plan when it comes back
-fn prepare_checked_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
-    let content_hash = hash(&data);
+fn prepare_checked_plan(data: &[u8]) -> Result<UploadPlan, TapedriveError> {
+    let content_hash = hash(data);
     let mut plan = prepare_plan(data)?;
     plan.content_hash = Some(content_hash);
     Ok(plan)
 }
 
-fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
+fn prepare_plan(data: &[u8]) -> Result<UploadPlan, TapedriveError> {
     let data_len = data.len();
     let profile = EncodingProfile::clay_default();
     let mut encoder = BlobEncoder::with_profile(profile);
@@ -737,7 +754,7 @@ pub(crate) async fn encode_blob<Blockchain: Rpc, Cluster: Api>(
     let encode_timer = client
         .timer(operation, Phase::Encode)
         .bytes(data.len() as u64);
-    let result = match tokio::task::spawn_blocking(move || prepare_plan(data)).await {
+    let result = match tokio::task::spawn_blocking(move || prepare_plan(&data)).await {
         Ok(plan) => plan,
         Err(join) => Err(TapedriveError::Encoding(format!("encode task failed: {join}"))),
     };
@@ -1003,16 +1020,17 @@ pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
     tape_key: &impl TapeOperator,
     name: &[u8],
     content_type: ContentType,
-    data: &[u8],
+    data: Vec<u8>,
     operation: Operation,
     visibility: TrackVisibility,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
+    let logical_size = StorageUnits::from_bytes(data.len() as u64);
     submit_blob_with_logical_size(
         client,
         tape_key,
         name,
         content_type,
-        StorageUnits::from_bytes(data.len() as u64),
+        logical_size,
         data,
         operation,
         visibility,
@@ -1026,11 +1044,11 @@ pub(crate) async fn submit_blob_with_logical_size<Blockchain: Rpc, Cluster: Api>
     name: &[u8],
     content_type: ContentType,
     logical_size: StorageUnits,
-    data: &[u8],
+    data: Vec<u8>,
     operation: Operation,
     visibility: TrackVisibility,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
-    let plan = encode_blob(client, data.to_vec(), operation).await?;
+    let plan = encode_blob(client, data, operation).await?;
     register_blob(
         client,
         tape_key,
@@ -2151,9 +2169,9 @@ mod tests {
     #[tokio::test]
     async fn plan_reuse() {
         let data = blob(MAX_INLINE_WRITE * 4);
-        let computed = content_etag(&data).await.expect("etag");
+        let computed = content_etag(data.clone()).await.expect("etag");
         let plan = computed.plan.expect("coded payload carries its plan");
-        let fresh = prepare_plan(data).expect("fresh plan");
+        let fresh = prepare_plan(&data).expect("fresh plan");
 
         assert_eq!(plan.commitment_hash, fresh.commitment_hash);
         assert_eq!(computed.etag, fresh.commitment_hash);
@@ -2192,7 +2210,7 @@ mod tests {
     #[test]
     fn unhashed_plan() {
         let data = blob(MAX_INLINE_WRITE * 4);
-        let plan = prepare_plan(data.clone()).expect("plan");
+        let plan = prepare_plan(&data).expect("plan");
 
         assert!(check_plan_matches(&plan, &data).is_err());
     }
@@ -2201,7 +2219,7 @@ mod tests {
     #[tokio::test]
     async fn unpaired_plan() {
         let data = blob(MAX_INLINE_WRITE * 4);
-        let plan = content_etag(&data).await.expect("etag").plan.expect("coded plan");
+        let plan = content_etag(data.clone()).await.expect("etag").plan.expect("coded plan");
 
         assert!(check_plan_matches(&plan, &data).is_ok());
 
@@ -2217,7 +2235,7 @@ mod tests {
     #[tokio::test]
     async fn inline_no_plan() {
         let data = blob(MAX_INLINE_WRITE);
-        let computed = content_etag(&data).await.expect("etag");
+        let computed = content_etag(data.clone()).await.expect("etag");
 
         assert!(computed.plan.is_none());
         assert_eq!(computed.etag, hash(&data));
@@ -2238,10 +2256,10 @@ mod tests {
         let data = blob(MAX_INLINE_WRITE);
         assert!(!inline_write_fits(name, data.len()));
 
-        let unnamed = content_etag(&data).await.expect("etag");
+        let unnamed = content_etag(data.clone()).await.expect("etag");
         assert!(unnamed.plan.is_none());
 
-        let named = content_etag_named(name, &data).await.expect("etag");
+        let named = content_etag_named(name, data.clone()).await.expect("etag");
         let plan = named.plan.expect("coded plan");
         assert_eq!(named.etag, plan.commitment_hash);
     }

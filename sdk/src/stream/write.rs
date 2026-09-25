@@ -567,7 +567,7 @@ async fn resume_stream_chunk<Blockchain: Rpc, Cluster: Api>(
                 UNNAMED_TRACK,
                 UNTYPED_TRACK,
                 logical_size,
-                chunk_data,
+                chunk_data.to_vec(),
                 Operation::WriteStream,
                 client.write_options.visibility,
             )
@@ -1212,7 +1212,7 @@ async fn store_manifest<Blockchain: Rpc, Cluster: Api>(
         name,
         content_type,
         logical_size,
-        manifest_bytes,
+        manifest_bytes.to_vec(),
         Operation::WriteStream,
         client.write_options.visibility,
     )
@@ -1363,7 +1363,7 @@ mod tests {
         for chunk_count in [1, 256] {
             let tape_key = TapeKey::generate();
             let bytes = sample_manifest_bytes(chunk_count);
-            let computed = content_etag_named(name, &bytes).await.expect("encode manifest");
+            let computed = content_etag_named(name, bytes.clone()).await.expect("encode manifest");
             let blob = computed.plan.as_ref().map(plan_blob);
             let data = match blob {
                 Some(blob) => BlobDataSlice::Coded(blob),
