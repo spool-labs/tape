@@ -10006,7 +10006,6 @@ dependencies = [
  "solana-nostd-sha256",
  "solana-program",
  "solana-pubkey 4.2.1",
- "solana-sha256-hasher",
  "solana-signature",
  "solana-signer",
  "tape-sha256",

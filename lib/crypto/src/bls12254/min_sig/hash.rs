@@ -3,6 +3,8 @@ use solana_bn254::compression::prelude::alt_bn128_g1_decompress_be;
 
 use crate::bls12254::{MODULUS, NORMALIZE_MODULUS};
 use crate::bls12254::errors::BLSError;
+#[cfg(not(target_os = "solana"))]
+use crate::hash::hashv;
 use super::g1::G1Point;
 
 fn to_be_32(value: &UBig) -> Option<[u8; 32]> {
@@ -27,8 +29,7 @@ pub fn hash_to_curve<T: AsRef<[u8]>>(message: T) -> Result<G1Point, BLSError> {
             let hash = solana_program::hash::hashv(&[b"BLS-BN254-RO", message.as_ref(), &[n]])
                 .to_bytes();
             #[cfg(not(target_os = "solana"))]
-            let hash = solana_sha256_hasher::hashv(&[b"BLS-BN254-RO", message.as_ref(), &[n]])
-                .to_bytes();
+            let hash = hashv(&[b"BLS-BN254-RO", message.as_ref(), &[n]]).to_bytes();
 
             let hash_ubig = UBig::from_be_bytes(&hash);
 
