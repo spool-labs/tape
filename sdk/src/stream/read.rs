@@ -28,9 +28,7 @@ pub async fn read_bytes<Blockchain: Rpc, Cluster: Api>(
     manifest_address: &Address,
 ) -> Result<Vec<u8>, TapedriveError> {
     let (manifest, manifest_track) = read_manifest(client, manifest_address).await?;
-    let mut buffer = MemoryWriter::new(manifest.total_size)?;
-    read_manifest_into(client, &manifest, &manifest_track, &mut buffer).await?;
-    Ok(buffer.into_inner())
+    read_manifest_bytes(client, &manifest, &manifest_track).await
 }
 
 /// Read a manifest track and write the reconstructed stream into an async sink.
@@ -48,20 +46,31 @@ pub(crate) async fn read_manifest<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     manifest_address: &Address,
 ) -> Result<(ChunkManifest, CompressedTrack), TapedriveError> {
-    let manifest_bytes = client
-        .read_as(manifest_address, Operation::ReadStream)
-        .await?;
-    let manifest = ChunkManifest::from_bytes(&manifest_bytes)
-        .map_err(|error| stream_error(StreamError::Manifest(format!("invalid manifest: {error}"))))?;
     let metadata = client.timer(Operation::ReadStream, Phase::TrackMetadata);
     let manifest_track = client.get_track(manifest_address).await;
     metadata.finish_result(&manifest_track);
     let manifest_track = manifest_track?;
+    let manifest_bytes = client
+        .read_known(manifest_address, manifest_track, Operation::ReadStream)
+        .await?;
+    let manifest = ChunkManifest::from_bytes(&manifest_bytes)
+        .map_err(|error| stream_error(StreamError::Manifest(format!("invalid manifest: {error}"))))?;
     Ok((manifest, manifest_track))
 }
 
+/// Reassemble a stream in memory from a manifest the caller already parsed
+pub(crate) async fn read_manifest_bytes<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    manifest: &ChunkManifest,
+    manifest_track: &CompressedTrack,
+) -> Result<Vec<u8>, TapedriveError> {
+    let mut buffer = MemoryWriter::new(manifest.total_size)?;
+    read_manifest_into(client, manifest, manifest_track, &mut buffer).await?;
+    Ok(buffer.into_inner())
+}
+
 /// Stream manifest chunks into an async writer, one chunk at a time.
-async fn read_manifest_into<Blockchain: Rpc, Cluster: Api, Writer: AsyncWrite + Unpin>(
+pub(crate) async fn read_manifest_into<Blockchain: Rpc, Cluster: Api, Writer: AsyncWrite + Unpin>(
     client: &Tapedrive<Blockchain, Cluster>,
     manifest: &ChunkManifest,
     manifest_track: &CompressedTrack,
