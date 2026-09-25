@@ -9,6 +9,7 @@ use tape_rpc::{Rpc, RpcError};
 use tape_store_api::Store;
 use tape_core::types::ContentType;
 use tape_crypto::address::Address;
+use tape_crypto::Hash;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_protocol::Api;
@@ -368,8 +369,8 @@ where
         write: &PendingWrite,
     ) -> Result<Address, TapedriveError> {
         match write.op {
-            PendingOp::Put { content_type, prior, .. } => {
-                self.put(tape, key, content_type, prior).await
+            PendingOp::Put { content_type, prior, etag, .. } => {
+                self.put(tape, key, content_type, prior, etag).await
             }
             PendingOp::Delete { track } => self.delete(tape, key, track).await,
         }
@@ -382,6 +383,7 @@ where
         key: &[u8],
         content_type: ContentType,
         prior: Option<Address>,
+        etag: Hash,
     ) -> Result<Address, TapedriveError> {
         // A queued Put with no payload is a corrupt row, not an outage.
         let bytes = self
@@ -399,9 +401,10 @@ where
             Some(track) => Some(track),
             None => self.indexed_track(tape, key)?,
         };
+        let plan = self.staging.take_plan(&etag);
         let (_etag, track) = self
             .write_ctx
-            .write_object(self.context.as_ref(), tape, key, content_type, &bytes, existing)
+            .write_object(self.context.as_ref(), tape, key, content_type, &bytes, existing, plan)
             .await?;
         Ok(track)
     }

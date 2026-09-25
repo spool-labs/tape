@@ -1258,6 +1258,10 @@ where
         return Err(error);
     }
 
+    // The enqueue wakes the drain, so the encode goes in first.
+    if let Some(plan) = computed.plan {
+        state.staging.stage_plan(computed.etag, plan);
+    }
     let queued = state
         .staging
         .enqueue_put(
