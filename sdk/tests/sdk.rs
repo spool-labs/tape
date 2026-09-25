@@ -38,8 +38,8 @@ use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
 use tape_sdk::track::write::WrittenTrack;
 
-/// A two-segment stream read asks for the name, the manifest data, then each segment's track and data
-const STREAM_ROUND_TRIPS: usize = 6;
+/// A two-segment stream read asks for the name, the manifest data, one track page and each segment's data
+const STREAM_ROUND_TRIPS: usize = 5;
 
 struct Fixture {
     rpc: LiteSvmRpc,

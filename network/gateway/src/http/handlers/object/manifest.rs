@@ -1,7 +1,9 @@
 use axum::body::{Body, Bytes};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use futures::Stream;
+use std::future::Future;
+
+use futures::stream::{self, Stream, StreamExt};
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_api::program::tapedrive::track_pda;
@@ -12,6 +14,7 @@ use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{current_request_id, current_share_token, with_request_id, with_share_token};
 use tape_sdk::stream::manifest::ChunkManifest;
+use tokio_util::task::AbortOnDropHandle;
 
 use super::decode::decode_track_bytes;
 use super::response::{ByteRange, ObjectResponseMetadata, ranged_object_headers};
@@ -130,6 +133,9 @@ where
     Ok((status, headers, body).into_response())
 }
 
+/// A stream decodes this many segments ahead of the one it sends
+const SEGMENT_READ_AHEAD: usize = 2;
+
 fn manifest_chunk_stream<Db, Cluster, Blockchain>(
     state: AppState<Db, Cluster, Blockchain>,
     chunks: Vec<StreamChunk>,
@@ -141,60 +147,61 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    futures::stream::try_unfold(
-        ObjectStreamState {
-            state,
-            chunks,
-            next: 0,
-            request_id,
-            share_token,
-        },
-        |mut stream| async move {
-            let Some(chunk) = stream.chunks.get(stream.next).copied() else {
-                return Ok(None);
-            };
-            stream.next += 1;
-
-            // The whole chunk decodes and verifies against the manifest size
-            // before any slicing; a ranged read changes what is sent, never
-            // what is checked. The body is polled after the request middleware
-            // finished, so the id and share token captured at response build
-            // re-enter scope here: each chunk's peer fetches stay correlated, and
-            // a hidden stream's chunk fetches still present the token.
-            let decode = with_share_token(
-                stream.share_token,
-                decode_track_bytes(&stream.state, chunk.track_addr, chunk.track),
-            );
-            let decoded = match stream.request_id.clone() {
-                Some(id) => with_request_id(id, decode).await?,
-                None => decode.await?,
-            };
-            if decoded.bytes.len() as u64 != chunk.expected_size {
-                return Err(RouteError::BadGateway(format!(
-                    "manifest chunk {} size mismatch",
-                    chunk.index
-                )));
-            }
-
-            stream
-                .state
-                .context
-                .metrics
-                .add_downloaded(decoded.bytes.len() as u64);
-
-            let bytes = Bytes::from(decoded.bytes)
-                .slice(chunk.skip as usize..(chunk.skip + chunk.take) as usize);
-            Ok(Some((bytes, stream)))
-        },
-    )
+    let decodes = chunks.into_iter().map(move |chunk| {
+        decode_chunk(state.clone(), chunk, request_id.clone(), share_token)
+    });
+    read_ahead(decodes)
 }
 
-struct ObjectStreamState<Db: Store, Cluster: Api, Blockchain: Rpc> {
+/// Run tasks on the runtime a few at a time and yield their results in order
+fn read_ahead<Item, Task>(
+    tasks: impl Iterator<Item = Task> + Send + 'static,
+) -> impl Stream<Item = Result<Item, RouteError>> + Send + 'static
+where
+    Item: Send + 'static,
+    Task: Future<Output = Result<Item, RouteError>> + Send + 'static,
+{
+    stream::iter(tasks.map(|task| AbortOnDropHandle::new(tokio::spawn(task))))
+        .buffered(SEGMENT_READ_AHEAD)
+        .map(|joined| match joined {
+            Ok(result) => result,
+            Err(error) => Err(RouteError::Internal(format!("segment decode task: {error}"))),
+        })
+}
+
+async fn decode_chunk<Db, Cluster, Blockchain>(
     state: AppState<Db, Cluster, Blockchain>,
-    chunks: Vec<StreamChunk>,
-    next: usize,
+    chunk: StreamChunk,
     request_id: Option<String>,
     share_token: Option<ShareToken>,
+) -> Result<Bytes, RouteError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    // The body runs after the request middleware, so the segment decode re-enters the request id and share token
+    let decode = with_share_token(
+        share_token,
+        decode_track_bytes(&state, chunk.track_addr, chunk.track),
+    );
+    let decoded = match request_id {
+        Some(id) => with_request_id(id, decode).await?,
+        None => decode.await?,
+    };
+    if decoded.bytes.len() as u64 != chunk.expected_size {
+        return Err(RouteError::BadGateway(format!(
+            "manifest chunk {} size mismatch",
+            chunk.index
+        )));
+    }
+
+    state
+        .context
+        .metrics
+        .add_downloaded(decoded.bytes.len() as u64);
+
+    Ok(Bytes::from(decoded.bytes).slice(chunk.skip as usize..(chunk.skip + chunk.take) as usize))
 }
 
 #[cfg(test)]
@@ -203,8 +210,15 @@ mod tests {
     use tape_crypto::Hash;
     use tape_sdk::stream::manifest::{ChunkEntry, ChunkManifest, MANIFEST_VERSION};
 
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use futures::StreamExt;
+
     use super::ByteRange;
-    use super::chunk_range_plan;
+    use super::{chunk_range_plan, read_ahead};
+    use crate::http::error::RouteError;
 
     // Four contiguous 100-byte chunks with a short 50-byte tail.
     fn manifest() -> ChunkManifest {
@@ -231,6 +245,35 @@ mod tests {
             .into_iter()
             .map(|chunk| (chunk.index, chunk.skip, chunk.take))
             .collect()
+    }
+
+    const SEGMENTS: u8 = 4;
+
+    // segments come out in order while the next ones already decode
+    #[tokio::test]
+    async fn segment_read_ahead() {
+        let loading = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let (tracking, top) = (loading.clone(), peak.clone());
+        let tasks = (0..SEGMENTS).map(move |index| {
+            let (loading, peak) = (tracking.clone(), top.clone());
+            async move {
+                let now = loading.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                let delay = if index == 0 { 30 } else { 5 };
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                loading.fetch_sub(1, Ordering::SeqCst);
+                Ok::<_, RouteError>(index)
+            }
+        });
+
+        let order: Vec<u8> = read_ahead(tasks)
+            .map(|result| result.expect("segment"))
+            .collect()
+            .await;
+
+        assert_eq!(order, vec![0, 1, 2, 3]);
+        assert!(peak.load(Ordering::SeqCst) >= 2);
     }
 
     #[test]
