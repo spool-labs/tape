@@ -2,23 +2,28 @@
 
 use std::time::Duration;
 
-use futures::stream::{self, FuturesOrdered, Stream, StreamExt};
+use futures::stream::{self, FuturesOrdered, Stream, StreamExt, TryStreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
-use tape_rpc::{CommitmentLevel, Rpc};
+use tape_rpc::{CommitmentLevel, Rpc, RpcError};
+use tape_rpc_client::{parse_tape_error, sign_transaction};
+use tape_api::compute::CERTIFY_TRACK_CU;
+use tape_api::errors::TapeError;
+use tape_api::instruction::build_certify_track_ix;
 use tape_api::program::tapedrive::track_pda;
 use tape_api::state::Tape;
 use tape_core::object::object_etag;
-use tape_core::prelude::CompressedTrack;
+use tape_core::prelude::{CompressedTrack, EpochNumber};
 use tape_core::track::data::{track_key, BlobDataSlice};
 use tape_core::track::mirror::ArchiveMirror;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::ContentType;
 use tape_core::types::{StorageUnits, TrackNumber};
 use tape_crypto::hash::hash;
+use tape_crypto::tx::Txid;
 use tape_crypto::Hash;
 use tape_protocol::Api;
 use tape_protocol::api::CertifyRes;
@@ -26,7 +31,7 @@ use tape_protocol::api::CertifyRes;
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
-use crate::metrics::{Operation, Phase};
+use crate::metrics::{Operation, Outcome, Phase};
 use crate::tapedrive::Tapedrive;
 use crate::track::write::{
     certified_track, certify_submit_with_retry, certify_with_retry, coded_identity,
@@ -50,6 +55,12 @@ const MAX_TRACKS: TrackNumber = TrackNumber(MAX_TRACKS_PER_TAPE);
 /// Encoded chunks buffered ahead of the serial register submits, so encoding
 /// (seconds of CPU per chunk) overlaps register confirmations.
 const ENCODE_AHEAD: usize = 2;
+
+/// Certify attempts that sign again after the chain's epoch turned under a run
+const EPOCH_RECOLLECT_ATTEMPTS: usize = 3;
+
+/// Tracks signed again at once when an epoch turn stales a whole run
+const RECOLLECT_CONCURRENCY: usize = 2;
 
 /// Concurrent chunk encodes, bounded by available cores. Each in-flight
 /// encode holds its input and coded slices (~3x the chunk), so four workers
@@ -78,6 +89,12 @@ const ROOT_CHECK_ATTEMPTS: usize = 10;
 
 /// Flat delay between root comparisons, the confirmed root only trails briefly
 const ROOT_CHECK_DELAY: Duration = Duration::from_millis(400);
+
+/// Peer lookups a resume makes for a track the tape already holds
+const RESUME_LOOKUP_ATTEMPTS: usize = 25;
+
+/// Flat delay between those lookups, a slot on the slowest chain here
+const RESUME_LOOKUP_DELAY: Duration = Duration::from_millis(400);
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Store a named byte stream and return before final manifest certification.
@@ -464,6 +481,48 @@ fn stream_chunk(
         .ok_or_else(|| stream_error(StreamError::InvalidInput("chunk out of range".into())))
 }
 
+/// The track at `track_number`, or nothing while the tape holds no such track
+///
+/// A peer answers not-found both for a track nothing registered and for a
+/// register it has yet to ingest, and the tape's own track count tells the two
+/// apart: below the count the track is on chain, so the lookup waits for the
+/// peers to catch up. Registering another track there would land it at the next
+/// number and leave the stream with two manifests.
+async fn resumed_track<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    operator: &impl TapeOperator,
+    track_number: TrackNumber,
+) -> Result<Option<CompressedTrack>, TapedriveError> {
+    let tape = operator.address();
+    let mut attempts = 0usize;
+
+    loop {
+        match client.get_track_by_number(&tape, track_number).await {
+            Ok(track) => return Ok(Some(track)),
+            Err(TapedriveError::NotFound) => {}
+            Err(other) => return Err(other),
+        }
+
+        if track_number >= client.get_tape(&tape).await?.tracks.next_number() {
+            return Ok(None);
+        }
+
+        attempts += 1;
+        if attempts >= RESUME_LOOKUP_ATTEMPTS {
+            return Err(stream_error(StreamError::Integrity(format!(
+                "tape holds track {track_number} and no peer served it in {attempts} lookups"
+            ))));
+        }
+
+        debug!(
+            %track_number,
+            attempts,
+            "resume: waiting for a peer to ingest a registered track"
+        );
+        sleep(RESUME_LOOKUP_DELAY).await;
+    }
+}
+
 /// Whether track `track_number` is already the coded chunk `chunk_data` encodes
 /// to. Chunks are unnamed and content addressed, so identity is the encoded key
 /// and value hash.
@@ -473,13 +532,8 @@ async fn stream_chunk_matches<Blockchain: Rpc, Cluster: Api>(
     track_number: TrackNumber,
     chunk_data: &[u8],
 ) -> Result<bool, TapedriveError> {
-    let existing = match client
-        .get_track_by_number(&tape_key.address(), track_number)
-        .await
-    {
-        Ok(track) => track,
-        Err(TapedriveError::NotFound) => return Ok(false),
-        Err(other) => return Err(other),
+    let Some(existing) = resumed_track(client, tape_key, track_number).await? else {
+        return Ok(false);
     };
     // Cheap reject before the expensive encode: a chunk is a coded track whose
     // stored size equals the chunk's byte length. A different object at this
@@ -555,15 +609,14 @@ async fn resume_stream_chunk<Blockchain: Rpc, Cluster: Api>(
     chunk_data: &[u8],
     track_number: TrackNumber,
 ) -> Result<CompressedTrack, TapedriveError> {
-    let tape = tape_key.address();
-    match client.get_track_by_number(&tape, track_number).await {
-        Ok(existing) => {
+    match resumed_track(client, tape_key, track_number).await? {
+        Some(existing) => {
             let (plan, key, value_hash) =
                 coded_identity(client, UNNAMED_TRACK, chunk_data, Operation::WriteStream).await?;
             ensure_track_matches(&existing, key, value_hash)?;
             finish_coded_track(client, tape_key, existing, &plan, Operation::WriteStream).await
         }
-        Err(TapedriveError::NotFound) => {
+        None => {
             let logical_size = StorageUnits::from_bytes(chunk_data.len() as u64);
             let (written, plan) = submit_blob_with_logical_size(
                 client,
@@ -581,7 +634,6 @@ async fn resume_stream_chunk<Blockchain: Rpc, Cluster: Api>(
                 upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
             certify_with_retry(client, tape_key, &written, Operation::WriteStream, &receipts).await
         }
-        Err(other) => Err(other),
     }
 }
 
@@ -597,15 +649,11 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
     track_number: TrackNumber,
 ) -> Result<StoredManifest, TapedriveError> {
     let tape = tape_key.address();
-    let existing = match client.get_track_by_number(&tape, track_number).await {
-        Ok(track) => track,
-        Err(TapedriveError::NotFound) => {
-            let manifest =
-                store_manifest(client, tape_key, name, content_type, size, manifest_bytes).await?;
-            verify_track_number(&manifest.written, track_number)?;
-            return Ok(manifest);
-        }
-        Err(other) => return Err(other),
+    let Some(existing) = resumed_track(client, tape_key, track_number).await? else {
+        let manifest =
+            store_manifest(client, tape_key, name, content_type, size, manifest_bytes).await?;
+        verify_track_number(&manifest.written, track_number)?;
+        return Ok(manifest);
     };
 
     match manifest_write_mode(name, manifest_bytes) {
@@ -947,6 +995,256 @@ pub(crate) async fn append_to_mirror<Blockchain: Rpc, Cluster: Api>(
         track = %written.address,
         "mirror could not follow a foreign register; later proofs come from storage nodes"
     );
+    Ok(())
+}
+
+/// One stored track ready to certify against the mirror.
+pub(crate) struct ChunkCertification {
+    pub written: WrittenTrack,
+    pub collected: CollectedSignatures,
+    pub receipts: Vec<CertifyRes>,
+}
+
+/// One certify built against the mirror and sent, kept to replay on the mirror.
+struct BuiltCertification {
+    proof: CompressedTrackProof,
+    certified: CompressedTrack,
+}
+
+/// Certify a run of stored chunks against the mirror the caller holds.
+///
+/// A chain that runs a JSON-RPC batch in order takes the whole run in one
+/// round trip: every proof is built against the mirror in turn, every
+/// transaction signs against one blockhash, and the chain executes them in
+/// the order they were built. An entry the chain refuses drops that track and
+/// the ones behind it back onto the one-at-a-time path, which rebuilds them
+/// against the mirror as it stands after the last certify that landed.
+pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    mirror: &Mutex<ArchiveMirror>,
+    pending: Vec<ChunkCertification>,
+    operation: Operation,
+) -> Result<(), TapedriveError> {
+    if !client.rpc().rpc().executes_batches_in_order().await {
+        return certify_chunks_singly(client, tape_key, mirror, pending, operation).await;
+    }
+
+    let mut pending = pending;
+    let mut recollects = 0;
+    while !pending.is_empty() {
+        let outcome = certify_run_once(client, tape_key, mirror, &pending, operation).await?;
+        let mut refused = pending.split_off(outcome.landed);
+        let Some(item) = refused.first() else {
+            break;
+        };
+
+        // The epoch turned under the run. Every entry left signed under the
+        // old one and addresses the old group account, so they sign again and
+        // go back out against the mirror the run already proved them from.
+        if outcome.is_epoch_changed && recollects < EPOCH_RECOLLECT_ATTEMPTS {
+            recollects += 1;
+            sleep(CERTIFY_CONFLICT_DELAY).await;
+            client.state().invalidate();
+            debug!(entries = refused.len(), attempt = recollects, "epoch turned under a certify run; signing again");
+            pending = recollect_run(client, refused, operation).await?;
+            continue;
+        }
+
+        // Only the refused track goes the slow way. The ones behind it are
+        // still the mirror's to prove, so they go back into a run.
+        let track = item.written.track.track_number;
+        let item = refused.remove(0);
+        certify_chunk(
+            client,
+            tape_key,
+            mirror,
+            &item.written,
+            item.collected,
+            &item.receipts,
+            operation,
+        )
+        .await?;
+        debug!(track = track.as_u64(), behind = refused.len(), "refused certify settled on its own");
+        pending = refused;
+    }
+
+    Ok(())
+}
+
+/// How a submit ended, which is refused unless the chain took an entry.
+///
+/// A post the chain answered and refused every entry of moved nothing, so it
+/// counts the same as a post the chain would not take at all.
+fn submit_outcome<Failure>(verdicts: &Result<Vec<Result<Txid, RpcError>>, Failure>) -> Outcome {
+    match verdicts {
+        Ok(entries) => match entries.iter().any(Result::is_ok) {
+            true => Outcome::Ok,
+            false => Outcome::Error,
+        },
+        Err(_) => Outcome::Error,
+    }
+}
+
+/// What one run of the batch did.
+struct RunOutcome {
+    landed: usize,
+    is_epoch_changed: bool,
+}
+
+/// Sign every entry of a run again under the epoch the chain has now.
+///
+/// The receipts banked at upload belong to the epoch that turned, so none of
+/// them are offered back to the collector.
+async fn recollect_run<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    pending: Vec<ChunkCertification>,
+    operation: Operation,
+) -> Result<Vec<ChunkCertification>, TapedriveError> {
+    stream::iter(pending)
+        .map(|item| async move {
+            let collected = collect_certification(client, &item.written, operation, &[]).await?;
+            Ok::<_, TapedriveError>(ChunkCertification { collected, ..item })
+        })
+        .buffered(RECOLLECT_CONCURRENCY)
+        .try_collect()
+        .await
+}
+
+/// Build and send one run against the mirror, returning how many of its
+/// entries the chain took.
+///
+/// The caller's mirror is advanced over the entries that landed and left
+/// alone for the rest, so a refusal leaves it at the last certify the chain
+/// actually ran.
+async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    mirror: &Mutex<ArchiveMirror>,
+    pending: &[ChunkCertification],
+    operation: Operation,
+) -> Result<RunOutcome, TapedriveError> {
+    // An empty run proves nothing, so it pays for neither the mirror copy nor
+    // a blockhash.
+    if pending.is_empty() {
+        return Ok(RunOutcome { landed: 0, is_epoch_changed: false });
+    }
+
+    let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
+
+    // Built against a copy, so a refused entry leaves the caller's mirror at
+    // the last certify the chain actually ran.
+    let mut working = mirror.lock().await.clone();
+    let mut built = Vec::with_capacity(pending.len());
+    let mut instructions = Vec::with_capacity(pending.len());
+    for item in pending {
+        let certified = certified_track(&item.written.track);
+        let Ok(proof) = working.proof_for(certified.track_number) else {
+            break;
+        };
+        if working
+            .apply_certified_with_proof(certified.track_number, &certified, &proof)
+            .is_err()
+        {
+            break;
+        }
+
+        instructions.push(build_certify_track_ix(
+            payer.pubkey().into(),
+            tape_key.pubkey().into(),
+            proof,
+            EpochNumber(item.collected.epoch),
+            item.collected.bitmap,
+            item.collected.aggregated_signature,
+        ));
+        built.push(BuiltCertification { proof, certified });
+    }
+
+    // The blockhash comes after the proving, so a run the mirror can prove
+    // nothing of costs no round trip and signs against a fresher one.
+    if instructions.is_empty() {
+        return Ok(RunOutcome { landed: 0, is_epoch_changed: false });
+    }
+
+    let blockhash = client.rpc().rpc().get_latest_blockhash().await?;
+    let mut transactions = Vec::with_capacity(instructions.len());
+    for certify_ix in instructions {
+        transactions.push(sign_transaction(
+            payer,
+            &[tape_signer],
+            CERTIFY_TRACK_CU,
+            &[certify_ix],
+            blockhash,
+        )?);
+    }
+
+    let submit = client
+        .timer(operation, Phase::CertifySubmit)
+        .chunks(transactions.len() as u64);
+    let verdicts = client.rpc().rpc().send_transactions(&transactions).await;
+    submit.finish(submit_outcome(&verdicts));
+    let verdicts = verdicts?;
+
+    check_verdict_count(built.len(), verdicts.len())?;
+
+    let mut landed = 0;
+    let mut is_epoch_changed = false;
+    for (index, (verdict, build)) in verdicts.into_iter().zip(&built).enumerate() {
+        if let Err(err) = verdict {
+            let verdict = parse_tape_error(&err);
+            // A track certified before the run reached it leaves the chain
+            // holding the leaf the mirror is about to write, so the run goes on.
+            if !matches!(verdict, Some(TapeError::AlreadyCertified)) {
+                is_epoch_changed = matches!(verdict, Some(TapeError::EpochChanged));
+                warn!(
+                    index,
+                    entries = built.len(),
+                    track = build.certified.track_number.as_u64(),
+                    ?verdict,
+                    %err,
+                    "certify run refused",
+                );
+                break;
+            }
+        }
+
+        apply_certified_to_mirror(client, tape_key, mirror, &build.certified, Some(&build.proof))
+            .await?;
+        landed = index + 1;
+    }
+
+    if landed > 0 {
+        // The program accepted signatures for the collected epoch, which
+        // proves the cached committee is current.
+        client.state().touch();
+    }
+
+    Ok(RunOutcome { landed, is_epoch_changed })
+}
+
+/// Certify each chunk on its own, the way a chain that promises no batch
+/// order has to.
+async fn certify_chunks_singly<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    mirror: &Mutex<ArchiveMirror>,
+    pending: Vec<ChunkCertification>,
+    operation: Operation,
+) -> Result<(), TapedriveError> {
+    for item in pending {
+        certify_chunk(
+            client,
+            tape_key,
+            mirror,
+            &item.written,
+            item.collected,
+            &item.receipts,
+            operation,
+        )
+        .await?;
+    }
+
     Ok(())
 }
 
@@ -1316,6 +1614,20 @@ async fn complete_stream<Blockchain: Rpc, Cluster: Api>(
     Ok(StreamReceipt::from_manifest_track(&track, manifest.etag))
 }
 
+/// Refuse a batch answer that holds a verdict for a transaction the run never sent
+///
+/// Every verdict is read against the certification it answers, so a count the
+/// chain and the run disagree on is unusable.
+fn check_verdict_count(sent: usize, answered: usize) -> Result<(), TapedriveError> {
+    if sent == answered {
+        return Ok(());
+    }
+
+    Err(stream_error(StreamError::Integrity(format!(
+        "certify run sent {sent} transactions and the chain answered {answered}"
+    ))))
+}
+
 fn stream_error(error: StreamError) -> TapedriveError {
     TapedriveError::Stream(error.to_string())
 }
@@ -1329,7 +1641,12 @@ mod tests {
     use peer_memory::MemoryApi;
     use rpc_litesvm::LiteSvmRpc;
     use tape_api::state::Tape;
+    use tape_core::bls::BlsSignature;
+    use tape_crypto::ed25519::Keypair;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
+    use tape_core::types::bitmap::SpoolBitmap;
+    use tape_core::track::archive::TrackArchive;
     use tape_core::system::Member;
     use tape_core::track::types::{TrackState, TrackVisibility};
     use tape_core::types::coin::TAPE;
@@ -1343,6 +1660,125 @@ mod tests {
     use crate::track::write::content_etag_named;
 
     use super::*;
+
+    fn txid(byte: u8) -> Txid {
+        Txid::from([byte; 64])
+    }
+
+    // a run the chain took an entry of is a submit that moved something
+    #[test]
+    fn a_submit_with_a_landed_entry_reads_ok() {
+        let verdicts: Result<_, TapedriveError> = Ok(vec![
+            Err(RpcError::Request("refused".to_string())),
+            Ok(txid(1)),
+        ]);
+
+        assert_eq!(submit_outcome(&verdicts), Outcome::Ok);
+    }
+
+    // a run the chain refused every entry of moved nothing
+    #[test]
+    fn a_submit_with_every_entry_refused_reads_refused() {
+        let verdicts: Result<Vec<Result<Txid, RpcError>>, TapedriveError> = Ok(vec![
+            Err(RpcError::Request("refused".to_string())),
+            Err(RpcError::Request("refused".to_string())),
+        ]);
+
+        assert_eq!(submit_outcome(&verdicts), Outcome::Error);
+    }
+
+    // a run with nothing to prove asks the chain for nothing
+    #[tokio::test]
+    async fn an_empty_certify_run_asks_the_client_for_nothing() {
+        // Every send expires the litesvm blockhash, so the blockhash standing
+        // afterwards is what says the run stayed off the chain.
+        let client = payer_client();
+        let tape_key = TapeKey::generate();
+        let mirror = Mutex::new(ArchiveMirror::new(&TrackArchive::zeroed()));
+        let before = blockhash(&client).await;
+
+        let empty = certify_run_once(&client, &tape_key, &mirror, &[], Operation::Upload)
+            .await
+            .expect("an empty run needs no chain");
+
+        assert_eq!(empty.landed, 0);
+        assert!(!empty.is_epoch_changed);
+        assert_eq!(blockhash(&client).await, before);
+
+        // The mirror holds no leaf for this chunk, so the run proves nothing of
+        // it and still asks the chain for nothing.
+        let unprovable = vec![chunk_certification(TrackNumber(7))];
+        let outcome = certify_run_once(&client, &tape_key, &mirror, &unprovable, Operation::Upload)
+            .await
+            .expect("an unprovable run needs no chain");
+
+        assert_eq!(outcome.landed, 0);
+        assert!(!outcome.is_epoch_changed);
+        assert_eq!(blockhash(&client).await, before);
+    }
+
+    // a batch answer holding a verdict per sent transaction is read
+    #[test]
+    fn verdict_count_matches() {
+        assert!(check_verdict_count(2, 2).is_ok());
+        assert!(check_verdict_count(0, 0).is_ok());
+    }
+
+    // a batch answer of another length is refused
+    #[test]
+    fn verdict_count_mismatch() {
+        let short = check_verdict_count(2, 1).expect_err("a short answer is refused");
+        let long = check_verdict_count(2, 3).expect_err("a long answer is refused");
+
+        assert!(matches!(short, TapedriveError::Stream(_)), "{short}");
+        assert!(matches!(long, TapedriveError::Stream(_)), "{long}");
+    }
+
+    // a post the chain would not take at all is refused too
+    #[test]
+    fn a_refused_post_reads_refused() {
+        let verdicts: Result<Vec<Result<Txid, RpcError>>, TapedriveError> =
+            Err(TapedriveError::Rpc(RpcError::Request("no".to_string())));
+
+        assert_eq!(submit_outcome(&verdicts), Outcome::Error);
+    }
+
+    async fn blockhash(client: &Tapedrive<LiteSvmRpc, MemoryApi>) -> String {
+        client
+            .rpc()
+            .rpc()
+            .get_latest_blockhash()
+            .await
+            .expect("litesvm blockhash")
+            .to_string()
+    }
+
+    /// One stored chunk waiting to certify, at a track number the caller picks
+    fn chunk_certification(track_number: TrackNumber) -> ChunkCertification {
+        let mut track = CompressedTrack::zeroed();
+        track.track_number = track_number;
+        ChunkCertification {
+            written: WrittenTrack { address: Address::new_unique(), track },
+            collected: CollectedSignatures {
+                aggregated_signature: BlsSignature::zeroed(),
+                bitmap: SpoolBitmap::zeroed(),
+                signature_count: 0,
+                spool_count: GROUP_SIZE,
+                epoch: 1,
+                responses: Vec::new(),
+                failures: Vec::new(),
+                early_exit: false,
+            },
+            receipts: Vec::new(),
+        }
+    }
+
+    /// A client that can pay, so a run reaches the chain unless it returns first
+    fn payer_client() -> Tapedrive<LiteSvmRpc, MemoryApi> {
+        let mut client = manifest_client(CompressedTrack::zeroed());
+        client.payer = Some(Keypair::new(&mut rand::thread_rng()));
+        client
+    }
 
     fn manifest_client(track: CompressedTrack) -> Tapedrive<LiteSvmRpc, MemoryApi> {
         let api = MemoryApi::new(move |_, request| {

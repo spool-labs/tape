@@ -226,7 +226,7 @@ linux-binaries: node-linux cache-linux gateway-linux explorer-linux moderation-l
 # Static wasm bundle for the observability dashboard (needs dioxus-cli: `dx`).
 # Deploy with `tape-network dashboard deploy`.
 dashboard-web:
-	cd monitoring/dashboard && dx build --package tape-dashboard --platform web --release --debug-symbols false
+	cd monitoring/dashboard && dx build --package tape-dashboard --platform web --release
 	@echo "bundle: target/dx/tape-dashboard/release/web/public"
 
 # Static wasm bundle for the atlas globe kiosk (needs dioxus-cli: `dx`).

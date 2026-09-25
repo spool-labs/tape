@@ -31,7 +31,7 @@ pub mod skip;
 
 // Core exports
 pub use error::{RpcError, looks_like_transaction_error};
-pub use rpc::{Rpc, SimulationResult};
+pub use rpc::{BlockWindow, ChainKind, Rpc, SimulationResult};
 
 // Re-export async_trait for implementors
 pub use async_trait::async_trait;
@@ -47,6 +47,6 @@ pub use solana_transaction_status::EncodedConfirmedTransactionWithStatusMeta;
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::error::RpcError;
-    pub use crate::rpc::Rpc;
+    pub use crate::rpc::{ChainKind, Rpc};
     pub use crate::CommitmentLevel;
 }

@@ -32,4 +32,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 bytemuck.workspace = true
-peer-memory = { path = "../peer-memory" }
+peer-memory.workspace = true

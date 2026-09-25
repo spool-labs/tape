@@ -40,40 +40,45 @@ pub struct SnapshotChunk {
     pub slices: [Vec<u8>; GROUP_SIZE],
 }
 
-/// Encode `log` into the full chunk-track set for `epoch`'s snapshot. The output
-/// is deterministic from `(snapshot_tape, epoch, log, total_groups)` and matches
-/// the set committed by the on-chain snapshot tape.
-pub fn encode_snapshot(
+/// Encode `log` into `epoch`'s chunk-track set and hand each chunk to `visit` in track order, one chunk of slices live at a time
+pub fn encode_snapshot_streaming<Error, Visit>(
     snapshot_tape: Address,
     epoch: EpochNumber,
     log: &SnapshotLog,
     total_groups: usize,
-) -> Result<Vec<SnapshotChunk>, SnapshotError> {
+    mut visit: Visit,
+) -> Result<(), Error>
+where
+    Error: From<SnapshotError>,
+    Visit: FnMut(SnapshotChunk) -> Result<(), Error>,
+{
     let outer_k = snapshot_outer_k(total_groups);
     if outer_k == 0 {
-        return Err(SnapshotError::NoGroups { epoch: epoch.0 });
+        return Err(SnapshotError::NoGroups { epoch: epoch.0 }.into());
     }
 
-    let serialized = log
-        .to_bytes()
-        .map_err(|e| SnapshotError::Serialize(e.to_string()))?;
-    let compressed = lz4_flex::compress_prepend_size(&serialized);
+    // The serialized log is dead once it is compressed, and it is tens of MB.
+    let compressed = {
+        let serialized = log
+            .to_bytes()
+            .map_err(|e| SnapshotError::Serialize(format!("epoch={}: {e}", epoch.0)))?;
+        lz4_flex::compress_prepend_size(&serialized)
+    };
 
     let max_segment_bytes = snapshot_max_segment_bytes(total_groups);
     let chunk_total = compressed.len().div_ceil(max_segment_bytes).max(1);
     let chunk_size = compressed.len().div_ceil(chunk_total).max(1);
 
     let mut outer = OuterCoder::new(outer_k, total_groups);
-    let mut chunks = Vec::with_capacity(chunk_total * total_groups);
 
     for chunk_index in 0..chunk_total {
         let start = chunk_index * chunk_size;
         let end = start.saturating_add(chunk_size).min(compressed.len());
 
         let packed = pack_segment(&compressed[start..end]);
-        let symbols = outer
-            .encode(&packed)
-            .map_err(|e| SnapshotError::OuterEncode(format!("segment={chunk_index}: {e}")))?;
+        let symbols = outer.encode(&packed).map_err(|e| {
+            SnapshotError::OuterEncode(format!("epoch={} segment={chunk_index}: {e}", epoch.0))
+        })?;
 
         let chunk = ChunkNumber(chunk_index as u64);
 
@@ -94,15 +99,38 @@ pub fn encode_snapshot(
                 value_hash: built.blob.get_hash(),
             };
 
-            chunks.push(SnapshotChunk {
+            visit(SnapshotChunk {
                 group,
                 chunk,
                 track,
                 blob: built.blob,
                 slices: built.slices,
-            });
+            })?;
         }
     }
+
+    Ok(())
+}
+
+/// Encode `log` into the full chunk-track set for `epoch`'s snapshot, slices included; deterministic from its inputs and equal to the set the on-chain snapshot tape commits
+pub fn encode_snapshot(
+    snapshot_tape: Address,
+    epoch: EpochNumber,
+    log: &SnapshotLog,
+    total_groups: usize,
+) -> Result<Vec<SnapshotChunk>, SnapshotError> {
+    let mut chunks = Vec::new();
+
+    encode_snapshot_streaming(
+        snapshot_tape,
+        epoch,
+        log,
+        total_groups,
+        |chunk| -> Result<(), SnapshotError> {
+            chunks.push(chunk);
+            Ok(())
+        },
+    )?;
 
     Ok(chunks)
 }
@@ -169,6 +197,7 @@ mod tests {
     use tape_core::bls::BlsPubkey;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent, SnapshotEntry};
     use tape_core::system::NodePreferences;
+    use tape_core::track::archive::TrackArchive;
     use tape_core::types::coin::TAPE;
     use tape_core::types::SlotNumber;
     use tape_crypto::tx::Txid;
@@ -177,6 +206,40 @@ mod tests {
     use crate::{assemble_snapshot_log, decode_chunk_payload, K_INNER};
 
     const TEST_GROUP_COUNT: usize = 20;
+
+    /// Slice bytes the visitor holds, counted as the encoder hands each chunk over
+    #[derive(Debug, Default)]
+    struct LiveSlices {
+        live: usize,
+        peak: usize,
+        total: usize,
+        visits: usize,
+    }
+
+    impl LiveSlices {
+        fn visit(&mut self, chunk: SnapshotChunk) {
+            let bytes = slice_bytes(&chunk);
+            self.live += bytes;
+            self.peak = self.peak.max(self.live);
+            self.total += bytes;
+            self.visits += 1;
+
+            drop(chunk);
+            self.live -= bytes;
+        }
+    }
+
+    fn slice_bytes(chunk: &SnapshotChunk) -> usize {
+        chunk.slices.iter().map(Vec::len).sum()
+    }
+
+    fn track_root(chunks: &[SnapshotChunk]) -> Hash {
+        let mut archive = TrackArchive::zeroed();
+        for chunk in chunks {
+            archive.append(&chunk.track).expect("append chunk track");
+        }
+        archive.tree.root()
+    }
 
     fn entry(slot: u64, event: ReplayableEvent) -> SnapshotEntry {
         SnapshotEntry {
@@ -343,5 +406,88 @@ mod tests {
 
         let err = assemble_snapshot_log(&symbols_by_segment, epoch, TEST_GROUP_COUNT).unwrap_err();
         assert!(format!("{err}").contains("groups decoded"));
+    }
+
+    // the streamed encode gives the same track root, rows, blobs, and slices
+    #[test]
+    fn streamed_matches_full() {
+        let epoch = EpochNumber(13);
+        let tape = Address::from([5u8; 32]);
+        let log = sample_log(epoch);
+        let full = encode_snapshot(tape, epoch, &log, TEST_GROUP_COUNT).expect("full encode");
+
+        let mut streamed: Vec<SnapshotChunk> = Vec::new();
+        encode_snapshot_streaming(
+            tape,
+            epoch,
+            &log,
+            TEST_GROUP_COUNT,
+            |chunk| -> Result<(), SnapshotError> {
+                streamed.push(chunk);
+                Ok(())
+            },
+        )
+        .expect("streamed encode");
+
+        assert_eq!(track_root(&streamed), track_root(&full));
+        assert_eq!(streamed.len(), full.len());
+        for (left, right) in streamed.iter().zip(full.iter()) {
+            assert_eq!(left.group, right.group);
+            assert_eq!(left.chunk, right.chunk);
+            assert_eq!(left.track, right.track);
+            assert_eq!(left.blob, right.blob);
+            assert_eq!(left.slices, right.slices);
+        }
+    }
+
+    // the streamed encode hands over one chunk's slice bytes at a time and stops where the visitor stops
+    #[test]
+    fn one_chunk_live() {
+        let epoch = EpochNumber(14);
+        let tape = Address::from([6u8; 32]);
+        let log = sample_log(epoch);
+
+        let mut counter = LiveSlices::default();
+        encode_snapshot_streaming(
+            tape,
+            epoch,
+            &log,
+            TEST_GROUP_COUNT,
+            |chunk| -> Result<(), SnapshotError> {
+                counter.visit(chunk);
+                Ok(())
+            },
+        )
+        .expect("streamed encode");
+
+        let full = encode_snapshot(tape, epoch, &log, TEST_GROUP_COUNT).expect("full encode");
+        let full_bytes: usize = full.iter().map(slice_bytes).sum();
+        let largest_chunk = full.iter().map(slice_bytes).max().expect("a chunk");
+
+        assert!(counter.visits > 1);
+        assert_eq!(counter.visits, full.len());
+        assert_eq!(counter.total, full_bytes);
+        // The set the full encode keeps is the whole point of the visitor, so a
+        // peak of one chunk's bytes is the thing to hold it to.
+        assert_eq!(counter.peak, largest_chunk);
+        assert!(full_bytes > counter.peak, "{full_bytes} bytes vs {}", counter.peak);
+        assert_eq!(counter.live, 0);
+
+        // A visitor that stops ends the run where it stopped, so nothing after
+        // that chunk is encoded.
+        let mut stopped_at = 0usize;
+        let stopped = encode_snapshot_streaming(
+            tape,
+            epoch,
+            &log,
+            TEST_GROUP_COUNT,
+            |_| -> Result<(), SnapshotError> {
+                stopped_at += 1;
+                Err(SnapshotError::NoGroups { epoch: epoch.0 })
+            },
+        );
+
+        assert!(stopped.is_err());
+        assert_eq!(stopped_at, 1);
     }
 }

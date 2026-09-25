@@ -14,14 +14,15 @@ use crate::error::TapedriveError;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Phase};
 use crate::stream::manifest::MAX_TRACK_SIZE;
-use crate::stream::write::{append_to_mirror, certify_chunk, verify_mirror_root};
+use crate::stream::write::{
+    ChunkCertification, append_to_mirror, certify_chunk_run, verify_mirror_root,
+};
 use crate::tapedrive::Tapedrive;
 use crate::track::write::{
-    UploadPlan, WrittenTrack, collect_certification, encode_blob, inline_write_fits,
-    register_blob_processed, register_raw_processed, resolve_sent_blob, resolve_sent_raw,
-    upload_with_retry, wait_for_certified_track,
+    SentRegister, UploadPlan, WrittenTrack, collect_certification, encode_blob, inline_write_fits,
+    prepare_blob_register, prepare_raw_register, resolve_sent_blob, resolve_sent_raw,
+    send_registers, upload_with_retry, wait_for_certified_track,
 };
-use crate::transfer::certify::CollectedSignatures;
 
 const MAX_ENCODE_WORKERS: usize = 4;
 const RESOLVE_CONCURRENCY: usize = 3;
@@ -59,6 +60,13 @@ enum PreparedItem {
         bytes_written: u64,
         plan: Box<UploadPlan>,
     },
+}
+
+/// What the batch knows about one register of a run, beside the transaction itself.
+struct RunItem {
+    index: usize,
+    name: String,
+    bytes_written: u64,
 }
 
 enum SentItem {
@@ -107,12 +115,6 @@ enum StoredItem {
         receipts: Vec<CertifyRes>,
         etag: Hash,
     },
-}
-
-struct PendingCertification {
-    written: WrittenTrack,
-    collected: CollectedSignatures,
-    receipts: Vec<CertifyRes>,
 }
 
 struct StoredCertification {
@@ -269,7 +271,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .try_collect()
             .await?;
 
-        let mut sent = Vec::with_capacity(prepared.len());
+        let mut run = Vec::with_capacity(prepared.len());
+        let mut registers = Vec::with_capacity(prepared.len());
         for item in prepared {
             match item {
                 PreparedItem::Inline {
@@ -279,23 +282,16 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                     data,
                 } => {
                     let bytes_written = data.len() as u64;
-                    let submitted = register_raw_processed(
+                    registers.push(prepare_raw_register(
                         self,
                         bucket,
                         name.as_bytes(),
                         content_type,
                         StorageUnits::from_bytes(bytes_written),
                         &data,
-                        Operation::WriteBatch,
                         self.write_options.visibility,
-                    )
-                    .await?;
-                    sent.push(SentItem::Inline {
-                        index,
-                        name,
-                        bytes_written,
-                        sent: submitted,
-                    });
+                    )?);
+                    run.push(RunItem { index, name, bytes_written });
                 }
                 PreparedItem::Coded {
                     index,
@@ -304,25 +300,37 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                     bytes_written,
                     plan,
                 } => {
-                    let submitted = register_blob_processed(
+                    registers.push(prepare_blob_register(
                         self,
                         bucket,
                         name.as_bytes(),
                         content_type,
                         StorageUnits::from_bytes(bytes_written),
                         *plan,
-                        Operation::WriteBatch,
                         self.write_options.visibility,
-                    )
-                    .await?;
-                    sent.push(SentItem::Coded {
-                        index,
-                        name,
-                        bytes_written,
-                        sent: Box::new(submitted),
-                    });
+                    )?);
+                    run.push(RunItem { index, name, bytes_written });
                 }
             }
+        }
+
+        let registered = send_registers(self, bucket, registers, Operation::WriteBatch).await?;
+        let mut sent = Vec::with_capacity(run.len());
+        for (item, register) in run.into_iter().zip(registered) {
+            sent.push(match register {
+                SentRegister::Raw(raw) => SentItem::Inline {
+                    index: item.index,
+                    name: item.name,
+                    bytes_written: item.bytes_written,
+                    sent: raw,
+                },
+                SentRegister::Blob(blob) => SentItem::Coded {
+                    index: item.index,
+                    name: item.name,
+                    bytes_written: item.bytes_written,
+                    sent: blob,
+                },
+            });
         }
 
         let resolved: Vec<ResolvedItem> = stream::iter(sent)
@@ -479,7 +487,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             return Ok(());
         }
 
-        let pending: Vec<PendingCertification> = stream::iter(pending)
+        let pending: Vec<ChunkCertification> = stream::iter(pending)
             .map(|stored| async move {
                 let collected = collect_certification(
                     self,
@@ -488,7 +496,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                     &stored.receipts,
                 )
                 .await?;
-                Ok::<_, TapedriveError>(PendingCertification {
+                Ok::<_, TapedriveError>(ChunkCertification {
                     written: stored.written,
                     collected,
                     receipts: stored.receipts,
@@ -508,19 +516,12 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         }
 
         let mut certified = Vec::with_capacity(pending.len());
-        for pending in pending {
-            certify_chunk(
-                self,
-                bucket,
-                &mirror,
-                &pending.written,
-                pending.collected,
-                &pending.receipts,
-                Operation::WriteBatch,
-            )
-            .await?;
-            certified.push(pending.written.track.track_number);
+        for item in &pending {
+            certified.push(item.written.track.track_number);
         }
+
+        // The certifies go out in one run against the mirror, once every register sent ahead of them has its leaf.
+        certify_chunk_run(self, bucket, &mirror, pending, Operation::WriteBatch).await?;
 
         let visibility = self
             .timer(Operation::WriteBatch, Phase::CertifyVisible)

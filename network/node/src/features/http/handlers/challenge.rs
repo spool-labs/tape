@@ -690,7 +690,7 @@ mod tests {
             .expect("build harness")
             .ctx_for(0);
 
-        let rounds = ctx.config.challenge_realign_after_blank_rounds();
+        let rounds = ctx.config.challenge.realign_after_blank_rounds;
         for _ in 0..rounds {
             ctx.challenge_tripwire.record_blank_round(GroupIndex(0));
         }

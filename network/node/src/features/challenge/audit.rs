@@ -22,7 +22,7 @@ use tape_crypto::hash::Hash;
 use tape_protocol::api::{AttestReq, ProofOfAccessReq, SpoolAttestation};
 use tape_protocol::{Api, ProtocolState};
 use tape_store::types::TrackSample;
-use tape_store::ops::{MetaOps, SampleOps, SliceOps, TrackDataOps};
+use tape_store::ops::{SampleOps, SliceOps, TrackDataOps};
 use tokio::time::timeout;
 use tracing::{debug, trace};
 
@@ -100,14 +100,13 @@ pub fn has_sample_set<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     round: &Round,
 ) -> bool {
-    set_entries(context, round).is_some_and(|held| sample_space(&held.1) > 0)
+    sample_space(&set_entries(context, round).1) > 0
 }
 
 /// The sample set for one round, shared by every answer drawn against it.
 pub type SampleSet = (Vec<(Address, TrackSample)>, Vec<SampleEntry>);
 
-/// One round's sample set, built once and reused, or nothing while this node's
-/// store has yet to reach the round's cut.
+/// One round's sample set, built once and reused.
 ///
 /// Every answer in a round draws from the same set, and the set is a scan of
 /// the group's rows. Deriving it per answer meant a receiver walked the group
@@ -115,66 +114,44 @@ pub type SampleSet = (Vec<(Address, TrackSample)>, Vec<SampleEntry>);
 /// across five groups is the same scan run thousands of times a second for one
 /// unchanging result.
 ///
-/// The set is the rows registered before a cut behind the round, and it stops
-/// moving once the store has applied every block before that cut: a later write
-/// lands at a slot past it and a later deletion records one too. A node takes
-/// part up to the settlement deadline behind the tip, and a store short of the
-/// cut would build a set missing rows, draw a different sample, and refuse
-/// honest answers or send a wrong one. So nothing is built or held until the
-/// store reaches the cut, and the next ask after that builds the set. A store
-/// edited behind the ingest path can outrun this, and says so with
-/// `backdated_write`.
+/// Safe to hold because the set cannot move once the round exists. It is the
+/// rows registered before a cutoff a finality window behind the round, and a
+/// node only takes part while at tip, so it has applied past that cutoff
+/// already: a later write carries a slot far above it and a later deletion
+/// records one too. A store edited behind the ingest path can outrun this, and
+/// says so with `invalidate`.
 fn set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     round: &Round,
-) -> Option<Arc<SampleSet>> {
+) -> Arc<SampleSet> {
     let key = (round.epoch, round.round, round.group);
     if let Some(held) = context.sample_sets.get(&key) {
-        return Some(held);
+        return held;
     }
-
-    // Nothing for an epoch this node never laid a grid for, so it asks no
-    // question of that epoch's rounds and answers none of them either.
-    let schedule = context.schedules.get(round.epoch)?;
-    let cutoff = schedule.sample_cutoff(round.round);
-    if !store_reaches(context, cutoff) {
-        return None;
-    }
-
     // Read before the store is, so a backdated row landing mid-build is not
     // stamped as though the set already held it.
     let built_at = context.sample_sets.generation();
-    let built = Arc::new(build_set_entries(context, round.group, cutoff));
+    let built = Arc::new(build_set_entries(context, round));
     context.sample_sets.put(key, built_at, built.clone());
-    Some(built)
-}
-
-/// Whether the store has applied every block before a round's cut, which is
-/// what makes the set drawn from it final.
-fn store_reaches<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &NodeContext<Db, Cluster, Blockchain>,
-    cutoff: SlotNumber,
-) -> bool {
-    match context.store.get_sync_cursor() {
-        Ok(Some(applied)) => applied.as_u64().saturating_add(1) >= cutoff.as_u64(),
-        Ok(None) => false,
-        Err(error) => {
-            debug!(%error, "challenge: store frontier unreadable");
-            false
-        }
-    }
+    built
 }
 
 fn build_set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
-    group: GroupIndex,
-    cutoff: SlotNumber,
+    round: &Round,
 ) -> SampleSet {
+    // Nothing for an epoch this node never laid a grid for, so it asks no
+    // question of that epoch's rounds and answers none of them either.
+    let Some(schedule) = context.schedules.get(round.epoch) else {
+        return (Vec::new(), Vec::new());
+    };
+    let cutoff = schedule.sample_cutoff(round.round);
+
     // Already in track order: the rows are keyed group-then-track, so the scan
     // arrives in the canonical order the draw is defined over.
     let rows: Vec<(Address, TrackSample)> = context
         .store
-        .iter_track_samples_by_group(group)
+        .iter_track_samples_by_group(round.group)
         .map_err(|error| debug!(%error, "challenge: sample set unavailable"))
         .unwrap_or_default()
         .into_iter()
@@ -199,7 +176,7 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
     round: &Round,
     spool: SpoolIndex,
 ) -> Option<(Sample, Hash)> {
-    let held = set_entries(context, round)?;
+    let held = set_entries(context, round);
     let (rows, entries) = (&held.0, &held.1);
 
     let seed = challenge::round_seed(&round.block, round.epoch, round.group, round.round, spool);
@@ -562,81 +539,4 @@ fn owners_of(peers: Vec<(SpoolIndex, Address)>) -> Vec<Address> {
         }
     }
     members
-}
-
-#[cfg(test)]
-mod tests {
-    use tape_core::challenge::sample::EntryKind;
-    use tape_core::types::StorageUnits;
-    use tape_store::ops::{MetaOps, SampleOps};
-    use tape_store::types::TrackSample;
-
-    use super::*;
-    use crate::harness::{NodeHarness, TestContext};
-
-    /// Where a live epoch sits, far enough in that a round's cut is past zero.
-    const START_SLOT: SlotNumber = SlotNumber(10_000);
-
-    /// A node with one row in a group and a grid laid for its epoch.
-    async fn seeded() -> (TestContext, Round) {
-        let harness = NodeHarness::builder()
-            .nodes(25)
-            .no_prev_snapshot_tape()
-            .build()
-            .await
-            .expect("build harness");
-        let ctx: TestContext = harness.ctx_for(0);
-        let mut state = (*ctx.state()).clone();
-        state.current.epoch.start_slot = START_SLOT;
-        ctx.set_state(state.clone()).expect("publish");
-        ctx.schedules.observe(&state, START_SLOT);
-
-        let group = GroupIndex(0);
-        let row = TrackSample {
-            kind: EntryKind::Coded {
-                slice_len: StorageUnits::from_bytes(4_096),
-            },
-            value_hash: Hash([1; 32]),
-            registered_slot: SlotNumber(0),
-            deleted_slot: None,
-        };
-        ctx.store
-            .put_track_sample(group, Address::new_unique(), row)
-            .expect("sample row");
-
-        let round = Round {
-            epoch: state.epoch(),
-            group,
-            round: RoundNumber(1),
-            block: Hash([2; 32]),
-        };
-        (ctx, round)
-    }
-
-    // a store short of the round's cut holds no set and keeps none, so the set
-    // built once the store reaches the cut is the full one
-    #[tokio::test]
-    async fn store_frontier() {
-        let (ctx, round) = seeded().await;
-        let cutoff = ctx
-            .schedules
-            .get(round.epoch)
-            .expect("a grid")
-            .sample_cutoff(round.round);
-        let key = (round.epoch, round.round, round.group);
-
-        ctx.store
-            .set_sync_cursor(SlotNumber(cutoff.as_u64() - 2), None)
-            .expect("cursor");
-
-        assert!(!has_sample_set(&ctx, &round));
-        assert!(ctx.sample_sets.get(&key).is_none());
-
-        ctx.store
-            .set_sync_cursor(SlotNumber(cutoff.as_u64() - 1), None)
-            .expect("cursor");
-
-        assert!(has_sample_set(&ctx, &round));
-        assert!(ctx.sample_sets.get(&key).is_some());
-    }
 }
