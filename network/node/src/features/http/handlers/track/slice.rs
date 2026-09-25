@@ -13,13 +13,15 @@ use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_crypto::merkle::verify_proof_hash;
 use tape_protocol::Api;
-use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse, SliceBody};
+use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse, SliceBody, encode_slice_window};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tape_store::types::slice::fuse;
 use tracing::{debug, trace};
 
 use crate::features::blacklist::refuses_object;
-use crate::features::http::auth::{local_access_threshold, MaybeActivePeer, MaybeStakedPeer};
+use crate::features::http::auth::{
+    local_access_threshold, ActivePeer, MaybeActivePeer, MaybeStakedPeer, StakedPeer,
+};
 use crate::features::http::error::RouteError;
 use crate::features::http::share::check_share_token;
 use crate::features::http::peer_identity::PeerIdentity;
@@ -35,14 +37,94 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<impl IntoResponse, RouteError> {
     trace!(track_id = %track_id, spool_id = %spool_id, "http get_slice start");
 
-    if local_access_threshold(&state).0 > 0 && staked_peer.is_none() {
+    let caller = SliceCaller {
+        staked_peer,
+        active_peer,
+        identity,
+    };
+    let track_key = check_slice_read(&state, caller, &track_id, spool_id, &headers)?;
+
+    let data = state
+        .context
+        .store
+        .get_slice(spool_id, track_key)
+        .map_err(store_error)?
+        .ok_or(RouteError::NotFound)?;
+
+    state.context.metrics.add_downloaded(data.len() as u64);
+
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, BINARY_CONTENT)],
+        data,
+    ))
+}
+
+/// Serve part of a slice with its sidecar, so a reader can check the part alone
+pub async fn get_slice_window<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    MaybeStakedPeer(staked_peer): MaybeStakedPeer,
+    MaybeActivePeer(active_peer): MaybeActivePeer,
+    identity: PeerIdentity,
+    Path((track_id, spool_id, offset, len)): Path<(String, SpoolIndex, u64, u64)>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, RouteError> {
+    if len == 0 || len > MAX_SLICE_WINDOW_BYTES {
+        return Err(RouteError::BadRequest("slice window length out of bounds".into()));
+    }
+    let (offset, len) = match (usize::try_from(offset), usize::try_from(len)) {
+        (Ok(offset), Ok(len)) => (offset, len),
+        _ => return Err(RouteError::BadRequest("slice window out of bounds".into())),
+    };
+
+    let caller = SliceCaller {
+        staked_peer,
+        active_peer,
+        identity,
+    };
+    let track_key = check_slice_read(&state, caller, &track_id, spool_id, &headers)?;
+
+    let (sidecar, data) = state
+        .context
+        .store
+        .slice_window(spool_id, track_key, offset, len)
+        .map_err(store_error)?
+        .ok_or(RouteError::NotFound)?;
+
+    state.context.metrics.add_downloaded(data.len() as u64);
+
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, BINARY_CONTENT)],
+        encode_slice_window(&sidecar, &data),
+    ))
+}
+
+/// A window request may ask for at most this many bytes of a slice
+const MAX_SLICE_WINDOW_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Who is asking for a slice, as the request extractors saw it
+struct SliceCaller {
+    staked_peer: Option<StakedPeer>,
+    active_peer: Option<ActivePeer>,
+    identity: PeerIdentity,
+}
+
+/// Check a slice read against staking, spool ownership, the blacklist and share tokens
+fn check_slice_read<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    caller: SliceCaller,
+    track_id: &str,
+    spool_id: SpoolIndex,
+    headers: &HeaderMap,
+) -> Result<Address, RouteError> {
+    if local_access_threshold(state).0 > 0 && caller.staked_peer.is_none() {
         return Err(RouteError::Forbidden("staked peer required".into()));
     }
 
-    let track: Address = track_id
+    let track_key: Address = track_id
         .parse()
         .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
-    let track_key = track;
 
     state
         .context
@@ -78,22 +160,8 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BlacklistedObject);
     }
 
-    check_share_token(&state, &track, identity, active_peer, &headers)?;
-
-    let data = state
-        .context
-        .store
-        .get_slice(spool_id, track_key)
-        .map_err(store_error)?
-        .ok_or(RouteError::NotFound)?;
-
-    state.context.metrics.add_downloaded(data.len() as u64);
-
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, BINARY_CONTENT)],
-        data,
-    ))
+    check_share_token(state, &track, caller.identity, caller.active_peer, headers)?;
+    Ok(track_key)
 }
 
 pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(

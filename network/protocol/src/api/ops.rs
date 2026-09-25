@@ -3,7 +3,7 @@
 use bytes::Bytes;
 use tape_core::bls::BlsSignature;
 use tape_core::prelude::{BlobData, CompressedTrack, EpochNumber, SpoolIndex, TrackNumber};
-use tape_core::types::RoundNumber;
+use tape_core::types::{RoundNumber, StorageUnits};
 use tape_core::spooler::GroupIndex;
 use tape_core::challenge::ProofOfAccess;
 use crate::api::types::SpoolAttestation;
@@ -41,6 +41,21 @@ pub struct GetSliceReq {
 
 #[derive(Clone, Debug)]
 pub struct GetSliceRes {
+    pub data: Bytes,
+}
+
+#[derive(Clone, Debug)]
+pub struct GetSliceWindowReq {
+    pub track: Address,
+    pub spool: SpoolIndex,
+    pub offset: StorageUnits,
+    pub len: StorageUnits,
+}
+
+/// Part of a slice with the sidecar that ties it to the slice root
+#[derive(Clone, Debug)]
+pub struct GetSliceWindowRes {
+    pub sidecar: Vec<Hash>,
     pub data: Bytes,
 }
 

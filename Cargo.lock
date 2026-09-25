@@ -10208,6 +10208,7 @@ dependencies = [
  "tape-retry",
  "tape-rpc",
  "tape-sdk",
+ "tape-slicer",
  "tape-store",
  "tape-store-api",
  "tape-store-memory",

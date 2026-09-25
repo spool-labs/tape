@@ -3,20 +3,24 @@ use std::time::Duration;
 use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
-use axum::response::Response;
+use axum::body::Bytes;
+use axum::response::{IntoResponse, Response};
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::track::types::CompressedTrack;
+use tape_core::object::object_etag;
+use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::with_share_token;
 use tape_sdk::stream::manifest::ChunkManifest;
 
-use super::decode::decode_track_bytes;
+use super::decode::{coded_blob, decode_track_bytes};
+use super::range::{decode_track_range, head_range, is_plain_object, is_rangeable};
 use super::manifest::{chunk_range_plan, object_stream_response};
 use super::response::{
     ByteRange, CachePolicy, ObjectResponseMetadata, object_response_metadata, object_response_ranged,
-    range_header, resolve_range,
+    range_header, ranged_object_headers, resolve_range,
 };
 use crate::http::error::RouteError;
 use crate::http::handlers::resolve::{Readable, resolve_readable_with_pending};
@@ -166,6 +170,24 @@ pub async fn read_object_response<
         }
     }
 
+    if status == StatusCode::OK && range.is_some() && track.is_coded() {
+        let blob = coded_blob(&state, track_addr, &track)?;
+        if is_rangeable(&blob) {
+            let head = decode_track_range(&state, track_addr, &track, blob, head_range(&blob)).await?;
+            if is_plain_object(&head, blob.size.to_bytes()) {
+                let total = blob.size.to_bytes();
+                if let Some(range) = resolve_range(range.as_deref(), total)? {
+                    let bytes = match range.end <= head.len() as u64 {
+                        true => head.slice(range.start as usize..range.end as usize),
+                        false => decode_track_range(&state, track_addr, &track, blob, range).await?,
+                    };
+                    let etag = object_etag(&track, Some(&blob));
+                    return ranged_response(&state, bytes, range, total, &metadata, etag);
+                }
+            }
+        }
+    }
+
     let decoded = decode_track_bytes(&state, track_addr, track).await?;
     let Ok(manifest) = ChunkManifest::from_bytes(&decoded.bytes) else {
         state
@@ -250,6 +272,14 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     let metadata = object_response_metadata(&state, track_addr)?;
+    if let Some(response) = with_share_token(
+        token,
+        ranged_track_bytes(&state, track_addr, &track, &metadata, range_header(&headers)),
+    )
+    .await?
+    {
+        return Ok(response);
+    }
     let decoded = with_share_token(token, decode_track_bytes(&state, track_addr, track)).await?;
     state
         .context
@@ -263,4 +293,42 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
         range_header(&headers),
         StatusCode::OK,
     )
+}
+
+/// Serve a range of a coded track from the stripes it covers, when that saves work
+async fn ranged_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    track_addr: Address,
+    track: &CompressedTrack,
+    metadata: &ObjectResponseMetadata,
+    range: Option<&str>,
+) -> Result<Option<Response>, RouteError> {
+    if range.is_none() || !track.is_coded() {
+        return Ok(None);
+    }
+    let blob = coded_blob(state, track_addr, track)?;
+    if !is_rangeable(&blob) {
+        return Ok(None);
+    }
+    let total = blob.size.to_bytes();
+    let Some(range) = resolve_range(range, total)? else {
+        return Ok(None);
+    };
+
+    let bytes = decode_track_range(state, track_addr, track, blob, range).await?;
+    let etag = object_etag(track, Some(&blob));
+    ranged_response(state, bytes, range, total, metadata, etag).map(Some)
+}
+
+fn ranged_response<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    bytes: Bytes,
+    range: ByteRange,
+    total: u64,
+    metadata: &ObjectResponseMetadata,
+    etag: Hash,
+) -> Result<Response, RouteError> {
+    state.context.metrics.add_downloaded(bytes.len() as u64);
+    let (status, headers) = ranged_object_headers(Some(range), total, metadata, etag, StatusCode::OK)?;
+    Ok((status, headers, bytes).into_response())
 }

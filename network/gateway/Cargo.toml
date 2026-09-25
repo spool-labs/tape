@@ -20,6 +20,7 @@ tape-crypto = { workspace = true }
 tape-node = { workspace = true }
 tape-protocol = { workspace = true }
 tape-sdk = { workspace = true }
+tape-slicer = { workspace = true }
 tape-store = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 tape-rpc = { workspace = true }

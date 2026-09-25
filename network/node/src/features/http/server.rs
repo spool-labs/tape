@@ -187,6 +187,15 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         admission::slice_admission::<Db, Cluster, Blockchain>,
                     )),
             )
+            .route(
+                api_routes::TRACK_SLICE_WINDOW_PATH,
+                get(handlers::track::slice::get_slice_window::<Db, Cluster, Blockchain>).layer(
+                    from_fn_with_state(
+                        state.clone(),
+                        admission::slice_admission::<Db, Cluster, Blockchain>,
+                    ),
+                ),
+            )
             // Challenge traffic: an answer and the attestations over it. An
             // answer is verified before it is kept; an attestation is taken on
             // trust from the peer its mTLS identity names and settled by the

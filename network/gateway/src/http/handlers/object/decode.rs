@@ -48,16 +48,7 @@ pub async fn decode_track_bytes<
         return Err(RouteError::BadRequest("unsupported track kind".into()));
     }
 
-    let track_data = track_data_with_pending(state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
-    let BlobData::Coded(blob) = track_data else {
-        crate::metrics::inc_decode_result("data_mismatch");
-        return Err(RouteError::BadRequest("track data is not blob metadata".into()));
-    };
-    if blob.get_hash() != track.value_hash || blob.commitment_root() != blob.commitment {
-        crate::metrics::inc_decode_result("commitment_mismatch");
-        return Err(RouteError::Internal("blob commitment mismatch".into()));
-    }
-
+    let blob = coded_blob(state, track_addr, &track)?;
     let slices = fetch_decoding_slices(state, track_addr, track, blob).await?;
     let profile = blob.profile;
     let start = std::time::Instant::now();
@@ -85,6 +76,24 @@ pub async fn decode_track_bytes<
         bytes,
         etag: object_etag(&track, Some(&blob)),
     })
+}
+
+/// The blob encoding behind a coded track, checked against the track's commitment
+pub fn coded_blob<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    track_addr: Address,
+    track: &CompressedTrack,
+) -> Result<BlobEncoding, RouteError> {
+    let track_data = track_data_with_pending(state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
+    let BlobData::Coded(blob) = track_data else {
+        crate::metrics::inc_decode_result("data_mismatch");
+        return Err(RouteError::BadRequest("track data is not blob metadata".into()));
+    };
+    if blob.get_hash() != track.value_hash || blob.commitment_root() != blob.commitment {
+        crate::metrics::inc_decode_result("commitment_mismatch");
+        return Err(RouteError::Internal("blob commitment mismatch".into()));
+    }
+    Ok(blob)
 }
 
 /// Serve an inline object, falling back to a peer fetch when the bytes are not
@@ -220,14 +229,14 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 /// Why one slice did not count toward a decode
 #[derive(Clone, Copy, Debug)]
-enum SliceFailure {
+pub enum SliceFailure {
     Group,
     Leaf,
     Fetch,
 }
 
 /// Cached slices first since they cost no transfer, then owners best first
-fn fetch_order<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub fn fetch_order<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
     mut peers: Vec<(SpoolIndex, Address)>,

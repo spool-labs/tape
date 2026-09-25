@@ -6,11 +6,13 @@ pub mod request_id;
 pub mod routes;
 pub mod share;
 pub mod types;
+pub mod window;
 
 pub use error::ApiError;
 pub use ops::*;
 pub use request_id::*;
 pub use routes::*;
+pub use window::{decode_slice_window, encode_slice_window};
 pub use share::*;
 pub use types::*;
 
@@ -28,6 +30,11 @@ pub const JSON_CONTENT: &str = "application/json";
 pub trait Api: Send + Sync + 'static {
     async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError>;
     async fn get_slice(&self, node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError>;
+
+    /// Fetch part of a slice with its sidecar
+    async fn get_slice_window(&self, _node: Address, _req: &GetSliceWindowReq) -> Result<GetSliceWindowRes, ApiError> {
+        Err(ApiError::Other("slice windows are not served here".into()))
+    }
     async fn get_track(&self, node: Address, req: &GetTrackReq) -> Result<GetTrackRes, ApiError>;
     async fn get_track_by_number(&self, node: Address, req: &GetTrackByNumberReq) -> Result<GetTrackByNumberRes, ApiError>;
     async fn find_track(&self, node: Address, req: &FindTrackReq) -> Result<FindTrackRes, ApiError>;

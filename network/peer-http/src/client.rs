@@ -297,6 +297,29 @@ impl Api for HttpApi {
         Ok(GetSliceRes { data: bytes })
     }
 
+    async fn get_slice_window(
+        &self,
+        node: Address,
+        req: &GetSliceWindowReq,
+    ) -> Result<GetSliceWindowRes, ApiError> {
+        let (client, base) = self.resolve_slice(node)?;
+        let track_id = req.track.to_string();
+        let url = format!("{base}{}", slice_window_url(&track_id, req.spool, req.offset, req.len));
+
+        let start = Instant::now();
+        let resp = stamp_request_scope(client.get(&url).timeout(self.get_slice_timeout))
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record(node, "get_slice_window", &resp, start, 0);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx(node, "get_slice_window", bytes.len() as u64);
+        let (sidecar, data) = decode_slice_window(bytes)?;
+        Ok(GetSliceWindowRes { sidecar, data })
+    }
+
     async fn get_track(&self, node: Address, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {
         let (client, base) = self.resolve(node)?;
         let track_id = req.track.to_string();

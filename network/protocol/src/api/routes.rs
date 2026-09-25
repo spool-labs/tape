@@ -1,6 +1,6 @@
 //! Route constants and URL builders for the node API.
 
-use tape_core::types::{SpoolIndex, TrackNumber};
+use tape_core::types::{SpoolIndex, StorageUnits, TrackNumber};
 
 pub const API_V1: &str = "/v1";
 
@@ -35,6 +35,7 @@ pub const TRACK_PROOF_PATH: &str = "/v1/tracks/{track_id}/proof";
 pub const TRACK_REPAIR_PATH: &str = "/v1/tracks/{track_id}/repair";
 pub const TRACK_SIGN_PATH: &str = "/v1/tracks/{track_id}/sign";
 pub const TRACK_SLICE_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}";
+pub const TRACK_SLICE_WINDOW_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}/window/{offset}/{len}";
 pub const TRACK_SLICE_STATUS_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}/status";
 pub const TRACK_STATUS_PATH: &str = "/v1/tracks/{track_id}/status";
 
@@ -42,6 +43,15 @@ pub const TRACK_STATUS_PATH: &str = "/v1/tracks/{track_id}/status";
 
 pub fn slice_url(track_id: &str, spool_id: SpoolIndex) -> String {
     format!("/v1/tracks/{track_id}/slices/{}", spool_id.0)
+}
+
+pub fn slice_window_url(track_id: &str, spool_id: SpoolIndex, offset: StorageUnits, len: StorageUnits) -> String {
+    format!(
+        "/v1/tracks/{track_id}/slices/{}/window/{}/{}",
+        spool_id.0,
+        offset.to_bytes(),
+        len.to_bytes()
+    )
 }
 
 pub fn status_url(track_id: &str) -> String {
