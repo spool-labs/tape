@@ -25,6 +25,7 @@ use tape_sdk::keys::helpers::load_ed25519_keypair;
 use tape_sdk::keys::operator::TapeDelegate;
 use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_sdk::bootstrap::Reputation;
+use tape_sdk::object::{ObjectBatchItem, ObjectBatchReceipt};
 use tape_sdk::track::write::UploadPlan;
 use tape_sdk::Tapedrive;
 use tokio::io::AsyncRead;
@@ -165,6 +166,23 @@ impl S3WriteContext {
             }
             Ok((receipt.etag, receipt.manifest))
         }
+    }
+
+    /// Write a run of in-memory objects to `tape` as the delegate in one batch, one receipt per object in order
+    pub async fn write_objects<Db, Cluster, Blockchain>(
+        &self,
+        context: &NodeContext<Db, Cluster, Blockchain>,
+        tape: Address,
+        objects: Vec<ObjectBatchItem>,
+    ) -> Result<Vec<ObjectBatchReceipt>, TapedriveError>
+    where
+        Db: Store,
+        Cluster: Api,
+        Blockchain: Rpc,
+    {
+        let client = self.client(context)?;
+        let operator = self.operator(tape)?;
+        client.put_objects_batch(&operator, objects).await
     }
 
     /// Stream a large object onto chunk tracks as the delegate, bounded in memory.

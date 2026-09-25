@@ -11,7 +11,7 @@ use tape_crypto::Hash;
 use tape_protocol::{Api, api::CertifyRes};
 
 use crate::error::TapedriveError;
-use crate::keys::tape_key::TapeKey;
+use crate::keys::operator::TapeOperator;
 use crate::metrics::{Operation, Phase};
 use crate::stream::manifest::MAX_TRACK_SIZE;
 use crate::stream::write::{append_to_mirror, certify_chunk};
@@ -156,7 +156,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// been registered.
     pub async fn put_objects_batch(
         &self,
-        bucket: &TapeKey,
+        bucket: &impl TapeOperator,
         objects: Vec<ObjectBatchItem>,
     ) -> Result<Vec<ObjectBatchReceipt>, TapedriveError> {
         validate_batch(&objects)?;
@@ -191,7 +191,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// finish the batch afterward.
     pub async fn store_objects_batch(
         &self,
-        bucket: &TapeKey,
+        bucket: &impl TapeOperator,
         objects: Vec<ObjectBatchItem>,
     ) -> Result<StoredObjectBatch, TapedriveError> {
         validate_batch(&objects)?;
@@ -214,7 +214,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// that mirror and every track certifies against a fresh peer proof.
     pub async fn certify_objects_batch(
         &self,
-        bucket: &TapeKey,
+        bucket: &impl TapeOperator,
         verification: ObjectBatchVerification,
     ) -> Result<(), TapedriveError> {
         self.certify_objects_batch_inner(bucket, verification, true)
@@ -223,7 +223,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
     async fn store_objects_batch_inner(
         &self,
-        bucket: &TapeKey,
+        bucket: &impl TapeOperator,
         objects: Vec<ObjectBatchItem>,
     ) -> Result<StoredObjectBatch, TapedriveError> {
         let tape = self.get_tape(&bucket.address()).await?;
@@ -471,7 +471,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
     async fn certify_objects_batch_inner(
         &self,
-        bucket: &TapeKey,
+        bucket: &impl TapeOperator,
         verification: ObjectBatchVerification,
         should_recheck_root: bool,
     ) -> Result<(), TapedriveError> {
