@@ -14,6 +14,7 @@ use tape_crypto::hash::hash;
 use tape_crypto::prelude::Address;
 use tape_protocol::api::{ApiError, FindTrackVersion};
 use tape_protocol::ProtocolState;
+use tokio::io::AsyncWrite;
 
 use crate::error::TapedriveError;
 use crate::metrics::{Metrics, Operation, Phase};
@@ -107,6 +108,43 @@ impl<Blockchain: Rpc> Gateway<Blockchain> {
             self.inner.api.get_object_bytes_range(*track, start, len),
         )
         .await
+    }
+
+    /// Copy logical object bytes for a representing track into a sink as they arrive
+    pub async fn read_object_into<Writer: AsyncWrite + Unpin>(
+        &self,
+        track: &Address,
+        writer: &mut Writer,
+    ) -> Result<u64, TapedriveError> {
+        let timer = self.inner.timer(Operation::ReadStream, Phase::Total);
+        let result = self
+            .inner
+            .api
+            .copy_object_into(*track, writer)
+            .await
+            .map_err(TapedriveError::from);
+        let timer = match &result {
+            Ok(copied) => timer.bytes(*copied),
+            Err(_) => timer,
+        };
+        timer.finish_result(&result);
+        result
+    }
+
+    /// Copy an object from a bucket by key into a sink as its bytes arrive
+    pub async fn get_object_into<Writer: AsyncWrite + Unpin>(
+        &self,
+        bucket: &Address,
+        name: &str,
+        writer: &mut Writer,
+    ) -> Result<u64, TapedriveError> {
+        let key = hash(name.as_bytes());
+        let track = self
+            .inner
+            .find_track(bucket, key, FindTrackVersion::Latest)
+            .await?;
+        let address = track_pda(track.tape, track.track_number).0;
+        self.read_object_into(&address, writer).await
     }
 
     /// Read a named object from a bucket through the gateway.

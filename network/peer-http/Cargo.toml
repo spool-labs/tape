@@ -19,6 +19,7 @@ tape-peer-tls = { workspace = true }
 async-trait.workspace = true
 bytes = { workspace = true }
 reqwest = { workspace = true }
+tokio = { workspace = true }
 wincode = { workspace = true }
 prometheus = { workspace = true }
 dashmap = { workspace = true }
@@ -26,5 +27,4 @@ dashmap = { workspace = true }
 [dev-dependencies]
 axum = { workspace = true }
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
-tokio = { workspace = true }
 rand = { workspace = true }

@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::Address;
 use tape_protocol::Api;
@@ -85,6 +86,34 @@ impl GatewayApi {
         }
         let bytes = response.bytes().await.map_err(map_reqwest)?;
         Ok(bytes.to_vec())
+    }
+
+    /// Copy a representing track's object bytes into a sink as they arrive
+    pub async fn copy_object_into<Writer: AsyncWrite + Unpin>(
+        &self,
+        track: Address,
+        writer: &mut Writer,
+    ) -> Result<u64, ApiError> {
+        let response = self
+            .client
+            .get(self.url(gateway_object_url(&track.to_string())))
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+        let mut response = check_status(response).await?;
+        let mut copied = 0u64;
+        while let Some(frame) = response.chunk().await.map_err(map_reqwest)? {
+            writer
+                .write_all(&frame)
+                .await
+                .map_err(|error| ApiError::Other(format!("object sink: {error}")))?;
+            copied += frame.len() as u64;
+        }
+        writer
+            .flush()
+            .await
+            .map_err(|error| ApiError::Other(format!("object sink: {error}")))?;
+        Ok(copied)
     }
 
     fn url(&self, path: String) -> String {
@@ -394,7 +423,34 @@ fn gateway_object_url(track_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use axum::Router;
+    use axum::routing::get;
+    use tape_crypto::Address;
+
     use super::{GatewayApi, gateway_object_url, gateway_track_url};
+
+    const OBJECT_BYTES: usize = 1 << 20;
+
+    fn object_body() -> Vec<u8> {
+        (0..OBJECT_BYTES).map(|index| (index % 251) as u8).collect()
+    }
+
+    // an object copies into a sink frame by frame
+    #[tokio::test]
+    async fn object_into_sink() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let base = format!("http://{}", listener.local_addr().expect("address"));
+        let router = Router::new().route("/object/{track}", get(|| async { object_body() }));
+        let server = tokio::spawn(async move { axum::serve(listener, router).await });
+        let api = GatewayApi::new(base).expect("client");
+        let mut sink = Vec::new();
+
+        let copied = api.copy_object_into(Address::new_unique(), &mut sink).await.expect("copy");
+
+        server.abort();
+        assert_eq!(copied, OBJECT_BYTES as u64);
+        assert_eq!(sink, object_body());
+    }
 
     #[test]
     fn normalizes_base_url() {
