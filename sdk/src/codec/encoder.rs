@@ -449,7 +449,8 @@ mod tests {
         let mut decoder = BlobDecoder::with_encoding(EncodingType::Clay);
 
         let slices = encoder.encode(original.clone()).unwrap();
-        let recovered = decoder.decode(slices).unwrap();
+        let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(idx, data)| (*idx, data.as_slice())).collect();
+        let recovered = decoder.decode(&refs).unwrap();
 
         assert_eq!(original, recovered);
     }

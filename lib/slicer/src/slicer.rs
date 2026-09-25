@@ -5,8 +5,6 @@
 //! - Metadata suffix (blob_len, stripe_size, profile for decoding)
 //! - Optional rotation mapping for fair load distribution
 
-use std::collections::HashSet;
-
 use tape_core::encoding::{ClayParams, EncodingProfile};
 use tape_core::types::ChunkNumber;
 
@@ -338,25 +336,24 @@ impl<C: ErasureCoder> ErasureCoder for Slicer<C> {
         let n = self.n();
         let (num_stripes, chunk_size) = validate_layout(chunks, &metadata)?;
 
-        // Build index set for quick lookup
-        let present_indices: HashSet<usize> = chunks.iter().map(|&(i, _)| i).collect();
-        let chunks_map: std::collections::HashMap<usize, &[u8]> =
-            chunks.iter().map(|&(i, d)| (i, d)).collect();
+        let mut by_slice: Vec<Option<&[u8]>> = vec![None; n];
+        for &(slice_idx, data) in chunks {
+            if let Some(slot) = by_slice.get_mut(slice_idx) {
+                *slot = Some(data);
+            }
+        }
 
         let mut output = Vec::with_capacity(blob_len);
+        let mut stripe_chunks: Vec<(usize, &[u8])> = Vec::with_capacity(chunks.len());
 
         for s in 0..num_stripes {
             let chunk_offset = s * chunk_size;
 
-            // Build available chunks and erasures for this stripe
-            let mut stripe_chunks: Vec<(usize, &[u8])> = Vec::with_capacity(chunks.len());
-
+            stripe_chunks.clear();
             for shard_idx in 0..n {
                 let slice_idx = shard_to_slice(self.strategy, n, s, shard_idx);
-                if present_indices.contains(&slice_idx) {
-                    let slice_data = chunks_map[&slice_idx];
-                    let chunk = &slice_data[chunk_offset..chunk_offset + chunk_size];
-                    stripe_chunks.push((shard_idx, chunk));
+                if let Some(slice_data) = by_slice[slice_idx] {
+                    stripe_chunks.push((shard_idx, &slice_data[chunk_offset..chunk_offset + chunk_size]));
                 }
             }
 

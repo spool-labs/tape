@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::Address;
 use tape_protocol::Api;
@@ -91,6 +92,10 @@ impl GatewayApi {
     }
 
     async fn get_bytes(&self, path: String) -> Result<Vec<u8>, ApiError> {
+        Ok(self.get_body(path).await?.to_vec())
+    }
+
+    async fn get_body(&self, path: String) -> Result<Bytes, ApiError> {
         let response = self
             .client
             .get(self.url(path))
@@ -98,8 +103,7 @@ impl GatewayApi {
             .await
             .map_err(map_reqwest)?;
         let response = check_status(response).await?;
-        let bytes = response.bytes().await.map_err(map_reqwest)?;
-        Ok(bytes.to_vec())
+        response.bytes().await.map_err(map_reqwest)
     }
 
     async fn post_wincode<Req: wincode::SchemaWrite<Src = Req>>(
@@ -131,7 +135,7 @@ impl Api for GatewayApi {
 
     async fn get_slice(&self, _node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
         let data = self
-            .get_bytes(slice_url(&req.track.to_string(), req.spool))
+            .get_body(slice_url(&req.track.to_string(), req.spool))
             .await?;
         Ok(GetSliceRes { data })
     }

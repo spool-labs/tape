@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use bytes::Bytes;
+
 use tape_rpc::Rpc;
 use tape_core::erasure::group_start;
 use tape_core::prelude::{GroupIndex, SpoolIndex, BlobData};
@@ -43,14 +45,11 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 }
 
-pub fn localize_slices(
-    group: GroupIndex,
-    slices: Vec<(SpoolIndex, Vec<u8>)>,
-) -> Vec<(SpoolIndex, Vec<u8>)> {
+pub fn localize_slices(group: GroupIndex, slices: &[(SpoolIndex, Bytes)]) -> Vec<(SpoolIndex, &[u8])> {
     let base = group_start(group);
     slices
-        .into_iter()
-        .map(|(global_idx, data)| (global_idx - base, data))
+        .iter()
+        .map(|(global_idx, data)| (*global_idx - base, data.as_ref()))
         .collect()
 }
 
@@ -131,7 +130,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         let decode = client.timer(operation, Phase::Decode);
         let mut decoder = BlobDecoder::with_profile(blob.profile);
         let data = decoder
-            .decode(localize_slices(group, slices))
+            .decode(&localize_slices(group, &slices))
             .map_err(|e| TapedriveError::Download(ClientError::Decoding(e.to_string())));
         let decode = match &data {
             Ok(data) => decode.bytes(data.len() as u64),

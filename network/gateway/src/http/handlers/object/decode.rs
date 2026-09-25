@@ -59,7 +59,8 @@ pub async fn decode_track_bytes<
     let slices = fetch_decoding_slices(state, track_addr, track, blob).await?;
     let mut decoder = BlobDecoder::with_profile(blob.profile);
     let start = std::time::Instant::now();
-    let mut bytes = decoder.decode(slices).map_err(|error| {
+    let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(position, data)| (*position, data.as_slice())).collect();
+    let mut bytes = decoder.decode(&refs).map_err(|error| {
         crate::metrics::inc_decode_result("decode_error");
         RouteError::BadGateway(format!("decode object: {error}"))
     })?;

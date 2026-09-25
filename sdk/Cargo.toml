@@ -47,12 +47,12 @@ hex = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+bytes = { workspace = true }
 futures = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
 wincode.workspace = true
-bytes.workspace = true
 wincode-derive.workspace = true
 
 # Concurrency

@@ -17,6 +17,7 @@ tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-peer-tls = { workspace = true }
 async-trait.workspace = true
+bytes = { workspace = true }
 reqwest = { workspace = true }
 wincode = { workspace = true }
 prometheus = { workspace = true }

@@ -157,5 +157,5 @@ async fn fetch_verified_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         "gateway fetched slice from owner"
     );
 
-    Ok(response.data)
+    Ok(Vec::from(response.data))
 }

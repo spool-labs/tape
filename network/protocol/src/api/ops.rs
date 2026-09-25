@@ -1,5 +1,6 @@
 //! Request/response types for peer operations.
 
+use bytes::Bytes;
 use tape_core::bls::BlsSignature;
 use tape_core::prelude::{BlobData, CompressedTrack, EpochNumber, SpoolIndex, TrackNumber};
 use tape_core::types::RoundNumber;
@@ -13,7 +14,6 @@ use crate::api::types::{
     InconsistencyProof, NodeStats, StripeSubChunkRequest, SyncSliceEntry,
     VoteCandidate, ObjectListItem,
 };
-use bytes::Bytes;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 use crate::api::ApiError;
@@ -41,7 +41,7 @@ pub struct GetSliceReq {
 
 #[derive(Clone, Debug)]
 pub struct GetSliceRes {
-    pub data: Vec<u8>,
+    pub data: Bytes,
 }
 
 #[derive(Clone, Debug)]

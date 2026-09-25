@@ -294,9 +294,7 @@ impl Api for HttpApi {
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
         self.record_rx(node, "get_slice", bytes.len() as u64);
-        Ok(GetSliceRes {
-            data: bytes.to_vec(),
-        })
+        Ok(GetSliceRes { data: bytes })
     }
 
     async fn get_track(&self, node: Address, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {
