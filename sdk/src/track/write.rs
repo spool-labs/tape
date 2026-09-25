@@ -1481,6 +1481,7 @@ pub(crate) async fn submit_certification<Blockchain: Rpc, Cluster: Api>(
         operation,
     )
     .await
+    .map(|_| ())
 }
 
 /// Submit the certify transaction for a prebuilt proof, waiting for the given
@@ -1496,7 +1497,7 @@ pub(crate) async fn submit_certification_with_proof<Blockchain: Rpc, Cluster: Ap
     collected: &CollectedSignatures,
     commitment: CommitmentLevel,
     operation: Operation,
-) -> Result<(), TapedriveError> {
+) -> Result<Option<Txid>, TapedriveError> {
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
 
@@ -1522,9 +1523,9 @@ pub(crate) async fn submit_certification_with_proof<Blockchain: Rpc, Cluster: Ap
         )
         .await;
     let result = match sent {
-        Ok(_) => Ok(()),
+        Ok(signature) => Ok(Some(signature)),
         Err(err) => match parse_tape_error(&err) {
-            Some(TapeError::AlreadyCertified) => Ok(()),
+            Some(TapeError::AlreadyCertified) => Ok(None),
             _ => Err(TapedriveError::Rpc(err)),
         },
     };
@@ -1535,6 +1536,40 @@ pub(crate) async fn submit_certification_with_proof<Blockchain: Rpc, Cluster: Ap
         client.state().touch();
     }
     submit.finish_result(&result);
+    result
+}
+
+/// Wait for certifies sent at processed to reach the client's commitment
+pub(crate) async fn confirm_certifies<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    signatures: &[Txid],
+    operation: Operation,
+) -> Result<(), TapedriveError> {
+    let confirm = client
+        .timer(operation, Phase::CertifyVisible)
+        .chunks(signatures.len() as u64);
+    let waits = signatures
+        .iter()
+        .map(|signature| client.rpc().rpc().wait_for_signature(signature));
+    let mut result = Ok(());
+    for waited in futures::future::join_all(waits).await {
+        let executed = match waited {
+            Ok(executed) => executed,
+            Err(error) => {
+                result = Err(TapedriveError::Rpc(error));
+                break;
+            }
+        };
+        if let Err(error) = executed {
+            result = Err(TapedriveError::Rpc(RpcError::Transaction {
+                message: error.to_string(),
+                err: Some(error),
+                simulated: false,
+            }));
+            break;
+        }
+    }
+    confirm.finish_result(&result);
     result
 }
 
@@ -1836,7 +1871,7 @@ async fn certify_with_mirror<Blockchain: Rpc, Cluster: Api>(
     )
     .await;
     match submitted {
-        Ok(()) => Ok(()),
+        Ok(_) => Ok(()),
         Err(err) if should_retry_certification(&err) => {
             warn!(error = %err, track = %written.address, "mirror-proof certify failed; falling back to peer proofs");
             let collected = (!needs_fresh_signatures(&err)).then_some(collected);

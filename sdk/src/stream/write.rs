@@ -19,6 +19,7 @@ use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::ContentType;
 use tape_core::types::{StorageUnits, TrackNumber};
 use tape_crypto::hash::hash;
+use tape_crypto::tx::Txid;
 use tape_crypto::Hash;
 use tape_protocol::Api;
 use tape_protocol::api::CertifyRes;
@@ -30,10 +31,11 @@ use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
 use crate::track::write::{
     certified_track, certify_submit_with_retry, certify_with_retry, coded_identity,
-    collect_certification, encode_blob, ensure_track_matches, finish_coded_track, inline_write_fits,
+    collect_certification, confirm_certifies, encode_blob, ensure_track_matches, finish_coded_track,
+    inline_write_fits,
     needs_fresh_signatures, plan_blob, register_blob_processed, resolve_sent_blob,
     should_retry_certification, submit_blob_with_logical_size, submit_certification_with_proof,
-    submit_raw_with_logical_size, upload_with_retry, wait_for_certified_track, UploadPlan,
+    submit_raw_with_logical_size, upload_with_retry, UploadPlan,
     WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
 };
 use crate::transfer::certify::CollectedSignatures;
@@ -72,12 +74,6 @@ const CERTIFY_CONFLICT_ATTEMPTS: usize = 3;
 /// Delay before each conflict refetch; the interfering transaction may be
 /// processed but not yet confirmed, so an immediate refetch can miss it.
 const CERTIFY_CONFLICT_DELAY: Duration = Duration::from_millis(400);
-
-/// Root comparisons made at the end of a write before the mirror is dropped.
-const ROOT_CHECK_ATTEMPTS: usize = 10;
-
-/// Flat delay between root comparisons, the confirmed root only trails briefly
-const ROOT_CHECK_DELAY: Duration = Duration::from_millis(400);
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Store a named byte stream and return before final manifest certification.
@@ -877,8 +873,9 @@ where
         })?;
 
         let mut pending_chunks = Vec::with_capacity(chunk_count.as_usize());
+        let mut processed = Vec::new();
         while let Some((pending, collected)) = collected_receiver.recv().await {
-            certify_chunk(
+            let signature = certify_chunk(
                 client,
                 tape_key,
                 mirror,
@@ -888,27 +885,12 @@ where
                 Operation::WriteStream,
             )
             .await?;
+            processed.extend(signature);
             pending_chunks.push(pending);
         }
 
-        // Every certify is on-chain; confirm peer visibility for all chunks at
-        // once instead of once per chunk inside the serial loop.
-        let visible = client
-            .timer(Operation::WriteStream, Phase::CertifyVisible)
-            .chunks(pending_chunks.len() as u64);
-        let tape_address = tape_key.address();
-        let result = futures::future::try_join_all(pending_chunks.iter().map(|pending| {
-            wait_for_certified_track(client, &tape_address, pending.written.track.track_number)
-        }))
-        .await;
-        visible.finish_result(&result);
-        result?;
-
-        // Peers already report every track certified, so the confirmed root
-        // has had time to catch up with the processed certifies; a lasting
-        // mismatch means an external writer touched the tape mid-stream.
-        verify_mirror_root(client, tape_key, mirror).await?;
-
+        // Readers poll peers, so the write ends at confirmation without waiting on peer lag.
+        confirm_certifies(client, &processed, Operation::WriteStream).await?;
         Ok::<_, TapedriveError>(pending_chunks)
     };
 
@@ -959,7 +941,7 @@ pub(crate) async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
     collected: CollectedSignatures,
     banked: &[CertifyRes],
     operation: Operation,
-) -> Result<(), TapedriveError> {
+) -> Result<Option<Txid>, TapedriveError> {
     let track_number = written.track.track_number;
     let certified = certified_track(&written.track);
     let mut has_valid_signatures = true;
@@ -978,9 +960,10 @@ pub(crate) async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
         )
         .await;
         match submitted {
-            Ok(()) => {
-                return apply_certified_to_mirror(client, tape_key, mirror, &certified, Some(&proof))
-                    .await
+            Ok(signature) => {
+                apply_certified_to_mirror(client, tape_key, mirror, &certified, Some(&proof))
+                    .await?;
+                return Ok(signature);
             }
             // A stale proof is regenerated; rejected signatures sign a past epoch and need collecting again
             Err(err) if should_retry_certification(&err) => {
@@ -988,7 +971,7 @@ pub(crate) async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
                     has_valid_signatures = false;
                     client.state().invalidate();
                 } else {
-                    let done = recertify_after_conflict(
+                    let retried = recertify_after_conflict(
                         client,
                         tape_key,
                         mirror,
@@ -997,8 +980,8 @@ pub(crate) async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
                         operation,
                     )
                     .await?;
-                    if done {
-                        return Ok(());
+                    if let ConflictRetry::Certified(signature) = retried {
+                        return Ok(signature);
                     }
                 }
             }
@@ -1008,7 +991,17 @@ pub(crate) async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
 
     let signatures = has_valid_signatures.then_some(collected);
     certify_submit_with_retry(client, tape_key, written, operation, signatures, banked).await?;
-    apply_certified_to_mirror(client, tape_key, mirror, &certified, None).await
+    apply_certified_to_mirror(client, tape_key, mirror, &certified, None).await?;
+    // The peer-proof path waits for the client's commitment itself.
+    Ok(None)
+}
+
+/// How a conflicted certify ended
+enum ConflictRetry {
+    /// Landed at processed, with the signature when a transaction was sent
+    Certified(Option<Txid>),
+    /// The mirror lost step with the chain, so the peer-proof path takes over
+    Fallback,
 }
 
 /// Retry a conflicted mirror certify against refetched chain state, reusing
@@ -1016,7 +1009,6 @@ pub(crate) async fn certify_chunk<Blockchain: Rpc, Cluster: Api>(
 /// between generation and execution; a mirror still in lockstep with the
 /// chain regenerates a valid proof, while any tape-tree mutation the mirror
 /// never saw forces a reseed that drops the track out of its provable range.
-/// Returns false when the caller must fall back to the peer-proof path.
 async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -1024,7 +1016,7 @@ async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
     certified: &CompressedTrack,
     collected: &CollectedSignatures,
     operation: Operation,
-) -> Result<bool, TapedriveError> {
+) -> Result<ConflictRetry, TapedriveError> {
     for _ in 0..CERTIFY_CONFLICT_ATTEMPTS {
         // The interfering transaction may only be processed, so give the
         // confirmed view time to include it before refetching.
@@ -1037,12 +1029,12 @@ async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
                 || reseeded.root() != mirror.root()
             {
                 *mirror = reseeded;
-                return Ok(false);
+                return Ok(ConflictRetry::Fallback);
             }
             mirror.proof_for(certified.track_number)
         };
         let Ok(proof) = proof else {
-            return Ok(false);
+            return Ok(ConflictRetry::Fallback);
         };
 
         let submitted = submit_certification_with_proof(
@@ -1055,21 +1047,21 @@ async fn recertify_after_conflict<Blockchain: Rpc, Cluster: Api>(
         )
         .await;
         match submitted {
-            Ok(()) => {
+            Ok(signature) => {
                 apply_certified_to_mirror(client, tape_key, mirror, certified, Some(&proof))
                     .await?;
-                return Ok(true);
+                return Ok(ConflictRetry::Certified(signature));
             }
             Err(err) if should_retry_certification(&err) => {
                 if needs_fresh_signatures(&err) {
-                    return Ok(false);
+                    return Ok(ConflictRetry::Fallback);
                 }
             }
             Err(err) => return Err(err),
         }
     }
 
-    Ok(false)
+    Ok(ConflictRetry::Fallback)
 }
 
 /// Build a replacement mirror from refetched chain state. The certify stage
@@ -1113,50 +1105,6 @@ async fn apply_certified_to_mirror<Blockchain: Rpc, Cluster: Api>(
         Ok(reseeded) => *mirror.lock().await = reseeded,
         Err(err) => warn!(tape = %tape_key.address(), %err, "mirror reseed failed; later proofs fall back"),
     }
-    Ok(())
-}
-
-/// Poll the chain root against the mirror and log a lasting mismatch, every track is already certified
-pub(crate) async fn verify_mirror_root<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
-    mirror: &Mutex<ArchiveMirror>,
-) -> Result<(), TapedriveError> {
-    // A mirror reseeded from chain state holds none of this client's tracks,
-    // so its root is a chain snapshot and comparing it proves nothing.
-    if mirror.lock().await.is_empty() {
-        debug!(tape = %tape_key.address(), "mirror holds no appended tracks; skipping root check");
-        return Ok(());
-    }
-
-    let mut expected = Hash::default();
-    let mut observed = Hash::default();
-    for attempt in 0..ROOT_CHECK_ATTEMPTS {
-        if attempt > 0 {
-            sleep(ROOT_CHECK_DELAY).await;
-        }
-
-        // A certify landing during the poll moves the mirror, so reread it
-        expected = mirror.lock().await.root();
-        let tape = match client.get_tape(&tape_key.address()).await {
-            Ok(tape) => tape,
-            Err(err) => {
-                warn!(tape = %tape_key.address(), %err, "mirror root check skipped; tape fetch failed");
-                return Ok(());
-            }
-        };
-        observed = tape.tracks.tree.root();
-        if observed == expected {
-            return Ok(());
-        }
-    }
-
-    warn!(
-        tape = %tape_key.address(),
-        mirror_root = %expected,
-        chain_root = %observed,
-        "tape track tree diverged from the mirror; another writer touched the tape"
-    );
     Ok(())
 }
 

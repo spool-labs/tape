@@ -14,12 +14,13 @@ use crate::error::TapedriveError;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Phase};
 use crate::stream::manifest::MAX_TRACK_SIZE;
-use crate::stream::write::{append_to_mirror, certify_chunk, verify_mirror_root};
+use crate::stream::write::{append_to_mirror, certify_chunk};
 use crate::tapedrive::Tapedrive;
 use crate::track::write::{
-    UploadPlan, WrittenTrack, collect_certification, encode_blob, inline_write_fits,
+    UploadPlan, WrittenTrack, collect_certification, confirm_certifies, encode_blob,
+    inline_write_fits,
     register_blob_processed, register_raw_processed, resolve_sent_blob, resolve_sent_raw,
-    upload_with_retry, wait_for_certified_track,
+    upload_with_retry,
 };
 use crate::transfer::certify::CollectedSignatures;
 
@@ -507,9 +508,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             }
         }
 
-        let mut certified = Vec::with_capacity(pending.len());
+        let mut processed = Vec::with_capacity(pending.len());
         for pending in pending {
-            certify_chunk(
+            let signature = certify_chunk(
                 self,
                 bucket,
                 &mirror,
@@ -519,20 +520,11 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 Operation::WriteBatch,
             )
             .await?;
-            certified.push(pending.written.track.track_number);
+            processed.extend(signature);
         }
 
-        let visibility = self
-            .timer(Operation::WriteBatch, Phase::CertifyVisible)
-            .chunks(certified.len() as u64);
-        let tape_address = bucket.address();
-        let result = futures::future::try_join_all(certified.iter().map(|track_number| {
-            wait_for_certified_track(self, &tape_address, *track_number)
-        }))
-        .await;
-        visibility.finish_result(&result);
-        result?;
-        verify_mirror_root(self, bucket, &mirror).await
+        // Readers poll peers, so the batch ends at confirmation without waiting on peer lag.
+        confirm_certifies(self, &processed, Operation::WriteBatch).await
     }
 }
 
