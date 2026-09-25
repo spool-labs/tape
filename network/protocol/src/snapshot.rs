@@ -256,7 +256,7 @@ async fn fetch_verified_slices<A: Api>(
                     warn!(node = %peer, spool = %spool, "snapshot reader: slice failed leaf verification");
                     continue;
                 }
-                out.push((leaf_idx, Vec::from(res.data)));
+                out.push((leaf_idx, res.data));
                 if out.len() >= K_INNER {
                     return Ok(out);
                 }

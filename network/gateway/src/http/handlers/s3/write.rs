@@ -25,8 +25,6 @@ use tape_sdk::keys::helpers::load_ed25519_keypair;
 use tape_sdk::keys::operator::TapeDelegate;
 use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_sdk::bootstrap::Reputation;
-use tape_sdk::object::{ObjectBatchItem, ObjectBatchReceipt};
-use tape_sdk::track::write::UploadPlan;
 use tape_sdk::Tapedrive;
 use tokio::io::AsyncRead;
 use zeroize::Zeroizing;
@@ -124,7 +122,6 @@ impl S3WriteContext {
     /// it (an S3 overwrite). A single-track write then resumes a matching
     /// incomplete track, skips a matching complete one, or overwrites and
     /// reclaims a differing one, instead of always appending a duplicate.
-    /// `plan` is the PUT's encode of these bytes, when it is still held.
     pub async fn write_object<Db, Cluster, Blockchain>(
         &self,
         context: &NodeContext<Db, Cluster, Blockchain>,
@@ -133,7 +130,6 @@ impl S3WriteContext {
         content_type: ContentType,
         data: &[u8],
         existing: Option<Address>,
-        plan: Option<UploadPlan>,
     ) -> Result<(Hash, Address), TapedriveError>
     where
         Db: Store,
@@ -148,7 +144,7 @@ impl S3WriteContext {
             // a client is never told one value now and served another once the
             // index catches up.
             let written = client
-                .write_or_resume_track_as(&operator, name, content_type, data, existing, plan)
+                .write_or_resume_track_as(&operator, name, content_type, data, existing)
                 .await?;
             let track = track_pda(written.track.tape, written.track.track_number).0;
             Ok((written.etag, track))
@@ -166,23 +162,6 @@ impl S3WriteContext {
             }
             Ok((receipt.etag, receipt.manifest))
         }
-    }
-
-    /// Write a run of in-memory objects to `tape` as the delegate in one batch, one receipt per object in order
-    pub async fn write_objects<Db, Cluster, Blockchain>(
-        &self,
-        context: &NodeContext<Db, Cluster, Blockchain>,
-        tape: Address,
-        objects: Vec<ObjectBatchItem>,
-    ) -> Result<Vec<ObjectBatchReceipt>, TapedriveError>
-    where
-        Db: Store,
-        Cluster: Api,
-        Blockchain: Rpc,
-    {
-        let client = self.client(context)?;
-        let operator = self.operator(tape)?;
-        client.put_objects_batch(&operator, objects).await
     }
 
     /// Stream a large object onto chunk tracks as the delegate, bounded in memory.

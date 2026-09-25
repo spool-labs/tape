@@ -306,7 +306,7 @@ async fn resume_flow_inner() {
         let key = TapeKey::generate();
         sdk.reserve(&key, capacity, EPOCHS).await.expect("I reserve");
         let first = sdk
-            .write_or_resume_track_as(&key, OBJECT_NAME, ContentType::Unknown, &data, None, None)
+            .write_or_resume_track_as(&key, OBJECT_NAME, ContentType::Unknown, &data, None)
             .await
             .expect("I first write");
         wait_track_state(&sdk, &key.address(), TrackWant::Certified, active_timeout).await;
@@ -317,7 +317,6 @@ async fn resume_flow_inner() {
                 ContentType::Unknown,
                 &other,
                 Some(track_pda(key.address(), first.track.track_number).0),
-                None,
             )
             .await
             .expect("I overwrite");

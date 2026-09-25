@@ -169,10 +169,4 @@ pub trait Rpc: Send + Sync {
         &self,
         txid: &Txid,
     ) -> Result<Option<Result<(), TransactionError>>, RpcError>;
-
-    /// Wait until a sent transaction reaches this client's commitment, returning how it executed
-    async fn wait_for_signature(
-        &self,
-        txid: &Txid,
-    ) -> Result<Result<(), TransactionError>, RpcError>;
 }

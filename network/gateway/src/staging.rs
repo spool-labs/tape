@@ -1,7 +1,7 @@
 //! Durable queue of S3 writes the gateway has acknowledged but not yet applied on chain.
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tape_store_api::Store;
@@ -11,57 +11,10 @@ use tape_crypto::address::Address;
 use tape_store::TapeStore;
 use tape_store::error::TapeStoreError;
 use tape_store::ops::PendingWriteOps;
-use tape_sdk::track::write::UploadPlan;
 use tape_store::types::{PendingOp, PendingState, PendingWrite};
 use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard};
 
 use crate::metrics;
-
-/// The staged encodes hold at most this many coded bytes
-const STAGED_PLAN_BYTES: u64 = 256 * 1024 * 1024;
-
-/// Holds the PUT path's encodes by ETag and drops the oldest first
-#[derive(Default)]
-struct StagedPlans {
-    plans: HashMap<Hash, UploadPlan>,
-    order: VecDeque<Hash>,
-    bytes: u64,
-}
-
-impl StagedPlans {
-    fn insert(&mut self, etag: Hash, plan: UploadPlan) {
-        let size = plan_bytes(&plan);
-        if size > STAGED_PLAN_BYTES || self.plans.contains_key(&etag) {
-            return;
-        }
-        while self.bytes + size > STAGED_PLAN_BYTES {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
-            if let Some(dropped) = self.plans.remove(&oldest) {
-                self.bytes -= plan_bytes(&dropped);
-            }
-        }
-        self.bytes += size;
-        self.order.push_back(etag);
-        self.plans.insert(etag, plan);
-    }
-
-    fn take(&mut self, etag: &Hash) -> Option<UploadPlan> {
-        let plan = self.plans.remove(etag)?;
-        self.bytes -= plan_bytes(&plan);
-        self.order.retain(|queued| queued != etag);
-        Some(plan)
-    }
-}
-
-fn plan_bytes(plan: &UploadPlan) -> u64 {
-    let mut bytes = 0;
-    for slice in &plan.slices {
-        bytes += slice.data().len() as u64;
-    }
-    bytes
-}
 
 /// What one entry counts towards each byte total.
 #[derive(Clone, Copy, Default)]
@@ -124,7 +77,6 @@ pub struct StagingStore<Db: Store> {
     queued_bytes: Mutex<QueuedBytes>,
     /// One write lock per bucket, minted on first use.
     tape_locks: Mutex<HashMap<Address, Arc<AsyncMutex<()>>>>,
-    staged_plans: Mutex<StagedPlans>,
     wake: Notify,
 }
 
@@ -143,7 +95,6 @@ impl<Db: Store> StagingStore<Db> {
             next_seq: AtomicU64::new(highest.saturating_add(1)),
             queued_bytes: Mutex::new(queued),
             tape_locks: Mutex::new(HashMap::new()),
-            staged_plans: Mutex::new(StagedPlans::default()),
             wake: Notify::new(),
         })
     }
@@ -368,18 +319,6 @@ impl<Db: Store> StagingStore<Db> {
         Ok(())
     }
 
-    /// Keep a PUT's encode so the drain can write with it
-    pub fn stage_plan(&self, etag: Hash, plan: UploadPlan) {
-        let mut staged = self.staged_plans.lock().unwrap_or_else(PoisonError::into_inner);
-        staged.insert(etag, plan);
-    }
-
-    /// The staged plan for these bytes, if the PUT's encode is still held
-    pub fn take_plan(&self, etag: &Hash) -> Option<UploadPlan> {
-        let mut staged = self.staged_plans.lock().unwrap_or_else(PoisonError::into_inner);
-        staged.take(etag)
-    }
-
     /// Wait until a write is queued; the drain also ticks on its own.
     pub async fn queued(&self) {
         self.wake.notified().await;
@@ -389,7 +328,6 @@ impl<Db: Store> StagingStore<Db> {
 #[cfg(test)]
 mod tests {
     use tape_store_memory::MemoryStore;
-    use tape_sdk::track::write::content_etag;
     use tape_store::types::PENDING_WRITE_CHUNK_BYTES;
 
     use crate::http::handlers::resolve::resolve_readable;
@@ -457,39 +395,7 @@ mod tests {
             .expect("enqueue put");
     }
 
-    async fn plan_for(size: usize) -> (Hash, UploadPlan) {
-        let computed = content_etag(pattern(size)).await.expect("etag");
-        (computed.etag, computed.plan.expect("coded plan"))
-    }
-
-    // the drain takes a staged plan back once
-    #[tokio::test]
-    async fn staged_plan() {
-        let staging = staging();
-        let (etag, plan) = plan_for(64 * 1024).await;
-        let commitment = plan.commitment_hash;
-
-        staging.stage_plan(etag, plan);
-
-        let taken = staging.take_plan(&etag).expect("staged plan");
-        assert_eq!(taken.commitment_hash, commitment);
-        assert!(staging.take_plan(&etag).is_none());
-    }
-
-    // plans past the byte budget push out the oldest
-    #[tokio::test]
-    async fn plan_budget() {
-        let staging = staging();
-        let (first, plan) = plan_for(64 * 1024 * 1024).await;
-        staging.stage_plan(first, plan);
-        let (second, plan) = plan_for(64 * 1024 * 1024 - 1).await;
-        staging.stage_plan(second, plan);
-
-        assert!(staging.take_plan(&first).is_none());
-        assert!(staging.take_plan(&second).is_some());
-    }
-
-        // a queued put serves its bytes back and is not hidden
+    // a queued put serves its bytes back and is not hidden
     #[tokio::test]
     async fn put_visible() {
         let staging = staging();

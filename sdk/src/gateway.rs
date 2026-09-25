@@ -9,10 +9,11 @@ use tape_peer_http::GatewayApi;
 use tape_peer_manager::PeerManager;
 use tape_rpc::Rpc;
 use tape_rpc_client::RpcClient;
+use tape_api::program::tapedrive::track_pda;
+use tape_crypto::hash::hash;
 use tape_crypto::prelude::Address;
-use tape_protocol::api::ApiError;
+use tape_protocol::api::{ApiError, FindTrackVersion};
 use tape_protocol::ProtocolState;
-use tokio::io::AsyncWrite;
 
 use crate::error::TapedriveError;
 use crate::metrics::{Metrics, Operation, Phase};
@@ -108,53 +109,15 @@ impl<Blockchain: Rpc> Gateway<Blockchain> {
         .await
     }
 
-    /// Copy logical object bytes for a representing track into a sink as they arrive
-    pub async fn read_object_into<Writer: AsyncWrite + Unpin>(
-        &self,
-        track: &Address,
-        writer: &mut Writer,
-    ) -> Result<u64, TapedriveError> {
-        let timer = self.inner.timer(Operation::ReadStream, Phase::Total);
-        let result = self
-            .inner
-            .api
-            .copy_object_into(*track, writer)
-            .await
-            .map_err(TapedriveError::from);
-        let timer = match &result {
-            Ok(copied) => timer.bytes(*copied),
-            Err(_) => timer,
-        };
-        timer.finish_result(&result);
-        result
-    }
-
-    /// Copy an object from a bucket by key into a sink as its bytes arrive
-    pub async fn get_object_into<Writer: AsyncWrite + Unpin>(
-        &self,
-        bucket: &Address,
-        name: &str,
-        writer: &mut Writer,
-    ) -> Result<u64, TapedriveError> {
-        let timer = self.inner.timer(Operation::ReadStream, Phase::Total);
-        let result = self
-            .inner
-            .api
-            .copy_bucket_object_into(*bucket, name, writer)
-            .await
-            .map_err(TapedriveError::from);
-        let timer = match &result {
-            Ok(copied) => timer.bytes(*copied),
-            Err(_) => timer,
-        };
-        timer.finish_result(&result);
-        result
-    }
-
     /// Read a named object from a bucket through the gateway.
     pub async fn get_object(&self, bucket: &Address, name: &str) -> Result<Vec<u8>, TapedriveError> {
-        self.timed_bytes(Operation::ReadStream, self.inner.api.get_bucket_object_bytes(*bucket, name))
-            .await
+        let key = hash(name.as_bytes());
+        let track = self
+            .inner
+            .find_track(bucket, key, FindTrackVersion::Latest)
+            .await?;
+        let address = track_pda(track.tape, track.track_number).0;
+        self.read_object_by_track(&address).await
     }
 }
 
@@ -197,75 +160,9 @@ impl<Blockchain: Rpc> Tapedrive<Blockchain, GatewayApi> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
-
-    use axum::Router;
-    use axum::routing::{get, post};
-    use bytemuck::Zeroable;
     use rpc_litesvm::LiteSvmRpc;
-    use tape_core::track::types::CompressedTrack;
-    use tape_crypto::hash::hash;
-    use tape_crypto::prelude::Address;
-    use tape_protocol::api::{FindTrackVersion, TAPE_TRACK_FIND_PATH, TrackResponse};
 
-    use crate::bootstrap::HEDGE_DELAY;
     use crate::tapedrive::Tapedrive;
-
-    /// Serve find-track and bucket reads slower than the hedge delay, counting every request
-    async fn slow_gateway(requests: Arc<AtomicUsize>) -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let base = format!("http://{}", listener.local_addr().expect("address"));
-        let (finds, reads) = (requests.clone(), requests);
-        let router = Router::new()
-            .route(
-                TAPE_TRACK_FIND_PATH,
-                post(move || async move {
-                    finds.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(HEDGE_DELAY * 3).await;
-                    let response = TrackResponse { track: CompressedTrack::zeroed().pack() };
-                    wincode::serialize(&response).expect("encode track")
-                }),
-            )
-            .route(
-                "/bucket/{tape}/{*key}",
-                get(move || async move {
-                    reads.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(HEDGE_DELAY * 3).await;
-                    b"object bytes".to_vec()
-                }),
-            );
-        tokio::spawn(async move { axum::serve(listener, router).await });
-        base
-    }
-
-    // a slow gateway still gets one request per lookup
-    #[tokio::test]
-    async fn one_request_lookup() {
-        let requests = Arc::new(AtomicUsize::new(0));
-        let base = slow_gateway(requests.clone()).await;
-        let gateway = Tapedrive::new_gateway_read_only(LiteSvmRpc::new(), base).expect("client");
-
-        let found = gateway.find_track(&Address::new_unique(), hash(b"key"), FindTrackVersion::Latest).await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        assert!(found.is_ok());
-        assert_eq!(requests.load(Ordering::SeqCst), 1);
-    }
-
-    // a read by bucket and key through a gateway is one request
-    #[tokio::test]
-    async fn one_request_object() {
-        let requests = Arc::new(AtomicUsize::new(0));
-        let base = slow_gateway(requests.clone()).await;
-        let gateway = Tapedrive::new_gateway_read_only(LiteSvmRpc::new(), base).expect("client");
-
-        let read = gateway.get_object(&Address::new_unique(), "photos/june.png").await;
-
-        assert_eq!(read.expect("read"), b"object bytes");
-        assert_eq!(requests.load(Ordering::SeqCst), 1);
-    }
 
     #[test]
     fn gateway_constructor_builds_read_client() {

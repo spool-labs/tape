@@ -44,5 +44,5 @@ pub trait ErasureCoder {
     /// # Returns
     /// Reconstructed data, including any encode padding. Callers that know
     /// the original length truncate.
-    fn decode(&self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DecodeError>;
+    fn decode(&mut self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DecodeError>;
 }

@@ -187,15 +187,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                         admission::slice_admission::<Db, Cluster, Blockchain>,
                     )),
             )
-            .route(
-                api_routes::TRACK_SLICE_WINDOW_PATH,
-                get(handlers::track::slice::get_slice_window::<Db, Cluster, Blockchain>).layer(
-                    from_fn_with_state(
-                        state.clone(),
-                        admission::slice_admission::<Db, Cluster, Blockchain>,
-                    ),
-                ),
-            )
             // Challenge traffic: an answer and the attestations over it. An
             // answer is verified before it is kept; an attestation is taken on
             // trust from the peer its mTLS identity names and settled by the
@@ -423,19 +414,13 @@ async fn handle_http_error(error: BoxError) -> StatusCode {
 const H2_MAX_CONCURRENT_STREAMS: u32 = 1024;
 const H2_MAX_PENDING_ACCEPT_RESET_STREAMS: usize = 1024;
 
-/// Receive windows wide enough for a whole slice body in one round trip.
-const H2_STREAM_WINDOW: u32 = 16 * 1024 * 1024;
-const H2_CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
-
 /// Raises the HTTP/2 limits a trusted mesh runs into.
 fn tune_h2<A>(server: &mut axum_server::Server<A>) {
     server
         .http_builder()
         .http2()
         .max_concurrent_streams(H2_MAX_CONCURRENT_STREAMS)
-        .max_pending_accept_reset_streams(H2_MAX_PENDING_ACCEPT_RESET_STREAMS)
-        .initial_stream_window_size(H2_STREAM_WINDOW)
-        .initial_connection_window_size(H2_CONNECTION_WINDOW);
+        .max_pending_accept_reset_streams(H2_MAX_PENDING_ACCEPT_RESET_STREAMS);
 }
 
 /// registered outside this layer and serve throughout.

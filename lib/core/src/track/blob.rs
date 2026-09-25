@@ -10,8 +10,7 @@ use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf, verify_proof
 
 use crate::encoding::EncodingProfile;
 use crate::erasure::{
-    GROUP_SIZE, SAMPLE_WINDOW_BYTES, SLICE_TREE_HEIGHT, SUB_LEAF_BYTES, SUB_TREE_HEIGHT, slice_root,
-    slice_root_from_sidecar, sub_leaf_hashes, window_root,
+    GROUP_SIZE, SLICE_TREE_HEIGHT, SUB_LEAF_BYTES, SUB_TREE_HEIGHT, slice_root, sub_leaf_hashes,
 };
 use crate::types::{SpoolIndex, StorageUnits, StripeCount};
 
@@ -94,31 +93,6 @@ impl BlobEncoding {
         }
 
         slice_root(data) == Some(self.leaves[position])
-    }
-
-    /// Verify whole windows cut from a slice from `first_window` on, against the sidecar and the slice root
-    pub fn verify_slice_window(
-        &self,
-        position: SpoolIndex,
-        sidecar: &[Hash],
-        first_window: usize,
-        data: &[u8],
-    ) -> bool {
-        let position = position.as_usize();
-        if position >= self.leaves.len() || data.is_empty() {
-            return false;
-        }
-        if slice_root_from_sidecar(sidecar) != self.leaves[position] {
-            return false;
-        }
-
-        for (offset, window) in data.chunks(SAMPLE_WINDOW_BYTES).enumerate() {
-            match sidecar.get(first_window + offset) {
-                Some(node) if *node == window_root(window) => {}
-                _ => return false,
-            }
-        }
-        true
     }
 
     /// Prove one sample leaf of a slice the caller holds.
@@ -216,7 +190,7 @@ impl<'de> SchemaRead<'de> for BlobEncoding {
 mod tests {
     use super::*;
     use crate::encoding::EncodingProfile;
-    use crate::erasure::{slice_sidecar, sub_leaf_count};
+    use crate::erasure::sub_leaf_count;
 
     fn sample_blob_encoding() -> BlobEncoding {
         BlobEncoding {
@@ -247,25 +221,6 @@ mod tests {
         assert_eq!(recovered.stripe_size, StorageUnits::from_bytes(64));
         assert_eq!(recovered.stripe_count, StripeCount(2));
         assert_eq!(recovered, blob);
-    }
-
-    // only an untouched window run at its true offset verifies against the sidecar
-    #[test]
-    fn slice_windows() {
-        let slice: Vec<u8> = (0..SAMPLE_WINDOW_BYTES * 3 + 700).map(|b| (b % 251) as u8).collect();
-        let sidecar = slice_sidecar(&slice).expect("sidecar");
-        let mut leaves = [Hash::default(); GROUP_SIZE];
-        leaves[4] = slice_root(&slice).expect("root");
-        let blob = BlobEncoding { leaves, ..BlobEncoding::zeroed() };
-        let tail = &slice[SAMPLE_WINDOW_BYTES * 2..];
-        let mut tampered = tail.to_vec();
-        tampered[10] ^= 1;
-
-        assert!(blob.verify_slice_window(SpoolIndex(4), &sidecar, 2, tail));
-        assert!(blob.verify_slice_window(SpoolIndex(4), &sidecar, 0, &slice[..SAMPLE_WINDOW_BYTES]));
-        assert!(!blob.verify_slice_window(SpoolIndex(4), &sidecar, 2, &tampered));
-        assert!(!blob.verify_slice_window(SpoolIndex(4), &sidecar, 1, tail));
-        assert!(!blob.verify_slice_window(SpoolIndex(5), &sidecar, 2, tail));
     }
 
     /// A blob whose leaves are the real sub-leaf roots of the returned slices.

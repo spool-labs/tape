@@ -9,7 +9,6 @@ name = "tape-gateway"
 path = "src/bin/gateway/main.rs"
 
 [dependencies]
-bytes = { workspace = true }
 tape-blacklist = { workspace = true }
 tape-rack = { workspace = true }
 tape-retry = { workspace = true }
@@ -20,7 +19,6 @@ tape-crypto = { workspace = true }
 tape-node = { workspace = true }
 tape-protocol = { workspace = true }
 tape-sdk = { workspace = true }
-tape-slicer = { workspace = true }
 tape-store = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 tape-rpc = { workspace = true }

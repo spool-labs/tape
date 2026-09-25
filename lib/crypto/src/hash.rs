@@ -6,8 +6,6 @@ use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_os = "solana"))]
 use solana_hash::{Hash as SolanaRuntimeHash, ParseHashError};
-#[cfg(not(target_os = "solana"))]
-use tape_sha256::{hash_messages, Message};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -92,28 +90,11 @@ impl FromStr for Hash {
 #[inline(always)]
 pub fn hashv(data: &[&[u8]]) -> Hash {
     #[cfg(not(target_os = "solana"))]
-    return hashv_parts(data);
+    let res = solana_sha256_hasher::hashv(data);
     #[cfg(target_os = "solana")]
-    return Hash(solana_program::hash::hashv(data).to_bytes());
-}
+    let res = solana_program::hash::hashv(data);
 
-/// SHA-256 of the parts in order, on the kernel the CPU supports
-#[cfg(not(target_os = "solana"))]
-fn hashv_parts(parts: &[&[u8]]) -> Hash {
-    let joined: Vec<u8>;
-    let message = match parts {
-        [] => Message::new(&[]),
-        [body] => Message::new(body),
-        [prefix, body] => Message::prefixed(prefix, body),
-        [prefix, left, right] => Message::pair(prefix, left, right),
-        [_, _, _, _, ..] => {
-            joined = parts.concat();
-            Message::new(&joined)
-        }
-    };
-    let mut out = [[0u8; HASH_BYTES]];
-    hash_messages(&[message], &mut out);
-    Hash(out[0])
+    Hash(res.to_bytes())
 }
 
 /// Name of the SHA-256 kernel this build hashes with.
@@ -140,9 +121,11 @@ pub fn sha256_lane_width() -> usize {
 #[inline(always)]
 pub fn hash(data: &[u8]) -> Hash {
     #[cfg(not(target_os = "solana"))]
-    return hashv_parts(&[data]);
+    let res = solana_sha256_hasher::hash(data);
     #[cfg(target_os = "solana")]
-    return Hash(solana_program::hash::hash(data).to_bytes());
+    let res = solana_program::hash::hash(data);
+
+    Hash(res.to_bytes())
 }
 
 #[cfg(test)]
@@ -156,43 +139,5 @@ mod tests {
 
         assert_eq!(hash.to_string(), expected);
         assert!(!hash.to_string().contains('['));
-    }
-
-    // single buffers match the standard SHA-256 digests across padding edges
-    #[test]
-    fn known_vectors() {
-        let vectors = [
-            (0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
-            (1, "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"),
-            (55, "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"),
-            (56, "b35439a4ac6f0948b6d6f9e3c6af0f5f590ce20f1bde7090ef7970686ec6738a"),
-            (64, "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"),
-            (1000, "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3"),
-        ];
-        for (len, digest) in vectors {
-            let data = vec![b'a'; len];
-            assert_eq!(hex::encode(hash(&data).0), digest);
-            assert_eq!(hex::encode(hashv(&[&data]).0), digest);
-        }
-    }
-
-    // any split into parts hashes the concatenation
-    #[test]
-    fn split_parts() {
-        let sentence: &[u8] = b"The quick brown fox jumps over the lazy dog";
-        let digest = "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592";
-        let cuts = [4, 10, 16, 20, 35];
-        for count in 1..=5 {
-            let mut parts = Vec::new();
-            let mut start = 0;
-            for cut in &cuts[..count - 1] {
-                parts.push(&sentence[start..*cut]);
-                start = *cut;
-            }
-            parts.push(&sentence[start..]);
-            assert_eq!(parts.len(), count);
-            assert_eq!(hex::encode(hashv(&parts).0), digest);
-        }
-        assert_eq!(hex::encode(hashv(&[b"", sentence, b""]).0), digest);
     }
 }

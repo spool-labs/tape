@@ -58,7 +58,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 }
 
                 let (written, plan) = self
-                    .write_owned_blob(bucket, name, content_type, data)
+                    .write_named_blob(bucket, name, content_type, &data)
                     .await?;
                 let receipts = self.upload(&written, &plan).await?;
                 Ok((written, receipts))

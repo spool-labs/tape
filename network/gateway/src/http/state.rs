@@ -4,7 +4,6 @@ use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_node::context::NodeContext;
 use tape_protocol::Api;
-use tape_sdk::bootstrap::Reputation;
 
 use crate::admission::{AdmitAll, Admission};
 use crate::blacklist::denials::GatewayBlacklists;
@@ -42,8 +41,6 @@ pub struct AppState<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub share_tokens: Arc<ConfiguredShareTokens>,
     /// Blacklists this gateway follows; reads of what they deny are refused.
     pub blacklists: Arc<GatewayBlacklists>,
-    /// How each storage node has answered slice fetches, best first
-    pub reputation: Arc<Reputation>,
 }
 
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> AppState<Db, Cluster, Blockchain> {
@@ -68,7 +65,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> AppState<Db, Cluster, Blockchain>
             staging,
             share_tokens,
             blacklists,
-            reputation: Arc::new(Reputation::detached()),
         }
     }
 }
@@ -87,7 +83,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> Clone for AppState<Db, Cluster, B
             staging: self.staging.clone(),
             share_tokens: self.share_tokens.clone(),
             blacklists: self.blacklists.clone(),
-            reputation: self.reputation.clone(),
         }
     }
 }

@@ -5,6 +5,8 @@
 //! - Metadata suffix (blob_len, stripe_size, profile for decoding)
 //! - Optional rotation mapping for fair load distribution
 
+use std::collections::HashSet;
+
 use tape_core::encoding::{ClayParams, EncodingProfile};
 use tape_core::types::ChunkNumber;
 
@@ -12,7 +14,6 @@ use crate::stripe::{derive_stripe_size, stripe_size_accepted, STRIPE_CAP};
 use crate::clay::ClayCoder;
 use crate::errors::{DecodeError, EncodeError};
 use crate::metadata::SliceMetadata;
-use crate::range::StripeWindow;
 use crate::ErasureCoder;
 
 /// Rotation step per stripe (coprime with n=20 for full coverage).
@@ -122,7 +123,7 @@ fn validate_layout(
 /// ```
 pub struct Slicer<C: ErasureCoder> {
     pub coder: C,
-    /// Stripe size of the last encode; 0 until the first one.
+    /// Stripe size of the last encode or decode; 0 until the first one.
     pub stripe_size: usize,
     pub strategy: MappingStrategy,
     pub profile: EncodingProfile,
@@ -238,7 +239,7 @@ impl Slicer<ClayCoder> {
 
 }
 
-impl<C: ErasureCoder + Sync> ErasureCoder for Slicer<C> {
+impl<C: ErasureCoder> ErasureCoder for Slicer<C> {
     fn k(&self) -> usize {
         self.coder.k()
     }
@@ -309,7 +310,7 @@ impl<C: ErasureCoder + Sync> ErasureCoder for Slicer<C> {
         Ok(slices)
     }
 
-    fn decode(&self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DecodeError> {
+    fn decode(&mut self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DecodeError> {
         if chunks.is_empty() {
             return Err(DecodeError::NotEnoughSlices);
         }
@@ -327,145 +328,60 @@ impl<C: ErasureCoder + Sync> ErasureCoder for Slicer<C> {
             return Err(DecodeError::NotEnoughSlices);
         }
 
+        self.stripe_size = metadata.stripe_size();
+
         let blob_len = metadata.blob_len();
         if blob_len == 0 {
             return Ok(Vec::new());
         }
 
-        let (num_stripes, chunk_size) = validate_layout(chunks, &metadata)?;
-        let mut by_slice: Vec<Option<&[u8]>> = vec![None; self.n()];
-        for &(slice_idx, data) in chunks {
-            if let Some(slot) = by_slice.get_mut(slice_idx) {
-                *slot = Some(data);
-            }
-        }
-
-        let layout = StripeLayout {
-            stripe_size: metadata.stripe_size(),
-            chunk_size,
-        };
-        let mut output = vec![0u8; blob_len];
-        let threads = decode_threads(num_stripes);
-        if threads == 1 {
-            self.decode_stripes(&by_slice, layout, 0, 0, &mut output)?;
-            return Ok(output);
-        }
-
-        let stripes_per_thread = num_stripes.div_ceil(threads);
-        let window = stripes_per_thread * layout.stripe_size;
-        let by_slice = &by_slice;
-        let results: Vec<Result<(), DecodeError>> = std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(threads);
-            for (part, out) in output.chunks_mut(window).enumerate() {
-                let first = part * stripes_per_thread;
-                handles.push(scope.spawn(move || self.decode_stripes(by_slice, layout, first, 0, out)));
-            }
-            let mut results = Vec::with_capacity(handles.len());
-            for handle in handles {
-                results.push(handle.join().unwrap_or(Err(DecodeError::BadEncoding)));
-            }
-            results
-        });
-        for result in results {
-            result?;
-        }
-
-        Ok(output)
-    }
-}
-
-/// A decode spreads its stripes over at most this many threads
-pub const DECODE_THREADS: usize = 8;
-
-/// A thread earns its spawn only with at least this many stripes to decode
-const MIN_STRIPES_PER_THREAD: usize = 2;
-
-/// Where each stripe sits in the blob and in every slice
-#[derive(Clone, Copy, Debug)]
-struct StripeLayout {
-    stripe_size: usize,
-    chunk_size: usize,
-}
-
-fn decode_threads(num_stripes: usize) -> usize {
-    let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get());
-    (num_stripes / MIN_STRIPES_PER_THREAD).min(cores).min(DECODE_THREADS).max(1)
-}
-
-impl<C: ErasureCoder + Sync> Slicer<C> {
-    /// Decode the stripes a range covers from slice windows that start at its slice offset
-    pub fn decode_window(
-        &self,
-        windows: &[(usize, &[u8])],
-        blob_len: usize,
-        stripe_size: usize,
-        chunk_size: usize,
-        window: StripeWindow,
-    ) -> Result<Vec<u8>, DecodeError> {
-        if windows.len() < self.coder.k() {
-            return Err(DecodeError::NotEnoughSlices);
-        }
-        let first_byte = window.first_stripe * stripe_size;
-        let needed = (window.first_stripe + window.stripe_count) * chunk_size;
-        if first_byte >= blob_len || needed < window.slice_offset {
-            return Err(DecodeError::InvalidLayout);
-        }
-
-        let mut by_slice: Vec<Option<&[u8]>> = vec![None; self.n()];
-        for &(slice_idx, data) in windows {
-            if data.len() < needed - window.slice_offset {
-                return Err(DecodeError::InvalidLayout);
-            }
-            if let Some(slot) = by_slice.get_mut(slice_idx) {
-                *slot = Some(data);
-            }
-        }
-
-        let layout = StripeLayout {
-            stripe_size,
-            chunk_size,
-        };
-        let mut output = vec![0u8; (window.stripe_count * stripe_size).min(blob_len - first_byte)];
-        self.decode_stripes(&by_slice, layout, window.first_stripe, window.slice_offset, &mut output)?;
-        Ok(output)
-    }
-
-    /// Decode consecutive stripes from `first` into `out`, reading slices that begin at `base` bytes in
-    fn decode_stripes(
-        &self,
-        by_slice: &[Option<&[u8]>],
-        layout: StripeLayout,
-        first: usize,
-        base: usize,
-        out: &mut [u8],
-    ) -> Result<(), DecodeError> {
         let n = self.n();
-        let mut stripe_chunks: Vec<(usize, &[u8])> = Vec::with_capacity(n);
-        for (offset, window) in out.chunks_mut(layout.stripe_size).enumerate() {
-            let stripe = first + offset;
-            let chunk_offset = stripe * layout.chunk_size - base;
+        let (num_stripes, chunk_size) = validate_layout(chunks, &metadata)?;
 
-            stripe_chunks.clear();
+        // Build index set for quick lookup
+        let present_indices: HashSet<usize> = chunks.iter().map(|&(i, _)| i).collect();
+        let chunks_map: std::collections::HashMap<usize, &[u8]> =
+            chunks.iter().map(|&(i, d)| (i, d)).collect();
+
+        let mut output = Vec::with_capacity(blob_len);
+
+        for s in 0..num_stripes {
+            let chunk_offset = s * chunk_size;
+
+            // Build available chunks and erasures for this stripe
+            let mut stripe_chunks: Vec<(usize, &[u8])> = Vec::with_capacity(chunks.len());
+
             for shard_idx in 0..n {
-                let slice_idx = shard_to_slice(self.strategy, n, stripe, shard_idx);
-                if let Some(slice_data) = by_slice[slice_idx] {
-                    stripe_chunks.push((shard_idx, &slice_data[chunk_offset..chunk_offset + layout.chunk_size]));
+                let slice_idx = shard_to_slice(self.strategy, n, s, shard_idx);
+                if present_indices.contains(&slice_idx) {
+                    let slice_data = chunks_map[&slice_idx];
+                    let chunk = &slice_data[chunk_offset..chunk_offset + chunk_size];
+                    stripe_chunks.push((shard_idx, chunk));
                 }
             }
 
             let stripe_data = self.coder.decode(&stripe_chunks)?;
-            let Some(decoded) = stripe_data.get(..window.len()) else {
-                return Err(DecodeError::InvalidLayout);
+
+            // Take only what we need for this stripe
+            let take = if s == num_stripes - 1 {
+                blob_len - output.len()
+            } else {
+                self.stripe_size
             };
-            window.copy_from_slice(decoded);
+
+            if take > stripe_data.len() {
+                return Err(DecodeError::InvalidLayout);
+            }
+            output.extend_from_slice(&stripe_data[..take]);
         }
-        Ok(())
+
+        Ok(output)
     }
 }
 
 impl<C: ErasureCoder> Slicer<C> {
     fn encode_empty_blob(&mut self) -> Result<Vec<Vec<u8>>, EncodeError> {
-        let n = self.coder.n();
+        let n = self.n();
 
         // Encode a full stripe of zeros
         let empty = vec![0u8; self.stripe_size];
@@ -489,7 +405,7 @@ impl<C: ErasureCoder> Slicer<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{num_stripes, stripe_window, ClayCoder};
+    use crate::{num_stripes, ClayCoder};
     use tape_core::encoding::ClayParams;
 
     const N: usize = 20; // k=7 + m=13 (default Clay)
@@ -590,30 +506,6 @@ mod tests {
         let refs = to_refs(&chunks);
         let restored = slicer.decode(&refs).unwrap();
         assert_eq!(restored, payload);
-    }
-
-    // a range decodes from window cuts of k slices and matches the blob bytes
-    #[test]
-    fn window_decode() {
-        let blob = mk(4 * 1024 * 1024 + 333);
-        let mut slicer = Slicer::clay_default();
-        let slices = slicer.encode(&blob).expect("encode");
-        let stripe_size = slicer.stripe_size();
-        let stripes = num_stripes(blob.len(), stripe_size);
-        let chunk_size = (slices[0].len() - SliceMetadata::SIZE) / stripes;
-        let keep = [1usize, 4, 6, 9, 13, 17, 19];
-
-        for (start, end) in [(stripe_size + 7, stripe_size + 4103), (stripe_size - 3, stripe_size * 2 + 9), (blob.len() - 50, blob.len())] {
-            let window = stripe_window(blob.len(), stripe_size, chunk_size, start, end).expect("window");
-            let cuts: Vec<(usize, &[u8])> = keep
-                .iter()
-                .map(|&idx| (idx, &slices[idx][window.slice_offset..window.slice_offset + window.slice_len]))
-                .collect();
-
-            let decoded = slicer.decode_window(&cuts, blob.len(), stripe_size, chunk_size, window).expect("decode");
-
-            assert_eq!(&decoded[window.skip..window.skip + window.take], &blob[start..end]);
-        }
     }
 
     #[test]

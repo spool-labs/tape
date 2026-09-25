@@ -1,19 +1,13 @@
-use std::time::Instant;
-
-use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::spooler::GroupIndex;
-use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{with_share_token, BINARY_CONTENT, GetSliceReq};
-use tape_sdk::bootstrap::counts_against_peer;
 use tracing::debug;
 
 use super::{parse_address, track_data_with_pending, track_with_pending};
@@ -59,39 +53,20 @@ pub async fn read_cached_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .await
 }
 
-/// Read one slice through the cache for a track whose record, blob and owner the caller already resolved
-pub async fn read_resolved_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
-    origin: &SliceOrigin,
-    spool_id: SpoolIndex,
-    owner: Address,
-) -> Result<CacheRead, RouteError> {
-    state
-        .slice_cache
-        .get_or_insert_with(spool_id, origin.track_addr, origin.tape, || {
-            fetch_verified_slice(state, origin, spool_id, owner)
-        })
-        .await
-}
-
-/// Slice fetches for one track check their bytes against these fields
-#[derive(Clone, Copy, Debug)]
-pub struct SliceOrigin {
-    pub track_addr: Address,
-    pub tape: Address,
-    pub group: GroupIndex,
-    pub blob: BlobEncoding,
-}
-
 async fn fetch_slice_from_owner<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
     spool_id: SpoolIndex,
-) -> Result<Bytes, RouteError> {
+) -> Result<Vec<u8>, RouteError> {
     let track = track_with_pending(state, track_addr)?.ok_or(RouteError::NotFound)?;
     if !track.is_coded() {
         return Err(RouteError::BadRequest("track is not coded".into()));
     }
+
+    let position = track
+        .group
+        .position_of(spool_id)
+        .ok_or_else(|| RouteError::BadRequest("spool is not in track group".into()))?;
 
     let data = track_data_with_pending(state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
     let BlobData::Coded(blob) = data else {
@@ -108,50 +83,25 @@ async fn fetch_slice_from_owner<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .find_map(|(spool, node)| (spool == spool_id).then_some(node))
         .ok_or_else(|| RouteError::BadGateway("spool owner not found".into()))?;
 
-    let origin = SliceOrigin {
-        track_addr,
-        tape: track.tape,
-        group: track.group,
-        blob,
-    };
-    fetch_verified_slice(state, &origin, spool_id, owner).await
-}
+    let response = state
+        .context
+        .api
+        .get_slice(
+            owner,
+            &GetSliceReq {
+                track: track_addr,
+                spool: spool_id,
+            },
+        )
+        .await
+        .map_err(|error| RouteError::BadGateway(format!("get_slice: {error}")))?;
 
-async fn fetch_verified_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
-    origin: &SliceOrigin,
-    spool_id: SpoolIndex,
-    owner: Address,
-) -> Result<Bytes, RouteError> {
-    let position = origin
-        .group
-        .position_of(spool_id)
-        .ok_or_else(|| RouteError::BadRequest("spool is not in track group".into()))?;
-
-    let started = Instant::now();
-    let request = GetSliceReq {
-        track: origin.track_addr,
-        spool: spool_id,
-    };
-    let response = match state.context.api.get_slice(owner, &request).await {
-        Ok(response) => {
-            state.reputation.record_success(owner, started.elapsed());
-            response
-        }
-        Err(error) => {
-            if counts_against_peer(&error) {
-                state.reputation.record_failure(owner);
-            }
-            return Err(RouteError::BadGateway(format!("get_slice: {error}")));
-        }
-    };
-
-    if !origin.blob.verify_slice(SpoolIndex(position as u64), &response.data) {
+    if !blob.verify_slice(SpoolIndex(position as u64), &response.data) {
         return Err(RouteError::BadGateway("slice leaf hash mismatch".into()));
     }
 
     debug!(
-        track = %origin.track_addr,
+        track = %track_addr,
         spool = spool_id.0,
         owner = %owner,
         bytes = response.data.len(),

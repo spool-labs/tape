@@ -63,7 +63,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 
     /// Resolve a name to its representing track (latest version) via `hash(name)`.
-    pub(super) async fn lookup_object(
+    async fn lookup_object(
         &self,
         bucket: &Address,
         name: &str,

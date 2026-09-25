@@ -226,9 +226,9 @@ impl BlobEncoder {
     /// - The blob merkle root (commitment)
     pub fn encode_with_proofs(
         &mut self,
-        data: &[u8],
+        data: Vec<u8>,
     ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot), UploadError> {
-        let chunks = self.encode_internal(data)?;
+        let chunks = self.encode_internal(&data)?;
 
         // Build each slice's sub-leaf root once, then reuse it for the blob root,
         // the proofs, and the per-slice leaf stored in the upload payload.
@@ -260,7 +260,7 @@ impl BlobEncoder {
                 chunk,
                 leaf_hash,
                 proof_arr,
-            )?);
+            ));
         }
 
         Ok((output, root))
@@ -272,7 +272,7 @@ impl BlobEncoder {
     /// to the RegisterTrack instruction.
     pub fn encode_with_leaves(
         &mut self,
-        data: &[u8],
+        data: Vec<u8>,
     ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot, [Hash; GROUP_SIZE]), UploadError> {
         let (slices, root) = self.encode_with_proofs(data)?;
         let mut leaves = [Hash::default(); GROUP_SIZE];
@@ -368,14 +368,14 @@ mod tests {
 
         let mut encoder = test_encoder();
         let data = vec![0x42; 20_000];
-        let (slices_with_proofs, root) = encoder.encode_with_proofs(&data).unwrap();
+        let (slices_with_proofs, root) = encoder.encode_with_proofs(data).unwrap();
 
         assert_eq!(slices_with_proofs.len(), GROUP_SIZE);
 
         // The top tree commits to slice roots, so the proof starts from the root
         for slice in &slices_with_proofs {
             let valid = verify_proof_hash(
-                slice_root(slice.data()).unwrap(),
+                slice_root(&slice.data).unwrap(),
                 &root,
                 &slice.merkle_proof,
                 slice.index.as_u64(),
@@ -389,7 +389,7 @@ mod tests {
     fn test_encode_with_proofs_indices_sequential() {
         let mut encoder = test_encoder();
         let data = vec![0xAB; 15_000];
-        let (slices_with_proofs, _) = encoder.encode_with_proofs(&data).unwrap();
+        let (slices_with_proofs, _) = encoder.encode_with_proofs(data).unwrap();
 
         // Verify indices are sequential
         for (expected_idx, slice) in slices_with_proofs.iter().enumerate() {
@@ -404,7 +404,7 @@ mod tests {
 
         // encode_with_root and encode_with_proofs should produce same root
         let (_, root1) = encoder.encode_with_root(data.clone()).unwrap();
-        let (_, root2) = encoder.encode_with_proofs(&data).unwrap();
+        let (_, root2) = encoder.encode_with_proofs(data).unwrap();
 
         assert_eq!(root1, root2);
     }
@@ -413,11 +413,11 @@ mod tests {
     fn test_encode_with_proofs_has_leaf_hash() {
         let mut encoder = test_encoder();
         let data = vec![0xEF; 10_000];
-        let (slices_with_proofs, _) = encoder.encode_with_proofs(&data).unwrap();
+        let (slices_with_proofs, _) = encoder.encode_with_proofs(data).unwrap();
 
         // Each leaf is the slice's sub-leaf root, not a hash of the whole slice
         for slice in &slices_with_proofs {
-            let expected_leaf = slice_root(slice.data()).unwrap();
+            let expected_leaf = slice_root(&slice.data).unwrap();
             assert_eq!(slice.leaf_hash, expected_leaf);
         }
     }
@@ -446,11 +446,10 @@ mod tests {
 
         let original = vec![0xAB; 10_000];
         let mut encoder = BlobEncoder::with_encoding(EncodingType::Clay);
-        let decoder = BlobDecoder::with_encoding(EncodingType::Clay);
+        let mut decoder = BlobDecoder::with_encoding(EncodingType::Clay);
 
         let slices = encoder.encode(original.clone()).unwrap();
-        let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(idx, data)| (*idx, data.as_slice())).collect();
-        let recovered = decoder.decode(&refs).unwrap();
+        let recovered = decoder.decode(slices).unwrap();
 
         assert_eq!(original, recovered);
     }

@@ -66,7 +66,7 @@ impl ErasureCoder for ReedSolomonCoder {
         Ok(slices)
     }
 
-    fn decode(&self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DecodeError> {
+    fn decode(&mut self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DecodeError> {
         if chunks.len() < self.k {
             return Err(DecodeError::NotEnoughSlices);
         }

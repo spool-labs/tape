@@ -11,16 +11,15 @@ use tape_crypto::Hash;
 use tape_protocol::{Api, api::CertifyRes};
 
 use crate::error::TapedriveError;
-use crate::keys::operator::TapeOperator;
+use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Phase};
 use crate::stream::manifest::MAX_TRACK_SIZE;
-use crate::stream::write::{append_to_mirror, certify_chunk};
+use crate::stream::write::{append_to_mirror, certify_chunk, verify_mirror_root};
 use crate::tapedrive::Tapedrive;
 use crate::track::write::{
-    UploadPlan, WrittenTrack, collect_certification, confirm_certifies, encode_blob,
-    inline_write_fits,
+    UploadPlan, WrittenTrack, collect_certification, encode_blob, inline_write_fits,
     register_blob_processed, register_raw_processed, resolve_sent_blob, resolve_sent_raw,
-    upload_with_retry,
+    upload_with_retry, wait_for_certified_track,
 };
 use crate::transfer::certify::CollectedSignatures;
 
@@ -156,7 +155,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// been registered.
     pub async fn put_objects_batch(
         &self,
-        bucket: &impl TapeOperator,
+        bucket: &TapeKey,
         objects: Vec<ObjectBatchItem>,
     ) -> Result<Vec<ObjectBatchReceipt>, TapedriveError> {
         validate_batch(&objects)?;
@@ -191,7 +190,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// finish the batch afterward.
     pub async fn store_objects_batch(
         &self,
-        bucket: &impl TapeOperator,
+        bucket: &TapeKey,
         objects: Vec<ObjectBatchItem>,
     ) -> Result<StoredObjectBatch, TapedriveError> {
         validate_batch(&objects)?;
@@ -214,7 +213,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// that mirror and every track certifies against a fresh peer proof.
     pub async fn certify_objects_batch(
         &self,
-        bucket: &impl TapeOperator,
+        bucket: &TapeKey,
         verification: ObjectBatchVerification,
     ) -> Result<(), TapedriveError> {
         self.certify_objects_batch_inner(bucket, verification, true)
@@ -223,7 +222,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
     async fn store_objects_batch_inner(
         &self,
-        bucket: &impl TapeOperator,
+        bucket: &TapeKey,
         objects: Vec<ObjectBatchItem>,
     ) -> Result<StoredObjectBatch, TapedriveError> {
         let tape = self.get_tape(&bucket.address()).await?;
@@ -471,7 +470,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
     async fn certify_objects_batch_inner(
         &self,
-        bucket: &impl TapeOperator,
+        bucket: &TapeKey,
         verification: ObjectBatchVerification,
         should_recheck_root: bool,
     ) -> Result<(), TapedriveError> {
@@ -508,9 +507,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             }
         }
 
-        let mut processed = Vec::with_capacity(pending.len());
+        let mut certified = Vec::with_capacity(pending.len());
         for pending in pending {
-            let signature = certify_chunk(
+            certify_chunk(
                 self,
                 bucket,
                 &mirror,
@@ -520,11 +519,20 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 Operation::WriteBatch,
             )
             .await?;
-            processed.extend(signature);
+            certified.push(pending.written.track.track_number);
         }
 
-        // Readers poll peers, so the batch ends at confirmation without waiting on peer lag.
-        confirm_certifies(self, &processed, Operation::WriteBatch).await
+        let visibility = self
+            .timer(Operation::WriteBatch, Phase::CertifyVisible)
+            .chunks(certified.len() as u64);
+        let tape_address = bucket.address();
+        let result = futures::future::try_join_all(certified.iter().map(|track_number| {
+            wait_for_certified_track(self, &tape_address, *track_number)
+        }))
+        .await;
+        visibility.finish_result(&result);
+        result?;
+        verify_mirror_root(self, bucket, &mirror).await
     }
 }
 

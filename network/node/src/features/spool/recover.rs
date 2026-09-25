@@ -263,7 +263,7 @@ async fn fetch_one_slice<Cluster: Api + 'static>(
             || api.get_slice(node_id, &request),
         ).await {
             if !res.data.is_empty() {
-                return Ok((SliceIndex::new(helper_slice), Vec::from(res.data)));
+                return Ok((SliceIndex::new(helper_slice), res.data));
             }
         }
     }
@@ -581,7 +581,7 @@ mod tests {
             PeerReq::GetSlice(ref r) => {
                 let pos = group.position_of(r.spool).unwrap();
                 PeerRes::GetSlice(Ok(GetSliceRes {
-                    data: slices_for_api[pos].clone().into(),
+                    data: slices_for_api[pos].clone(),
                 }))
             }
             _ => panic!("unexpected request"),
@@ -689,7 +689,7 @@ mod tests {
             PeerReq::GetSlice(ref r) => {
                 let pos = group.position_of(r.spool).unwrap();
                 PeerRes::GetSlice(Ok(GetSliceRes {
-                    data: slices_for_api[pos].clone().into(),
+                    data: slices_for_api[pos].clone(),
                 }))
             }
             _ => panic!("unexpected request"),
@@ -785,7 +785,7 @@ mod tests {
                 if good_spools.contains(&r.spool) {
                     let pos = group.position_of(r.spool).unwrap();
                     PeerRes::GetSlice(Ok(GetSliceRes {
-                        data: slices_for_api[pos].clone().into(),
+                        data: slices_for_api[pos].clone(),
                     }))
                 } else {
                     PeerRes::GetSlice(Err(tape_protocol::api::ApiError::Other(

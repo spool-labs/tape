@@ -140,24 +140,6 @@ pub trait Store: Send + Sync {
         std::future::ready(self.put(cf, key, value))
     }
 
-    /// Put a key and an owned value, handing the value over without a copy where the backend can
-    fn put_owned(&self, cf: &str, key: &[u8], value: Vec<u8>) -> Result<()> {
-        self.put(cf, key, &value)
-    }
-
-    /// Put a key and an owned value, awaiting the sync instead of blocking on it
-    fn put_owned_wait(
-        &self,
-        cf: &str,
-        key: &[u8],
-        value: Vec<u8>,
-    ) -> impl Future<Output = Result<()>> + Send
-    where
-        Self: Sized,
-    {
-        std::future::ready(self.put_owned(cf, key, value))
-    }
-
     /// Delete a key from the specified column family.
     fn delete(&self, cf: &str, key: &[u8]) -> Result<()>;
 

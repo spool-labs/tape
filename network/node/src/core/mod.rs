@@ -12,7 +12,6 @@ pub mod signals;
 pub mod startup;
 pub mod state;
 pub mod types;
-pub mod write_signatures;
 
 pub use crate::config;
 pub use crate::context;

@@ -1,16 +1,12 @@
 use std::collections::HashMap;
 
-use bytes::Bytes;
-
 use tape_rpc::Rpc;
 use tape_core::erasure::group_start;
 use tape_core::prelude::{GroupIndex, SpoolIndex, BlobData};
-use tape_core::track::types::CompressedTrack;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::hash::hash;
 use tape_protocol::api::{with_share_token, ApiError, GetTrackDataReq};
 use tape_protocol::Api;
-use tokio::task::spawn_blocking;
 
 use crate::codec::decoder::BlobDecoder;
 use crate::codec::encoder::BlobEncoder;
@@ -33,18 +29,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         track: &Address,
         operation: Operation,
     ) -> Result<Vec<u8>, TapedriveError> {
-        with_share_token(self.read_options.share_token, read_track(self, track, None, operation)).await
-    }
-
-    /// Read a track whose record the caller already holds
-    pub(crate) async fn read_known(
-        &self,
-        track: &Address,
-        record: CompressedTrack,
-        operation: Operation,
-    ) -> Result<Vec<u8>, TapedriveError> {
-        let read = read_track(self, track, Some(record), operation);
-        with_share_token(self.read_options.share_token, read).await
+        with_share_token(self.read_options.share_token, read_track(self, track, operation)).await
     }
 
     /// Verify that `data` matches the on-chain commitment for a track.
@@ -58,33 +43,30 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 }
 
-pub fn localize_slices(group: GroupIndex, slices: &[(SpoolIndex, Bytes)]) -> Vec<(SpoolIndex, &[u8])> {
+pub fn localize_slices(
+    group: GroupIndex,
+    slices: Vec<(SpoolIndex, Vec<u8>)>,
+) -> Vec<(SpoolIndex, Vec<u8>)> {
     let base = group_start(group);
     slices
-        .iter()
-        .map(|(global_idx, data)| (*global_idx - base, data.as_ref()))
+        .into_iter()
+        .map(|(global_idx, data)| (global_idx - base, data))
         .collect()
 }
 
 pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track: &Address,
-    known: Option<CompressedTrack>,
     operation: Operation,
 ) -> Result<Vec<u8>, TapedriveError> {
     let total = client.timer(operation, Phase::Total);
     let result = async {
         bootstrap_network_state(client, Some(operation)).await?;
 
-        let track_info = match known {
-            Some(track_info) => track_info,
-            None => {
-                let metadata = client.timer(operation, Phase::TrackMetadata);
-                let track_info = client.get_track(track).await;
-                metadata.finish_result(&track_info);
-                track_info?
-            }
-        };
+        let metadata = client.timer(operation, Phase::TrackMetadata);
+        let track_info = client.get_track(track).await;
+        metadata.finish_result(&track_info);
+        let track_info = track_info?;
 
         let data = client.timer(operation, Phase::BlobData);
         let track_data = fetch_track_data(client, *track, track_info.group, operation).await;
@@ -147,13 +129,10 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         let slices = slices?;
 
         let decode = client.timer(operation, Phase::Decode);
-        let profile = blob.profile;
-        let data = spawn_blocking(move || {
-            BlobDecoder::with_profile(profile).decode(&localize_slices(group, &slices))
-        })
-        .await
-        .map_err(|error| TapedriveError::Download(ClientError::Decoding(error.to_string())))
-        .and_then(|data| data.map_err(|e| TapedriveError::Download(ClientError::Decoding(e.to_string()))));
+        let mut decoder = BlobDecoder::with_profile(blob.profile);
+        let data = decoder
+            .decode(localize_slices(group, slices))
+            .map_err(|e| TapedriveError::Download(ClientError::Decoding(e.to_string())));
         let decode = match &data {
             Ok(data) => decode.bytes(data.len() as u64),
             Err(_) => decode,

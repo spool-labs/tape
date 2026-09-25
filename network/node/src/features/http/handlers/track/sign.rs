@@ -6,6 +6,7 @@ use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
+use tape_core::cert::track::TrackWriteMessage;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse};
@@ -73,9 +74,11 @@ pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::NotFound);
     }
 
+    let message = TrackWriteMessage::new(epoch, track.get_hash());
+
     let signature = state
         .context
-        .sign_track_write(epoch, track.get_hash())
+        .bls_sign(&message.to_bytes())
         .map_err(|error| RouteError::Internal(format!("bls sign: {error:?}")))?;
 
     let response = BlsSignResponse {

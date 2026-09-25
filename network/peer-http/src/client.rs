@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use dashmap::mapref::entry::Entry;
 use tape_peer_manager::{PeerManager, PeerNode};
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::network::NetworkAddress;
@@ -22,10 +21,6 @@ const VOTE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Connections a peer's slice bodies spread over; one h2 client holds one socket.
 const SLICE_CONNECTIONS: usize = 8;
 
-/// Receive windows wide enough for a whole slice body in one round trip.
-const H2_STREAM_WINDOW: u32 = 16 * 1024 * 1024;
-const H2_CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
-
 /// The clients pinned to one peer's TLS public key. Cached on the `HttpApi` and
 /// invalidated when PeerManager observes a change to the peer's on-chain
 /// `network_tls` field.
@@ -33,21 +28,8 @@ const H2_CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
 pub struct PinnedPeerClient {
     pub ring: Arc<Vec<reqwest::Client>>,
     pub cursor: Arc<AtomicUsize>,
-    pub in_flight: Arc<Vec<AtomicUsize>>,
     pub tls_pubkey: NetworkTlsPubkey,
     pub network_address: NetworkAddress,
-}
-
-/// Keeps a ring connection counted busy until the slice push on it ends
-pub struct SlotLease {
-    in_flight: Arc<Vec<AtomicUsize>>,
-    slot: usize,
-}
-
-impl Drop for SlotLease {
-    fn drop(&mut self) {
-        self.in_flight[self.slot].fetch_sub(1, Ordering::Relaxed);
-    }
 }
 
 impl PinnedPeerClient {
@@ -60,28 +42,6 @@ impl PinnedPeerClient {
     pub fn next(&self) -> reqwest::Client {
         let step = self.cursor.fetch_add(1, Ordering::Relaxed);
         self.ring[step % self.ring.len()].clone()
-    }
-
-    /// The first idle connection for one slice push, so a later slot opens only when the earlier ones are busy
-    pub fn lease(&self) -> (reqwest::Client, SlotLease) {
-        let mut chosen = 0;
-        let mut least = usize::MAX;
-        for (slot, count) in self.in_flight.iter().enumerate() {
-            let busy = count.load(Ordering::Relaxed);
-            if busy < least {
-                chosen = slot;
-                least = busy;
-            }
-            if busy == 0 {
-                break;
-            }
-        }
-        self.in_flight[chosen].fetch_add(1, Ordering::Relaxed);
-        let lease = SlotLease {
-            in_flight: self.in_flight.clone(),
-            slot: chosen,
-        };
-        (self.ring[chosen].clone(), lease)
     }
 }
 
@@ -127,47 +87,35 @@ impl HttpApi {
     /// cached entry's TLS pubkey or network address differ from the current
     /// PeerNode snapshot (which is how we handle peer key rotations).
     fn client_for(&self, peer: &PeerNode) -> Result<(PinnedPeerClient, String), ApiError> {
-        let url = https_base_url(peer.network_address)?;
-        // Callers racing on a new peer share one ring, and so its connections.
-        let pinned = match self.clients.entry(peer.node) {
-            Entry::Occupied(entry)
-                if entry.get().tls_pubkey == peer.tls_pubkey
-                    && entry.get().network_address == peer.network_address =>
+        if let Some(entry) = self.clients.get(&peer.node) {
+            if entry.tls_pubkey == peer.tls_pubkey
+                && entry.network_address == peer.network_address
             {
-                entry.get().clone()
+                let url = https_base_url(entry.network_address)?;
+                return Ok((entry.clone(), url));
             }
-            Entry::Occupied(mut entry) => {
-                let pinned = self.build_ring(peer)?;
-                entry.insert(pinned.clone());
-                pinned
-            }
-            Entry::Vacant(entry) => entry.insert(self.build_ring(peer)?).clone(),
-        };
-        Ok((pinned, url))
-    }
+        }
 
-    fn build_ring(&self, peer: &PeerNode) -> Result<PinnedPeerClient, ApiError> {
         let mut ring = Vec::with_capacity(SLICE_CONNECTIONS);
-        let mut in_flight = Vec::with_capacity(SLICE_CONNECTIONS);
         for _ in 0..SLICE_CONNECTIONS {
             ring.push(self.build_pinned_client(peer.tls_pubkey)?);
-            in_flight.push(AtomicUsize::new(0));
         }
-        Ok(PinnedPeerClient {
+        let pinned = PinnedPeerClient {
             ring: Arc::new(ring),
             cursor: Arc::new(AtomicUsize::new(0)),
-            in_flight: Arc::new(in_flight),
             tls_pubkey: peer.tls_pubkey,
             network_address: peer.network_address,
-        })
+        };
+        self.clients.insert(peer.node, pinned.clone());
+
+        let url = https_base_url(peer.network_address)?;
+        Ok((pinned, url))
     }
 
     fn build_pinned_client(&self, tls_pubkey: NetworkTlsPubkey) -> Result<reqwest::Client, ApiError> {
         let builder = reqwest::Client::builder()
             .connect_timeout(self.connect_timeout)
-            .timeout(self.request_timeout)
-            .http2_initial_stream_window_size(H2_STREAM_WINDOW)
-            .http2_initial_connection_window_size(H2_CONNECTION_WINDOW);
+            .timeout(self.request_timeout);
         let builder = match &self.local_identity {
             Some(identity) => {
                 tape_peer_tls::apply_pinned_tls_with_identity(builder, tls_pubkey, identity.as_ref())
@@ -185,14 +133,6 @@ impl HttpApi {
         let peer = self.resolve_peer(node)?;
         let (pinned, url) = self.client_for(&peer)?;
         Ok((pinned.first(), url))
-    }
-
-    /// A peer's first idle connection, for one slice push.
-    fn lease_slice(&self, node: Address) -> Result<(reqwest::Client, SlotLease, String), ApiError> {
-        let peer = self.resolve_peer(node)?;
-        let (pinned, url) = self.client_for(&peer)?;
-        let (client, lease) = pinned.lease();
-        Ok((client, lease, url))
     }
 
     /// A peer's next connection, for one slice body in either direction.
@@ -246,10 +186,13 @@ fn https_base_url(addr: NetworkAddress) -> Result<String, ApiError> {
 #[async_trait]
 impl Api for HttpApi {
     async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
-        let (client, _lease, base) = self.lease_slice(node)?;
+        let (client, base) = self.resolve_slice(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", slice_url(&track_id, req.spool));
-        let body = req.body.clone();
+        let body =
+            wincode::serialize(&req.payload)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
         let bytes_sent = body.len() as u64;
         let start = Instant::now();
         let resp = client
@@ -294,30 +237,9 @@ impl Api for HttpApi {
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
         self.record_rx(node, "get_slice", bytes.len() as u64);
-        Ok(GetSliceRes { data: bytes })
-    }
-
-    async fn get_slice_window(
-        &self,
-        node: Address,
-        req: &GetSliceWindowReq,
-    ) -> Result<GetSliceWindowRes, ApiError> {
-        let (client, base) = self.resolve_slice(node)?;
-        let track_id = req.track.to_string();
-        let url = format!("{base}{}", slice_window_url(&track_id, req.spool, req.offset, req.len));
-
-        let start = Instant::now();
-        let resp = stamp_request_scope(client.get(&url).timeout(self.get_slice_timeout))
-            .send()
-            .await
-            .map_err(map_reqwest)?;
-
-        self.record(node, "get_slice_window", &resp, start, 0);
-        let resp = check_status(resp).await?;
-        let bytes = resp.bytes().await.map_err(map_reqwest)?;
-        self.record_rx(node, "get_slice_window", bytes.len() as u64);
-        let (sidecar, data) = decode_slice_window(bytes)?;
-        Ok(GetSliceWindowRes { sidecar, data })
+        Ok(GetSliceRes {
+            data: bytes.to_vec(),
+        })
     }
 
     async fn get_track(&self, node: Address, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {
@@ -915,10 +837,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Arc;
 
-    use std::collections::HashSet;
-
     use axum::body::Bytes;
-    use axum::extract::ConnectInfo;
     use axum::http::StatusCode;
     use axum::routing::post;
     use axum::Router;
@@ -931,7 +850,7 @@ mod tests {
     use tape_core::system::VoteKind;
     use tape_core::system::NodePreferences;
     use tape_core::types::coin::TAPE;
-    use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, SpoolIndex, StorageUnits};
+    use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits};
     use tape_crypto::address::Address;
     use tape_crypto::ed25519::Keypair as EdKeypair;
     use tape_crypto::Hash;
@@ -1182,65 +1101,6 @@ mod tests {
         api.client_for(&peer).expect("build fresh client");
         let cached = api.clients.get(&target).unwrap();
         assert_eq!(cached.tls_pubkey, pubkey_of(&new_tls));
-    }
-
-    /// Answer every slice push with a receipt and record the client port it came from
-    async fn serve_receipts(tls_keypair: EdKeypair) -> (SocketAddr, Arc<std::sync::Mutex<HashSet<u16>>>) {
-        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        std_listener.set_nonblocking(true).unwrap();
-        let addr = std_listener.local_addr().unwrap();
-        let server_config =
-            build_server_config(&tls_keypair, &[IpAddr::V4(Ipv4Addr::LOCALHOST)]).expect("cfg");
-        let rustls = RustlsConfig::from_config(server_config);
-        let ports = Arc::new(std::sync::Mutex::new(HashSet::new()));
-        let receipt = wincode::serialize(&BlsSignResponse {
-            signature: BlsPrivateKey::from_random().sign(b"receipt").unwrap(),
-            node: address(7),
-            epoch: EpochNumber(1),
-        })
-        .unwrap();
-        let router = Router::new().fallback({
-            let ports = ports.clone();
-            move |ConnectInfo(peer): ConnectInfo<SocketAddr>, _: Bytes| {
-                let ports = ports.clone();
-                let receipt = receipt.clone();
-                async move {
-                    ports.lock().unwrap().insert(peer.port());
-                    receipt
-                }
-            }
-        });
-        tokio::spawn(async move {
-            axum_server::from_tcp_rustls(std_listener, rustls)
-                .serve(router.into_make_service_with_connect_info::<SocketAddr>())
-                .await
-                .unwrap();
-        });
-        (addr, ports)
-    }
-
-    // slice pushes one after another reuse one warm connection
-    #[tokio::test]
-    async fn warm_connection() {
-        install_default_provider();
-        let tls = EdKeypair::new(&mut thread_rng());
-        let tls_pubkey = pubkey_of(&tls);
-        let (addr, ports) = serve_receipts(tls).await;
-        let target = address(7);
-        let peer_manager = Arc::new(PeerManager::new());
-        peer_manager.add_peer(make_peer(target, addr.port(), tls_pubkey));
-        let api = HttpApi::with_default_timeouts(peer_manager);
-
-        for spool in 0..6u64 {
-            let request = PutSliceReq {
-                track: address(9),
-                spool: SpoolIndex::from(spool),
-                body: Bytes::from(vec![1u8; 64]),
-            };
-            api.put_slice(target, &request).await.expect("push");
-        }
-
-        assert_eq!(ports.lock().unwrap().len(), 1);
     }
 
     // Plain-TcpListener warning suppression — tokio's import can otherwise go
