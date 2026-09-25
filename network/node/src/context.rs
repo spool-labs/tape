@@ -499,7 +499,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         let (node_address, _) = node_pda(self.keypair.address());
         let admission = Arc::new(AdmissionLimiter::new(self.config.http.admission.clone()));
         let challenge_tripwire = Arc::new(Tripwire::new(
-            self.config.challenge_realign_after_blank_rounds(),
+            self.config.challenge.realign_after_blank_rounds,
         ));
 
         self.store
