@@ -16,7 +16,6 @@ use tape_sdk::codec::decoder::BlobDecoder;
 use tape_store::ops::TrackDataOps;
 use tracing::{debug, warn};
 
-use crate::cache::CacheSource;
 use crate::http::error::RouteError;
 use crate::http::handlers::store_error;
 use crate::http::handlers::track::slice::read_cached_slice;
@@ -169,7 +168,7 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     for (spool_id, _) in peers {
         fetches.push(async move {
             let read = read_cached_slice(state, track_addr, track.tape, spool_id).await?;
-            Ok::<_, RouteError>((spool_id, read.data, read.source))
+            Ok::<_, RouteError>((spool_id, read.data, read.is_verified))
         });
     }
 
@@ -179,21 +178,22 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let (mut rejected_group, mut rejected_leaf, mut fetch_failed) = (0u64, 0u64, 0u64);
     while let Some(result) = fetches.next().await {
         match result {
-            Ok((spool_id, data, source)) => {
+            Ok((spool_id, data, is_verified)) => {
                 let Some(position) = track.group.position_of(spool_id) else {
                     rejected_group += 1;
                     warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice outside track group");
                     continue;
                 };
-                // A miss verified these bytes as it fetched them. A hit comes off
-                // disk, possibly written by an earlier process, so it still needs
-                // checking.
-                if source == CacheSource::Hit
-                    && !blob.verify_slice(SpoolIndex(position as u64), &data)
-                {
-                    rejected_leaf += 1;
-                    warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice with mismatched leaf hash");
-                    continue;
+                // A slice fetched here was checked on the way in, one left by an earlier process is checked once
+                if !is_verified {
+                    if !blob.verify_slice(SpoolIndex(position as u64), &data) {
+                        rejected_leaf += 1;
+                        warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice with mismatched leaf hash");
+                        continue;
+                    }
+                    if let Err(error) = state.slice_cache.mark_verified(spool_id, track_addr) {
+                        debug!(%error, "gateway could not mark slice verified");
+                    }
                 }
 
                 slices.push((SpoolIndex(position as u64), data));

@@ -83,11 +83,12 @@ impl<Db: Store> GatewaySliceCache<Db> {
             if self.blacklists.denies(track_address, tape) {
                 return Err(GatewayCacheError::Removed.into());
             }
-            if let Some(data) = self.get_cached(key).map_err(E::from)? {
+            if let Some((data, is_verified)) = self.get_cached(key).map_err(E::from)? {
                 crate::metrics::inc_cache(if waited { "coalesced" } else { "hit" });
                 return Ok(CacheRead {
                     data,
                     source: CacheSource::Hit,
+                    is_verified,
                 });
             }
 
@@ -106,6 +107,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
                             .map(|data| CacheRead {
                                 data,
                                 source: CacheSource::Miss,
+                                is_verified: true,
                             })
                             .map_err(E::from),
                         Err(error) => Err(error),
@@ -120,6 +122,12 @@ impl<Db: Store> GatewaySliceCache<Db> {
             }
             return result;
         }
+    }
+
+    /// Record that a cached slice passed its leaf check, so later hits skip the hash
+    pub fn mark_verified(&self, spool_id: SpoolIndex, track_address: Address) -> Result<(), GatewayCacheError> {
+        self.lock_state()?.mark_verified(SliceCacheKey::new(spool_id, track_address));
+        Ok(())
     }
 
     /// Delete every cached slice of a track across its group
@@ -143,13 +151,13 @@ impl<Db: Store> GatewaySliceCache<Db> {
                 .map_err(|error| GatewayCacheError::Codec(format!("slice key: {error}")))?;
             // The budget is the payload the gateway serves, not the sidecar
             // riding in front of it.
-            state.upsert(key.into(), slice::payload(&value_bytes).len() as u64);
+            state.upsert(key.into(), slice::payload(&value_bytes).len() as u64, false);
         }
 
         Ok(state)
     }
 
-    fn get_cached(&self, key: SliceCacheKey) -> Result<Option<Vec<u8>>, GatewayCacheError> {
+    fn get_cached(&self, key: SliceCacheKey) -> Result<Option<(Vec<u8>, bool)>, GatewayCacheError> {
         if self.config.max_bytes == 0 {
             return Ok(None);
         }
@@ -166,8 +174,8 @@ impl<Db: Store> GatewaySliceCache<Db> {
         };
 
         let mut state = self.lock_state()?;
-        state.touch(key, data.len() as u64);
-        Ok(Some(data))
+        let is_verified = state.touch(key, data.len() as u64);
+        Ok(Some((data, is_verified)))
     }
 
     fn store_fetched(
@@ -196,7 +204,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
 
         {
             let mut state = self.lock_state()?;
-            state.upsert(key, data.len() as u64);
+            state.upsert(key, data.len() as u64, true);
         }
 
         let evicted = self.evict_to_budget()?;
@@ -437,6 +445,26 @@ mod tests {
         assert_eq!(read.data, vec![7, 8, 9]);
         assert!(store.get_slice(spool, track).unwrap().is_none());
         assert_eq!(cache.stats().unwrap().entries, 0);
+    }
+
+    // only slices this process fetched or checked count as verified on a hit
+    #[tokio::test]
+    async fn verified_hits() {
+        let store = test_store();
+        let (on_disk, fetched, spool) = (Address::new_unique(), Address::new_unique(), SpoolIndex(2));
+        store.put_slice(spool, on_disk, vec![1]).expect("seed store");
+        let cache = GatewaySliceCache::new(store, cache_config(1024), blacklists()).expect("open cache");
+        let fetch = || async { Ok::<_, GatewayCacheError>(vec![2]) };
+        cache.get_or_insert_with(spool, fetched, test_tape(), fetch).await.expect("fill");
+
+        let old = cache.get_or_insert_with(spool, on_disk, test_tape(), fetch).await.expect("old");
+        let new = cache.get_or_insert_with(spool, fetched, test_tape(), fetch).await.expect("new");
+        cache.mark_verified(spool, on_disk).expect("mark");
+        let checked = cache.get_or_insert_with(spool, on_disk, test_tape(), fetch).await.expect("checked");
+
+        assert_eq!((old.source, old.is_verified), (CacheSource::Hit, false));
+        assert_eq!((new.source, new.is_verified), (CacheSource::Hit, true));
+        assert!(checked.is_verified);
     }
 
     // with the cache off a read never touches the store, so a slice written there after startup stays
