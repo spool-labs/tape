@@ -717,6 +717,16 @@ impl Rpc for LiteSvmRpc {
 
         Ok(Some(status))
     }
+
+    async fn wait_for_signature(
+        &self,
+        txid: &Txid,
+    ) -> Result<Result<(), solana_transaction::TransactionError>, RpcError> {
+        // A sent transaction executes at once, so an unknown one was never sent.
+        self.get_signature_status(txid)
+            .await?
+            .ok_or(RpcError::TransactionNotFound(*txid))
+    }
 }
 
 impl Default for LiteSvmRpc {

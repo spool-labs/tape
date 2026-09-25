@@ -884,6 +884,29 @@ impl Rpc for SolanaRpc {
         })
         .await
     }
+
+    async fn wait_for_signature(
+        &self,
+        txid: &Txid,
+    ) -> Result<Result<(), TransactionError>, RpcError> {
+        let signature: Signature = (*txid).into();
+        let commitment = CommitmentConfig {
+            commitment: self.config.commitment,
+        };
+        let (ramp, steady) = confirm_cadence();
+        let statuses = self.statuses.clone();
+
+        self.with_retry("waitForSignature", move |client| {
+            let statuses = statuses.clone();
+            async move {
+                statuses
+                    .wait(&client, signature, commitment, ramp, steady)
+                    .await
+                    .map_err(|error| Self::convert_error(error, None))
+            }
+        })
+        .await
+    }
 }
 
 fn flatten_error(err: &(dyn std::error::Error + 'static)) -> String {

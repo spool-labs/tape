@@ -3,7 +3,11 @@ use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
-use tape_rpc::{CommitmentLevel, EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError};
+use std::future::Future;
+
+use tape_rpc::{
+    CommitmentLevel, EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError, TransactionError,
+};
 use tape_rpc_client::parse_tape_error;
 use tape_api::compute::{CERTIFY_TRACK_CU, TRACK_WRITE_CU};
 use tape_api::errors::TapeError;
@@ -32,7 +36,7 @@ use tape_protocol::Api;
 use tape_protocol::api::GetTrackDataReq;
 use tape_protocol::api::GetTrackByNumberReq;
 use futures::stream::StreamExt;
-use tape_retry::{retry, retry_if, Backoff, RetryConfig, Retryable};
+use tape_retry::{retry_if, Backoff, RetryConfig, Retryable};
 use tape_slicer::num_stripes;
 use tokio::time::sleep;
 
@@ -1937,15 +1941,42 @@ async fn fetch_track_written_event<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     signature: &Txid,
 ) -> Result<TrackWritten, TapedriveError> {
-    let transaction = retry(
-        write_retry_config(),
-        None,
-        || async { client.rpc().get_transaction(signature).await },
+    let transaction = read_after_confirmation(
+        || client.rpc().rpc().wait_for_signature(signature),
+        || client.rpc().get_transaction(signature),
     )
     .await
     .map_err(TapedriveError::Rpc)?;
 
     extract_track_written_event(&transaction)
+}
+
+/// Read a sent transaction once it has confirmed
+async fn read_after_confirmation<Output, Wait, WaitFuture, Read, ReadFuture>(
+    wait: Wait,
+    read: Read,
+) -> Result<Output, RpcError>
+where
+    Wait: Fn() -> WaitFuture,
+    WaitFuture: Future<Output = Result<Result<(), TransactionError>, RpcError>>,
+    Read: Fn() -> ReadFuture,
+    ReadFuture: Future<Output = Result<Output, RpcError>>,
+{
+    retry_if(
+        write_retry_config(),
+        None,
+        || async {
+            wait().await?.map_err(|error| RpcError::Transaction {
+                message: error.to_string(),
+                err: Some(error),
+                simulated: false,
+            })?;
+            read().await
+        },
+        // A transaction that failed never gains the event.
+        |error: &RpcError| !matches!(error, RpcError::Transaction { .. }),
+    )
+    .await
 }
 
 fn write_retry_config() -> RetryConfig {
@@ -1993,8 +2024,10 @@ mod tests {
 
     use crate::error::TapedriveError;
 
+    use std::time::{Duration, Instant};
+
     use super::{
-        check_plan_matches, content_etag, content_etag_named, ensure_expected_track_position,
+        read_after_confirmation, check_plan_matches, content_etag, content_etag_named, ensure_expected_track_position,
         hash, inline_write_fits, needs_fresh_signatures, prepare_plan,
         should_retry_certification, RpcError, TapeError, TrackNumber, MAX_INLINE_WRITE,
     };
@@ -2034,7 +2067,31 @@ mod tests {
         assert_eq!(plan.slices.len(), fresh.slices.len());
     }
 
-    // a plan from other bytes is refused, whatever its length
+    // a register's event is read as soon as it confirms
+    #[tokio::test]
+    async fn confirmed_read() {
+        let confirmed_at = Instant::now() + Duration::from_millis(300);
+        let started = Instant::now();
+
+        let read = read_after_confirmation(
+            || async move {
+                tokio::time::sleep_until(confirmed_at.into()).await;
+                Ok(Ok(()))
+            },
+            || async move {
+                match Instant::now() >= confirmed_at {
+                    true => Ok(7u64),
+                    false => Err(RpcError::TransactionNotFound(Default::default())),
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(read.expect("read"), 7);
+        assert!(started.elapsed() < Duration::from_millis(600));
+    }
+
+        // a plan from other bytes is refused, whatever its length
     #[test]
     fn unpaired_plan() {
         let data = blob(MAX_INLINE_WRITE * 4);
