@@ -151,7 +151,6 @@ impl<Db: Store> GatewaySliceCache<Db> {
 
     fn get_cached(&self, key: SliceCacheKey) -> Result<Option<Vec<u8>>, GatewayCacheError> {
         if self.config.max_bytes == 0 {
-            self.delete_cached(key)?;
             return Ok(None);
         }
 
@@ -178,7 +177,6 @@ impl<Db: Store> GatewaySliceCache<Db> {
         data: Vec<u8>,
     ) -> Result<Vec<u8>, GatewayCacheError> {
         if self.config.max_bytes == 0 {
-            self.delete_cached(key)?;
             return match self.blacklists.denies(key.track_address, tape) {
                 true => Err(GatewayCacheError::Removed),
                 false => Ok(data),
@@ -439,6 +437,25 @@ mod tests {
         assert_eq!(read.data, vec![7, 8, 9]);
         assert!(store.get_slice(spool, track).unwrap().is_none());
         assert_eq!(cache.stats().unwrap().entries, 0);
+    }
+
+    // with the cache off a read never touches the store, so a slice written there after startup stays
+    #[tokio::test]
+    async fn zero_budget() {
+        let store = test_store();
+        let cache = GatewaySliceCache::new(store.clone(), cache_config(0), blacklists()).expect("open cache");
+        let (track, spool) = (Address::new_unique(), SpoolIndex(4));
+        store.put_slice(spool, track, vec![5, 5]).expect("seed store");
+
+        let read = cache
+            .get_or_insert_with(spool, track, test_tape(), || async {
+                Ok::<_, GatewayCacheError>(vec![6])
+            })
+            .await
+            .expect("read");
+
+        assert_eq!(read.data, vec![6]);
+        assert_eq!(store.get_slice(spool, track).expect("read store"), Some(vec![5, 5]));
     }
 
     // a fetch that finishes after its track is removed caches nothing, and later reads are refused
