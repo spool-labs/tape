@@ -81,9 +81,8 @@ pub struct UploadPlan {
     pub stripe_size: usize,
     pub stripe_count: usize,
     pub leaves: [Hash; GROUP_SIZE],
-    /// Hash of the bytes this plan was encoded from, which a write checks the
-    /// plan it is handed against
-    pub content_hash: Hash,
+    /// Hash of the source bytes, set only on a plan meant to be handed back
+    pub content_hash: Option<Hash>,
 }
 
 #[derive(Clone)]
@@ -483,7 +482,7 @@ pub async fn content_etag_named(name: &[u8], data: &[u8]) -> Result<ContentEtag,
         });
     }
     let owned = data.to_vec();
-    match tokio::task::spawn_blocking(move || prepare_plan(owned)).await {
+    match tokio::task::spawn_blocking(move || prepare_checked_plan(owned)).await {
         Ok(plan) => {
             let plan = plan?;
             Ok(ContentEtag {
@@ -666,9 +665,16 @@ impl ObjectWrite {
     }
 }
 
+/// Encode `data` and hash it, so a write can check the plan when it comes back
+fn prepare_checked_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
+    let content_hash = hash(&data);
+    let mut plan = prepare_plan(data)?;
+    plan.content_hash = Some(content_hash);
+    Ok(plan)
+}
+
 fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
     let data_len = data.len();
-    let content_hash = hash(&data);
     let profile = EncodingProfile::clay_default();
     let mut encoder = BlobEncoder::with_profile(profile);
     let (slices, merkle_root, leaves) = encoder
@@ -687,14 +693,14 @@ fn prepare_plan(data: Vec<u8>) -> Result<UploadPlan, TapedriveError> {
         stripe_size,
         stripe_count: num_stripes(data_len, stripe_size),
         leaves,
-        content_hash,
+        content_hash: None,
     })
 }
 
 /// Refuse a plan that is not the encode of `data`, which would otherwise store
 /// the wrong content under an etag computed from the right one.
 fn check_plan_matches(plan: &UploadPlan, data: &[u8]) -> Result<(), TapedriveError> {
-    if plan.storage_units.to_bytes() != data.len() as u64 || plan.content_hash != hash(data) {
+    if plan.storage_units.to_bytes() != data.len() as u64 || plan.content_hash != Some(hash(data)) {
         return Err(TapedriveError::Encoding(
             "upload plan was not encoded from these bytes".into(),
         ));
@@ -2091,11 +2097,20 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(600));
     }
 
-        // a plan from other bytes is refused, whatever its length
+    // a plan from a plain encode skipped the content hash, so it cannot pass as a checked reuse
     #[test]
-    fn unpaired_plan() {
+    fn unhashed_plan() {
         let data = blob(MAX_INLINE_WRITE * 4);
         let plan = prepare_plan(data.clone()).expect("plan");
+
+        assert!(check_plan_matches(&plan, &data).is_err());
+    }
+
+    // a plan from other bytes is refused, whatever its length
+    #[tokio::test]
+    async fn unpaired_plan() {
+        let data = blob(MAX_INLINE_WRITE * 4);
+        let plan = content_etag(&data).await.expect("etag").plan.expect("coded plan");
 
         assert!(check_plan_matches(&plan, &data).is_ok());
 
