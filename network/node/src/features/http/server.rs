@@ -414,13 +414,19 @@ async fn handle_http_error(error: BoxError) -> StatusCode {
 const H2_MAX_CONCURRENT_STREAMS: u32 = 1024;
 const H2_MAX_PENDING_ACCEPT_RESET_STREAMS: usize = 1024;
 
+/// Receive windows wide enough for a whole slice body in one round trip.
+const H2_STREAM_WINDOW: u32 = 16 * 1024 * 1024;
+const H2_CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
+
 /// Raises the HTTP/2 limits a trusted mesh runs into.
 fn tune_h2<A>(server: &mut axum_server::Server<A>) {
     server
         .http_builder()
         .http2()
         .max_concurrent_streams(H2_MAX_CONCURRENT_STREAMS)
-        .max_pending_accept_reset_streams(H2_MAX_PENDING_ACCEPT_RESET_STREAMS);
+        .max_pending_accept_reset_streams(H2_MAX_PENDING_ACCEPT_RESET_STREAMS)
+        .initial_stream_window_size(H2_STREAM_WINDOW)
+        .initial_connection_window_size(H2_CONNECTION_WINDOW);
 }
 
 /// registered outside this layer and serve throughout.

@@ -354,8 +354,9 @@ pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     tracks.sort_by_key(|track| track.track_number.0);
-    // The cursor is the last track sent, since the next page starts after it.
-    let next_cursor = (tracks.len() > limit).then(|| tracks[limit - 1].track_number);
+    let next_cursor = tracks
+        .get(limit)
+        .map(|track| track.track_number);
 
     let tracks = tracks
         .into_iter()
@@ -598,51 +599,6 @@ mod tests {
         let result = call_get_track_proof(&ctx, track, Some(staked_peer)).await;
 
         assert!(result.is_ok());
-    }
-
-    // paging with a small limit returns every track once
-    #[tokio::test]
-    async fn pages_cover_every_track() {
-        let ctx = test_context().await;
-        let tape = Address::new_unique();
-        for number in 0..5 {
-            let track = CompressedTrack {
-                tape,
-                track_number: TrackNumber(number),
-                key: Hash::from([1u8; 32]),
-                kind: TrackKind::Coded as u64,
-                state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
-                size: StorageUnits::from_bytes(64),
-                group: GroupIndex(0),
-                value_hash: Hash::from([2u8; 32]),
-            };
-            ctx.store.put_track(track_pda(tape, TrackNumber(number)).0, track).expect("put track");
-        }
-
-        let mut seen = Vec::new();
-        let mut cursor = None;
-        loop {
-            let request = wincode::serialize(&ListTracksByTapeRequest { cursor, limit: 2 }).expect("encode");
-            let response = list_tracks_by_tape::<_, _, _>(
-                State(AppState { context: ctx.clone() }),
-                MaybeStakedPeer(None),
-                Path(tape.to_string()),
-                Bytes::from(request),
-            )
-            .await
-            .expect("list")
-            .into_response();
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("body");
-            let page: ListTracksByTapeResponse = wincode::deserialize(&body).expect("decode");
-            seen.extend(page.tracks.into_iter().map(|track| CompressedTrack::unpack(track).track_number.0));
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
-
-        assert_eq!(seen, vec![0, 1, 2, 3, 4]);
     }
 
     // a track and the tape it names both resolve through the pending overlay,

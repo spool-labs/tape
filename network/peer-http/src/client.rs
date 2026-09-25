@@ -21,6 +21,10 @@ const VOTE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Connections a peer's slice bodies spread over; one h2 client holds one socket.
 const SLICE_CONNECTIONS: usize = 8;
 
+/// Receive windows wide enough for a whole slice body in one round trip.
+const H2_STREAM_WINDOW: u32 = 16 * 1024 * 1024;
+const H2_CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
+
 /// The clients pinned to one peer's TLS public key. Cached on the `HttpApi` and
 /// invalidated when PeerManager observes a change to the peer's on-chain
 /// `network_tls` field.
@@ -115,7 +119,9 @@ impl HttpApi {
     fn build_pinned_client(&self, tls_pubkey: NetworkTlsPubkey) -> Result<reqwest::Client, ApiError> {
         let builder = reqwest::Client::builder()
             .connect_timeout(self.connect_timeout)
-            .timeout(self.request_timeout);
+            .timeout(self.request_timeout)
+            .http2_initial_stream_window_size(H2_STREAM_WINDOW)
+            .http2_initial_connection_window_size(H2_CONNECTION_WINDOW);
         let builder = match &self.local_identity {
             Some(identity) => {
                 tape_peer_tls::apply_pinned_tls_with_identity(builder, tls_pubkey, identity.as_ref())
