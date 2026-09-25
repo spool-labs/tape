@@ -4,6 +4,7 @@
 use std::future::Future;
 
 use tape_store_api::{Column, Store};
+use tape_core::erasure::slice_sidecar;
 use tape_core::types::{SpoolIndex, StorageUnits};
 use tape_crypto::address::Address;
 
@@ -36,6 +37,9 @@ pub trait SliceOps {
         track_address: Address,
         value: Vec<u8>,
     ) -> impl Future<Output = Result<()>> + Send;
+
+    /// Store slice data from a borrowed buffer, deriving its sidecar
+    fn put_slice_from(&self, spool_id: SpoolIndex, track_address: Address, data: &[u8]) -> Result<()>;
 
     /// Delete slice data
     fn delete_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
@@ -161,6 +165,13 @@ impl<S: Store> SliceOps for TapeStore<S> {
             .inner()
             .put_owned_wait(SliceCol::CF_NAME, &key, value)
             .await?;
+        Ok(())
+    }
+
+    fn put_slice_from(&self, spool_id: SpoolIndex, track_address: Address, data: &[u8]) -> Result<()> {
+        let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
+        let value = slice::fuse(data, slice_sidecar(data).as_deref());
+        self.inner().inner().put_owned(SliceCol::CF_NAME, &key, value)?;
         Ok(())
     }
 

@@ -9,6 +9,7 @@ name = "tape-gateway"
 path = "src/bin/gateway/main.rs"
 
 [dependencies]
+bytes = { workspace = true }
 tape-blacklist = { workspace = true }
 tape-rack = { workspace = true }
 tape-retry = { workspace = true }

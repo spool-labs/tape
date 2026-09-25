@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use bytes::Bytes;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::erasure::GROUP_SIZE;
@@ -61,7 +62,7 @@ pub async fn decode_track_bytes<
     let profile = blob.profile;
     let start = std::time::Instant::now();
     let decoded = spawn_blocking(move || {
-        let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(position, data)| (*position, data.as_slice())).collect();
+        let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(position, data)| (*position, data.as_ref())).collect();
         BlobDecoder::with_profile(profile).decode(&refs)
     })
     .await
@@ -162,7 +163,7 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track_addr: Address,
     track: CompressedTrack,
     blob: BlobEncoding,
-) -> Result<Vec<(SpoolIndex, Vec<u8>)>, RouteError> {
+) -> Result<Vec<(SpoolIndex, Bytes)>, RouteError> {
     let k = blob.profile.k() as usize;
     if k == 0 || k > GROUP_SIZE {
         return Err(RouteError::Internal("invalid blob encoding profile".into()));
@@ -248,7 +249,7 @@ async fn fetch_decoding_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     origin: &SliceOrigin,
     spool_id: SpoolIndex,
     owner: Address,
-) -> Result<(SpoolIndex, Vec<u8>), SliceFailure> {
+) -> Result<(SpoolIndex, Bytes), SliceFailure> {
     let track_addr = origin.track_addr;
     let read = match read_resolved_slice(state, origin, spool_id, owner).await {
         Ok(read) => read,

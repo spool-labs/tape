@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::IntoResponse;
@@ -86,7 +87,7 @@ async fn fetch_slice_from_owner<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
     spool_id: SpoolIndex,
-) -> Result<Vec<u8>, RouteError> {
+) -> Result<Bytes, RouteError> {
     let track = track_with_pending(state, track_addr)?.ok_or(RouteError::NotFound)?;
     if !track.is_coded() {
         return Err(RouteError::BadRequest("track is not coded".into()));
@@ -121,7 +122,7 @@ async fn fetch_verified_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     origin: &SliceOrigin,
     spool_id: SpoolIndex,
     owner: Address,
-) -> Result<Vec<u8>, RouteError> {
+) -> Result<Bytes, RouteError> {
     let position = origin
         .group
         .position_of(spool_id)
@@ -157,5 +158,5 @@ async fn fetch_verified_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         "gateway fetched slice from owner"
     );
 
-    Ok(Vec::from(response.data))
+    Ok(response.data)
 }

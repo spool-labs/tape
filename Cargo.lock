@@ -10185,6 +10185,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.13.1",
+ "bytes",
  "clap",
  "futures",
  "hex",
