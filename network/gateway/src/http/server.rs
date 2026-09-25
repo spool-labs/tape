@@ -145,6 +145,13 @@ where
                 )),
             )
             .route(
+                object::BUCKET_OBJECT_PATH,
+                get(object::get_bucket_object::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
+                    state.clone(),
+                    crate::meter::object_read_metering::<Db, Cluster, Blockchain>,
+                )),
+            )
+            .route(
                 object::TRACK_BYTES_PATH,
                 get(object::get_track_bytes::<Db, Cluster, Blockchain>).layer(
                     from_fn_with_state(

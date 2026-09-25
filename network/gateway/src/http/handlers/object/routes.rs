@@ -15,10 +15,12 @@ use tape_sdk::stream::manifest::ChunkManifest;
 use super::decode::decode_track_bytes;
 use super::manifest::{chunk_range_plan, object_stream_response};
 use super::response::{
-    ByteRange, ObjectResponseMetadata, object_response_metadata, object_response_ranged,
+    ByteRange, CachePolicy, ObjectResponseMetadata, object_response_metadata, object_response_ranged,
     range_header, resolve_range,
 };
 use crate::http::error::RouteError;
+use crate::http::handlers::resolve::{Readable, resolve_readable_with_pending};
+use crate::http::handlers::store_error;
 use crate::http::handlers::share::authorize_signed_read;
 use crate::http::handlers::track::{ensure_readable, parse_address, track_with_pending};
 use crate::http::state::AppState;
@@ -26,6 +28,7 @@ use crate::meter::{GatewayMeterDecision, MeterCaller, rate_limited_response};
 
 pub const OBJECT_PATH: &str = "/object/{track_id}";
 pub const TRACK_BYTES_PATH: &str = "/track/{track_id}";
+pub const BUCKET_OBJECT_PATH: &str = "/bucket/{tape_id}/{*key}";
 
 pub async fn get_object<
     Db: Store + 'static,
@@ -48,6 +51,75 @@ pub async fn get_object<
 
     let token = authorize_signed_read(&state, &headers, &method, uri.path(), &track)?;
 
+    let metadata = object_response_metadata(&state, track_addr)?;
+    with_share_token(
+        token,
+        read_object_response(
+            state,
+            track_addr,
+            track,
+            metadata,
+            StatusCode::OK,
+            &caller,
+            range_header(&headers).map(str::to_string),
+            rate_limited_response,
+        ),
+    )
+    .await
+}
+
+/// Serve an object by bucket and key in one request
+pub async fn get_bucket_object<
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+>(
+    State(state): State<AppState<Db, Cluster, Blockchain>>,
+    Extension(caller): Extension<MeterCaller>,
+    Path((tape_id, key)): Path<(String, String)>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Result<Response, RouteError> {
+    let tape = parse_address(&tape_id, "tape id")?;
+    if state.blacklists.is_unlisted(tape) {
+        return Err(RouteError::Gone);
+    }
+    let readable = resolve_readable_with_pending(
+        state.context.store.as_ref(),
+        state.staging.as_ref(),
+        state.context.pending.as_ref(),
+        tape,
+        key.as_bytes(),
+    )
+    .map_err(store_error)?
+    .ok_or(RouteError::NotFound)?;
+
+    let resolved = match readable {
+        Readable::Queued(object) => {
+            let bytes = state
+                .staging
+                .bytes(tape, key.as_bytes())
+                .map_err(store_error)?
+                .ok_or(RouteError::NotFound)?;
+            let metadata = ObjectResponseMetadata {
+                content_type: object.content_type,
+                filename: None,
+                cache: CachePolicy::Immutable,
+            };
+            return object_response_ranged(bytes, &metadata, object.etag, range_header(&headers), StatusCode::OK);
+        }
+        Readable::Track(resolved) => resolved,
+    };
+
+    let track_addr = resolved.track_address;
+    let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
+    ensure_readable(&state, track_addr, track.tape)?;
+    if !track.is_certified() {
+        return Err(RouteError::NotFound);
+    }
+
+    let token = authorize_signed_read(&state, &headers, &method, uri.path(), &track)?;
     let metadata = object_response_metadata(&state, track_addr)?;
     with_share_token(
         token,

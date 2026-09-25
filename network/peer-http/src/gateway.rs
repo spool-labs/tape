@@ -16,6 +16,9 @@ use tape_protocol::api::*;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The gateway route that reads an object by bucket and key starts with this segment
+const GATEWAY_BUCKET_SEGMENT: &str = "bucket";
+
 #[derive(Clone)]
 pub struct GatewayApi {
     client: reqwest::Client,
@@ -88,18 +91,37 @@ impl GatewayApi {
         Ok(bytes.to_vec())
     }
 
+    /// Fetch an object's bytes by bucket and key in one request
+    pub async fn get_bucket_object_bytes(&self, tape: Address, key: &str) -> Result<Vec<u8>, ApiError> {
+        let url = self.bucket_object_url(tape, key)?;
+        let response = self.client.get(url).send().await.map_err(map_reqwest)?;
+        let response = check_status(response).await?;
+        let bytes = response.bytes().await.map_err(map_reqwest)?;
+        Ok(bytes.to_vec())
+    }
+
     /// Copy a representing track's object bytes into a sink as they arrive
     pub async fn copy_object_into<Writer: AsyncWrite + Unpin>(
         &self,
         track: Address,
         writer: &mut Writer,
     ) -> Result<u64, ApiError> {
-        let response = self
-            .client
-            .get(self.url(gateway_object_url(&track.to_string())))
-            .send()
-            .await
-            .map_err(map_reqwest)?;
+        self.copy_into(self.url(gateway_object_url(&track.to_string())), writer).await
+    }
+
+    /// Copy an object's bytes by bucket and key into a sink as they arrive
+    pub async fn copy_bucket_object_into<Writer: AsyncWrite + Unpin>(
+        &self,
+        tape: Address,
+        key: &str,
+        writer: &mut Writer,
+    ) -> Result<u64, ApiError> {
+        let url = self.bucket_object_url(tape, key)?;
+        self.copy_into(url.to_string(), writer).await
+    }
+
+    async fn copy_into<Writer: AsyncWrite + Unpin>(&self, url: String, writer: &mut Writer) -> Result<u64, ApiError> {
+        let response = self.client.get(url).send().await.map_err(map_reqwest)?;
         let mut response = check_status(response).await?;
         let mut copied = 0u64;
         while let Some(frame) = response.chunk().await.map_err(map_reqwest)? {
@@ -114,6 +136,18 @@ impl GatewayApi {
             .await
             .map_err(|error| ApiError::Other(format!("object sink: {error}")))?;
         Ok(copied)
+    }
+
+    fn bucket_object_url(&self, tape: Address, key: &str) -> Result<reqwest::Url, ApiError> {
+        let mut url = reqwest::Url::parse(&self.base_url)
+            .map_err(|error| ApiError::Other(format!("gateway url: {error}")))?;
+        url.path_segments_mut()
+            .map_err(|_| ApiError::Other("gateway url cannot take a path".into()))?
+            .pop_if_empty()
+            .push(GATEWAY_BUCKET_SEGMENT)
+            .push(&tape.to_string())
+            .extend(key.split('/'));
+        Ok(url)
     }
 
     fn url(&self, path: String) -> String {
@@ -158,6 +192,10 @@ impl GatewayApi {
 
 #[async_trait]
 impl Api for GatewayApi {
+    fn is_gateway(&self) -> bool {
+        true
+    }
+
     async fn put_slice(&self, _node: Address, _req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
         Err(unsupported("put_slice"))
     }
@@ -440,7 +478,9 @@ mod tests {
     async fn object_into_sink() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let base = format!("http://{}", listener.local_addr().expect("address"));
-        let router = Router::new().route("/object/{track}", get(|| async { object_body() }));
+        let router = Router::new()
+            .route("/object/{track}", get(|| async { object_body() }))
+            .route("/bucket/{tape}/{*key}", get(|| async { object_body() }));
         let server = tokio::spawn(async move { axum::serve(listener, router).await });
         let api = GatewayApi::new(base).expect("client");
         let mut sink = Vec::new();
@@ -450,6 +490,17 @@ mod tests {
         server.abort();
         assert_eq!(copied, OBJECT_BYTES as u64);
         assert_eq!(sink, object_body());
+    }
+
+    // a bucket key keeps its slashes as path segments and escapes the rest
+    #[test]
+    fn bucket_object_url() {
+        let api = GatewayApi::new("http://127.0.0.1:3000/api").expect("client");
+        let tape = Address::new_unique();
+
+        let url = api.bucket_object_url(tape, "photos/june final.png").expect("url");
+
+        assert_eq!(url.path(), format!("/api/bucket/{tape}/photos/june%20final.png"));
     }
 
     #[test]

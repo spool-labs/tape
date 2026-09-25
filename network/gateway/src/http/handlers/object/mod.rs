@@ -9,5 +9,6 @@ pub use response::{
     range_header, ranged_object_headers, resolve_range,
 };
 pub use routes::{
-    OBJECT_PATH, TRACK_BYTES_PATH, get_object, get_track_bytes, read_object_response,
+    BUCKET_OBJECT_PATH, OBJECT_PATH, TRACK_BYTES_PATH, get_bucket_object, get_object, get_track_bytes,
+    read_object_response,
 };

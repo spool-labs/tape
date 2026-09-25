@@ -45,4 +45,9 @@ pub trait Api: Send + Sync + 'static {
     async fn get_health(&self, node: Address, req: &GetHealthReq) -> Result<GetHealthRes, ApiError>;
     async fn get_stats(&self, node: Address, req: &GetStatsReq) -> Result<GetStatsRes, ApiError>;
     async fn get_observe_board(&self, node: Address) -> Result<Vec<u8>, ApiError>;
+
+    /// Whether one endpoint answers for every node, so a query needs a single request
+    fn is_gateway(&self) -> bool {
+        false
+    }
 }
