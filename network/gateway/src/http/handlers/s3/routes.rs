@@ -25,6 +25,7 @@ use tape_rpc::{Rpc, RpcError};
 use tape_store_api::Store;
 use tape_api::instruction::MAX_NAME_LEN;
 use tape_api::program::tapedrive::tape_pda;
+use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
@@ -716,12 +717,12 @@ async fn delete_bucket(Path(bucket): Path<String>) -> Result<Response, S3Error> 
     ))
 }
 
-/// Resolve an S3 `(bucket, key)` to what a read serves, shared by GET and HEAD
+/// Resolve an S3 `(bucket, key)` to what a read serves, shared by GET and HEAD, with the track record behind it
 fn resolve_readable<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     bucket_label: &str,
     key: &str,
-) -> Result<Readable, S3Error> {
+) -> Result<(Readable, Option<CompressedTrack>), S3Error> {
     let bucket = parse_bucket(bucket_label)?;
     if state.blacklists.is_unlisted(bucket) {
         return Err(S3Error::Removed);
@@ -737,16 +738,19 @@ fn resolve_readable<Db: Store, Cluster: Api, Blockchain: Rpc>(
     .ok_or(S3Error::NoSuchKey)?;
 
     match readable {
-        Readable::Queued(object) => Ok(Readable::Queued(object)),
-        Readable::Track(resolved) => readable_track(state, resolved),
+        Readable::Queued(object) => Ok((Readable::Queued(object), None)),
+        Readable::Track(resolved) => {
+            let track = readable_track(state, &resolved)?;
+            Ok((Readable::Track(resolved), Some(track)))
+        }
     }
 }
 
 /// The certified track behind a resolved object, or NoSuchKey while it cannot be served
 fn readable_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
-    resolved: ResolvedObject,
-) -> Result<Readable, S3Error> {
+    resolved: &ResolvedObject,
+) -> Result<CompressedTrack, S3Error> {
     let track = track_with_pending(state, resolved.track_address)
         .map_err(S3Error::from)?
         .ok_or(S3Error::NoSuchKey)?;
@@ -757,7 +761,7 @@ fn readable_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     if !track.is_certified() {
         return Err(S3Error::NoSuchKey);
     }
-    Ok(Readable::Track(resolved))
+    Ok(track)
 }
 
 /// Whether a queued delete hides this key from the write path
@@ -844,7 +848,7 @@ where
     check_request_rate(&state, &caller)?;
 
     let tape = parse_bucket(&bucket)?;
-    let readable = resolve_readable(&state, &bucket, &key)?;
+    let (readable, track) = resolve_readable(&state, &bucket, &key)?;
     if let Some(answer) = conditional_read_answer(preconditions, &readable)? {
         return Ok(answer);
     }
@@ -855,9 +859,7 @@ where
         }
         Readable::Track(resolved) => resolved,
     };
-    let track = track_with_pending(&state, resolved.track_address)
-        .map_err(S3Error::from)?
-        .ok_or(S3Error::NoSuchKey)?;
+    let track = track.ok_or(S3Error::NoSuchKey)?;
     // The S3 content type comes from the object-list index; objects carry no
     // separate filename, so no Content-Disposition is set.
     let metadata = ObjectResponseMetadata {
@@ -931,7 +933,7 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
     preconditions: &Preconditions,
 ) -> Result<Response, S3Error> {
     check_request_rate(state, caller)?;
-    let readable = resolve_readable(state, bucket, key)?;
+    let (readable, track) = resolve_readable(state, bucket, key)?;
     if let Some(answer) = conditional_read_answer(preconditions, &readable)? {
         return Ok(answer);
     }
@@ -944,7 +946,7 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
             range,
         ),
         Readable::Track(resolved) => {
-            let track = track_with_pending(state, resolved.track_address)?.ok_or(S3Error::NoSuchKey)?;
+            let track = track.ok_or(S3Error::NoSuchKey)?;
             if track.is_hidden() {
                 authorize_hidden_read(state, auth, parse_bucket(bucket)?)?;
             }

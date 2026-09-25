@@ -18,7 +18,7 @@ use tracing::{debug, warn};
 
 use crate::http::error::RouteError;
 use crate::http::handlers::store_error;
-use crate::http::handlers::track::slice::read_cached_slice;
+use crate::http::handlers::track::slice::{SliceOrigin, read_resolved_slice};
 use crate::http::handlers::track::track_data_with_pending;
 use crate::http::state::AppState;
 
@@ -164,10 +164,17 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadGateway("no peers for track group".into()));
     }
 
+    let origin = SliceOrigin {
+        track_addr,
+        tape: track.tape,
+        group: track.group,
+        blob,
+    };
+    let origin = &origin;
     let mut fetches = FuturesUnordered::new();
-    for (spool_id, _) in peers {
+    for (spool_id, owner) in peers {
         fetches.push(async move {
-            let read = read_cached_slice(state, track_addr, track.tape, spool_id).await?;
+            let read = read_resolved_slice(state, origin, spool_id, owner).await?;
             Ok::<_, RouteError>((spool_id, read.data, read.is_verified))
         });
     }
