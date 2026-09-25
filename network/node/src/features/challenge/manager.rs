@@ -72,8 +72,6 @@ pub struct ChallengeManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     open_rounds: HashMap<GroupIndex, VecDeque<OpenRound>>,
     first_round: HashMap<EpochNumber, RoundNumber>,
     certified_in: HashSet<(EpochNumber, SpoolIndex)>,
-    /// Openings counted as discarded when their block lost, so the chain that
-    /// won skipping the same slot counts nothing more.
     rolled_rounds: HashSet<(EpochNumber, RoundNumber)>,
 }
 
