@@ -15,6 +15,7 @@ use tape_core::spooler::GroupIndex;
 use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
+use bytes::Bytes;
 use tape_protocol::api::{Api, ApiError, CertifyRes, PutSliceReq, SlicePayload};
 use tape_protocol::ProtocolState;
 use tape_retry::{Backoff, RetryConfig, Retryable};
@@ -29,27 +30,43 @@ use crate::error::UploadError;
 /// Longest a rate limited upload sleeps, whatever the server advertises.
 const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
 
-/// A slice with its merkle proof, ready for upload.
-///
-/// Slice bytes are shared so cloning a slice into per-node upload tasks and
-/// retry attempts never copies the payload.
+/// The wire body puts a u64 length ahead of the slice bytes
+const BODY_DATA_OFFSET: usize = 8;
+
+/// A slice with its merkle proof, held as the wire body every push attempt shares
 #[derive(Clone)]
 pub struct SliceWithProof {
     pub index: SpoolIndex,
-    pub data: Arc<Vec<u8>>,
     pub leaf_hash: Hash,
     pub merkle_proof: SliceMerkleProof,
+    pub body: Bytes,
+    data_len: usize,
 }
 
 impl SliceWithProof {
     /// Create a new slice with proof.
-    pub fn new(index: SpoolIndex, data: Vec<u8>, leaf_hash: Hash, merkle_proof: SliceMerkleProof) -> Self {
-        Self { index, data: Arc::new(data), leaf_hash, merkle_proof }
+    pub fn new(
+        index: SpoolIndex,
+        data: Vec<u8>,
+        leaf_hash: Hash,
+        merkle_proof: SliceMerkleProof,
+    ) -> Result<Self, UploadError> {
+        let data_len = data.len();
+        let payload = SlicePayload::new(data, leaf_hash, merkle_proof.to_vec());
+        let body = wincode::serialize(&payload)
+            .map_err(|error| UploadError::Encoding(format!("slice body: {error}")))?;
+        Ok(Self {
+            index,
+            leaf_hash,
+            merkle_proof,
+            body: Bytes::from(body),
+            data_len,
+        })
     }
 
-    /// Convert to SlicePayload for network transmission.
-    pub fn to_payload(&self) -> SlicePayload {
-        SlicePayload::new(self.data.as_ref().clone(), self.leaf_hash, self.merkle_proof.to_vec())
+    /// The slice bytes inside the wire body.
+    pub fn data(&self) -> &[u8] {
+        &self.body[BODY_DATA_OFFSET..BODY_DATA_OFFSET + self.data_len]
     }
 }
 
@@ -347,12 +364,11 @@ async fn upload_node_slices<P: Api>(
     let uploads = slices.into_iter().map(|(global_spool, slice)| {
         let quorum = quorum.clone();
         async move {
-            let payload = slice.to_payload();
-            let payload_bytes = payload.data.len();
+            let payload_bytes = slice.data().len();
             let req = PutSliceReq {
                 track,
                 spool: global_spool,
-                payload,
+                body: slice.body.clone(),
             };
 
             let result = upload_slice_with_retry(
@@ -562,6 +578,7 @@ mod tests {
                     Hash::default(),
                     [Hash::default(); SLICE_TREE_HEIGHT],
                 )
+                .expect("slice")
             })
             .collect()
     }
@@ -664,19 +681,19 @@ mod tests {
         assert_eq!(uploader.slice_count(), GROUP_SIZE);
     }
 
+    // the wire body decodes back to the original slice
     #[test]
-    fn slice_with_proof_to_payload() {
-        let slice = SliceWithProof::new(
-            SpoolIndex::from(42),
-            vec![0xAB; 500],
-            Hash::default(),
-            [Hash::default(); SLICE_TREE_HEIGHT],
-        );
+    fn wire_body() {
+        let data: Vec<u8> = (0..500).map(|byte| (byte % 251) as u8).collect();
+        let proof = [Hash([7u8; 32]); SLICE_TREE_HEIGHT];
+        let slice = SliceWithProof::new(SpoolIndex::from(42), data.clone(), Hash([9u8; 32]), proof)
+            .expect("slice");
 
-        let payload = slice.to_payload();
+        let payload: SlicePayload = wincode::deserialize(&slice.body).expect("decode");
 
-        assert_eq!(payload.data, *slice.data);
+        assert_eq!(payload.data, data);
+        assert_eq!(slice.data(), data.as_slice());
         assert_eq!(payload.leaf_hash, slice.leaf_hash);
-        assert_eq!(payload.merkle_proof, slice.merkle_proof);
+        assert_eq!(payload.merkle_proof, proof.to_vec());
     }
 }

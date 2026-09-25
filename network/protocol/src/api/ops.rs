@@ -10,18 +10,20 @@ use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 
 use crate::api::types::{
-    InconsistencyProof, NodeStats, SlicePayload, StripeSubChunkRequest, SyncSliceEntry,
+    InconsistencyProof, NodeStats, StripeSubChunkRequest, SyncSliceEntry,
     VoteCandidate, ObjectListItem,
 };
+use bytes::Bytes;
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 use crate::api::ApiError;
 
+/// A slice push, its payload already in wire form so every attempt sends the same bytes
 #[derive(Clone, Debug)]
 pub struct PutSliceReq {
     pub track: Address,
     pub spool: SpoolIndex,
-    pub payload: SlicePayload,
+    pub body: Bytes,
 }
 
 /// A stored slice comes back with the certify signature for its track, so the

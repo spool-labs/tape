@@ -195,10 +195,7 @@ impl Api for HttpApi {
         let (client, base) = self.resolve_slice(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", slice_url(&track_id, req.spool));
-        let body =
-            wincode::serialize(&req.payload)
-            .map_err(|e| ApiError::Serialization(e.to_string()))?;
-
+        let body = req.body.clone();
         let bytes_sent = body.len() as u64;
         let start = Instant::now();
         let resp = client

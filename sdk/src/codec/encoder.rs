@@ -260,7 +260,7 @@ impl BlobEncoder {
                 chunk,
                 leaf_hash,
                 proof_arr,
-            ));
+            )?);
         }
 
         Ok((output, root))
@@ -375,7 +375,7 @@ mod tests {
         // The top tree commits to slice roots, so the proof starts from the root
         for slice in &slices_with_proofs {
             let valid = verify_proof_hash(
-                slice_root(&slice.data).unwrap(),
+                slice_root(slice.data()).unwrap(),
                 &root,
                 &slice.merkle_proof,
                 slice.index.as_u64(),
@@ -417,7 +417,7 @@ mod tests {
 
         // Each leaf is the slice's sub-leaf root, not a hash of the whole slice
         for slice in &slices_with_proofs {
-            let expected_leaf = slice_root(&slice.data).unwrap();
+            let expected_leaf = slice_root(slice.data()).unwrap();
             assert_eq!(slice.leaf_hash, expected_leaf);
         }
     }

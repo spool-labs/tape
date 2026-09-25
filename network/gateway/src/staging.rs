@@ -58,7 +58,7 @@ impl StagedPlans {
 fn plan_bytes(plan: &UploadPlan) -> u64 {
     let mut bytes = 0;
     for slice in &plan.slices {
-        bytes += slice.data.len() as u64;
+        bytes += slice.data().len() as u64;
     }
     bytes
 }

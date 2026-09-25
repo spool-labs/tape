@@ -405,7 +405,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         written: &WrittenTrack,
         plan: &UploadPlan,
     ) -> Result<Vec<CertifyRes>, TapedriveError> {
-        let bytes = plan.slices.iter().map(|slice| slice.data.len() as u64).sum();
+        let bytes = plan.slices.iter().map(|slice| slice.data().len() as u64).sum();
         let timer = self
             .timer(Operation::Upload, Phase::Total)
             .bytes(bytes)
@@ -1230,7 +1230,7 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     operation: Operation,
     progress: &mut UploadProgress,
 ) -> Result<Vec<CertifyRes>, TapedriveError> {
-    let bytes = slices.iter().map(|slice| slice.data.len() as u64).sum();
+    let bytes = slices.iter().map(|slice| slice.data().len() as u64).sum();
     let chunks = slices.len() as u64;
 
     let locate = client.timer(operation, Phase::Locate);
