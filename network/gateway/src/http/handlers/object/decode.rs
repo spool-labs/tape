@@ -15,6 +15,7 @@ use tape_protocol::inline::{fetch_inline_from_peers, InlineFetchError};
 use tape_protocol::Api;
 use tape_sdk::codec::decoder::BlobDecoder;
 use tape_store::ops::TrackDataOps;
+use tokio::task::spawn_blocking;
 use tracing::{debug, warn};
 
 use super::hedge::fetch_hedged;
@@ -57,10 +58,15 @@ pub async fn decode_track_bytes<
     }
 
     let slices = fetch_decoding_slices(state, track_addr, track, blob).await?;
-    let mut decoder = BlobDecoder::with_profile(blob.profile);
+    let profile = blob.profile;
     let start = std::time::Instant::now();
-    let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(position, data)| (*position, data.as_slice())).collect();
-    let mut bytes = decoder.decode(&refs).map_err(|error| {
+    let decoded = spawn_blocking(move || {
+        let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(position, data)| (*position, data.as_slice())).collect();
+        BlobDecoder::with_profile(profile).decode(&refs)
+    })
+    .await
+    .map_err(|error| RouteError::Internal(format!("decode task: {error}")))?;
+    let mut bytes = decoded.map_err(|error| {
         crate::metrics::inc_decode_result("decode_error");
         RouteError::BadGateway(format!("decode object: {error}"))
     })?;

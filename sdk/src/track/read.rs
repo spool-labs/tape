@@ -9,6 +9,7 @@ use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::hash::hash;
 use tape_protocol::api::{with_share_token, ApiError, GetTrackDataReq};
 use tape_protocol::Api;
+use tokio::task::spawn_blocking;
 
 use crate::codec::decoder::BlobDecoder;
 use crate::codec::encoder::BlobEncoder;
@@ -128,10 +129,13 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         let slices = slices?;
 
         let decode = client.timer(operation, Phase::Decode);
-        let mut decoder = BlobDecoder::with_profile(blob.profile);
-        let data = decoder
-            .decode(&localize_slices(group, &slices))
-            .map_err(|e| TapedriveError::Download(ClientError::Decoding(e.to_string())));
+        let profile = blob.profile;
+        let data = spawn_blocking(move || {
+            BlobDecoder::with_profile(profile).decode(&localize_slices(group, &slices))
+        })
+        .await
+        .map_err(|error| TapedriveError::Download(ClientError::Decoding(error.to_string())))
+        .and_then(|data| data.map_err(|e| TapedriveError::Download(ClientError::Decoding(e.to_string()))));
         let decode = match &data {
             Ok(data) => decode.bytes(data.len() as u64),
             Err(_) => decode,

@@ -63,7 +63,7 @@ pub fn snapshot_track_group_count(
 pub fn decode_chunk_payload(
     slices: &[(usize, &[u8])],
 ) -> Result<(ChunkNumber, Vec<u8>), SnapshotError> {
-    let mut slicer = Slicer::clay_default();
+    let slicer = Slicer::clay_default();
     let plaintext = slicer
         .decode(slices)
         .map_err(|e| SnapshotError::ClayDecode(e.to_string()))?;

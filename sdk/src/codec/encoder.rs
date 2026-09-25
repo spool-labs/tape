@@ -446,7 +446,7 @@ mod tests {
 
         let original = vec![0xAB; 10_000];
         let mut encoder = BlobEncoder::with_encoding(EncodingType::Clay);
-        let mut decoder = BlobDecoder::with_encoding(EncodingType::Clay);
+        let decoder = BlobDecoder::with_encoding(EncodingType::Clay);
 
         let slices = encoder.encode(original.clone()).unwrap();
         let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(idx, data)| (*idx, data.as_slice())).collect();
