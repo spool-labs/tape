@@ -50,7 +50,7 @@ use crate::stream::read::read_manifest;
 use crate::tapedrive::Tapedrive;
 use crate::track::{bootstrap_network_state, query};
 use crate::transfer::certify::{CertificationCollector, CollectedSignatures};
-use crate::transfer::uploader::{DistributedUploader, SliceWithProof};
+use crate::transfer::uploader::{DistributedUploader, SliceWithProof, UploadProgress};
 
 /// Poll cadence for visibility and certification waits.
 const POLL_INTERVAL_MS: u64 = 400;
@@ -403,7 +403,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             self,
             written,
             plan,
-            Operation::Upload
+            Operation::Upload,
+            &mut UploadProgress::default(),
         ).await;
 
         timer.finish_result(&result);
@@ -1209,6 +1210,7 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     group: GroupIndex,
     slices: Vec<SliceWithProof>,
     operation: Operation,
+    progress: &mut UploadProgress,
 ) -> Result<Vec<CertifyRes>, TapedriveError> {
     let bytes = slices.iter().map(|slice| slice.data.len() as u64).sum();
     let chunks = slices.len() as u64;
@@ -1235,7 +1237,7 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
         .chunks(chunks);
 
     let result = uploader
-        .upload_all(client.api.clone())
+        .upload_all(client.api.clone(), progress)
         .await
         .map_err(TapedriveError::Upload);
 
@@ -1253,6 +1255,7 @@ async fn upload<Blockchain: Rpc, Cluster: Api>(
     written: &WrittenTrack,
     plan: &UploadPlan,
     operation: Operation,
+    progress: &mut UploadProgress,
 ) -> Result<Vec<CertifyRes>, TapedriveError> {
     let eager = upload_once(
         client,
@@ -1260,6 +1263,7 @@ async fn upload<Blockchain: Rpc, Cluster: Api>(
         written.track.group,
         plan.slices.clone(),
         operation,
+        progress,
     )
     .await;
     match eager {
@@ -1289,6 +1293,7 @@ async fn upload<Blockchain: Rpc, Cluster: Api>(
         written.track.group,
         plan.slices.clone(),
         operation,
+        progress,
     )
     .await
 }
@@ -1928,12 +1933,22 @@ pub(crate) async fn upload_with_retry<Blockchain: Rpc, Cluster: Api>(
     plan: &UploadPlan,
     operation: Operation,
 ) -> Result<Vec<CertifyRes>, TapedriveError> {
-    retry_if(
-        write_retry_config(),
-        None,
-        || upload(client, written, plan, operation),
-        should_retry_upload,
-    ).await
+    // Retries push only spools that are still missing.
+    let mut progress = UploadProgress::default();
+    let mut backoff = Backoff::new(write_retry_config());
+    loop {
+        match upload(client, written, plan, operation, &mut progress).await {
+            Ok(receipts) => return Ok(receipts),
+            Err(err) if should_retry_upload(&err) => {
+                warn!(error = %err, track = %written.address, "upload attempt failed; retrying");
+                match backoff.next_delay() {
+                    Some(delay) => sleep(delay).await,
+                    None => return Err(err),
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 /// One certification attempt: collect signatures unless the cache already

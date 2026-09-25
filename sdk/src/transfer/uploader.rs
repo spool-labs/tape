@@ -12,7 +12,7 @@ use futures::future::join_all;
 use tape_core::bft::{max_faulty, min_correct};
 use tape_core::erasure::{GROUP_SIZE, spool_for_slice};
 use tape_core::spooler::GroupIndex;
-use tape_core::types::SpoolIndex;
+use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_protocol::api::{Api, ApiError, CertifyRes, PutSliceReq, SlicePayload};
@@ -64,8 +64,17 @@ pub struct DistributedUploader {
     slices: Vec<SliceWithProof>,
     group_peers: Vec<(SpoolIndex, Address)>,
     group_member_count: usize,
+    epoch: EpochNumber,
     concurrency_limit: Arc<Semaphore>,
     reputation: Option<Arc<Reputation>>,
+}
+
+/// Earlier upload attempts of one track landed these spools and receipts
+#[derive(Default)]
+pub struct UploadProgress {
+    epoch: Option<EpochNumber>,
+    stored: HashSet<SpoolIndex>,
+    receipts: HashMap<Address, CertifyRes>,
 }
 
 struct NodeUploadResult {
@@ -100,6 +109,7 @@ impl DistributedUploader {
             slices,
             group_peers,
             group_member_count,
+            epoch: state.current.epoch.id,
             concurrency_limit: Arc::new(Semaphore::new(concurrency.max(1))),
             reputation: None,
         })
@@ -117,7 +127,12 @@ impl DistributedUploader {
     /// spool assignment. Returns as soon as a certification quorum of members
     /// and slices has landed; the remaining uploads keep running as detached
     /// tasks and any that fail are left for the recovery worker to handle.
-    pub async fn upload_all<P: Api>(&self, peer_client: Arc<P>) -> Result<Vec<CertifyRes>, UploadError> {
+    /// Spools in `progress` from this epoch are not sent again.
+    pub async fn upload_all<P: Api>(
+        &self,
+        peer_client: Arc<P>,
+        progress: &mut UploadProgress,
+    ) -> Result<Vec<CertifyRes>, UploadError> {
         if self.group_peers.is_empty() {
             return Err(UploadError::NoNodesAvailable);
         }
@@ -126,6 +141,34 @@ impl DistributedUploader {
         let mut node_groups: HashMap<Address, Vec<SpoolIndex>> = HashMap::new();
         for &(spool, node) in &self.group_peers {
             node_groups.entry(node).or_default().push(spool);
+        }
+
+        // A new epoch moves spools to new owners, so nothing landed before counts.
+        if progress.epoch != Some(self.epoch) {
+            *progress = UploadProgress {
+                epoch: Some(self.epoch),
+                ..UploadProgress::default()
+            };
+        }
+        let mut fully_successful_members = 0;
+        let mut stored_slices: HashSet<SpoolIndex> = HashSet::new();
+        let mut missing_groups: HashMap<Address, Vec<SpoolIndex>> = HashMap::new();
+        for (node, spools) in node_groups {
+            let mut missing = Vec::new();
+            for spool in spools {
+                match progress.stored.contains(&spool) {
+                    true => {
+                        stored_slices.insert(spool);
+                    }
+                    false => missing.push(spool),
+                }
+            }
+            match missing.is_empty() {
+                true => fully_successful_members += 1,
+                false => {
+                    missing_groups.insert(node, missing);
+                }
+            }
         }
 
         // Build a lookup: global spool index → slice data
@@ -150,8 +193,7 @@ impl DistributedUploader {
         // the full retry budget; after quorum, remaining uploads get one
         // attempt.
         let (result_sender, mut result_receiver) = mpsc::unbounded_channel();
-        let node_count = node_groups.len();
-        for (node, spools) in node_groups {
+        for (node, spools) in missing_groups {
             let track = self.track;
             let concurrency_limit = self.concurrency_limit.clone();
             let quorum_rx = quorum_rx.clone();
@@ -210,29 +252,8 @@ impl DistributedUploader {
         let mut total_failed_slices = 0;
         let mut not_responsible_count = 0usize;
         let mut member_failures = 0;
-        let mut fully_successful_members = 0;
-        let mut stored_slices: HashSet<SpoolIndex> = HashSet::new();
-        // One receipt per owner: every slice that node stored signs the same
-        // track hash, so the rest are duplicates.
-        let mut receipts: Vec<CertifyRes> = Vec::with_capacity(node_count);
 
-        while let Some(result) = result_receiver.recv().await {
-            match result {
-                Ok(node) => {
-                    total_failed_slices += node.failed.len();
-                    not_responsible_count += node.not_responsible.len();
-                    stored_slices.extend(node.stored);
-                    receipts.extend(node.receipt);
-                    if node.failed.is_empty() && node.not_responsible.is_empty() {
-                        fully_successful_members += 1;
-                    }
-                }
-                Err(error) => {
-                    warn!(error = %error, "member upload task failed");
-                    member_failures += 1;
-                }
-            }
-
+        loop {
             if fully_successful_members >= required_members
                 && stored_slices.len() >= required_slices
             {
@@ -251,7 +272,30 @@ impl DistributedUploader {
                     required_slices,
                     "slice upload quorum reached, draining remaining uploads in the background"
                 );
-                return Ok(receipts);
+                // One receipt per owner: every slice that node stored signs the same track hash.
+                return Ok(progress.receipts.values().cloned().collect());
+            }
+
+            let Some(result) = result_receiver.recv().await else {
+                break;
+            };
+            match result {
+                Ok(node) => {
+                    total_failed_slices += node.failed.len();
+                    not_responsible_count += node.not_responsible.len();
+                    progress.stored.extend(node.stored.iter().copied());
+                    stored_slices.extend(node.stored);
+                    if let Some(receipt) = node.receipt {
+                        progress.receipts.insert(receipt.node, receipt);
+                    }
+                    if node.failed.is_empty() && node.not_responsible.is_empty() {
+                        fully_successful_members += 1;
+                    }
+                }
+                Err(error) => {
+                    warn!(error = %error, "member upload task failed");
+                    member_failures += 1;
+                }
             }
         }
 
@@ -494,8 +538,13 @@ async fn upload_slice_with_retry<P: Api>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
     use super::*;
     use bytemuck::Zeroable;
+    use peer_memory::MemoryApi;
+    use tape_core::bls::BlsSignature;
+    use tape_protocol::api::{PeerReq, PeerRes, PutSliceRes};
     use tape_api::state::Group;
     use tape_core::bls::BlsPubkey;
     use tape_core::system::{Member, Spool};
@@ -543,7 +592,62 @@ mod tests {
         state
     }
 
-    #[test]
+    fn receipt(node: Address) -> CertifyRes {
+        CertifyRes {
+            signature: BlsSignature::zeroed(),
+            node,
+            epoch: EpochNumber(1),
+        }
+    }
+
+    // a retry after a failed quorum pushes only the spools that never landed
+    #[tokio::test]
+    async fn missing_spools() {
+        let state = make_test_state(4);
+        let failing = [state.current.committee[0].node, state.current.committee[1].node];
+        let is_healed = Arc::new(AtomicBool::new(false));
+        let pushes = Arc::new(AtomicUsize::new(0));
+        let api = Arc::new(MemoryApi::new({
+            let is_healed = is_healed.clone();
+            let pushes = pushes.clone();
+            move |node, request| match request {
+                PeerReq::PutSlice(_) => {
+                    pushes.fetch_add(1, Ordering::SeqCst);
+                    if failing.contains(&node) && !is_healed.load(Ordering::SeqCst) {
+                        return PeerRes::PutSlice(Err(ApiError::Other("down".into())));
+                    }
+                    PeerRes::PutSlice(Ok(PutSliceRes { receipt: receipt(node) }))
+                }
+                _ => PeerRes::GetHealth(Err(ApiError::Other("unexpected".into()))),
+            }
+        }));
+        let uploader = DistributedUploader::new(
+            Address::new_unique(),
+            GroupIndex(0),
+            make_test_slices(GROUP_SIZE),
+            &state,
+            GROUP_SIZE,
+        )
+        .expect("uploader");
+        let mut progress = UploadProgress::default();
+
+        let first = uploader.upload_all(api.clone(), &mut progress).await;
+        assert!(matches!(first, Err(UploadError::InsufficientQuorum { .. })));
+        assert_eq!(pushes.load(Ordering::SeqCst), GROUP_SIZE);
+
+        is_healed.store(true, Ordering::SeqCst);
+        let receipts = uploader
+            .upload_all(api, &mut progress)
+            .await
+            .expect("second attempt");
+
+        // Stragglers past the quorum finish in the background.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(pushes.load(Ordering::SeqCst), GROUP_SIZE + GROUP_SIZE / 2);
+        assert!(receipts.len() >= min_correct(4) as usize);
+    }
+
+        #[test]
     fn uploader_creation() {
         let slices = make_test_slices(GROUP_SIZE);
         let state = make_test_state(2);
