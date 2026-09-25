@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::IntoResponse;
@@ -10,6 +12,7 @@ use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{with_share_token, BINARY_CONTENT, GetSliceReq};
+use tape_sdk::bootstrap::counts_against_peer;
 use tracing::debug;
 
 use super::{parse_address, track_data_with_pending, track_with_pending};
@@ -124,18 +127,23 @@ async fn fetch_verified_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .position_of(spool_id)
         .ok_or_else(|| RouteError::BadRequest("spool is not in track group".into()))?;
 
-    let response = state
-        .context
-        .api
-        .get_slice(
-            owner,
-            &GetSliceReq {
-                track: origin.track_addr,
-                spool: spool_id,
-            },
-        )
-        .await
-        .map_err(|error| RouteError::BadGateway(format!("get_slice: {error}")))?;
+    let started = Instant::now();
+    let request = GetSliceReq {
+        track: origin.track_addr,
+        spool: spool_id,
+    };
+    let response = match state.context.api.get_slice(owner, &request).await {
+        Ok(response) => {
+            state.reputation.record_success(owner, started.elapsed());
+            response
+        }
+        Err(error) => {
+            if counts_against_peer(&error) {
+                state.reputation.record_failure(owner);
+            }
+            return Err(RouteError::BadGateway(format!("get_slice: {error}")));
+        }
+    };
 
     if !origin.blob.verify_slice(SpoolIndex(position as u64), &response.data) {
         return Err(RouteError::BadGateway("slice leaf hash mismatch".into()));

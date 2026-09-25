@@ -1,4 +1,5 @@
 pub mod decode;
+pub mod hedge;
 mod manifest;
 pub mod response;
 mod routes;

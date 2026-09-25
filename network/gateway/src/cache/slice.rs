@@ -124,6 +124,13 @@ impl<Db: Store> GatewaySliceCache<Db> {
         }
     }
 
+    /// Whether a slice is in the cache, from memory alone
+    pub fn holds(&self, spool_id: SpoolIndex, track_address: Address) -> bool {
+        self.lock_state()
+            .map(|state| state.entries.contains_key(&SliceCacheKey::new(spool_id, track_address)))
+            .unwrap_or(false)
+    }
+
     /// Record that a cached slice passed its leaf check, so later hits skip the hash
     pub fn mark_verified(&self, spool_id: SpoolIndex, track_address: Address) -> Result<(), GatewayCacheError> {
         self.lock_state()?.mark_verified(SliceCacheKey::new(spool_id, track_address));
