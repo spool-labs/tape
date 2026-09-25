@@ -7,7 +7,6 @@ use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::cert::track::TrackWriteMessage;
 use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
 use tape_core::track::data::BlobData;
 use tape_core::types::SpoolIndex;
@@ -211,10 +210,9 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?;
     state.context.metrics.add_uploaded(data_len);
 
-    let message = TrackWriteMessage::new(epoch, track.get_hash());
     let signature = state
         .context
-        .bls_sign(&message.to_bytes())
+        .sign_track_write(epoch, track.get_hash())
         .map_err(|error| RouteError::Internal(format!("bls sign: {error:?}")))?;
 
     let receipt = BlsSignResponse {
@@ -247,6 +245,7 @@ mod tests {
     use bytemuck::Zeroable;
 
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
+    use tape_core::cert::track::TrackWriteMessage;
     use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{slice_root, GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::prelude::{SpoolState, SpoolStatus};

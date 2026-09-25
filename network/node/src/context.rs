@@ -22,10 +22,10 @@ use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::challenge::schedule::MAX_PENDING_ROUNDS;
 use tape_core::erasure::GROUP_SIZE;
-use tape_core::prelude::{EpochPhase, NodeId, NodeStatus, SpoolIndex};
+use tape_core::prelude::{EpochNumber, EpochPhase, NodeId, NodeStatus, SpoolIndex};
 use tape_core::types::coin::SOL;
 use tape_core::types::tls::NetworkTlsPubkey;
-use tape_crypto::prelude::{Address, BLSError, Keypair, Signature};
+use tape_crypto::prelude::{Address, BLSError, Hash, Keypair, Signature};
 use tape_crypto::ed25519::Pubkey;
 use tape_protocol::{Api, ProtocolState};
 use tape_store::{TapeStore, ops::MetaOps};
@@ -37,6 +37,7 @@ use crate::core::error::NodeError;
 use crate::core::ingest::{IngestBus, IngestState};
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
+use crate::core::write_signatures::WriteSignatures;
 use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::challenge::attest_queue::AttestQueue;
 use crate::features::challenge::sample_cache::SampleSets;
@@ -91,6 +92,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     node_address: Address,
     keypair: Arc<Keypair>,
     bls_keypair: Arc<BlsPrivateKey>,
+    write_signatures: WriteSignatures,
     tls_keypair: Arc<Keypair>,
     reclaim_pending: AtomicBool,
     fee_payer_balance: AtomicU64,
@@ -281,6 +283,15 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub fn bls_sign(&self, message: &[u8]) -> Result<BlsSignature, BLSError> {
         self.bls_keypair.sign(message)
+    }
+
+    /// Sign a track write once per epoch, however many of its slices this node stores
+    pub fn sign_track_write(
+        &self,
+        epoch: EpochNumber,
+        track_hash: Hash,
+    ) -> Result<BlsSignature, BLSError> {
+        self.write_signatures.sign(&self.bls_keypair, epoch, track_hash)
     }
 
     pub fn tls_keypair(&self) -> &Keypair {
@@ -516,6 +527,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             config: Arc::new(self.config),
             keypair: Arc::new(self.keypair),
             bls_keypair: Arc::new(self.bls_keypair),
+            write_signatures: WriteSignatures::new(),
             tls_keypair: self.tls_keypair,
             store: Arc::new(self.store),
             rpc: Arc::new(self.rpc),
