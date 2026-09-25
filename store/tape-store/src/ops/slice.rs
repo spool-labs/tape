@@ -1,5 +1,8 @@
 //! Slice data operations (merged primary + recovery)
 
+
+use std::future::Future;
+
 use tape_store_api::{Column, Store};
 use tape_core::types::{SpoolIndex, StorageUnits};
 use tape_crypto::address::Address;
@@ -25,6 +28,14 @@ pub trait SliceOps {
         track_address: Address,
         slice: impl Into<SliceWrite>,
     ) -> Result<()>;
+
+    /// Store a slice already fused with its sidecar, awaited, without copying the value
+    fn put_fused_slice_wait(
+        &self,
+        spool_id: SpoolIndex,
+        track_address: Address,
+        value: Vec<u8>,
+    ) -> impl Future<Output = Result<()>> + Send;
 
     /// Delete slice data
     fn delete_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<()>;
@@ -136,6 +147,20 @@ impl<S: Store> SliceOps for TapeStore<S> {
         let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
         let value = slice::fuse(&data, sidecar.as_deref());
         self.inner().inner().put(SliceCol::CF_NAME, &key, &value)?;
+        Ok(())
+    }
+
+    async fn put_fused_slice_wait(
+        &self,
+        spool_id: SpoolIndex,
+        track_address: Address,
+        value: Vec<u8>,
+    ) -> Result<()> {
+        let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
+        self.inner()
+            .inner()
+            .put_owned_wait(SliceCol::CF_NAME, &key, value)
+            .await?;
         Ok(())
     }
 

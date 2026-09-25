@@ -7,15 +7,15 @@ use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
+use tape_core::erasure::{slice_root_from_sidecar, slice_sidecar, GROUP_SIZE, SLICE_TREE_HEIGHT};
 use tape_core::track::data::BlobData;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_crypto::merkle::verify_proof_hash;
 use tape_protocol::Api;
-use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse, SlicePayload};
+use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse, SliceBody};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
-use tape_store::types::SliceWrite;
+use tape_store::types::slice::fuse;
 use tracing::{debug, trace};
 
 use crate::features::blacklist::refuses_object;
@@ -114,7 +114,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let track_key = track;
     let epoch = current_epoch(&state)?;
-    let payload: SlicePayload = wincode::deserialize(&body)
+    let payload = SliceBody::parse(&body)
         .map_err(|error| RouteError::BadRequest(format!("slice payload: {error}")))?;
 
     let in_store = state
@@ -184,8 +184,12 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     // One hash of the slice serves both jobs: the root that settles the claim,
     // and the sidecar the store keeps so a later challenge answers off one window.
-    let slice = SliceWrite::new(payload.data);
-    let Some(root) = slice.root() else {
+    let data = payload.data;
+    let data_len = data.len() as u64;
+    let sidecar = slice_sidecar(&data);
+    let root = sidecar.as_deref().map(slice_root_from_sidecar);
+    let value = fuse(&data, sidecar.as_deref());
+    let Some(root) = root else {
         return Err(RouteError::BadRequest("slice exceeds sub-leaf tree capacity".into()));
     };
     if root != payload.leaf_hash {
@@ -202,11 +206,11 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("invalid merkle proof".into()));
     }
 
-    let data_len = slice.data().len() as u64;
     state
         .context
         .store
-        .put_slice(spool_id, track_key, slice)
+        .put_fused_slice_wait(spool_id, track_key, value)
+        .await
         .map_err(store_error)?;
     state.context.metrics.add_uploaded(data_len);
 
@@ -265,7 +269,7 @@ mod tests {
     use tape_crypto::ed25519::{Keypair, SecretKey};
     use tape_crypto::Hash;
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, root_from_leaf_hashes};
-    use tape_protocol::api::{encode_share_token, SHARE_TOKEN_HEADER};
+    use tape_protocol::api::{encode_share_token, SlicePayload, SHARE_TOKEN_HEADER};
     use tape_store::ops::{ObjectInfoOps, SpoolOps, TapeOps, TrackDataOps};
     use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 
