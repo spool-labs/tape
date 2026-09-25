@@ -65,7 +65,7 @@ macro_rules! dispatch {
 #[async_trait]
 impl Api for MemoryApi {
     async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
-        dispatch!(self, node, PutSliceReq { track: req.track, spool: req.spool, payload: req.payload.clone() }, PutSlice)
+        dispatch!(self, node, PutSliceReq { track: req.track, spool: req.spool, body: req.body.clone() }, PutSlice)
     }
 
     async fn get_slice(&self, node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {

@@ -67,6 +67,11 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 pub(crate) async fn queryable_peers<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
 ) -> Result<Vec<Address>, TapedriveError> {
+    // A gateway answers for every node, so one placeholder peer means one request
+    if client.api.is_gateway() {
+        return Ok(vec![Address::default()]);
+    }
+
     let state = bootstrap_network_state(client, None).await?;
     let mut peers = Vec::with_capacity(state.current.committee.len());
     for member in &state.current.committee {

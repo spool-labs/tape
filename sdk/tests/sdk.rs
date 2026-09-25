@@ -33,9 +33,13 @@ use tape_protocol::api::{
 use tape_protocol::ProtocolState;
 
 use tape_sdk::object::ListObjectsQuery;
+use tape_sdk::stream::manifest::{ChunkEntry, ChunkManifest, MANIFEST_VERSION};
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
 use tape_sdk::track::write::WrittenTrack;
+
+/// A two-segment stream read asks for the name, the manifest data, one track page and each segment's data
+const STREAM_ROUND_TRIPS: usize = 5;
 
 struct Fixture {
     rpc: LiteSvmRpc,
@@ -43,6 +47,7 @@ struct Fixture {
     tracks: Arc<Mutex<HashMap<Address, CompressedTrack>>>,
     data: Arc<Mutex<HashMap<Address, BlobData>>>,
     objects: Arc<Mutex<HashMap<Address, Vec<ObjectListItem>>>>,
+    requests: Arc<Mutex<Vec<&'static str>>>,
 }
 
 fn unexpected_error() -> ApiError {
@@ -100,13 +105,17 @@ fn setup() -> Fixture {
     let data = Arc::new(Mutex::new(HashMap::<Address, BlobData>::new()));
     let objects = Arc::new(Mutex::new(HashMap::<Address, Vec<ObjectListItem>>::new()));
     let proofs = Arc::new(Mutex::new(HashMap::<Address, CompressedTrackProof>::new()));
+    let requests = Arc::new(Mutex::new(Vec::new()));
 
     let api = Arc::new(MemoryApi::new({
         let tracks = tracks.clone();
         let data = data.clone();
         let objects = objects.clone();
         let proofs = proofs.clone();
-        move |_node, req| match req {
+        let requests = requests.clone();
+        move |_node, req| {
+        requests.lock().unwrap().push(request_kind(&req));
+        match req {
             PeerReq::GetTrack(req) => match tracks.lock().unwrap().get(&req.track).copied() {
                 Some(track) => PeerRes::GetTrack(Ok(GetTrackRes { track })),
                 None => PeerRes::GetTrack(Err(ApiError::NotFound)),
@@ -248,6 +257,7 @@ fn setup() -> Fixture {
             PeerReq::PutSlice(_) => unexpected_peer_response(&req),
             PeerReq::GetSlice(_) => unexpected_peer_response(&req),
         }
+        }
     }));
 
     let peer_manager = Arc::new(PeerManager::new());
@@ -288,6 +298,30 @@ fn setup() -> Fixture {
         tracks,
         data,
         objects,
+        requests,
+    }
+}
+
+fn request_kind(request: &PeerReq) -> &'static str {
+    match request {
+        PeerReq::GetTrack(_) => "get_track",
+        PeerReq::GetTrackByNumber(_) => "get_track_by_number",
+        PeerReq::FindTrack(_) => "find_track",
+        PeerReq::ListTracksByTape(_) => "list_tracks_by_tape",
+        PeerReq::ListObjects(_) => "list_objects",
+        PeerReq::GetTrackData(_) => "get_track_data",
+        PeerReq::GetTrackProof(_) => "get_track_proof",
+        PeerReq::SyncSlices(_) => "sync_slices",
+        PeerReq::Repair(_) => "repair",
+        PeerReq::Certify(_) => "certify",
+        PeerReq::Vote(_) => "vote",
+        PeerReq::Invalidate(_) => "invalidate",
+        PeerReq::ProofOfAccess(_) => "proof_of_access",
+        PeerReq::Attest(_) => "attest",
+        PeerReq::GetHealth(_) => "get_health",
+        PeerReq::GetStats(_) => "get_stats",
+        PeerReq::PutSlice(_) => "put_slice",
+        PeerReq::GetSlice(_) => "get_slice",
     }
 }
 
@@ -555,6 +589,59 @@ async fn read_raw_track() {
 
     let read = fixture.client.read(&address).await.unwrap();
     assert_eq!(read, raw);
+}
+
+// reading an object by name asks for the track data straight after the lookup
+#[tokio::test]
+async fn object_round_trips() {
+    let fixture = setup();
+    let tape = tape_pda(Keypair::new(&mut rand::thread_rng()).pubkey().into()).0;
+    let (track, data) = make_raw_track(tape, hash::hash(b"notes.md"), 0, b"small object");
+    fixture.insert_track(track, data);
+
+    let read = fixture.client.get_object(&tape, "notes.md").await.expect("read object");
+
+    assert_eq!(read, b"small object");
+    assert_eq!(*fixture.requests.lock().unwrap(), vec!["find_track", "get_track_data"]);
+}
+
+// reading a stream by name fetches its manifest once and then only its segments
+#[tokio::test]
+async fn stream_round_trips() {
+    let fixture = setup();
+    let tape = tape_pda(Keypair::new(&mut rand::thread_rng()).pubkey().into()).0;
+    let segments: [&[u8]; 2] = [b"first half ", b"second half"];
+    let mut entries = Vec::new();
+    let mut offset = 0;
+    for (number, segment) in segments.iter().enumerate() {
+        let (track, data) = make_raw_track(tape, hash::hash(segment), number as u64, segment);
+        fixture.insert_track(track, data);
+        entries.push(ChunkEntry {
+            track_number: TrackNumber(number as u64),
+            offset: StorageUnits::from_bytes(offset),
+            size: StorageUnits::from_bytes(segment.len() as u64),
+        });
+        offset += segment.len() as u64;
+    }
+    let manifest = ChunkManifest {
+        version: MANIFEST_VERSION,
+        total_size: StorageUnits::from_bytes(offset),
+        chunk_count: TrackNumber(entries.len() as u64),
+        chunk_size: StorageUnits::from_bytes(segments[0].len() as u64),
+        key: hash::hash(b"movie.bin"),
+        chunks: entries,
+    };
+    let manifest_bytes = manifest.to_bytes().expect("encode manifest");
+    let (track, data) = make_raw_track(tape, hash::hash(b"movie.bin"), 2, &manifest_bytes);
+    fixture.insert_track(track, data);
+
+    let read = fixture.client.get_object(&tape, "movie.bin").await.expect("read stream");
+
+    assert_eq!(read, b"first half second half");
+    let requests = fixture.requests.lock().unwrap().clone();
+    assert_eq!(requests.iter().filter(|kind| **kind == "find_track").count(), 1);
+    assert_eq!(requests.iter().filter(|kind| **kind == "get_track_data").count(), 3);
+    assert_eq!(requests.len(), STREAM_ROUND_TRIPS);
 }
 
 #[tokio::test]

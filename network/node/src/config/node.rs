@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsPrivateKey;
-use tape_core::challenge::schedule::Schedule;
+use tape_core::challenge::schedule::{Schedule, rounds_in_seconds};
 use tape_api::consts::NAME_LENGTH;
 use tape_api::genesis::GenesisConfig;
 use tape_core::types::{BasisPoints, SlotNumber};
@@ -110,12 +110,63 @@ pub enum GenesisPreset {
 }
 
 impl GenesisPreset {
-    /// Explicit network timing, never inferred from epoch duration.
+    /// Round spacing in slots: the preset's planned spacing at its slot time,
+    /// to the whole slot below.
     pub fn challenge_interval_slots(self) -> u64 {
+        self.challenge_spacing_ms() / self.slot_ms()
+    }
+
+    /// Wall time each preset plans between one round opening and the next.
+    pub fn challenge_spacing_ms(self) -> u64 {
         match self {
-            Self::Mainnet | Self::Devnet => 7,
-            Self::Localnet => 25,
-            Self::Simnet => 10,
+            Self::Mainnet => 60_000,
+            Self::Devnet => 30_000,
+            Self::Localnet => 10_000,
+            Self::Simnet => 10_000,
+        }
+    }
+
+    /// Wall time one slot takes on each network, and the one rate every preset
+    /// timing converts at.
+    ///
+    /// Mainnet plans at 200 ms, where it is heading from 250 today. A slower
+    /// live rate only stretches each round, so a span converted here lasts at
+    /// least as long as stated. The simnet producer ticks once a wall second,
+    /// while its chain clock counts `SLOT_MS` a slot. `SLOT_MS` is the fallback
+    /// before ingest measures a live rate, and no cluster preset plans slower.
+    pub fn slot_ms(self) -> u64 {
+        match self {
+            Self::Mainnet => 200,
+            Self::Devnet => 166,
+            Self::Localnet => 400,
+            Self::Simnet => 1_000,
+        }
+    }
+
+    /// Seconds a spool that changed hands has to fetch what it was handed.
+    ///
+    /// Eight rounds at each preset's own cadence, the count every preset ran
+    /// with when the grace was stated in rounds. Devnet's figure falls midway
+    /// through its eighth round, so a slot time a few percent off keeps the count.
+    pub fn challenge_handover_grace_seconds(self) -> u64 {
+        match self {
+            Self::Mainnet => 480,
+            Self::Devnet => 225,
+            Self::Localnet => 80,
+            Self::Simnet => 80,
+        }
+    }
+
+    /// Seconds of blank rounds in a row before the node re-reads protocol state.
+    ///
+    /// Three rounds at each preset's own cadence, well inside the default
+    /// eviction policy's thirty consecutive misses.
+    pub fn challenge_realign_after_blank_seconds(self) -> u64 {
+        match self {
+            Self::Mainnet => 180,
+            Self::Devnet => 75,
+            Self::Localnet => 30,
+            Self::Simnet => 30,
         }
     }
 
@@ -135,6 +186,34 @@ impl NodeConfig {
         self.challenge
             .interval_slots
             .unwrap_or_else(|| self.genesis_preset.challenge_interval_slots())
+    }
+
+    /// Rounds a spool that changed hands has to fetch what it was handed.
+    pub fn challenge_handover_grace_rounds(&self) -> u64 {
+        let seconds = self
+            .challenge
+            .handover_grace_seconds
+            .unwrap_or_else(|| self.genesis_preset.challenge_handover_grace_seconds());
+        self.challenge_rounds_in(seconds)
+    }
+
+    /// Blank rounds in a row before the node re-reads protocol state.
+    pub fn challenge_realign_after_blank_rounds(&self) -> u64 {
+        let seconds = self
+            .challenge
+            .realign_after_blank_seconds
+            .unwrap_or_else(|| self.genesis_preset.challenge_realign_after_blank_seconds());
+        self.challenge_rounds_in(seconds)
+    }
+
+    /// The fewest whole rounds that last a wall-clock span at this network's
+    /// cadence.
+    fn challenge_rounds_in(&self, seconds: u64) -> u64 {
+        rounds_in_seconds(
+            seconds,
+            self.challenge_interval_slots(),
+            self.genesis_preset.slot_ms(),
+        )
     }
 
     /// Returns whether challenge and eviction participation are both enabled.
@@ -166,9 +245,14 @@ impl NodeConfig {
             .validate()
             .map_err(|error| ConfigError::Invalid(format!("eviction.policy.{error}")))?;
 
-        if self.challenge.realign_after_blank_rounds == 0 {
+        if self.challenge.realign_after_blank_seconds == Some(0) {
             return Err(ConfigError::Invalid(
-                "challenge.realign_after_blank_rounds must be greater than zero".into(),
+                "challenge.realign_after_blank_seconds must be greater than zero".into(),
+            ));
+        }
+        if self.challenge.handover_grace_seconds == Some(0) {
+            return Err(ConfigError::Invalid(
+                "challenge.handover_grace_seconds must be greater than zero".into(),
             ));
         }
         if self.challenge.verify_workers == 0 {
@@ -475,9 +559,10 @@ fn default_commission() -> BasisPoints {
 mod tests {
     use std::path::PathBuf;
 
+    use tape_core::challenge::schedule::SLOT_MS;
     use tape_core::types::{BasisPoints, SlotNumber};
 
-    use super::{NodeConfig, default_config_path};
+    use super::{GenesisPreset, NodeConfig, default_config_path};
     use tape_crypto::address::Address;
     use tape_forwarded::cidr::CidrBlock;
     use crate::config::logs::LoggingFormat;
@@ -895,11 +980,84 @@ eviction:
         }
     }
 
+    // each preset's grace and realign spans are wall clock, and each becomes
+    // the fewest whole rounds that last it at that preset's own cadence
+    #[test]
+    fn challenge_spans_become_round_counts() {
+        let spans = [
+            ("mainnet", 300, 200, 8, 3),
+            ("devnet", 180, 166, 8, 3),
+            ("localnet", 25, 400, 8, 3),
+            ("simnet", 10, 1_000, 8, 3),
+        ];
+
+        for (preset, interval, slot_ms, grace, realign) in spans {
+            let yaml = format!("genesis_preset: {preset}");
+            let config = NodeConfig::from_yaml_str(&yaml).expect("valid preset");
+
+            assert_eq!(config.challenge_interval_slots(), interval);
+            assert_eq!(config.genesis_preset.slot_ms(), slot_ms);
+            assert_eq!(config.challenge_handover_grace_rounds(), grace, "{preset}");
+            assert_eq!(config.challenge_realign_after_blank_rounds(), realign, "{preset}");
+        }
+
+        // The tighter grid the fleet ran for a month covers the same spans in
+        // many more rounds, which is the whole point of stating them in seconds.
+        let yaml = r#"
+genesis_preset: devnet
+challenge:
+  interval_slots: 7
+"#;
+        let config = NodeConfig::from_yaml_str(yaml).expect("valid interval");
+        assert_eq!(config.challenge_handover_grace_rounds(), 194);
+        assert_eq!(config.challenge_realign_after_blank_rounds(), 65);
+
+        // A stated span wins over the preset at the same cadence, and a part
+        // round counts in full.
+        let yaml = r#"
+genesis_preset: devnet
+challenge:
+  handover_grace_seconds: 240
+  realign_after_blank_seconds: 90
+"#;
+        let config = NodeConfig::from_yaml_str(yaml).expect("valid spans");
+        assert_eq!(config.challenge_handover_grace_rounds(), 9);
+        assert_eq!(config.challenge_realign_after_blank_rounds(), 4);
+
+        for zero in ["handover_grace_seconds", "realign_after_blank_seconds"] {
+            let yaml = format!("challenge:\n  {zero}: 0");
+            assert!(NodeConfig::from_yaml_str(&yaml).is_err());
+        }
+    }
+
+    // each preset's cadence comes from its own slot time, and the fallback slot
+    // time is no faster than any cluster preset plans for
+    #[test]
+    fn slot_times() {
+        let presets = [
+            GenesisPreset::Mainnet,
+            GenesisPreset::Devnet,
+            GenesisPreset::Localnet,
+            GenesisPreset::Simnet,
+        ];
+
+        for preset in presets {
+            let slot_ms = preset.slot_ms();
+            let planned = preset.challenge_interval_slots() * slot_ms;
+
+            assert!(planned <= preset.challenge_spacing_ms(), "{preset:?}");
+            assert!(planned + slot_ms > preset.challenge_spacing_ms(), "{preset:?}");
+        }
+        for cluster in [GenesisPreset::Mainnet, GenesisPreset::Devnet, GenesisPreset::Localnet] {
+            assert!(cluster.slot_ms() <= SLOT_MS, "{cluster:?}");
+        }
+    }
+
     #[test]
     fn challenge_interval_uses_named_presets_and_explicit_overrides() {
         let presets = [
-            ("mainnet", 7),
-            ("devnet", 7),
+            ("mainnet", 300),
+            ("devnet", 180),
             ("localnet", 25),
             ("simnet", 10),
         ];

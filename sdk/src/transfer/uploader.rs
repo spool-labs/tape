@@ -11,9 +11,10 @@ use futures::future::join_all;
 use tape_core::bft::{max_faulty, min_correct};
 use tape_core::erasure::{GROUP_SIZE, spool_for_slice};
 use tape_core::spooler::GroupIndex;
-use tape_core::types::SpoolIndex;
+use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
+use bytes::Bytes;
 use tape_protocol::api::{Api, ApiError, CertifyRes, PutSliceReq, SlicePayload};
 use tape_protocol::ProtocolState;
 use tape_retry::{Backoff, RetryConfig, Retryable};
@@ -68,27 +69,43 @@ impl StragglerRegistry {
     }
 }
 
-/// A slice with its merkle proof, ready for upload.
-///
-/// Slice bytes are shared so cloning a slice into per-node upload tasks and
-/// retry attempts never copies the payload.
+/// The wire body puts a u64 length ahead of the slice bytes
+const BODY_DATA_OFFSET: usize = 8;
+
+/// A slice with its merkle proof, held as the wire body every push attempt shares
 #[derive(Clone)]
 pub struct SliceWithProof {
     pub index: SpoolIndex,
-    pub data: Arc<Vec<u8>>,
     pub leaf_hash: Hash,
     pub merkle_proof: SliceMerkleProof,
+    pub body: Bytes,
+    data_len: usize,
 }
 
 impl SliceWithProof {
     /// Create a new slice with proof.
-    pub fn new(index: SpoolIndex, data: Vec<u8>, leaf_hash: Hash, merkle_proof: SliceMerkleProof) -> Self {
-        Self { index, data: Arc::new(data), leaf_hash, merkle_proof }
+    pub fn new(
+        index: SpoolIndex,
+        data: Vec<u8>,
+        leaf_hash: Hash,
+        merkle_proof: SliceMerkleProof,
+    ) -> Result<Self, UploadError> {
+        let data_len = data.len();
+        let payload = SlicePayload::new(data, leaf_hash, merkle_proof.to_vec());
+        let body = wincode::serialize(&payload)
+            .map_err(|error| UploadError::Encoding(format!("slice body: {error}")))?;
+        Ok(Self {
+            index,
+            leaf_hash,
+            merkle_proof,
+            body: Bytes::from(body),
+            data_len,
+        })
     }
 
-    /// Convert to SlicePayload for network transmission.
-    pub fn to_payload(&self) -> SlicePayload {
-        SlicePayload::new(self.data.as_ref().clone(), self.leaf_hash, self.merkle_proof.to_vec())
+    /// The slice bytes inside the wire body.
+    pub fn data(&self) -> &[u8] {
+        &self.body[BODY_DATA_OFFSET..BODY_DATA_OFFSET + self.data_len]
     }
 }
 
@@ -103,10 +120,19 @@ pub struct DistributedUploader {
     slices: Vec<SliceWithProof>,
     group_peers: Vec<(SpoolIndex, Address)>,
     group_member_count: usize,
+    epoch: EpochNumber,
     concurrency_limit: Arc<Semaphore>,
     reputation: Option<Arc<Reputation>>,
     // one push task per owner; a call that gives up aborts them, a call that reached quorum hands them to the registry
     stragglers: Mutex<Vec<JoinHandle<()>>>,
+}
+
+/// Earlier upload attempts of one track landed these spools and receipts
+#[derive(Default)]
+pub struct UploadProgress {
+    epoch: Option<EpochNumber>,
+    stored: HashSet<SpoolIndex>,
+    receipts: HashMap<Address, CertifyRes>,
 }
 
 struct NodeUploadResult {
@@ -171,6 +197,7 @@ impl DistributedUploader {
             slices,
             group_peers,
             group_member_count,
+            epoch: state.current.epoch.id,
             concurrency_limit: Arc::new(Semaphore::new(concurrency.max(1))),
             reputation: None,
             stragglers: Mutex::new(Vec::new()),
@@ -189,8 +216,13 @@ impl DistributedUploader {
     /// spool assignment. Returns as soon as a certification quorum of members
     /// and slices has landed; the owners still behind keep pushing for as long
     /// as this uploader lives, and any slice that never lands is left for the
-    /// recovery worker to handle.
-    pub async fn upload_all<P: Api>(&self, peer_client: Arc<P>) -> Result<Vec<CertifyRes>, UploadError> {
+    /// recovery worker to handle. Spools in `progress` from this epoch are not
+    /// sent again.
+    pub async fn upload_all<P: Api>(
+        &self,
+        peer_client: Arc<P>,
+        progress: &mut UploadProgress,
+    ) -> Result<Vec<CertifyRes>, UploadError> {
         if self.group_peers.is_empty() {
             return Err(UploadError::NoNodesAvailable);
         }
@@ -199,6 +231,34 @@ impl DistributedUploader {
         let mut node_groups: HashMap<Address, Vec<SpoolIndex>> = HashMap::new();
         for &(spool, node) in &self.group_peers {
             node_groups.entry(node).or_default().push(spool);
+        }
+
+        // A new epoch moves spools to new owners, so nothing landed before counts.
+        if progress.epoch != Some(self.epoch) {
+            *progress = UploadProgress {
+                epoch: Some(self.epoch),
+                ..UploadProgress::default()
+            };
+        }
+        let mut fully_successful_members = 0;
+        let mut stored_slices: HashSet<SpoolIndex> = HashSet::new();
+        let mut missing_groups: HashMap<Address, Vec<SpoolIndex>> = HashMap::new();
+        for (node, spools) in node_groups {
+            let mut missing = Vec::new();
+            for spool in spools {
+                match progress.stored.contains(&spool) {
+                    true => {
+                        stored_slices.insert(spool);
+                    }
+                    false => missing.push(spool),
+                }
+            }
+            match missing.is_empty() {
+                true => fully_successful_members += 1,
+                false => {
+                    missing_groups.insert(node, missing);
+                }
+            }
         }
 
         // Build a lookup: global spool index → slice data
@@ -211,14 +271,22 @@ impl DistributedUploader {
             })
             .collect();
 
+        // What this call puts on the wire, which is what the quorum wait has
+        // to cover.
+        let bytes_in_flight: u64 = missing_groups
+            .values()
+            .flatten()
+            .filter_map(|spool| slice_map.get(spool))
+            .map(|slice| slice.data().len() as u64)
+            .sum();
+
         let required_members = min_correct(self.group_member_count as u64) as usize;
         let required_slices = min_correct(GROUP_SIZE as u64) as usize;
 
         // Each owner uploads in its own task, so a quorum completes the call
         // while the owners behind it keep pushing.
         let (result_sender, mut result_receiver) = mpsc::unbounded_channel();
-        let node_count = node_groups.len();
-        for (node, spools) in node_groups {
+        for (node, spools) in missing_groups {
             let track = self.track;
             let concurrency_limit = self.concurrency_limit.clone();
             let peer_client = peer_client.clone();
@@ -271,43 +339,15 @@ impl DistributedUploader {
         let mut total_failed_slices = 0;
         let mut not_responsible_count = 0usize;
         let mut member_failures = 0;
-        let mut fully_successful_members = 0;
-        let mut stored_slices: HashSet<SpoolIndex> = HashSet::new();
-        // One receipt per owner: every slice that node stored signs the same
-        // track hash, so the rest are duplicates.
-        let mut receipts: Vec<CertifyRes> = Vec::with_capacity(node_count);
 
         // Waiting on every owner would hold the call for the whole straggler
-        // window, so a run that never reaches quorum stops at the ladder the
-        // pushes themselves spend.
-        let deadline = Instant::now() + quorum_wait_limit();
+        // window, so a run where no owner answers stops at the ladder the
+        // pushes themselves spend, widened by the time this call's bytes take
+        // on the wire. Every answer re-arms that wait, because owners still
+        // streaming their slices have not gone quiet.
+        let quiet_limit = quorum_wait_limit(bytes_in_flight);
+        let mut deadline = Instant::now() + quiet_limit;
         loop {
-            let received = tokio::select! {
-                // Safe: recv leaves an unread result queued.
-                received = result_receiver.recv() => received,
-                // Safe: the deadline is absolute, so a re-armed sleep is the same sleep.
-                _ = sleep_until(deadline) => break,
-            };
-            let Some(result) = received else {
-                break;
-            };
-
-            match result {
-                Ok(node) => {
-                    total_failed_slices += node.failed.len();
-                    not_responsible_count += node.not_responsible.len();
-                    stored_slices.extend(node.stored);
-                    receipts.extend(node.receipt);
-                    if node.failed.is_empty() && node.not_responsible.is_empty() {
-                        fully_successful_members += 1;
-                    }
-                }
-                Err(error) => {
-                    warn!(error = %error, "member upload task failed");
-                    member_failures += 1;
-                }
-            }
-
             if fully_successful_members >= required_members
                 && stored_slices.len() >= required_slices
             {
@@ -326,7 +366,38 @@ impl DistributedUploader {
                     "slice upload quorum reached, draining remaining uploads in the background"
                 );
                 self.release_stragglers();
-                return Ok(receipts);
+                // One receipt per owner: every slice that node stored signs the same track hash.
+                return Ok(progress.receipts.values().cloned().collect());
+            }
+
+            let received = tokio::select! {
+                // Safe: recv leaves an unread result queued.
+                received = result_receiver.recv() => received,
+                // Safe: the deadline is absolute, so a re-armed sleep is the same sleep.
+                _ = sleep_until(deadline) => break,
+            };
+            let Some(result) = received else {
+                break;
+            };
+            deadline = Instant::now() + quiet_limit;
+
+            match result {
+                Ok(node) => {
+                    total_failed_slices += node.failed.len();
+                    not_responsible_count += node.not_responsible.len();
+                    progress.stored.extend(node.stored.iter().copied());
+                    stored_slices.extend(node.stored);
+                    if let Some(receipt) = node.receipt {
+                        progress.receipts.insert(receipt.node, receipt);
+                    }
+                    if node.failed.is_empty() && node.not_responsible.is_empty() {
+                        fully_successful_members += 1;
+                    }
+                }
+                Err(error) => {
+                    warn!(error = %error, "member upload task failed");
+                    member_failures += 1;
+                }
             }
         }
 
@@ -419,12 +490,11 @@ async fn upload_node_slices<P: Api>(
         .map_err(|_| UploadError::Semaphore)?;
 
     let uploads = slices.into_iter().map(|(global_spool, slice)| async move {
-        let payload = slice.to_payload();
-        let payload_bytes = payload.data.len();
+        let payload_bytes = slice.data().len();
         let req = PutSliceReq {
             track,
             spool: global_spool,
-            payload,
+            body: slice.body.clone(),
         };
 
         let result =
@@ -499,18 +569,29 @@ fn next_push_delay(
 ///
 /// Ramping from 60 ms catches the ingest as soon as it happens and still
 /// settles to a polite cadence if a node is genuinely down rather than behind.
-/// Longest the call waits for a quorum once the pushes are in flight
+/// Slowest link a quorum wait sits through, in bytes per second.
+///
+/// The wait has to cover the time the slices themselves spend on the wire, so
+/// it is sized from the bytes in flight. Ten megabits is below any link a
+/// writer can usefully upload from, so this only ever widens the wait for a
+/// transfer that is genuinely large.
+const QUORUM_WAIT_FLOOR_BYTES_PER_SEC: u64 = 1_250_000;
+
+/// Longest the call waits for a quiet quorum once the pushes are in flight
 ///
 /// The retry ladder below spends about twelve seconds on an owner that has not
-/// ingested the register, which is as long as a push can usefully wait. Past
-/// that the run has no quorum to report and the caller retries the whole write.
-fn quorum_wait_limit() -> Duration {
+/// ingested the register, and `bytes_in_flight` adds the time those bytes take
+/// to transmit on the slowest link worth waiting for. A push still streaming
+/// its slices is inside that budget, so the wait covers it. Past that the run
+/// has no quorum to report and the caller retries the whole write.
+fn quorum_wait_limit(bytes_in_flight: u64) -> Duration {
     let config = slice_retry_config();
     let mut total = Duration::ZERO;
     for attempt in 0..config.max_retries.unwrap_or(0) {
         total += (config.base_delay * 2u32.saturating_pow(attempt)).min(config.max_delay);
     }
-    total
+
+    total + Duration::from_secs(bytes_in_flight / QUORUM_WAIT_FLOOR_BYTES_PER_SEC)
 }
 
 fn slice_retry_config() -> RetryConfig {
@@ -620,7 +701,7 @@ async fn upload_slice_with_retry<P: Api>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
     use bytemuck::Zeroable;
@@ -645,6 +726,7 @@ mod tests {
                     Hash::default(),
                     [Hash::default(); SLICE_TREE_HEIGHT],
                 )
+                .expect("slice")
             })
             .collect()
     }
@@ -675,7 +757,62 @@ mod tests {
         state
     }
 
-    #[test]
+    fn receipt(node: Address) -> CertifyRes {
+        CertifyRes {
+            signature: BlsSignature::zeroed(),
+            node,
+            epoch: EpochNumber(1),
+        }
+    }
+
+    // a retry after a failed quorum pushes only the spools that never landed
+    #[tokio::test]
+    async fn missing_spools() {
+        let state = make_test_state(4);
+        let failing = [state.current.committee[0].node, state.current.committee[1].node];
+        let is_healed = Arc::new(AtomicBool::new(false));
+        let pushes = Arc::new(AtomicUsize::new(0));
+        let api = Arc::new(MemoryApi::new({
+            let is_healed = is_healed.clone();
+            let pushes = pushes.clone();
+            move |node, request| match request {
+                PeerReq::PutSlice(_) => {
+                    pushes.fetch_add(1, Ordering::SeqCst);
+                    if failing.contains(&node) && !is_healed.load(Ordering::SeqCst) {
+                        return PeerRes::PutSlice(Err(ApiError::Other("down".into())));
+                    }
+                    PeerRes::PutSlice(Ok(PutSliceRes { receipt: receipt(node) }))
+                }
+                _ => PeerRes::GetHealth(Err(ApiError::Other("unexpected".into()))),
+            }
+        }));
+        let uploader = DistributedUploader::new(
+            Address::new_unique(),
+            GroupIndex(0),
+            make_test_slices(GROUP_SIZE),
+            &state,
+            GROUP_SIZE,
+        )
+        .expect("uploader");
+        let mut progress = UploadProgress::default();
+
+        let first = uploader.upload_all(api.clone(), &mut progress).await;
+        assert!(matches!(first, Err(UploadError::InsufficientQuorum { .. })));
+        assert_eq!(pushes.load(Ordering::SeqCst), GROUP_SIZE);
+
+        is_healed.store(true, Ordering::SeqCst);
+        let receipts = uploader
+            .upload_all(api, &mut progress)
+            .await
+            .expect("second attempt");
+
+        // Stragglers past the quorum finish in the background.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(pushes.load(Ordering::SeqCst), GROUP_SIZE + GROUP_SIZE / 2);
+        assert!(receipts.len() >= min_correct(4) as usize);
+    }
+
+        #[test]
     fn uploader_creation() {
         let slices = make_test_slices(GROUP_SIZE);
         let state = make_test_state(2);
@@ -692,20 +829,20 @@ mod tests {
         assert_eq!(uploader.slice_count(), GROUP_SIZE);
     }
 
+    // the wire body decodes back to the original slice
     #[test]
-    fn slice_with_proof_to_payload() {
-        let slice = SliceWithProof::new(
-            SpoolIndex::from(42),
-            vec![0xAB; 500],
-            Hash::default(),
-            [Hash::default(); SLICE_TREE_HEIGHT],
-        );
+    fn wire_body() {
+        let data: Vec<u8> = (0..500).map(|byte| (byte % 251) as u8).collect();
+        let proof = [Hash([7u8; 32]); SLICE_TREE_HEIGHT];
+        let slice = SliceWithProof::new(SpoolIndex::from(42), data.clone(), Hash([9u8; 32]), proof)
+            .expect("slice");
 
-        let payload = slice.to_payload();
+        let payload: SlicePayload = wincode::deserialize(&slice.body).expect("decode");
 
-        assert_eq!(payload.data, *slice.data);
+        assert_eq!(payload.data, data);
+        assert_eq!(slice.data(), data.as_slice());
         assert_eq!(payload.leaf_hash, slice.leaf_hash);
-        assert_eq!(payload.merkle_proof, slice.merkle_proof);
+        assert_eq!(payload.merkle_proof, proof.to_vec());
     }
 
     fn ephemeral_reputation() -> Arc<Reputation> {
@@ -778,7 +915,7 @@ mod tests {
         let reputation = ephemeral_reputation();
 
         let uploader = uploader_for(&state, reputation.clone());
-        let receipts = uploader.upload_all(api).await.expect("quorum reached");
+        let receipts = uploader.upload_all(api, &mut UploadProgress::default()).await.expect("quorum reached");
         sleep(STRAGGLER_LIMIT * 2).await;
 
         assert!(receipts.len() >= min_correct(GROUP_SIZE as u64) as usize);
@@ -800,7 +937,7 @@ mod tests {
         let started = Instant::now();
 
         let uploader = uploader_for(&state, reputation.clone());
-        let receipts = uploader.upload_all(api).await.expect("quorum reached");
+        let receipts = uploader.upload_all(api, &mut UploadProgress::default()).await.expect("quorum reached");
         sleep(STRAGGLER_STEP / 2).await;
 
         assert!(receipts.len() >= min_correct(GROUP_SIZE as u64) as usize);
@@ -819,7 +956,7 @@ mod tests {
         let reputation = ephemeral_reputation();
 
         let uploader = uploader_for(&state, reputation.clone());
-        uploader.upload_all(api).await.expect("quorum reached");
+        uploader.upload_all(api, &mut UploadProgress::default()).await.expect("quorum reached");
         sleep(STRAGGLER_LIMIT * 2).await;
         let pushed = attempts.load(Ordering::Relaxed);
         sleep(STRAGGLER_LIMIT).await;
@@ -848,7 +985,7 @@ mod tests {
         let reputation = ephemeral_reputation();
 
         let uploader = uploader_for(&state, reputation.clone());
-        uploader.upload_all(api).await.expect("quorum reached");
+        uploader.upload_all(api, &mut UploadProgress::default()).await.expect("quorum reached");
         sleep(STRAGGLER_LIMIT * 2).await;
 
         assert!(attempts.load(Ordering::Relaxed) > 1);
@@ -865,7 +1002,7 @@ mod tests {
         let reputation = ephemeral_reputation();
 
         let uploader = uploader_for(&state, reputation.clone());
-        uploader.upload_all(api).await.expect("quorum reached");
+        uploader.upload_all(api, &mut UploadProgress::default()).await.expect("quorum reached");
         drop(uploader);
         let pushed = attempts.load(Ordering::Relaxed);
         sleep(STRAGGLER_LIMIT * 2).await;
@@ -894,17 +1031,79 @@ mod tests {
         let state = make_test_state(GROUP_SIZE);
         let api = Arc::new(MemoryApi::new(|_, _| refused(ApiError::NotFound)));
         let started = Instant::now();
+        let bytes = small_slice_bytes();
 
         let uploader = uploader_for(&state, ephemeral_reputation());
-        let error = uploader.upload_all(api).await.expect_err("no quorum");
+        let error = uploader.upload_all(api, &mut UploadProgress::default()).await.expect_err("no quorum");
 
         assert!(matches!(error, UploadError::InsufficientQuorum { .. }), "{error}");
-        assert!(started.elapsed() >= quorum_wait_limit(), "{:?}", started.elapsed());
+        assert!(started.elapsed() >= quorum_wait_limit(bytes), "{:?}", started.elapsed());
         assert!(
-            started.elapsed() < quorum_wait_limit() + STRAGGLER_STEP,
+            started.elapsed() < quorum_wait_limit(bytes) + STRAGGLER_STEP,
             "{:?}",
             started.elapsed()
         );
+    }
+
+    /// Bytes `make_test_slices(GROUP_SIZE)` puts on the wire.
+    fn small_slice_bytes() -> u64 {
+        make_test_slices(GROUP_SIZE)
+            .iter()
+            .map(|slice| slice.data().len() as u64)
+            .sum()
+    }
+
+    // the quorum wait covers the ladder plus the time the bytes take to send
+    #[test]
+    fn quorum_wait_covers_the_bytes_in_flight() {
+        let ladder = quorum_wait_limit(0);
+        assert!(ladder >= Duration::from_secs(11) && ladder <= Duration::from_secs(13), "{ladder:?}");
+
+        // One 64 MiB chunk is GROUP_SIZE slices of about 9.1 MiB.
+        let chunk = 20 * 9_588_048u64;
+        let wide = quorum_wait_limit(chunk);
+        assert!(wide >= ladder + Duration::from_secs(145), "{wide:?}");
+    }
+
+    // a push whose slices are still streaming is not cut off at the ladder
+    #[tokio::test(start_paused = true)]
+    async fn a_large_upload_waits_out_its_bytes() {
+        let state = make_test_state(GROUP_SIZE);
+        let api = Arc::new(MemoryApi::new(|_, _| refused(ApiError::NotFound)));
+        let slices: Vec<_> = (0..GROUP_SIZE)
+            .map(|index| {
+                SliceWithProof::new(
+                    SpoolIndex::from(index as u64),
+                    vec![index as u8; 4 * 1024 * 1024],
+                    Hash::default(),
+                    [Hash::default(); SLICE_TREE_HEIGHT],
+                )
+                .expect("slice")
+            })
+            .collect();
+        let bytes: u64 = slices.iter().map(|slice| slice.data().len() as u64).sum();
+        let started = Instant::now();
+
+        let uploader = DistributedUploader::new(
+            Address::new_unique(),
+            GroupIndex(0),
+            slices,
+            &state,
+            GROUP_SIZE,
+        )
+        .expect("uploader built")
+        .with_reputation(ephemeral_reputation());
+        let error = uploader.upload_all(api, &mut UploadProgress::default()).await.expect_err("no quorum");
+
+        assert!(matches!(error, UploadError::InsufficientQuorum { .. }), "{error}");
+        // The bare ladder would have cut this off while every push was still
+        // streaming; the byte-sized wait lets the pushes run themselves out.
+        assert!(
+            started.elapsed() > quorum_wait_limit(0),
+            "gave up at the ladder after {:?}",
+            started.elapsed(),
+        );
+        assert!(quorum_wait_limit(bytes) > quorum_wait_limit(0) + Duration::from_secs(60));
     }
 
     // an owner whose spool moved off it still clears the failures it had
@@ -920,7 +1119,7 @@ mod tests {
         reputation.record_failure(straggler);
 
         let uploader = uploader_for(&state, reputation.clone());
-        uploader.upload_all(api).await.expect("quorum reached");
+        uploader.upload_all(api, &mut UploadProgress::default()).await.expect("quorum reached");
         sleep(STRAGGLER_STEP).await;
 
         let record = peer_record(&reputation, straggler).expect("owner recorded");
@@ -939,7 +1138,7 @@ mod tests {
         }
 
         let uploader = uploader_for(&state, reputation.clone());
-        uploader.upload_all(api).await.expect("quorum reached");
+        uploader.upload_all(api, &mut UploadProgress::default()).await.expect("quorum reached");
         sleep(STRAGGLER_LIMIT * 2).await;
 
         assert_eq!(attempts.load(Ordering::Relaxed), 1);

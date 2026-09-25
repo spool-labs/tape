@@ -601,14 +601,15 @@ pub struct ChallengeGrid {
     #[serde(default)]
     pub max_consecutive_misses: u64,
     /// Milliseconds from the entropy block to its certificate having gossiped,
-    /// which is the width a timeline draws one round in. The slots a round
-    /// spends searching for that block are behind it, so they are not counted.
+    /// which is the width a timeline draws one round in.
     #[serde(default)]
     pub round_span_ms: u64,
     /// Milliseconds after the block by which a proof must arrive.
     #[serde(default)]
     pub proof_deadline_ms: u64,
-    /// Milliseconds after the block by which attestations must be signed.
+    /// Milliseconds after the block by which attestations must be signed: the
+    /// proof deadline and then the signature window, as the round width counts
+    /// them.
     #[serde(default)]
     pub attest_deadline_ms: u64,
     /// Milliseconds between one round opening and the next, so a reader can say
@@ -621,9 +622,6 @@ pub struct ChallengeGrid {
     /// Measured slot time. Every millisecond field above is this times a slot count.
     #[serde(default)]
     pub slot_ms: u64,
-    /// Slots a round searches for its entropy block.
-    #[serde(default)]
-    pub span_slots: u64,
     /// Slots from a round opening to its certificate having gossiped.
     #[serde(default)]
     pub round_width_slots: u64,
@@ -633,8 +631,9 @@ pub struct ChallengeGrid {
     /// Slots a round waits on its entropy block before it is void.
     #[serde(default)]
     pub settle_deadline_slots: u64,
-    /// Slots the sample set is cut behind a round. Covers the spread between
-    /// owners' frontiers, which is wall-clock, so fast slots shrink it.
+    /// Slots the sample set is cut behind a round: the furthest a node can sit
+    /// behind the tip and still take part, plus a finality window for its store
+    /// to trail its ingest head.
     #[serde(default)]
     pub sample_lookback_slots: u64,
     /// One row per peer, worst first so an outlier is the top row.
@@ -707,7 +706,7 @@ pub struct RoundId {
 /// Lifetime challenge round counters for this node.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct ChallengeRounds {
-    /// Rounds this node opened and answered for its own spool.
+    /// Rounds this node took part in, one per group it holds a spool in.
     pub opened: u64,
     /// Spool outcomes settled as certified.
     pub settled_certified: u64,
@@ -715,9 +714,16 @@ pub struct ChallengeRounds {
     pub settled_missed: u64,
     /// Incoming answers refused at the door.
     pub answers_refused: u64,
-    /// Rounds whose entropy block never confirmed, charged to nobody.
+    /// Rounds charged to nobody, one per group this node holds a spool in: an
+    /// unconfirmed block, an empty sample set, or an opening this node reached
+    /// too late to take part in, which it counts here and opens nothing for.
     #[serde(default)]
     pub voided: u64,
+    /// Round openings the chain skipped, void on every node alike, one per
+    /// group this node holds a spool in. An opening this node saw on a block
+    /// that lost counts under `discarded` alone.
+    #[serde(default)]
+    pub skipped: u64,
     /// Rounds dropped because their candidate block lost.
     #[serde(default)]
     pub discarded: u64,

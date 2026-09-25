@@ -97,7 +97,7 @@ impl BlobDecoder {
     ///
     /// # Errors
     /// Returns error if k cannot be determined (Unknown encoding or missing metadata).
-    fn min_slices_from_metadata(&self, slices: &[(SpoolIndex, Vec<u8>)]) -> Result<usize, DownloadError> {
+    fn min_slices_from_metadata(&self, slices: &[(SpoolIndex, &[u8])]) -> Result<usize, DownloadError> {
         match self.encoding_type() {
             EncodingType::Clay => {
                 slices.first()
@@ -115,10 +115,10 @@ impl BlobDecoder {
     }
 
     /// Internal decoding dispatch.
-    fn decode_internal(&mut self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DownloadError> {
+    fn decode_internal(&self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DownloadError> {
         match self.encoding_type() {
             EncodingType::Basic => {
-                let result = self.basic.as_mut().unwrap()
+                let result = self.basic.as_ref().unwrap()
                     .decode(chunks)
                     .map_err(|e| DownloadError::Decoding(e.to_string()))?;
                 // RS decode may have padding, but for Basic encoding we just return it
@@ -127,7 +127,7 @@ impl BlobDecoder {
             }
             EncodingType::Clay | EncodingType::Unknown => {
                 // Slicer::decode auto-reconfigures based on slice metadata
-                self.clay.as_mut().unwrap()
+                self.clay.as_ref().unwrap()
                     .decode(chunks)
                     .map_err(|e| DownloadError::Decoding(e.to_string()))
             }
@@ -152,9 +152,9 @@ impl BlobDecoder {
     /// - `InvalidSliceIndex` if any slice index >= GROUP_SIZE
     /// - `InsufficientSlices` if fewer than k slices provided (k from metadata)
     /// - `Decoding` if erasure code reconstruction fails or encoding type is Unknown
-    pub fn decode(&mut self, slices: Vec<(SpoolIndex, Vec<u8>)>) -> Result<Vec<u8>, DownloadError> {
+    pub fn decode(&self, slices: &[(SpoolIndex, &[u8])]) -> Result<Vec<u8>, DownloadError> {
         // Peek at metadata to get k (minimum slices needed)
-        let min_slices = self.min_slices_from_metadata(&slices)?;
+        let min_slices = self.min_slices_from_metadata(slices)?;
 
         // Check we have enough slices
         if slices.len() < min_slices {
@@ -165,33 +165,30 @@ impl BlobDecoder {
         }
 
         // Validate indices and build refs
-        for &(idx, _) in &slices {
+        for &(idx, _) in slices {
             if idx.as_usize() >= GROUP_SIZE {
                 return Err(DownloadError::InvalidSliceIndex(idx));
             }
         }
 
-        // Convert to (usize, &[u8]) format expected by Slicer trait
         let chunks: Vec<(usize, &[u8])> = slices
             .iter()
-            .map(|(idx, data)| (idx.as_usize(), data.as_slice()))
+            .map(|&(idx, data)| (idx.as_usize(), data))
             .collect();
 
         self.decode_internal(&chunks)
     }
 
-    /// Decode slices, returning the data as a Vec<u8>.
-    ///
-    /// Same as `decode()` - kept for API compatibility.
-    pub fn decode_to_blob(&mut self, slices: Vec<(SpoolIndex, Vec<u8>)>) -> Result<Vec<u8>, DownloadError> {
-        self.decode(slices)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::codec::encoder::BlobEncoder;
+
+    fn refs(slices: &[(SpoolIndex, Vec<u8>)]) -> Vec<(SpoolIndex, &[u8])> {
+        slices.iter().map(|(idx, data)| (*idx, data.as_slice())).collect()
+    }
 
     /// Create test encoder using ReedSolomonCoder (supports blobs up to ~40 KB).
     fn test_encoder() -> BlobEncoder {
@@ -210,8 +207,8 @@ mod tests {
         let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
 
-        let mut decoder = test_decoder();
-        let recovered = decoder.decode(slices).unwrap();
+        let decoder = test_decoder();
+        let recovered = decoder.decode(&refs(&slices)).unwrap();
 
         // For Basic encoding, we need to trim padding
         assert_eq!(&recovered[..original.len()], &original);
@@ -228,8 +225,8 @@ mod tests {
         // Keep only exactly k (minimum required)
         let data_only: Vec<_> = slices.into_iter().take(k).collect();
 
-        let mut decoder = test_decoder();
-        let recovered = decoder.decode(data_only).unwrap();
+        let decoder = test_decoder();
+        let recovered = decoder.decode(&refs(&data_only)).unwrap();
 
         assert_eq!(&recovered[..original.len()], &original);
     }
@@ -245,8 +242,8 @@ mod tests {
         // Keep only the first k (all data, no parity)
         let data_only: Vec<_> = slices.into_iter().take(k).collect();
 
-        let mut decoder = test_decoder();
-        let recovered = decoder.decode(data_only).unwrap();
+        let decoder = test_decoder();
+        let recovered = decoder.decode(&refs(&data_only)).unwrap();
 
         assert_eq!(&recovered[..original.len()], &original);
     }
@@ -269,8 +266,8 @@ mod tests {
 
         assert!(scattered.len() >= k);
 
-        let mut decoder = test_decoder();
-        let recovered = decoder.decode(scattered).unwrap();
+        let decoder = test_decoder();
+        let recovered = decoder.decode(&refs(&scattered)).unwrap();
 
         assert_eq!(&recovered[..original.len()], &original);
     }
@@ -286,8 +283,8 @@ mod tests {
         // Only keep k - 1 slices (not enough)
         let too_few: Vec<_> = slices.into_iter().take(k - 1).collect();
 
-        let mut decoder = test_decoder();
-        let result = decoder.decode(too_few);
+        let decoder = test_decoder();
+        let result = decoder.decode(&refs(&too_few));
 
         assert!(matches!(
             result,
@@ -304,8 +301,8 @@ mod tests {
         // Replace one slice's index with an invalid one (>= GROUP_SIZE)
         slices[0].0 = SpoolIndex::from(9999);
 
-        let mut decoder = test_decoder();
-        let result = decoder.decode(slices);
+        let decoder = test_decoder();
+        let result = decoder.decode(&refs(&slices));
 
         assert!(matches!(
             result,
@@ -320,24 +317,11 @@ mod tests {
         let mut encoder = test_encoder();
         let slices = encoder.encode(original.clone()).unwrap();
 
-        let mut decoder = test_decoder();
-        let recovered = decoder.decode(slices).unwrap();
+        let decoder = test_decoder();
+        let recovered = decoder.decode(&refs(&slices)).unwrap();
 
         // Empty encodes to k minimal slices, decodes to zeros
         assert!(recovered.iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn test_decode_to_blob() {
-        let original = vec![0x56; 15_000];
-
-        let mut encoder = test_encoder();
-        let slices = encoder.encode(original.clone()).unwrap();
-
-        let mut decoder = test_decoder();
-        let blob = decoder.decode_to_blob(slices).unwrap();
-
-        assert_eq!(&blob[..original.len()], &original);
     }
 
     #[test]
@@ -363,10 +347,10 @@ mod tests {
         let original = vec![0xAB; 10_000];
 
         let mut encoder = BlobEncoder::with_encoding(EncodingType::Clay);
-        let mut decoder = BlobDecoder::with_encoding(EncodingType::Clay);
+        let decoder = BlobDecoder::with_encoding(EncodingType::Clay);
 
         let slices = encoder.encode(original.clone()).unwrap();
-        let recovered = decoder.decode(slices).unwrap();
+        let recovered = decoder.decode(&refs(&slices)).unwrap();
 
         assert_eq!(original, recovered);
     }
@@ -376,7 +360,7 @@ mod tests {
         let original = vec![0xCD; 50_000];
 
         let mut encoder = BlobEncoder::with_encoding(EncodingType::Clay);
-        let mut decoder = BlobDecoder::with_encoding(EncodingType::Clay);
+        let decoder = BlobDecoder::with_encoding(EncodingType::Clay);
 
         let slices = encoder.encode(original.clone()).unwrap();
 
@@ -384,7 +368,7 @@ mod tests {
         let k = encoder.profile().k() as usize;
         let partial: Vec<_> = slices.into_iter().take(k).collect();
 
-        let recovered = decoder.decode(partial).unwrap();
+        let recovered = decoder.decode(&refs(&partial)).unwrap();
         assert_eq!(original, recovered);
     }
 }

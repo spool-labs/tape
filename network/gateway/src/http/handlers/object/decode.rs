@@ -1,4 +1,6 @@
-use futures::stream::{FuturesUnordered, StreamExt};
+use std::collections::HashMap;
+
+use bytes::Bytes;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::erasure::GROUP_SIZE;
@@ -14,12 +16,13 @@ use tape_protocol::inline::{fetch_inline_from_peers, InlineFetchError};
 use tape_protocol::Api;
 use tape_sdk::codec::decoder::BlobDecoder;
 use tape_store::ops::TrackDataOps;
+use tokio::task::spawn_blocking;
 use tracing::{debug, warn};
 
-use crate::cache::CacheSource;
+use super::hedge::fetch_hedged;
 use crate::http::error::RouteError;
 use crate::http::handlers::store_error;
-use crate::http::handlers::track::slice::read_cached_slice;
+use crate::http::handlers::track::slice::{SliceOrigin, read_resolved_slice};
 use crate::http::handlers::track::track_data_with_pending;
 use crate::http::state::AppState;
 
@@ -45,20 +48,17 @@ pub async fn decode_track_bytes<
         return Err(RouteError::BadRequest("unsupported track kind".into()));
     }
 
-    let track_data = track_data_with_pending(state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
-    let BlobData::Coded(blob) = track_data else {
-        crate::metrics::inc_decode_result("data_mismatch");
-        return Err(RouteError::BadRequest("track data is not blob metadata".into()));
-    };
-    if blob.get_hash() != track.value_hash || blob.commitment_root() != blob.commitment {
-        crate::metrics::inc_decode_result("commitment_mismatch");
-        return Err(RouteError::Internal("blob commitment mismatch".into()));
-    }
-
+    let blob = coded_blob(state, track_addr, &track)?;
     let slices = fetch_decoding_slices(state, track_addr, track, blob).await?;
-    let mut decoder = BlobDecoder::with_profile(blob.profile);
+    let profile = blob.profile;
     let start = std::time::Instant::now();
-    let mut bytes = decoder.decode(slices).map_err(|error| {
+    let decoded = spawn_blocking(move || {
+        let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(position, data)| (*position, data.as_ref())).collect();
+        BlobDecoder::with_profile(profile).decode(&refs)
+    })
+    .await
+    .map_err(|error| RouteError::Internal(format!("decode task: {error}")))?;
+    let mut bytes = decoded.map_err(|error| {
         crate::metrics::inc_decode_result("decode_error");
         RouteError::BadGateway(format!("decode object: {error}"))
     })?;
@@ -76,6 +76,24 @@ pub async fn decode_track_bytes<
         bytes,
         etag: object_etag(&track, Some(&blob)),
     })
+}
+
+/// The blob encoding behind a coded track, checked against the track's commitment
+pub fn coded_blob<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    track_addr: Address,
+    track: &CompressedTrack,
+) -> Result<BlobEncoding, RouteError> {
+    let track_data = track_data_with_pending(state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
+    let BlobData::Coded(blob) = track_data else {
+        crate::metrics::inc_decode_result("data_mismatch");
+        return Err(RouteError::BadRequest("track data is not blob metadata".into()));
+    };
+    if blob.get_hash() != track.value_hash || blob.commitment_root() != blob.commitment {
+        crate::metrics::inc_decode_result("commitment_mismatch");
+        return Err(RouteError::Internal("blob commitment mismatch".into()));
+    }
+    Ok(blob)
 }
 
 /// Serve an inline object, falling back to a peer fetch when the bytes are not
@@ -154,7 +172,7 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track_addr: Address,
     track: CompressedTrack,
     blob: BlobEncoding,
-) -> Result<Vec<(SpoolIndex, Vec<u8>)>, RouteError> {
+) -> Result<Vec<(SpoolIndex, Bytes)>, RouteError> {
     let k = blob.profile.k() as usize;
     if k == 0 || k > GROUP_SIZE {
         return Err(RouteError::Internal("invalid blob encoding profile".into()));
@@ -165,46 +183,26 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadGateway("no peers for track group".into()));
     }
 
-    let mut fetches = FuturesUnordered::new();
-    for (spool_id, _) in peers {
-        fetches.push(async move {
-            let read = read_cached_slice(state, track_addr, track.tape, spool_id).await?;
-            Ok::<_, RouteError>((spool_id, read.data, read.source))
-        });
-    }
+    let origin = SliceOrigin {
+        track_addr,
+        tape: track.tape,
+        group: track.group,
+        blob,
+    };
+    let candidates = fetch_order(state, track_addr, peers);
+    let (slices, failures) = fetch_hedged(&candidates, k, |(spool_id, owner)| {
+        fetch_decoding_slice(state, &origin, spool_id, owner)
+    })
+    .await;
 
     // Tally slice outcomes locally and record them once per decode, not per
     // slice, to keep metric label lookups off the read hot path.
-    let mut slices = Vec::with_capacity(k);
     let (mut rejected_group, mut rejected_leaf, mut fetch_failed) = (0u64, 0u64, 0u64);
-    while let Some(result) = fetches.next().await {
-        match result {
-            Ok((spool_id, data, source)) => {
-                let Some(position) = track.group.position_of(spool_id) else {
-                    rejected_group += 1;
-                    warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice outside track group");
-                    continue;
-                };
-                // A miss verified these bytes as it fetched them. A hit comes off
-                // disk, possibly written by an earlier process, so it still needs
-                // checking.
-                if source == CacheSource::Hit
-                    && !blob.verify_slice(SpoolIndex(position as u64), &data)
-                {
-                    rejected_leaf += 1;
-                    warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice with mismatched leaf hash");
-                    continue;
-                }
-
-                slices.push((SpoolIndex(position as u64), data));
-                if slices.len() >= k {
-                    break;
-                }
-            }
-            Err(error) => {
-                fetch_failed += 1;
-                debug!(track = %track_addr, ?error, "gateway object slice fetch failed");
-            }
+    for failure in failures {
+        match failure {
+            SliceFailure::Group => rejected_group += 1,
+            SliceFailure::Leaf => rejected_leaf += 1,
+            SliceFailure::Fetch => fetch_failed += 1,
         }
     }
 
@@ -227,4 +225,63 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Err(RouteError::BadGateway(
         "insufficient verified slices for object decode".into(),
     ))
+}
+
+/// Why one slice did not count toward a decode
+#[derive(Clone, Copy, Debug)]
+pub enum SliceFailure {
+    Group,
+    Leaf,
+    Fetch,
+}
+
+/// Cached slices first since they cost no transfer, then owners best first
+pub fn fetch_order<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    track_addr: Address,
+    mut peers: Vec<(SpoolIndex, Address)>,
+) -> Vec<(SpoolIndex, Address)> {
+    let owners: Vec<Address> = peers.iter().map(|(_, owner)| *owner).collect();
+    let mut ranks = HashMap::with_capacity(owners.len());
+    for (rank, owner) in state.reputation.order(&owners).into_iter().enumerate() {
+        ranks.entry(owner).or_insert(rank);
+    }
+    peers.sort_by_cached_key(|(spool_id, owner)| {
+        let is_cached = state.slice_cache.holds(*spool_id, track_addr);
+        (!is_cached, ranks.get(owner).copied().unwrap_or(usize::MAX), *spool_id)
+    });
+    peers
+}
+
+async fn fetch_decoding_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    origin: &SliceOrigin,
+    spool_id: SpoolIndex,
+    owner: Address,
+) -> Result<(SpoolIndex, Bytes), SliceFailure> {
+    let track_addr = origin.track_addr;
+    let read = match read_resolved_slice(state, origin, spool_id, owner).await {
+        Ok(read) => read,
+        Err(error) => {
+            debug!(track = %track_addr, ?error, "gateway object slice fetch failed");
+            return Err(SliceFailure::Fetch);
+        }
+    };
+    let Some(position) = origin.group.position_of(spool_id) else {
+        warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice outside track group");
+        return Err(SliceFailure::Group);
+    };
+
+    // A slice fetched here was checked on the way in, one left by an earlier process is checked once
+    if !read.is_verified {
+        if !origin.blob.verify_slice(SpoolIndex(position as u64), &read.data) {
+            warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice with mismatched leaf hash");
+            return Err(SliceFailure::Leaf);
+        }
+        if let Err(error) = state.slice_cache.mark_verified(spool_id, track_addr) {
+            debug!(%error, "gateway could not mark slice verified");
+        }
+    }
+
+    Ok((SpoolIndex(position as u64), read.data))
 }

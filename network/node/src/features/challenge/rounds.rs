@@ -413,7 +413,7 @@ mod protocol_tests {
     use tape_core::challenge::proof::SampleProof;
     use tape_core::challenge::sample::{EntryKind, SampleLeaf};
     use tape_store::types::TrackSample;
-    use tape_store::ops::{SampleOps, SliceOps, TrackDataOps};
+    use tape_store::ops::{MetaOps, SampleOps, SliceOps, TrackDataOps};
 
     use crate::features::challenge::fold::holds_spool;
     use crate::features::challenge::audit::{
@@ -425,6 +425,8 @@ mod protocol_tests {
 
     const PAYLOAD_BYTES: usize = 300_000;
     const BLOCK: Hash = Hash([0x7C; 32]);
+    /// The round every fixture question is asked in.
+    const ROUND: RoundNumber = RoundNumber(3);
 
     struct Fixture {
         ctx: TestContext,
@@ -484,6 +486,11 @@ mod protocol_tests {
             .put_slice(mine, track, slices[leaf_position(mine).as_usize()].clone())
             .expect("put slice");
         put_sample(&ctx, group, track, slices[0].len(), SlotNumber(0));
+        // The store has applied every block before the fixture round's cut.
+        let schedule = ctx.schedules.get(state.epoch()).expect("a grid");
+        ctx.store
+            .set_sync_cursor(schedule.base_slot(ROUND), None)
+            .expect("store frontier");
 
         Fixture {
             ctx,
@@ -668,7 +675,7 @@ mod protocol_tests {
             Round {
                 epoch: self.state.epoch(),
                 group: self.group,
-                round: RoundNumber(3),
+                round: ROUND,
                 block: BLOCK,
             }
         }

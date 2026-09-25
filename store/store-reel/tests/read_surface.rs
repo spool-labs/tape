@@ -194,6 +194,24 @@ fn sweep_covers() {
     }
 }
 
+// a value put through the owned door reads back like a borrowed put
+#[test]
+fn owned_put() {
+    let dir = TempDir::new().expect("dir");
+    let store = ReelStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS)
+        .expect("open");
+
+    let key = bulk_key(1);
+    store.put_owned(BULK_CF, &key, payload(1)).expect("put_owned");
+
+    assert_eq!(
+        store.get(BULK_CF, &key).expect("get").map(Value::into_vec),
+        Some(payload(1)),
+    );
+    assert!(store.put_owned(BULK_CF, &key[..2], payload(2)).is_err());
+    assert!(store.put_owned("no_such_family", &key, payload(3)).is_err());
+}
+
 #[cfg(feature = "rocks")]
 mod rocks {
     use super::*;

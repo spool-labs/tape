@@ -6,13 +6,12 @@
 //! a fork and gets dropped. The last promoted block is the floor the chain
 //! has to keep descending from.
 //!
-//! Purely structural: appending and rolling back. Promotion is decided by
-//! the block ingestor against the confirmed tip.
+//! Purely structural: appending and rolling back. Every block is fetched at
+//! confirmed commitment, so the block ingestor promotes the whole queue.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use tape_core::types::SlotNumber;
 use tape_crypto::Hash;
 
 use crate::features::block::ingestor::ParsedBlock;
@@ -34,14 +33,8 @@ pub enum AppendOutcome {
 }
 
 #[derive(Debug)]
-struct PendingEntry {
-    block: Arc<ParsedBlock>,
-    confirmed_when_fetched: bool,
-}
-
-#[derive(Debug)]
 pub struct PendingBlocks {
-    entries: VecDeque<PendingEntry>,
+    entries: VecDeque<Arc<ParsedBlock>>,
     promoted: Option<Hash>,
 }
 
@@ -52,31 +45,27 @@ impl PendingBlocks {
     }
 
     /// Append `block` if it chains. See `AppendOutcome` for the cases.
-    pub fn append(&mut self, block: Arc<ParsedBlock>, confirmed_when_fetched: bool) -> AppendOutcome {
+    pub fn append(&mut self, block: Arc<ParsedBlock>) -> AppendOutcome {
         let parent = self
             .entries
             .iter()
-            .rposition(|entry| entry.block.blockhash == block.previous_blockhash);
+            .rposition(|entry| entry.blockhash == block.previous_blockhash);
 
         match parent {
             Some(pos) if pos + 1 == self.entries.len() => {
-                self.entries.push_back(PendingEntry { block, confirmed_when_fetched });
+                self.entries.push_back(block);
                 AppendOutcome::Appended
             }
             Some(pos) => {
-                let dropped: Vec<_> = self
-                    .entries
-                    .drain((pos + 1)..)
-                    .map(|entry| entry.block)
-                    .collect();
-                self.entries.push_back(PendingEntry { block, confirmed_when_fetched });
+                let dropped: Vec<_> = self.entries.drain((pos + 1)..).collect();
+                self.entries.push_back(block);
                 AppendOutcome::Forked { dropped }
             }
             // Nothing queued chains to it, so the promoted head decides; before any promotion it is trusted
             None => match self.promoted {
                 Some(promoted) if promoted == block.previous_blockhash => {
                     let dropped = self.drain();
-                    self.entries.push_back(PendingEntry { block, confirmed_when_fetched });
+                    self.entries.push_back(block);
                     if dropped.is_empty() {
                         AppendOutcome::Appended
                     } else {
@@ -85,7 +74,7 @@ impl PendingBlocks {
                 }
                 Some(_) => AppendOutcome::Diverged,
                 None if self.entries.is_empty() => {
-                    self.entries.push_back(PendingEntry { block, confirmed_when_fetched });
+                    self.entries.push_back(block);
                     AppendOutcome::Appended
                 }
                 None => AppendOutcome::ChainBroken,
@@ -96,22 +85,14 @@ impl PendingBlocks {
     /// Drain the queue, returning every entry. Used after a `ChainBroken`
     /// outcome to discard a stale fork.
     pub fn drain(&mut self) -> Vec<Arc<ParsedBlock>> {
-        self.entries.drain(..).map(|entry| entry.block).collect()
+        self.entries.drain(..).collect()
     }
 
     /// Promotes the head, which becomes the floor the chain has to keep descending from
     pub fn pop_front(&mut self) -> Option<Arc<ParsedBlock>> {
-        let block = self.entries.pop_front()?.block;
+        let block = self.entries.pop_front()?;
         self.promoted = Some(block.blockhash);
         Some(block)
-    }
-
-    pub fn front(&self) -> Option<&Arc<ParsedBlock>> {
-        self.entries.front().map(|entry| &entry.block)
-    }
-
-    pub fn back(&self) -> Option<&Arc<ParsedBlock>> {
-        self.entries.back().map(|entry| &entry.block)
     }
 
     pub fn len(&self) -> usize {
@@ -120,27 +101,6 @@ impl PendingBlocks {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
-    }
-
-    /// A head that was already behind the confirmed tip when fetched is
-    /// always safe to promote: the RPC can only return the confirmed block
-    /// at such slots.
-    ///
-    /// A head fetched ahead of the confirmed tip may have been on a fork. It
-    /// is safe to promote once the confirmed tip has passed its slot AND a
-    /// later block is queued past the confirmed tip: the queue chains by
-    /// blockhash, so that later block proves the confirmed chain still
-    /// descends from the head.
-    ///
-    /// `confirmed_tip` is the most recently observed confirmed slot.
-    pub fn front_promotable(&self, confirmed_tip: SlotNumber) -> bool {
-        let (Some(head), Some(tail)) = (self.entries.front(), self.entries.back()) else {
-            return false;
-        };
-        if head.confirmed_when_fetched {
-            return true;
-        }
-        head.block.slot <= confirmed_tip && tail.block.slot > confirmed_tip
     }
 }
 
@@ -163,18 +123,11 @@ mod tests {
         })
     }
 
-    impl PendingBlocks {
-        /// Append a block fetched ahead of finality.
-        fn append_confirmed(&mut self, block: Arc<ParsedBlock>) -> AppendOutcome {
-            self.append(block, false)
-        }
-    }
-
     #[test]
     fn first_append_skips_chain_check() {
         let mut queue = PendingBlocks::new(None);
         let h = Hash::new_unique();
-        let outcome = queue.append_confirmed(block(10, h, Hash::new_unique()));
+        let outcome = queue.append(block(10, h, Hash::new_unique()));
         assert!(matches!(outcome, AppendOutcome::Appended));
         assert_eq!(queue.len(), 1);
     }
@@ -184,8 +137,8 @@ mod tests {
         let mut queue = PendingBlocks::new(None);
         let h0 = Hash::new_unique();
         let h1 = Hash::new_unique();
-        queue.append_confirmed(block(10, h0, Hash::new_unique()));
-        let outcome = queue.append_confirmed(block(11, h1, h0));
+        queue.append(block(10, h0, Hash::new_unique()));
+        let outcome = queue.append(block(11, h1, h0));
         assert!(matches!(outcome, AppendOutcome::Appended));
         assert_eq!(queue.len(), 2);
     }
@@ -196,13 +149,13 @@ mod tests {
         let h0 = Hash::new_unique();
         let h1 = Hash::new_unique();
         let h2 = Hash::new_unique();
-        queue.append_confirmed(block(10, h0, Hash::new_unique()));
-        queue.append_confirmed(block(11, h1, h0));
-        queue.append_confirmed(block(12, h2, h1));
+        queue.append(block(10, h0, Hash::new_unique()));
+        queue.append(block(11, h1, h0));
+        queue.append(block(12, h2, h1));
 
         // New block at slot 12 chains to slot 10's blockhash, bypassing h1/h2.
         let h2b = Hash::new_unique();
-        let outcome = queue.append_confirmed(block(12, h2b, h0));
+        let outcome = queue.append(block(12, h2b, h0));
         match outcome {
             AppendOutcome::Forked { dropped } => {
                 assert_eq!(dropped.len(), 2);
@@ -212,7 +165,7 @@ mod tests {
             other => panic!("expected Forked, got {other:?}"),
         }
         assert_eq!(queue.len(), 2);
-        assert_eq!(queue.back().unwrap().blockhash, h2b);
+        assert_eq!(queue.entries.back().expect("tail").blockhash, h2b);
     }
 
     // after a promotion the next block has to chain to the promoted head
@@ -220,15 +173,15 @@ mod tests {
     fn promoted_floor() {
         let mut queue = PendingBlocks::new(None);
         let h0 = Hash::new_unique();
-        queue.append_confirmed(block(10, h0, Hash::new_unique()));
+        queue.append(block(10, h0, Hash::new_unique()));
         queue.pop_front();
         assert!(queue.is_empty());
 
-        let outcome = queue.append_confirmed(block(12, Hash::new_unique(), Hash::new_unique()));
+        let outcome = queue.append(block(12, Hash::new_unique(), Hash::new_unique()));
         assert!(matches!(outcome, AppendOutcome::Diverged));
         assert!(queue.is_empty());
 
-        let outcome = queue.append_confirmed(block(11, Hash::new_unique(), h0));
+        let outcome = queue.append(block(11, Hash::new_unique(), h0));
         assert!(matches!(outcome, AppendOutcome::Appended));
         assert_eq!(queue.len(), 1);
     }
@@ -240,13 +193,13 @@ mod tests {
         let h0 = Hash::new_unique();
         let h1 = Hash::new_unique();
         let h2 = Hash::new_unique();
-        queue.append_confirmed(block(10, h0, Hash::new_unique()));
-        queue.append_confirmed(block(11, h1, h0));
-        queue.append_confirmed(block(12, h2, h1));
+        queue.append(block(10, h0, Hash::new_unique()));
+        queue.append(block(11, h1, h0));
+        queue.append(block(12, h2, h1));
         queue.pop_front();
 
         let h1b = Hash::new_unique();
-        match queue.append_confirmed(block(11, h1b, h0)) {
+        match queue.append(block(11, h1b, h0)) {
             AppendOutcome::Forked { dropped } => {
                 assert_eq!(dropped.len(), 2);
                 assert_eq!(dropped[0].blockhash, h1);
@@ -255,10 +208,10 @@ mod tests {
             other => panic!("expected Forked, got {other:?}"),
         }
         assert_eq!(queue.len(), 1);
-        assert_eq!(queue.back().unwrap().blockhash, h1b);
+        assert_eq!(queue.entries.back().expect("tail").blockhash, h1b);
 
         // Below the promoted head is the losing branch even with entries queued
-        let outcome = queue.append_confirmed(block(11, Hash::new_unique(), Hash::new_unique()));
+        let outcome = queue.append(block(11, Hash::new_unique(), Hash::new_unique()));
         assert!(matches!(outcome, AppendOutcome::Diverged));
         assert_eq!(queue.len(), 1);
     }
@@ -267,9 +220,9 @@ mod tests {
     fn unmatched_parent_returns_broken_without_appending() {
         let mut queue = PendingBlocks::new(None);
         let h0 = Hash::new_unique();
-        queue.append_confirmed(block(10, h0, Hash::new_unique()));
+        queue.append(block(10, h0, Hash::new_unique()));
 
-        let outcome = queue.append_confirmed(block(11, Hash::new_unique(), Hash::new_unique()));
+        let outcome = queue.append(block(11, Hash::new_unique(), Hash::new_unique()));
         assert!(matches!(outcome, AppendOutcome::ChainBroken));
         assert_eq!(queue.len(), 1);
     }
@@ -279,9 +232,9 @@ mod tests {
         let mut queue = PendingBlocks::new(None);
         let h0 = Hash::new_unique();
         let h2 = Hash::new_unique();
-        queue.append_confirmed(block(10, h0, Hash::new_unique()));
+        queue.append(block(10, h0, Hash::new_unique()));
         // Slot 11 was skipped; slot 12 chains to slot 10.
-        let outcome = queue.append_confirmed(block(12, h2, h0));
+        let outcome = queue.append(block(12, h2, h0));
         assert!(matches!(outcome, AppendOutcome::Appended));
         assert_eq!(queue.len(), 2);
     }
@@ -291,73 +244,25 @@ mod tests {
         let mut queue = PendingBlocks::new(None);
         let h0 = Hash::new_unique();
         let h1 = Hash::new_unique();
-        queue.append_confirmed(block(10, h0, Hash::new_unique()));
-        queue.append_confirmed(block(11, h1, h0));
+        queue.append(block(10, h0, Hash::new_unique()));
+        queue.append(block(11, h1, h0));
 
         let drained = queue.drain();
         assert_eq!(drained.len(), 2);
         assert!(queue.is_empty());
     }
 
+    // every queued block promotes in order, with no gate on a later block
     #[test]
-    fn empty_queue_never_promotable() {
-        let queue = PendingBlocks::new(None);
-        assert!(!queue.front_promotable(SlotNumber(100)));
-    }
-
-    #[test]
-    fn single_entry_waits_for_later_block() {
-        // One block in queue, confirmed has reached its slot, but no later
-        // block queued past finalization → not promotable.
-        let mut queue = PendingBlocks::new(None);
-        let h = Hash::new_unique();
-        queue.append_confirmed(block(10, h, Hash::new_unique()));
-        assert!(!queue.front_promotable(SlotNumber(10)));
-        assert!(!queue.front_promotable(SlotNumber(11)));
-    }
-
-    #[test]
-    fn head_promotes_after_later_confirmed_block() {
+    fn pop_order() {
         let mut queue = PendingBlocks::new(None);
         let h0 = Hash::new_unique();
         let h1 = Hash::new_unique();
-        queue.append_confirmed(block(10, h0, Hash::new_unique()));
-        queue.append_confirmed(block(11, h1, h0));
-        // confirmed_tip = 10, a later block is queued at slot 11.
-        assert!(queue.front_promotable(SlotNumber(10)));
-    }
+        queue.append(block(10, h0, Hash::new_unique()));
+        queue.append(block(11, h1, h0));
 
-    #[test]
-    fn head_above_confirmed_not_promotable() {
-        let mut queue = PendingBlocks::new(None);
-        let h0 = Hash::new_unique();
-        let h1 = Hash::new_unique();
-        queue.append_confirmed(block(10, h0, Hash::new_unique()));
-        queue.append_confirmed(block(11, h1, h0));
-        // confirmed_tip = 9, head at 10 not yet confirmed.
-        assert!(!queue.front_promotable(SlotNumber(9)));
-    }
-
-    #[test]
-    fn already_confirmed_head_promotes_alone() {
-        let mut queue = PendingBlocks::new(None);
-        let h = Hash::new_unique();
-        queue.append(block(10, h, Hash::new_unique()), true);
-        assert!(queue.front_promotable(SlotNumber(100)));
-    }
-
-    #[test]
-    fn confirmed_when_fetched_applies_per_entry() {
-        let mut queue = PendingBlocks::new(None);
-        let h0 = Hash::new_unique();
-        let h1 = Hash::new_unique();
-        queue.append(block(10, h0, Hash::new_unique()), true);
-        queue.append(block(11, h1, h0), false);
-
-        // The already-confirmed head promotes; the successor was fetched
-        // ahead of finality and must wait for a later block again.
-        assert!(queue.front_promotable(SlotNumber(50)));
-        queue.pop_front();
-        assert!(!queue.front_promotable(SlotNumber(50)));
+        assert_eq!(queue.pop_front().expect("first block").slot, SlotNumber(10));
+        assert_eq!(queue.pop_front().expect("second block").slot, SlotNumber(11));
+        assert!(queue.pop_front().is_none());
     }
 }

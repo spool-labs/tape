@@ -80,6 +80,14 @@ pub fn slice_root_from_sidecar(sidecar: &[Hash]) -> Hash {
     fold_level(sidecar, SAMPLE_WINDOW_HEIGHT, SUB_TREE_HEIGHT - SAMPLE_WINDOW_HEIGHT)[0]
 }
 
+/// Fold one window of slice bytes up to its sidecar node
+pub fn window_root(window: &[u8]) -> Hash {
+    fold_level(&sub_leaf_hashes(window), 0, SAMPLE_WINDOW_HEIGHT)
+        .first()
+        .copied()
+        .unwrap_or_default()
+}
+
 /// Byte range of the slice a sample leaf's proof is built from.
 pub fn sample_window(sub_leaf: usize, slice_len: usize) -> Range<usize> {
     let window = sample_window_range(sub_leaf);

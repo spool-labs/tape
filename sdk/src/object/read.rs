@@ -1,22 +1,33 @@
 use tape_rpc::Rpc;
+use tape_api::program::tapedrive::track_pda;
 use tape_crypto::prelude::Address;
 use tape_protocol::Api;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::error::TapedriveError;
+use crate::metrics::{Operation, Phase};
 use crate::stream::manifest::ChunkManifest;
+use crate::stream::read::{read_manifest_bytes, read_manifest_into};
 use crate::tapedrive::Tapedrive;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Read a named object from a bucket.
     pub async fn get_object(&self, bucket: &Address, name: &str) -> Result<Vec<u8>, TapedriveError> {
-        let address = self.resolve_object(bucket, name).await?;
-        let bytes = self.read(&address).await?;
+        let track = self.lookup_object(bucket, name).await?;
+        let address = track_pda(track.tape, track.track_number).0;
+        let bytes = self.read_known(&address, track, Operation::ReadTrack).await?;
 
         // A stream's representing track is its manifest; detect and follow it.
         // (Hardening: a magic-prefixed manifest would make this unambiguous.)
-        if ChunkManifest::from_bytes(&bytes).is_ok() {
-            return self.read_bytes(&address).await;
+        if let Ok(manifest) = ChunkManifest::from_bytes(&bytes) {
+            let timer = self.timer(Operation::ReadStream, Phase::Total);
+            let result = read_manifest_bytes(self, &manifest, &track).await;
+            let timer = match &result {
+                Ok(bytes) => timer.bytes(bytes.len() as u64),
+                Err(_) => timer,
+            };
+            timer.finish_result(&result);
+            return result;
         }
 
         Ok(bytes)
@@ -32,11 +43,15 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         name: &str,
         mut writer: Writer,
     ) -> Result<u64, TapedriveError> {
-        let address = self.resolve_object(bucket, name).await?;
-        let bytes = self.read(&address).await?;
+        let track = self.lookup_object(bucket, name).await?;
+        let address = track_pda(track.tape, track.track_number).0;
+        let bytes = self.read_known(&address, track, Operation::ReadTrack).await?;
 
         if let Ok(manifest) = ChunkManifest::from_bytes(&bytes) {
-            self.read_into(&address, &mut writer).await?;
+            let timer = self.timer(Operation::ReadStream, Phase::Total);
+            let result = read_manifest_into(self, &manifest, &track, &mut writer).await;
+            timer.finish_result(&result);
+            result?;
             return Ok(manifest.total_size.to_bytes());
         }
 

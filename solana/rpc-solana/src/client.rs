@@ -2,6 +2,7 @@
 
 use crate::config::RpcConfig;
 use crate::selector::{EndpointCursor, EndpointSelector};
+use crate::status::StatusBatch;
 use async_trait::async_trait;
 use solana_account::Account;
 use solana_client::client_error::{ClientError, ClientErrorKind};
@@ -61,6 +62,8 @@ pub struct SolanaRpc {
     /// Which chain the endpoints answer for, probed on first ask. A backend
     /// does not change kind under a client, so one probe settles it.
     chain_kind: tokio::sync::OnceCell<ChainKind>,
+    /// Every transaction waiting on confirmation shares one status call per tick
+    statuses: Arc<StatusBatch>,
     /// Prometheus counters, absent when no registry is installed
     #[cfg(feature = "metrics")]
     metrics: Option<Arc<crate::metrics::RpcMetrics>>,
@@ -117,6 +120,7 @@ impl SolanaRpc {
             // crate's feature list to keep decompressing getBlock.
             http: reqwest::Client::new(),
             chain_kind: tokio::sync::OnceCell::new(),
+            statuses: Arc::new(StatusBatch::new()),
             #[cfg(feature = "metrics")]
             metrics,
         })
@@ -907,6 +911,7 @@ fn confirm_cadence() -> (&'static [u64], u64) {
 
 async fn send_and_poll(
     client: &RpcClient,
+    statuses: &StatusBatch,
     transaction: &VersionedTransaction,
     commitment: CommitmentLevel,
     skip_preflight: bool,
@@ -931,20 +936,10 @@ async fn send_and_poll(
         )
         .await?;
 
-    let mut probe = 0usize;
-    loop {
-        if let Some(status) = client
-            .get_signature_status_with_commitment(&signature, commitment)
-            .await?
-        {
-            status?;
-            return Ok(signature);
-        }
-
-        let delay = ramp.get(probe).copied().unwrap_or(steady);
-        probe += 1;
-        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-    }
+    statuses
+        .wait(client, signature, commitment, ramp, steady)
+        .await??;
+    Ok(signature)
 }
 
 // ============================================================================
@@ -1294,12 +1289,14 @@ impl Rpc for SolanaRpc {
         skip_preflight: bool,
     ) -> Result<Txid, RpcError> {
         let transaction = Arc::new(transaction.clone());
+        let statuses = self.statuses.clone();
 
         let signature = self
             .with_retry("sendAndConfirmTransaction", move |client| {
                 let transaction = transaction.clone();
+                let statuses = statuses.clone();
                 async move {
-                    send_and_poll(&client, &transaction, commitment, skip_preflight)
+                    send_and_poll(&client, &statuses, &transaction, commitment, skip_preflight)
                         .await
                         .map_err(|error| Self::convert_error(error, None))
                 }
@@ -1320,6 +1317,29 @@ impl Rpc for SolanaRpc {
                 .get_signature_status(&signature)
                 .await
                 .map_err(|error| Self::convert_error(error, None))
+        })
+        .await
+    }
+
+    async fn wait_for_signature(
+        &self,
+        txid: &Txid,
+    ) -> Result<Result<(), TransactionError>, RpcError> {
+        let signature: Signature = (*txid).into();
+        let commitment = CommitmentConfig {
+            commitment: self.config.commitment,
+        };
+        let (ramp, steady) = confirm_cadence();
+        let statuses = self.statuses.clone();
+
+        self.with_retry("waitForSignature", move |client| {
+            let statuses = statuses.clone();
+            async move {
+                statuses
+                    .wait(&client, signature, commitment, ramp, steady)
+                    .await
+                    .map_err(|error| Self::convert_error(error, None))
+            }
         })
         .await
     }

@@ -6,6 +6,7 @@ pub mod errors;
 pub mod merkle_helpers;
 pub mod metadata;
 pub mod outer;
+pub mod range;
 pub mod reed_solomon;
 pub mod clay;
 pub mod repair;
@@ -24,3 +25,4 @@ pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree,
 pub use slice_index::SliceIndex;
 pub use repair::{RepairPlan, StripeRepair, HelperPlan, extract_repair_data};
 pub use outer::{OuterCoder, MAX_CHUNK_BYTES};
+pub use range::{stripe_window, StripeWindow};

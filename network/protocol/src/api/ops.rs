@@ -1,8 +1,9 @@
 //! Request/response types for peer operations.
 
+use bytes::Bytes;
 use tape_core::bls::BlsSignature;
 use tape_core::prelude::{BlobData, CompressedTrack, EpochNumber, SpoolIndex, TrackNumber};
-use tape_core::types::RoundNumber;
+use tape_core::types::{RoundNumber, StorageUnits};
 use tape_core::spooler::GroupIndex;
 use tape_core::challenge::ProofOfAccess;
 use crate::api::types::SpoolAttestation;
@@ -10,18 +11,19 @@ use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 
 use crate::api::types::{
-    InconsistencyProof, NodeStats, SlicePayload, StripeSubChunkRequest, SyncSliceEntry,
+    InconsistencyProof, NodeStats, StripeSubChunkRequest, SyncSliceEntry,
     VoteCandidate, ObjectListItem,
 };
 use wincode_derive::{SchemaRead, SchemaWrite};
 
 use crate::api::ApiError;
 
+/// A slice push, its payload already in wire form so every attempt sends the same bytes
 #[derive(Clone, Debug)]
 pub struct PutSliceReq {
     pub track: Address,
     pub spool: SpoolIndex,
-    pub payload: SlicePayload,
+    pub body: Bytes,
 }
 
 /// A stored slice comes back with the certify signature for its track, so the
@@ -39,7 +41,22 @@ pub struct GetSliceReq {
 
 #[derive(Clone, Debug)]
 pub struct GetSliceRes {
-    pub data: Vec<u8>,
+    pub data: Bytes,
+}
+
+#[derive(Clone, Debug)]
+pub struct GetSliceWindowReq {
+    pub track: Address,
+    pub spool: SpoolIndex,
+    pub offset: StorageUnits,
+    pub len: StorageUnits,
+}
+
+/// Part of a slice with the sidecar that ties it to the slice root
+#[derive(Clone, Debug)]
+pub struct GetSliceWindowRes {
+    pub sidecar: Vec<Hash>,
+    pub data: Bytes,
 }
 
 #[derive(Clone, Debug)]

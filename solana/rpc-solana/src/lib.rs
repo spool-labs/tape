@@ -50,6 +50,7 @@
 mod client;
 mod config;
 mod selector;
+mod status;
 
 #[cfg(feature = "metrics")]
 pub mod metrics;

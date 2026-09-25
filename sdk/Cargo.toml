@@ -47,6 +47,7 @@ hex = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+bytes = { workspace = true }
 futures = { workspace = true }
 
 # Serialization

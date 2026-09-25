@@ -22,7 +22,7 @@ mod split;
 use std::path::Path;
 
 use reel::{
-    ByteCount, CompactRate, IoBackend, MapShape, PointReads, Preallocate, ReelConfig,
+    ByteCount, CompactRate, IoBackend, MapShape, PointReads, Preallocate, RecordKey, ReelConfig,
     ReelStore as EngineStore, ServingBackend, ShardShapes, SyncPolicy, ThreadBudget,
     MAP_EVERYTHING,
 };
@@ -54,6 +54,22 @@ pub use split::{MetaBulkStore, REEL_SUBDIR};
 /// The public reel engine behind the internal store trait
 pub struct ReelStore {
     inner: EngineStore,
+}
+
+impl ReelStore {
+    fn record_key(&self, cf: &str, key: &[u8]) -> StoreResult<RecordKey> {
+        let spec = self
+            .inner
+            .column_spec(cf)
+            .ok_or_else(|| StoreError::ColumnFamilyNotFound(cf.to_string()))?;
+        if !spec.key_width.admits(key.len()) {
+            return Err(StoreError::Database(format!(
+                "key of {} bytes does not fit column {cf}",
+                key.len()
+            )));
+        }
+        RecordKey::from_bytes(spec.id, key).map_err(engine)
+    }
 }
 
 /// What one column's index holds
@@ -712,6 +728,24 @@ impl Store for ReelStore {
             .await
             .map_err(crossed);
         record(cf, "put", result.is_ok(), timer.elapsed().as_secs_f64(), 0, value.len());
+        result
+    }
+
+    fn put_owned(&self, cf: &str, key: &[u8], value: Vec<u8>) -> StoreResult<()> {
+        let timer = std::time::Instant::now();
+        let written = value.len();
+        let record_key = self.record_key(cf, key)?;
+        let result = self.inner.put_owned(&record_key, value).map_err(engine);
+        record(cf, "put", result.is_ok(), timer.elapsed().as_secs_f64(), 0, written);
+        result
+    }
+
+    async fn put_owned_wait(&self, cf: &str, key: &[u8], value: Vec<u8>) -> StoreResult<()> {
+        let timer = std::time::Instant::now();
+        let written = value.len();
+        let record_key = self.record_key(cf, key)?;
+        let result = self.inner.put_owned_wait(&record_key, value).await.map_err(engine);
+        record(cf, "put", result.is_ok(), timer.elapsed().as_secs_f64(), 0, written);
         result
     }
 

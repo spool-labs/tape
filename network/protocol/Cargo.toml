@@ -21,6 +21,7 @@ tape-retry.workspace = true
 arc-swap.workspace = true
 base64.workspace = true
 async-trait.workspace = true
+bytes.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 wincode.workspace = true
@@ -32,4 +33,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 bytemuck.workspace = true
-peer-memory.workspace = true
+peer-memory = { path = "../peer-memory" }

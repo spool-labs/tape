@@ -1,6 +1,7 @@
 //! Applies queued S3 writes to the chain, one in-flight write per bucket.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -9,13 +10,16 @@ use tape_rpc::{Rpc, RpcError};
 use tape_store_api::Store;
 use tape_core::types::ContentType;
 use tape_crypto::address::Address;
+use tape_crypto::Hash;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_protocol::Api;
 use tape_sdk::error::TapedriveError;
+use tape_sdk::object::{MAX_OBJECT_BATCH_BYTES, MAX_OBJECT_BATCH_ITEMS, ObjectBatchItem};
+use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_store::types::{PendingOp, PendingState, PendingWrite};
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::http::handlers::resolve::resolve_object;
 use crate::http::handlers::s3::write::S3WriteContext;
@@ -396,24 +400,124 @@ where
         };
 
         let mut remaining = 0;
+        let mut run = Vec::new();
         for (key, write) in entries {
             if self.cancel.is_cancelled() {
                 remaining += 1;
                 continue;
             }
-            if !self.apply(tape, &key, &write).await {
-                remaining += 1;
+            if matches!(write.state, PendingState::Landed { .. }) {
+                if !self.reap(tape, &key, &write) {
+                    remaining += 1;
+                }
+                continue;
+            }
+            // An attempted entry stays until the index catches up and it is reaped.
+            remaining += 1;
+            if self.is_paused() || !self.retries.is_due(tape, &key) {
+                continue;
+            }
+            match self.batch_candidate(tape, &key, &write) {
+                Some(candidate) => run.push(candidate),
+                None => {
+                    // Queue order holds, so everything before this entry goes first.
+                    self.write_run(tape, std::mem::take(&mut run)).await;
+                    self.attempt(tape, &key, &write).await;
+                }
             }
         }
+        self.write_run(tape, run).await;
         remaining
     }
 
-    /// Move one entry along, returning whether it left the queue.
-    async fn apply(&self, tape: Address, key: &[u8], write: &PendingWrite) -> bool {
-        match write.state {
-            PendingState::Landed { .. } => self.reap(tape, key, write),
-            PendingState::Queued => self.attempt(tape, key, write).await,
-            PendingState::Failed { .. } => self.attempt(tape, key, write).await,
+    /// A queued put that can share a batch: a fresh object of one track, or one replacing different content
+    fn batch_candidate(&self, tape: Address, key: &[u8], write: &PendingWrite) -> Option<Candidate> {
+        let PendingOp::Put { etag, size, prior, .. } = write.op else {
+            return None;
+        };
+        let name = String::from_utf8(key.to_vec()).ok()?;
+        if name.is_empty() || name.contains(['\0', '\n', '\r']) || size > MAX_TRACK_SIZE as u64 {
+            return None;
+        }
+        // The single path handles matching content, whether landed or left to finish.
+        let indexed = resolve_object(self.context.store.as_ref(), tape, key).ok()?;
+        if indexed.as_ref().is_some_and(|object| object.etag == etag) {
+            return None;
+        }
+        Some(Candidate {
+            name,
+            write: write.clone(),
+            reclaim: prior.or(indexed.map(|object| object.track_address)),
+        })
+    }
+
+    /// Write consecutive batchable puts in runs within the batch limits
+    async fn write_run(&self, tape: Address, candidates: Vec<Candidate>) {
+        let mut sizes = Vec::with_capacity(candidates.len());
+        for candidate in &candidates {
+            sizes.push(candidate.size());
+        }
+        let mut candidates = candidates.into_iter();
+        for run in split_runs(&sizes) {
+            let batch: Vec<Candidate> = candidates.by_ref().take(run.len()).collect();
+            self.write_batch(tape, batch).await;
+        }
+    }
+
+    /// One batch through the SDK pipeline; a rejected batch retries its entries one by one
+    async fn write_batch(&self, tape: Address, candidates: Vec<Candidate>) {
+        let mut items = Vec::with_capacity(candidates.len());
+        let mut entries = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            let key = candidate.name.as_bytes().to_vec();
+            let Ok(Some(data)) = self.staging.bytes(tape, &key) else {
+                // A row without bytes gets the single path's error.
+                self.attempt(tape, &key, &candidate.write).await;
+                continue;
+            };
+            let PendingOp::Put { content_type, etag, .. } = candidate.write.op else {
+                continue;
+            };
+            items.push(ObjectBatchItem {
+                name: candidate.name,
+                data,
+                content_type,
+                plan: self.staging.take_plan(&etag),
+            });
+            entries.push((key, candidate.write, candidate.reclaim));
+        }
+        if items.is_empty() {
+            return;
+        }
+
+        match self.write_ctx.write_objects(self.context.as_ref(), tape, items).await {
+            Ok(receipts) => {
+                for ((key, write, reclaim), receipt) in entries.iter().zip(receipts) {
+                    self.landed(tape, key, write, receipt.address);
+                    self.reclaim(tape, *reclaim, receipt.address).await;
+                }
+            }
+            Err(error) if entries.len() == 1 || !matches!(classify(&error), Failure::Permanent) => {
+                for (key, write, _) in &entries {
+                    self.record_failure(tape, key, write, &error);
+                }
+            }
+            Err(error) => {
+                warn!(%error, %tape, entries = entries.len(), "s3 drain: batch rejected, writing its entries one by one");
+                for (key, write, _) in &entries {
+                    self.attempt(tape, key, write).await;
+                }
+            }
+        }
+    }
+
+    /// Delete the old track after a batched overwrite lands; a failure leaves it for a later sweep
+    async fn reclaim(&self, tape: Address, prior: Option<Address>, written: Address) {
+        let Some(prior) = prior.filter(|prior| *prior != written) else {
+            return;
+        };
+        if let Err(error) = self.write_ctx.delete_object(self.context.as_ref(), tape, prior).await {
+            debug!(%error, %tape, %prior, "s3 drain: overwrite reclaim failed, stale track left for later reclaim");
         }
     }
 
@@ -451,22 +555,22 @@ where
         }
 
         match self.write_chain(tape, key, write).await {
-            Ok(track) => {
-                self.retries.clear(tape, key);
-                metrics::inc_pending_write("landed");
-                // Superseded in flight: the track went to the entry that replaced it.
-                if let Err(error) =
-                    self.staging.set_state(tape, key, write.seq, PendingState::Landed { track })
-                {
-                    warn!(%error, %tape, "s3 drain: marking an entry landed failed");
-                }
-                // The index has not seen the write yet, so the entry stays.
-                false
-            }
-            Err(error) => {
-                self.record_failure(tape, key, write, &error);
-                false
-            }
+            Ok(track) => self.landed(tape, key, write, track),
+            Err(error) => self.record_failure(tape, key, write, &error),
+        }
+        // The index has not seen the write yet, so the entry stays.
+        false
+    }
+
+    /// Record that an entry's write reached the chain as `track`
+    fn landed(&self, tape: Address, key: &[u8], write: &PendingWrite, track: Address) {
+        self.retries.clear(tape, key);
+        metrics::inc_pending_write("landed");
+        // Superseded in flight: the track went to the entry that replaced it.
+        if let Err(error) =
+            self.staging.set_state(tape, key, write.seq, PendingState::Landed { track })
+        {
+            warn!(%error, %tape, "s3 drain: marking an entry landed failed");
         }
     }
 
@@ -478,8 +582,8 @@ where
         write: &PendingWrite,
     ) -> Result<Address, TapedriveError> {
         match write.op {
-            PendingOp::Put { content_type, prior, .. } => {
-                self.put(tape, key, content_type, prior).await
+            PendingOp::Put { content_type, prior, etag, .. } => {
+                self.put(tape, key, content_type, prior, etag).await
             }
             PendingOp::Delete { track } => self.delete(tape, key, track).await,
         }
@@ -492,6 +596,7 @@ where
         key: &[u8],
         content_type: ContentType,
         prior: Option<Address>,
+        etag: Hash,
     ) -> Result<Address, TapedriveError> {
         // A queued Put with no payload is a corrupt row, not an outage.
         let bytes = self
@@ -509,9 +614,10 @@ where
             Some(track) => Some(track),
             None => self.indexed_track(tape, key)?,
         };
+        let plan = self.staging.take_plan(&etag);
         let (_etag, track) = self
             .write_ctx
-            .write_object(self.context.as_ref(), tape, key, content_type, &bytes, existing)
+            .write_object(self.context.as_ref(), tape, key, content_type, &bytes, existing, plan)
             .await?;
         Ok(track)
     }
@@ -602,6 +708,43 @@ where
 
 }
 
+/// A queued put headed for a batch
+struct Candidate {
+    name: String,
+    write: PendingWrite,
+    reclaim: Option<Address>,
+}
+
+impl Candidate {
+    fn size(&self) -> u64 {
+        match self.write.op {
+            PendingOp::Put { size, .. } => size,
+            PendingOp::Delete { .. } => 0,
+        }
+    }
+}
+
+/// Cut consecutive puts into runs within the batch's item and byte limits, in queue order
+fn split_runs(sizes: &[u64]) -> Vec<Range<usize>> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    let mut bytes = 0u64;
+    for (index, size) in sizes.iter().enumerate() {
+        let is_full = index - start == MAX_OBJECT_BATCH_ITEMS
+            || bytes + size > MAX_OBJECT_BATCH_BYTES;
+        if is_full && index > start {
+            runs.push(start..index);
+            start = index;
+            bytes = 0;
+        }
+        bytes += size;
+    }
+    if start < sizes.len() {
+        runs.push(start..sizes.len());
+    }
+    runs
+}
+
 /// The wait before the next attempt: exponential to a minute, or the slow beat once parked.
 fn retry_delay(steps: u32, is_parked: bool) -> Duration {
     if is_parked {
@@ -619,6 +762,24 @@ mod tests {
     use super::*;
 
     // backoff doubles from a second to a minute, and a parked entry gets the slow beat
+    // a burst of small puts goes out in runs of the batch's item limit
+    #[test]
+    fn item_runs() {
+        let sizes = vec![4096; 40];
+
+        assert_eq!(split_runs(&sizes), vec![0..32, 32..40]);
+    }
+
+    // large puts cut a run at the batch's byte limit
+    #[test]
+    fn byte_runs() {
+        let chunk = MAX_TRACK_SIZE as u64;
+        let sizes = vec![chunk, chunk, chunk, chunk, chunk, 1];
+
+        assert_eq!(split_runs(&sizes), vec![0..4, 4..6]);
+        assert!(split_runs(&[]).is_empty());
+    }
+
     #[test]
     fn backoff_curve() {
         assert_eq!(retry_delay(1, false), Duration::from_secs(1));

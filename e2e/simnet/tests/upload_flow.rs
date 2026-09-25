@@ -132,7 +132,7 @@ async fn upload_flow_inner() {
     // A caller that already encoded these bytes to decide whether to write at
     // all hands that plan over, and the write must land exactly what a fresh
     // encode would have. Only the sync path passes a plan in production.
-    let plan = content_etag(&plan_data)
+    let plan = content_etag(plan_data.clone())
         .await
         .expect("content etag")
         .plan

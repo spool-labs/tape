@@ -17,6 +17,7 @@ use tape_core::types::RoundNumber;
 use tape_core::track::types::{PackedTrack, PackedTrackProof};
 use tape_core::types::{ContentType, SlotNumber, SpoolBitmap, StorageUnits};
 use tape_api::instruction::MAX_INLINE_WRITE;
+use bytes::Bytes;
 use tape_crypto::prelude::{Address, Hash};
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
@@ -356,6 +357,67 @@ impl SlicePayload {
     }
 }
 
+/// A slice push body read in place; its slice bytes point into the request body
+#[derive(Clone, Debug)]
+pub struct SliceBody {
+    pub data: Bytes,
+    pub leaf_hash: Hash,
+    pub merkle_proof: Vec<Hash>,
+}
+
+impl SliceBody {
+    /// Read the wire form of a slice payload without copying its slice bytes
+    pub fn parse(body: &Bytes) -> Result<Self, String> {
+        let mut at = 0;
+        let data_len = read_len(body, &mut at)?;
+        if data_len > SLICE_BYTES_LIMIT {
+            return Err(format!("slice of {data_len} bytes is over the limit"));
+        }
+        let data = take(body, &mut at, data_len)?;
+        let leaf_hash = read_hash(body, &mut at)?;
+        let proof_len = read_len(body, &mut at)?;
+        if proof_len > SLICE_TREE_HEIGHT {
+            return Err(format!("proof of {proof_len} hashes is over the limit"));
+        }
+        let mut merkle_proof = Vec::with_capacity(proof_len);
+        for _ in 0..proof_len {
+            merkle_proof.push(read_hash(body, &mut at)?);
+        }
+        if at != body.len() {
+            return Err("slice body has trailing bytes".into());
+        }
+        Ok(Self {
+            data,
+            leaf_hash,
+            merkle_proof,
+        })
+    }
+}
+
+fn take(body: &Bytes, at: &mut usize, len: usize) -> Result<Bytes, String> {
+    let end = at
+        .checked_add(len)
+        .filter(|end| *end <= body.len())
+        .ok_or_else(|| "slice body ends early".to_string())?;
+    let taken = body.slice(*at..end);
+    *at = end;
+    Ok(taken)
+}
+
+fn read_len(body: &Bytes, at: &mut usize) -> Result<usize, String> {
+    let bytes = take(body, at, size_of::<u64>())?;
+    let mut raw = [0u8; size_of::<u64>()];
+    raw.copy_from_slice(&bytes);
+    usize::try_from(u64::from_le_bytes(raw)).map_err(|error| error.to_string())
+}
+
+fn read_hash(body: &Bytes, at: &mut usize) -> Result<Hash, String> {
+    let bytes = take(body, at, Hash::LEN)?;
+    let mut raw = [0u8; Hash::LEN];
+    raw.copy_from_slice(&bytes);
+    Ok(Hash::from(raw))
+}
+
 /// Request for slice synchronization.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncSlicesRequest {
@@ -451,6 +513,39 @@ mod tests {
     use tape_core::track::blob::BlobEncoding;
     use tape_core::types::{StorageUnits, StripeCount};
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
+
+    fn encoded_slice(len: usize) -> (SlicePayload, Bytes) {
+        let data: Vec<u8> = (0..len).map(|byte| (byte % 251) as u8).collect();
+        let payload = SlicePayload::new(data, Hash::from([3u8; 32]), path()[..SLICE_TREE_HEIGHT].to_vec());
+        let body = Bytes::from(wincode::serialize(&payload).expect("encode"));
+        (payload, body)
+    }
+
+    // reading a body in place gives the same fields as the wire decoder
+    #[test]
+    fn slice_body() {
+        let (payload, body) = encoded_slice(70_000);
+
+        let parsed = SliceBody::parse(&body).expect("parse");
+
+        assert_eq!(parsed.data.as_ref(), payload.data.as_slice());
+        assert_eq!(parsed.leaf_hash, payload.leaf_hash);
+        assert_eq!(parsed.merkle_proof, payload.merkle_proof);
+    }
+
+    // a cut or padded body is refused
+    #[test]
+    fn slice_body_bounds() {
+        let (_, body) = encoded_slice(1000);
+
+        assert!(SliceBody::parse(&body.slice(..body.len() - 1)).is_err());
+        let mut padded = body.to_vec();
+        padded.push(0);
+        assert!(SliceBody::parse(&Bytes::from(padded)).is_err());
+        let mut inflated = body.to_vec();
+        inflated[..8].copy_from_slice(&(SLICE_BYTES_LIMIT as u64 + 1).to_le_bytes());
+        assert!(SliceBody::parse(&Bytes::from(inflated)).is_err());
+    }
 
     /// A distinct non-zero hash per level. Zero is the seed the empty-subtree
     /// roots derive from, so it is the one 32-byte value with a meaning of its

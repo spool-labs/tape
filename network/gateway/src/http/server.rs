@@ -17,6 +17,7 @@ use tape_node::config::http::HttpConfig;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_protocol::Api;
+use tape_sdk::bootstrap::Reputation;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower::limit::ConcurrencyLimitLayer;
@@ -140,6 +141,13 @@ where
             .route(
                 object::OBJECT_PATH,
                 get(object::get_object::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
+                    state.clone(),
+                    crate::meter::object_read_metering::<Db, Cluster, Blockchain>,
+                )),
+            )
+            .route(
+                object::BUCKET_OBJECT_PATH,
+                get(object::get_bucket_object::<Db, Cluster, Blockchain>).layer(from_fn_with_state(
                     state.clone(),
                     crate::meter::object_read_metering::<Db, Cluster, Blockchain>,
                 )),
@@ -325,6 +333,7 @@ where
             staging: self.staging.clone(),
             share_tokens: Arc::new(ConfiguredShareTokens::from_config(&self.context.config.gateway.share_tokens)),
             blacklists: self.blacklists.clone(),
+            reputation: Arc::new(Reputation::detached()),
         };
 
         let verifier = verifier_from_config(&self.s3_config);

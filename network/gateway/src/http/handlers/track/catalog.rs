@@ -193,7 +193,8 @@ pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     tracks.sort_by_key(|track| track.track_number.0);
-    let next_cursor = tracks.get(limit).map(|track| track.track_number);
+    // The cursor is the last track sent, since the next page starts after it.
+    let next_cursor = (tracks.len() > limit).then(|| tracks[limit - 1].track_number);
     let tracks = tracks
         .into_iter()
         .take(limit)

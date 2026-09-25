@@ -46,6 +46,16 @@ impl NodeHarness {
         chain: ChainHarness,
         api: Option<Arc<MemoryApi>>,
     ) -> Result<Self> {
+        Self::from_chain_with_config(chain, api, test_config()).await
+    }
+
+    /// Build every node's context on one configuration, so a test can move a
+    /// setting the whole fleet shares.
+    pub async fn from_chain_with_config(
+        chain: ChainHarness,
+        api: Option<Arc<MemoryApi>>,
+        config: NodeConfig,
+    ) -> Result<Self> {
         let mut contexts = Vec::new();
 
         for index in 0..chain.node_count() {
@@ -59,7 +69,7 @@ impl NodeHarness {
             let tls = Arc::new(tape_crypto::ed25519::Keypair::new(&mut rng));
 
             let ctx = NodeContextBuilder::new(
-                test_config(),
+                config.clone(),
                 clone_keypair(node.keypair()),
                 *node.bls_keypair(),
                 tls,
@@ -147,6 +157,7 @@ impl NodeHarness {
 pub struct NodeHarnessBuilder {
     chain: ChainHarnessBuilder,
     api: Option<Arc<MemoryApi>>,
+    challenge_interval_slots: Option<u64>,
 }
 
 impl NodeHarnessBuilder {
@@ -262,9 +273,17 @@ impl NodeHarnessBuilder {
         self
     }
 
+    /// Put every node's challenge grid on this interval, overriding the preset.
+    pub fn challenge_interval(mut self, slots: u64) -> Self {
+        self.challenge_interval_slots = Some(slots);
+        self
+    }
+
     pub async fn build(self) -> Result<NodeHarness> {
         let chain = self.chain.build().await?;
-        NodeHarness::from_chain_with_api(chain, self.api).await
+        let mut config = test_config();
+        config.challenge.interval_slots = self.challenge_interval_slots;
+        NodeHarness::from_chain_with_config(chain, self.api, config).await
     }
 }
 

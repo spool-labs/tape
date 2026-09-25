@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
+use bytes::Bytes;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
@@ -102,7 +103,7 @@ impl ParallelDownloader {
     ///
     /// Requests slices in parallel (up to concurrency limit) and returns
     /// as soon as enough are collected.
-    pub async fn download_enough_slices<P: Api>(&self, peer_client: &P) -> Result<Vec<(SpoolIndex, Vec<u8>)>, DownloadError> {
+    pub async fn download_enough_slices<P: Api>(&self, peer_client: &P) -> Result<Vec<(SpoolIndex, Bytes)>, DownloadError> {
         if self.slice_to_node.is_empty() {
             return Err(DownloadError::NoNodesAvailable);
         }
@@ -160,7 +161,7 @@ impl ParallelDownloader {
     }
 
     /// Download a specific slice via the Api trait.
-    pub async fn download_slice<P: Api>(&self, peer_client: &P, slice_idx: SpoolIndex) -> Result<Vec<u8>, DownloadError> {
+    pub async fn download_slice<P: Api>(&self, peer_client: &P, slice_idx: SpoolIndex) -> Result<Bytes, DownloadError> {
         let &node = self.slice_to_node.get(&slice_idx)
             .ok_or(DownloadError::InvalidSliceIndex(slice_idx))?;
 
