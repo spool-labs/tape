@@ -1,4 +1,5 @@
-//! Verifies that every stored coded slice is represented in its group's sample set.
+//! Verifies that every stored slice of a registered coded track is represented in its
+//! group's sample set. Snapshot chunks have no registration to replay and stay out of it.
 
 use std::time::Duration;
 
@@ -6,7 +7,8 @@ use tape_core::erasure::group_for_spool;
 use tape_core::track::data::BlobData;
 use tape_core::types::{BasisPoints, EpochNumber};
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
-use tape_store::ops::{SampleOps, SliceOps, SpoolOps, TrackDataOps};
+use tape_store::ops::{ObjectInfoOps, SampleOps, SliceOps, SpoolOps, TrackDataOps};
+use tape_store::types::ObjectInfo;
 
 const NODE_COUNT: usize = 20;
 const TARGET_GROUPS: u64 = 1;
@@ -85,7 +87,11 @@ async fn sample_coverage_inner() {
                     store.get_track_data(track).expect("track data"),
                     Some(BlobData::Coded(_))
                 );
-                if coded && store.track_sample(group, track).expect("sample").is_none() {
+                let snapshot = matches!(
+                    store.get_object_info(track).expect("object info"),
+                    Some(ObjectInfo::System { .. })
+                );
+                if coded && !snapshot && store.track_sample(group, track).expect("sample").is_none() {
                     uncovered.push((index, spool, track));
                 }
             }

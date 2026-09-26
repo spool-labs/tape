@@ -19,7 +19,6 @@ use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
 
-use crate::features::store::sample::{put_sample, SNAPSHOT_REGISTERED_SLOT};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
@@ -68,23 +67,7 @@ where
 /// `ObjectInfo::System { Snapshot }` (always certified), and the generic spool
 /// sync/repair then fetches the slices for owned spools. `decoded.tracks` was
 /// verified against the committed merkle root before decode.
-pub fn persist_snapshot_metadata<Db, Cluster, Blockchain>(
-    context: &NodeContext<Db, Cluster, Blockchain>,
-    epoch: EpochNumber,
-    decoded: &DecodedSnapshot,
-) -> Result<(), NodeError>
-where
-    Db: Store,
-    Cluster: Api,
-    Blockchain: Rpc,
-{
-    // Snapshot rows are stamped at slot zero, under every live round's cutoff.
-    let written = persist_snapshot_metadata_to_store(context.store.as_ref(), epoch, decoded);
-    context.sample_sets.backdated_write();
-    written
-}
-
-pub fn persist_snapshot_metadata_to_store<Db: Store>(
+pub fn persist_snapshot_metadata<Db: Store>(
     store: &TapeStore<Db>,
     epoch: EpochNumber,
     decoded: &DecodedSnapshot,
@@ -115,14 +98,6 @@ pub fn persist_snapshot_metadata_to_store<Db: Store>(
         store
             .put_track_data(track_address, BlobData::Coded(snapshot_track.blob))
             .map_err(store_err)?;
-        put_sample(
-            store,
-            track.group,
-            track_address,
-            &BlobData::Coded(snapshot_track.blob),
-            track.value_hash,
-            SNAPSHOT_REGISTERED_SLOT,
-        )?;
 
         store
             .put_object_info(
@@ -166,7 +141,7 @@ mod tests {
     use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
     use tape_store::TapeStore;
 
-    use super::persist_snapshot_metadata_to_store;
+    use super::persist_snapshot_metadata;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -212,7 +187,7 @@ mod tests {
             tracks: vec![DecodedSnapshotTrack { state: track, blob }],
         };
 
-        persist_snapshot_metadata_to_store(&store, epoch, &decoded).unwrap();
+        persist_snapshot_metadata(&store, epoch, &decoded).unwrap();
 
         assert_eq!(
             store.get_tape(snapshot_tape).unwrap(),

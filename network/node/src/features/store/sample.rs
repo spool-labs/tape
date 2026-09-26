@@ -11,9 +11,6 @@ use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
 
-/// Makes snapshot tracks eligible for every round that can observe them.
-pub const SNAPSHOT_REGISTERED_SLOT: SlotNumber = SlotNumber(0);
-
 pub fn put_sample<Db: Store>(
     store: &TapeStore<Db>,
     group: tape_core::types::GroupIndex,

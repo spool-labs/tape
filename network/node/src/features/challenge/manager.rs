@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::StreamExt;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::challenge::schedule::{
-    MAX_PENDING_ROUNDS, SETTLE_DEADLINE_SLOTS, Schedule, round_width_slots,
+    MAX_PENDING_ROUNDS, SETTLE_DEADLINE_SLOTS, SLOT_MS, Schedule, round_width_slots,
 };
 use tape_core::erasure::group_for_spool;
 use tape_core::system::EpochPhase;
@@ -16,6 +17,7 @@ use tape_crypto::hash::Hash;
 use tape_protocol::api::ProofOfAccessReq;
 use tape_protocol::{Api, ProtocolState};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
 
@@ -43,6 +45,7 @@ struct OpenRound {
     round: Round,
     spools: Vec<Asked>,
     opened_slot: SlotNumber,
+    opened_at: Instant,
     confirmed: bool,
     askable: bool,
     is_suspect: bool,
@@ -58,9 +61,13 @@ struct Asked {
 impl OpenRound {
     /// Its block confirmed and the round has had its full width to answer, or it
     /// waited past the point where the block could still confirm.
-    fn settles_at(&self, now: SlotNumber) -> bool {
+    ///
+    /// The width runs on this node's clock from the opening. A node behind the
+    /// tip ingests the blocks after the opening in a burst, and counting them
+    /// settled its rounds before a certificate could form.
+    fn settles_at(&self, now: SlotNumber, width: Duration) -> bool {
         let elapsed = now.as_u64().saturating_sub(self.opened_slot.as_u64());
-        (self.confirmed && elapsed >= round_width_slots()) || elapsed >= SETTLE_DEADLINE_SLOTS
+        (self.confirmed && self.opened_at.elapsed() >= width) || elapsed >= SETTLE_DEADLINE_SLOTS
     }
 }
 
@@ -234,6 +241,7 @@ where
                     })
                     .collect(),
                 opened_slot: block.slot,
+                opened_at: Instant::now(),
                 confirmed: false,
                 askable: has_sample_set(&self.context, &round),
                 is_suspect: self.context.challenge_tripwire.is_realigning(),
@@ -334,9 +342,11 @@ where
     /// Verified rounds whose block confirmed, voids those that waited too long.
     /// Oldest first, so it stops at the first round still waiting.
     fn settle_confirmed(&mut self, now: SlotNumber) {
+        let slot_ms = self.context.ingest.progress().slot_ms().unwrap_or(SLOT_MS);
+        let width = Duration::from_millis(round_width_slots() * slot_ms);
         let mut ready = Vec::new();
         for pending in self.open_rounds.values_mut() {
-            while pending.front().is_some_and(|open| open.settles_at(now)) {
+            while pending.front().is_some_and(|open| open.settles_at(now, width)) {
                 if let Some(open) = pending.pop_front() {
                     ready.push(open);
                 }
@@ -889,6 +899,7 @@ mod tests {
         for open in manager.open_rounds.values_mut().flatten() {
             open.confirmed = true;
             open.askable = true;
+            open.opened_at = width_ago();
         }
 
         // Suspension lifts, and the round opened under it settles.
@@ -1055,6 +1066,7 @@ mod tests {
         for open in manager.open_rounds.values_mut().flatten() {
             open.confirmed = true;
             open.askable = true;
+            open.opened_at = width_ago();
         }
         manager.settle_confirmed(SlotNumber(block.slot.as_u64() + round_width_slots()));
 
@@ -1064,6 +1076,38 @@ mod tests {
             "a round open before the lag was thrown away"
         );
         assert!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed) > 0);
+    }
+
+    // a node behind the tip ingests the blocks after an opening in a burst, and
+    // the round still waits out its width on the clock before it settles
+    #[tokio::test]
+    async fn burst_waits_the_width() {
+        let ctx = ready_context().await;
+        let mut manager = manager_for(&ctx);
+        let block = first_round_block(&ctx);
+
+        manager.on_produced(block.clone()).await.expect("produced");
+        for open in manager.open_rounds.values_mut().flatten() {
+            open.confirmed = true;
+            open.askable = true;
+        }
+        let burst = SlotNumber(block.slot.as_u64() + round_width_slots());
+
+        manager.settle_confirmed(burst);
+        assert_eq!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed), 0);
+        assert!(!manager.open_rounds.is_empty());
+
+        for open in manager.open_rounds.values_mut().flatten() {
+            open.opened_at = width_ago();
+        }
+        manager.settle_confirmed(burst);
+        assert!(ctx.challenge_counters.settled_missed.load(Ordering::Relaxed) > 0);
+    }
+
+    /// An opening a full round width back on the clock, at the slowest slot time.
+    fn width_ago() -> Instant {
+        let width = Duration::from_millis(round_width_slots() * SLOT_MS);
+        Instant::now().checked_sub(width).expect("a clock past the width")
     }
 
     // the chain skipped the round's opening slot, so the round is void on the

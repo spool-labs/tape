@@ -31,7 +31,6 @@ use tape_store::ops::{
 use tape_store::types::{ObjectInfo, SnapshotArtifact, SystemObjectKind, TapeInfo};
 use tokio_util::sync::CancellationToken;
 
-use crate::features::store::sample::{put_sample, SNAPSHOT_REGISTERED_SLOT};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
@@ -237,15 +236,6 @@ where
         ctx.store
             .put_track_data(track_address, BlobData::Coded(track.blob))
             .map_err(store_err("put_track_data"))?;
-        put_sample(
-            &ctx.store,
-            track.track.group,
-            track_address,
-            &BlobData::Coded(track.blob),
-            track.track.value_hash,
-            SNAPSHOT_REGISTERED_SLOT,
-        )?;
-        ctx.sample_sets.backdated_write();
         ctx.store
             .put_object_info(
                 track_address,

@@ -417,7 +417,7 @@ where
     context.bootstrap.begin_snapshot_replay(epoch.0);
     let decoded = fetch::fetch_and_decode_epoch(context, epoch, cancel).await?;
     replay.apply_snapshot_log(&decoded.log)?;
-    fetch::persist_snapshot_metadata(context, epoch, &decoded)?;
+    fetch::persist_snapshot_metadata(context.store.as_ref(), epoch, &decoded)?;
     advance_cursors(context, epoch, decoded.log.end_slot)?;
 
     info!(

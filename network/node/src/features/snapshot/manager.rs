@@ -363,7 +363,7 @@ where
         }
 
         let decoded = fetch_and_decode_epoch(&self.context, epoch, &self.cancel).await?;
-        persist_snapshot_metadata(self.context.as_ref(), epoch, &decoded)?;
+        persist_snapshot_metadata(self.context.store.as_ref(), epoch, &decoded)?;
         info!(
             epoch = epoch.0,
             tracks = decoded.tracks.len(),
