@@ -25,6 +25,7 @@
 #   make cache-linux  - Same, for rpc-cache
 #   make gateway-linux - Same, for tape-gateway
 #   make explorer-linux - Same, for tapedrive-explorer
+#   make dashboard-linux - Same, for tapedrive-dashboard
 #   make moderation-linux - Same, for tape-moderation
 #   make linux-binaries - All five Linux deploy binaries
 #   make deploy-tools - All of the above plus the Solana programs
@@ -67,7 +68,7 @@ EXPLORER_RPC ?= http://$(CACHE_BIND)?api=$(CACHE_API_KEY)
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape tape-linux node-linux cache-linux gateway-linux collector-linux explorer-linux moderation-linux linux-binaries dashboard-web atlas-web s3-bench deploy-tools install uninstall
+.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape tape-linux node-linux cache-linux gateway-linux collector-linux explorer-linux dashboard-linux moderation-linux linux-binaries dashboard-web atlas-web s3-bench deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
@@ -217,6 +218,9 @@ collector-linux:
 
 explorer-linux:
 	$(call linux-cargo,.,-p tapedrive-explorer,tapedrive-explorer)
+
+dashboard-linux:
+	$(call linux-cargo,.,-p tapedrive-dashboard,tapedrive-dashboard)
 
 moderation-linux:
 	$(call linux-cargo,.,-p tape-moderation,tape-moderation)

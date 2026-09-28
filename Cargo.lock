@@ -10867,6 +10867,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "tapedrive-dashboard"
+version = "0.4.4"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "axum",
+ "bytemuck",
+ "dioxus 0.7.10",
+ "dioxus-ssr",
+ "futures",
+ "rand 0.8.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tape-api",
+ "tape-blocks",
+ "tape-core",
+ "tape-crypto",
+ "tape-observe-api",
+ "tape-peer-tls",
+ "tape-protocol",
+ "tape-retry",
+ "tape-rpc",
+ "tape-rpc-client",
+ "tape-rpc-solana",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tapedrive-explorer"
 version = "0.4.4"
 dependencies = [
