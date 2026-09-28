@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "explorer",
   "dashboard",
+  "dashboard/api",
   "solana/api",
   "lib/core",
   "lib/crypto",
@@ -31,7 +32,6 @@ members = [
   "solana/rpc-cache",
   "lib/metrics",
   "monitoring/atlas",
-  "monitoring/dashboard",
   "monitoring/atlas-web",
   "monitoring/atlas-collector",
   "network/observe-api",
@@ -150,6 +150,7 @@ tape-test = { version = "0.4.4", path = "./test" }
 tape-chain-harness = { version = "0.4.4", path = "./test/harness" }
 tape-metrics = { version = "0.4.4", path = "./lib/metrics" }
 tape-observe-api = { version = "0.4.4", path = "./network/observe-api" }
+tape-dashboard-api = { version = "0.4.4", path = "./dashboard/api" }
 tape-atlas = { version = "0.4.4", path = "./monitoring/atlas" }
 tape-gateway = { version = "0.4.4", path = "./network/gateway" }
 tape-node = { version = "0.4.4", path = "./network/node" }

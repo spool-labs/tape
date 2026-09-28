@@ -25,7 +25,7 @@
 #   make cache-linux  - Same, for rpc-cache
 #   make gateway-linux - Same, for tape-gateway
 #   make explorer-linux - Same, for tapedrive-explorer
-#   make dashboard-linux - Same, for tapedrive-dashboard
+#   make dashboard-linux - The live dashboard: server and browser app, by dx
 #   make moderation-linux - Same, for tape-moderation
 #   make linux-binaries - All five Linux deploy binaries
 #   make deploy-tools - All of the above plus the Solana programs
@@ -68,7 +68,7 @@ EXPLORER_RPC ?= http://$(CACHE_BIND)?api=$(CACHE_API_KEY)
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape tape-linux node-linux cache-linux gateway-linux collector-linux explorer-linux dashboard-linux moderation-linux linux-binaries dashboard-web atlas-web s3-bench deploy-tools install uninstall
+.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape tape-linux node-linux cache-linux gateway-linux collector-linux explorer-linux dashboard-linux dashboard-check dashboard-dev moderation-linux linux-binaries atlas-web s3-bench deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
@@ -219,19 +219,61 @@ collector-linux:
 explorer-linux:
 	$(call linux-cargo,.,-p tapedrive-explorer,tapedrive-explorer)
 
+# The live dashboard for x86_64 Linux: its server and browser app, built
+# together by dx, since dx writes the hashed asset names into the server after
+# linking. The server and its public/ land together in
+# target/x86_64-unknown-linux-gnu/release/dashboard/, where
+# `tape-network dashboard deploy` reads them. The `@server` half repeats the
+# shared flags and names its platform: dx takes nothing else from them, and
+# without `--platform server` it builds the browser app for Linux. On macOS dx
+# runs in a linux container that has it (deploy/Dockerfile.dashboard-builder).
+DASHBOARD_DX := dx build --package tapedrive-dashboard --fullstack --release --debug-symbols false \
+	@server --platform server --package tapedrive-dashboard --release --debug-symbols false --target $(LINUX_TRIPLE)
+DASHBOARD_OUT := target/$(LINUX_TRIPLE)/release/dashboard
+ifeq ($(UNAME_S),Linux)
 dashboard-linux:
-	$(call linux-cargo,.,-p tapedrive-dashboard,tapedrive-dashboard)
+	cd dashboard && $(DASHBOARD_DX)
+	rm -rf $(DASHBOARD_OUT) && mkdir -p $(DASHBOARD_OUT)
+	cp -R target/dx/tapedrive-dashboard/release/web/. $(DASHBOARD_OUT)/
+	@echo "dashboard: $(DASHBOARD_OUT)"
+else
+dashboard-linux:
+	docker build -q --platform $(DOCKER_PLATFORM) -t tape-dashboard-builder -f deploy/Dockerfile.dashboard-builder deploy
+	docker run --rm --platform $(DOCKER_PLATFORM) \
+		-v $(CURDIR):/src -w /src/dashboard \
+		-v tape-cargo-registry:/usr/local/cargo/registry \
+		-v $(HOME)/.cargo/git:/usr/local/cargo/git \
+		-e CARGO_TARGET_DIR=/src/target/linux \
+		-e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+		-e CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
+		-e CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ \
+		tape-dashboard-builder \
+		$(DASHBOARD_DX)
+	rm -rf $(DASHBOARD_OUT) && mkdir -p $(DASHBOARD_OUT)
+	cp -R target/linux/dx/tapedrive-dashboard/release/web/. $(DASHBOARD_OUT)/
+	@echo "dashboard: $(DASHBOARD_OUT)"
+endif
+
+# The live dashboard's two builds, and the rule that its browser build never
+# pulls in the signing stack (REALTIME.md in the dashboard design repository)
+DASHBOARD_WEB := -p tapedrive-dashboard --no-default-features --features web --target wasm32-unknown-unknown
+dashboard-check:
+	cargo check -p tapedrive-dashboard --features server
+	cargo check $(DASHBOARD_WEB)
+	@if cargo tree $(DASHBOARD_WEB) -e normal --prefix none | grep -E '^(tape-core|tape-crypto|tape-protocol|solana-)'; then \
+		echo "the dashboard's browser build pulls in the crates above"; exit 1; \
+	fi
+	@echo "the dashboard's browser build is clear of the signing stack"
+
+# The live dashboard and its browser app, rebuilt on change. Needs dioxus-cli
+# 0.7.9 (`dx`) and DASHBOARD_RPC set.
+dashboard-dev:
+	cd dashboard && dx serve --fullstack --package tapedrive-dashboard
 
 moderation-linux:
 	$(call linux-cargo,.,-p tape-moderation,tape-moderation)
 
 linux-binaries: node-linux cache-linux gateway-linux explorer-linux moderation-linux
-
-# Static wasm bundle for the observability dashboard (needs dioxus-cli: `dx`).
-# Deploy with `tape-network dashboard deploy`.
-dashboard-web:
-	cd monitoring/dashboard && dx build --package tape-dashboard --platform web --release --debug-symbols false
-	@echo "bundle: target/dx/tape-dashboard/release/web/public"
 
 # Static wasm bundle for the atlas globe kiosk (needs dioxus-cli: `dx`).
 # Serve it with `tape-collector --www <bundle>`.
