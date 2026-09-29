@@ -437,19 +437,21 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
 mod tests {
     use std::time::Duration;
 
-    use tape_core::snapshot::replay::ReplayableEvent;
+    use tape_core::snapshot::replay::{ReplayableEvent, SnapshotEntry};
     use tape_core::system::EpochPhase;
     use tape_core::types::{EpochNumber, SlotNumber};
-    use tape_store::ops::EventLogOps;
+    use tape_store::ops::{EventLogOps, MetaOps};
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
     use super::{BlockIngestor, CATCH_UP_WINDOW_SLOTS};
     use crate::chain::{submit_join_committee, submit_set_network_tls};
+    use crate::config::node::NodeConfig;
     use crate::core::channels::{downstream_channels, store_channel};
     use crate::features::block::fetch::FETCH_PIPELINE_DEPTH;
-    use crate::features::bootstrap::LiveStart;
+    use crate::features::bootstrap::{run, LiveStart};
     use crate::features::replay::manager::ReplayManager;
+    use crate::features::replay::types::ReplayBatch;
     use crate::harness::{NodeHarness, TestContext};
 
     const EPOCH: EpochNumber = EpochNumber(3);
@@ -499,6 +501,34 @@ mod tests {
             .produced_slot(&[slot.0 + 1, slot.0 + 2])
             .await
             .expect("discover later slot")
+    }
+
+    /// Run the replay lane over the block at `start` and return the batch it hands the store lane
+    async fn replay_block(ctx: &TestContext, start: LiveStart) -> ReplayBatch {
+        let (senders, receivers) = downstream_channels();
+        let (store_tx, mut store_rx) = store_channel();
+        let replay = ReplayManager::new(
+            ctx.clone(),
+            receivers.replay,
+            store_tx,
+            CancellationToken::new(),
+        );
+        let replay_task = tokio::spawn(replay.run());
+
+        let mut ingestor = BlockIngestor::new(ctx.clone(), start, senders, CancellationToken::new());
+        ingestor
+            .ingest_step(start.slot)
+            .await
+            .expect("dispatch block");
+
+        let batch = timeout(Duration::from_secs(1), store_rx.recv())
+            .await
+            .expect("receive replay batch in time")
+            .expect("replay batch");
+
+        replay_task.abort();
+        let _ = replay_task.await;
+        batch
     }
 
     // a window the chain lists no block in moves ingest past it
@@ -634,5 +664,32 @@ mod tests {
             batch.records.as_slice(),
             [record] if matches!(&record.event, ReplayableEvent::JoinCommittee { .. })
         ));
+    }
+
+    // a restart after a crash between the journal and the cursor keeps one copy of the slot's rows
+    #[tokio::test]
+    async fn crash_restart() {
+        let harness = harness().await;
+        let ctx = harness.ctx_for(NODE);
+        let join_slot = join_block(&harness, &ctx).await;
+        let cursor = join_slot.checked_prev().expect("slot before the join block");
+        ctx.store.set_sync_cursor(cursor, None).expect("set cursor");
+        harness.rpc().set_finalized_tip(cursor.0).expect("finalize up to the cursor");
+
+        // The replay lane journals the slot and the process dies before the store lane persists it
+        replay_block(&ctx, LiveStart { slot: join_slot, parent: None }).await;
+
+        let restart = run(&ctx, &NodeConfig::default(), &CancellationToken::new())
+            .await
+            .expect("restart bootstrap");
+        assert_eq!(restart.slot, join_slot);
+        let batch = replay_block(&ctx, restart).await;
+
+        let single_pass = SnapshotEntry {
+            slot: join_slot,
+            block_time: batch.block_time,
+            records: batch.records,
+        };
+        assert_eq!(ctx.store.get_epoch_events(EPOCH).expect("epoch events"), [single_pass]);
     }
 }
