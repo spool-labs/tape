@@ -7,8 +7,9 @@ use axum::http::{Method, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
+use tape_crypto::hash::hash;
 use tape_node::config::gateway::S3Config;
 
 use super::authz::Auth;
@@ -590,9 +591,7 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; 32], S3Error> {
 
 /// Compute the lowercase hex `SHA-256(data)`
 pub(super) fn sha256_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
+    hex::encode(hash(data).to_bytes())
 }
 
 /// Trim leading/trailing whitespace and collapse internal runs of spaces to a
@@ -842,6 +841,20 @@ mod tests {
         let signed = SignedPayloadHash(Some(sha256_hex(body)));
 
         assert!(verify_signed_body(&signed, body).is_ok());
+    }
+
+    // the body hash agrees with the sha2 crate across block edges and a multi-block body
+    #[test]
+    fn body_hash_digest() {
+        use sha2::Digest;
+
+        assert_eq!(sha256_hex(b""), EMPTY_PAYLOAD_SHA256);
+        let mut lengths: Vec<usize> = (0..=130).collect();
+        lengths.push(4 * 1024 * 1024 + 7);
+        for length in lengths {
+            let body: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
+            assert_eq!(sha256_hex(&body), hex::encode(sha2::Sha256::digest(&body)), "length {length}");
+        }
     }
 
     // a body that does not match the signed hash is rejected
