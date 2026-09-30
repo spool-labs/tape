@@ -110,8 +110,9 @@ impl StatusBatch {
         let started = Instant::now();
         let signatures: Vec<Signature> = self.lock().keys().copied().collect();
         let mut statuses = Vec::with_capacity(signatures.len());
+
         for chunk in signatures.chunks(MAX_SIGNATURES_PER_CALL) {
-            statuses.extend(client.get_signature_statuses(chunk).await?.value);
+            statuses.extend(client.get_signature_statuses_with_history(chunk).await?.value);
         }
 
         let mut waiters = self.lock();
