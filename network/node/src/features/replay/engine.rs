@@ -47,10 +47,11 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
             &block.instruction_tx_ids,
         )?;
 
-        let rows: Vec<_> = captured.events.iter().map(|entry| (entry.epoch, &entry.record)).collect();
-        self.store
-            .journal_slot(block.slot, block.block_time, &rows)
-            .map_err(store_error)?;
+        for entry in &captured.events {
+            self.store
+                .append_record(entry.epoch, block.slot, block.block_time, &entry.record)
+                .map_err(store_error)?;
+        }
 
         self.current_epoch = captured.next_epoch;
 

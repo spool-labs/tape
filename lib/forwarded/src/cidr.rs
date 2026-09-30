@@ -47,6 +47,13 @@ fn prefix_mask_v6(prefix_length: u8) -> u128 {
         .unwrap_or(0)
 }
 
+fn family_bits(address: IpAddr) -> u8 {
+    match address {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
+    }
+}
+
 impl FromStr for CidrBlock {
     type Err = String;
 
@@ -60,10 +67,7 @@ impl FromStr for CidrBlock {
             .trim()
             .parse()
             .map_err(|error| format!("invalid address in {value:?}: {error}"))?;
-        let family_bits = match address {
-            IpAddr::V4(_) => 32,
-            IpAddr::V6(_) => 128,
-        };
+        let family_bits = family_bits(address);
 
         let prefix_length = match prefix {
             None => family_bits,
@@ -79,6 +83,15 @@ impl FromStr for CidrBlock {
             address,
             prefix_length,
         })
+    }
+}
+
+impl From<IpAddr> for CidrBlock {
+    fn from(address: IpAddr) -> Self {
+        Self {
+            address,
+            prefix_length: family_bits(address),
+        }
     }
 }
 
@@ -108,6 +121,15 @@ mod tests {
 
     fn address(value: &str) -> IpAddr {
         value.parse().expect("address should parse")
+    }
+
+    // a converted address matches only itself
+    #[test]
+    fn from_address() {
+        let single = CidrBlock::from(address("127.0.0.1"));
+
+        assert_eq!(single, block("127.0.0.1"));
+        assert!(!single.contains(address("127.0.0.2")));
     }
 
     // a bare address parses as a full-length prefix matching only itself

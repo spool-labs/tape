@@ -230,7 +230,7 @@ impl Upstream {
     }
 
     /// Time left before any request may go upstream again
-    fn cool_off_remaining(&self) -> Duration {
+    pub fn cool_off_remaining(&self) -> Duration {
         let resume_at = *self.resume_at.lock().unwrap_or_else(PoisonError::into_inner);
         resume_at.saturating_duration_since(Instant::now())
     }

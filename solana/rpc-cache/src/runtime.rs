@@ -31,6 +31,7 @@ use tracing::{debug, info, warn};
 use crate::cache::{CacheStore, Policy};
 use crate::config::Config;
 use crate::filter::filter_block;
+use crate::public::Public;
 use crate::server::{AppState, CacheStats, CachedBlock};
 use crate::upstream::{RateLimitWait, Upstream, UpstreamError};
 
@@ -99,6 +100,28 @@ pub async fn run_application(config: Config) -> Result<()> {
             .await
             .context("axum serve")
     });
+
+    // A public instance serves no blocks, so it has nothing to fill
+    if state.public.is_some() {
+        state.stats.bootstrap_done.store(true, Ordering::Relaxed);
+        info!(
+            listen = %config.listen,
+            upstream = %config.upstream,
+            "rpc-cache accepting public connections"
+        );
+        tokio::select! {
+            _ = wait_shutdown_signal() => {
+                info!("shutdown signal received");
+                cancel.cancel();
+            }
+            r = &mut http_task => {
+                let r = join_result(r);
+                warn!(result = ?r, "http server exited before shutdown");
+                cancel.cancel();
+            }
+        }
+        return Ok(());
+    }
 
     let bootstrap_state = state.clone();
     let bootstrap_cancel = cancel.clone();
@@ -184,6 +207,7 @@ fn build_state(config: &Config) -> Result<Arc<AppState>> {
         upstream,
         log_submits: config.log_submits,
         api_key: config.api_key.clone(),
+        public: config.public.as_ref().map(Public::new),
         slot_store,
         program_ids,
         stats,

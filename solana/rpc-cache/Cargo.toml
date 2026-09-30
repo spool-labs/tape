@@ -19,6 +19,7 @@ tape-rpc = { workspace = true }
 tape-api = { workspace = true }
 tape-core = { workspace = true }
 tape-crypto = { workspace = true }
+tape-forwarded = { workspace = true }
 
 # External
 anyhow = { workspace = true }

@@ -10,8 +10,11 @@
 //!
 //! Batch requests (top-level JSON array) pass through unchanged.
 //!
+//! A public instance sends every JSON-RPC request down a third path,
+//! `public::serve_public`, which meters the caller and gates the method.
+//!
 //! Two unauthed observability routes: `GET /v1/health` and
-//! `GET /v1/stats`. Everything JSON-RPC requires `?api=<key>`.
+//! `GET /v1/stats`. Every fleet JSON-RPC request requires `?api=<key>`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -20,8 +23,8 @@ use std::time::Instant;
 
 use axum::{
     Router,
-    extract::{ConnectInfo, Query, State},
-    http::{StatusCode, header},
+    extract::{ConnectInfo, DefaultBodyLimit, Query, State},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -34,6 +37,7 @@ use tracing::{info, warn};
 
 use crate::cache::{CacheStore, MethodKind, Policy};
 use crate::key::CacheKey;
+use crate::public::{PUBLIC_BODY_LIMIT, Public, serve_public};
 use crate::runtime::fetch_slot_block;
 use crate::submit_log;
 use crate::upstream::{CALLER_RATE_LIMIT_WAIT, RpcEnvelope, Upstream, UpstreamError};
@@ -73,6 +77,9 @@ pub struct CacheStats {
     pub slots_fetched: AtomicU64,
     pub slots_skipped: AtomicU64,
     pub upstream_calls: AtomicU64,
+    pub public_refused: AtomicU64,
+    pub public_callers_limited: AtomicU64,
+    pub public_upstream_limited: AtomicU64,
     started: Instant,
 }
 
@@ -90,6 +97,9 @@ impl CacheStats {
             slots_fetched: AtomicU64::new(0),
             slots_skipped: AtomicU64::new(0),
             upstream_calls: AtomicU64::new(0),
+            public_refused: AtomicU64::new(0),
+            public_callers_limited: AtomicU64::new(0),
+            public_upstream_limited: AtomicU64::new(0),
             started: Instant::now(),
         }
     }
@@ -126,11 +136,12 @@ pub struct AppState {
     pub cache: CacheStore,
     pub upstream: Upstream,
     pub log_submits: bool,
-    /// Required as `?api=<api_key>` on every JSON-RPC request. Not a
+    /// Required as `?api=<api_key>` on every fleet JSON-RPC request. Not a
     /// security boundary — a cheap filter to keep port scanners from
     /// discovering an open Solana endpoint. `/v1/*` routes do not
-    /// require this.
-    pub api_key: String,
+    /// require this, and a public instance has none.
+    pub api_key: Option<String>,
+    pub public: Option<Public>,
     pub slot_store: MokaCache<u64, CachedBlock>,
     pub program_ids: Vec<Address>,
     pub stats: CacheStats,
@@ -143,14 +154,20 @@ struct AuthQuery {
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let is_public = state.public.is_some();
+    let router = Router::new()
         .route("/", post(handle))
         // Providers often accept POST at other paths. Mirror that so nodes
         // configured with a path suffix still work.
         .route("/{*rest}", post(handle))
         .route("/v1/health", get(health))
         .route("/v1/stats", get(stats))
-        .with_state(state)
+        .with_state(state);
+    if is_public {
+        router.layer(DefaultBodyLimit::max(PUBLIC_BODY_LIMIT))
+    } else {
+        router
+    }
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -197,6 +214,9 @@ async fn stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "slots_fetched": s.slots_fetched.load(Ordering::Relaxed),
         "slots_skipped": s.slots_skipped.load(Ordering::Relaxed),
         "upstream_calls": s.upstream_calls.load(Ordering::Relaxed),
+        "public_refused": s.public_refused.load(Ordering::Relaxed),
+        "public_callers_limited": s.public_callers_limited.load(Ordering::Relaxed),
+        "public_upstream_limited": s.public_upstream_limited.load(Ordering::Relaxed),
     });
     (StatusCode::OK, axum::Json(body)).into_response()
 }
@@ -205,9 +225,13 @@ async fn handle(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Query(auth): Query<AuthQuery>,
+    headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    if auth.api.as_deref() != Some(state.api_key.as_str()) {
+    if let Some(public) = &state.public {
+        return serve_public(&state, public, addr.ip(), &headers, &body).await;
+    }
+    if auth.api.is_none() || auth.api != state.api_key {
         return (StatusCode::UNAUTHORIZED, "unauthorized".to_string()).into_response();
     }
 
@@ -411,15 +435,7 @@ async fn forward_raw(state: &AppState, req: &Value) -> Response {
     // For batch requests, `id` is per-sub-request; nothing for us to
     // preserve at the envelope level. Just forward and return verbatim.
     match state.upstream.forward(req, CALLER_RATE_LIMIT_WAIT).await {
-        Ok(env) => {
-            let wire = json!({
-                "jsonrpc": env.jsonrpc,
-                "id": env.id,
-                "result": env.result,
-                "error": env.error,
-            });
-            (StatusCode::OK, axum::Json(strip_nulls(wire))).into_response()
-        }
+        Ok(env) => raw_reply(env),
         Err(e) => {
             let id = req.get("id").cloned().unwrap_or(Value::Null);
             upstream_err(id, &e).into_response()
@@ -427,9 +443,20 @@ async fn forward_raw(state: &AppState, req: &Value) -> Response {
     }
 }
 
+/// Return the envelope as upstream sent it, id included.
+pub fn raw_reply(env: RpcEnvelope) -> Response {
+    let wire = json!({
+        "jsonrpc": env.jsonrpc,
+        "id": env.id,
+        "result": env.result,
+        "error": env.error,
+    });
+    (StatusCode::OK, axum::Json(strip_nulls(wire))).into_response()
+}
+
 /// Rebuild a JSON-RPC response envelope substituting the caller's
 /// original `id`, which is what clients match on.
-fn reshape_with_id(env: RpcEnvelope, id: Value) -> Value {
+pub fn reshape_with_id(env: RpcEnvelope, id: Value) -> Value {
     let mut out = json!({
         "jsonrpc": env.jsonrpc,
         "id": id,
@@ -443,7 +470,7 @@ fn reshape_with_id(env: RpcEnvelope, id: Value) -> Value {
     out
 }
 
-fn json_ok(id: Value, result: Value) -> (StatusCode, axum::Json<Value>) {
+pub fn json_ok(id: Value, result: Value) -> (StatusCode, axum::Json<Value>) {
     (
         StatusCode::OK,
         axum::Json(json!({
@@ -454,7 +481,7 @@ fn json_ok(id: Value, result: Value) -> (StatusCode, axum::Json<Value>) {
     )
 }
 
-fn upstream_err(id: Value, err: &UpstreamError) -> (StatusCode, axum::Json<Value>) {
+pub fn upstream_err(id: Value, err: &UpstreamError) -> (StatusCode, axum::Json<Value>) {
     info!(error = %err, "returning upstream-error envelope");
     (
         StatusCode::BAD_GATEWAY,

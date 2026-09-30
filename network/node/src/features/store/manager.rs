@@ -124,7 +124,7 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluste
 
         loop {
             tokio::select! {
-                _ = self.cancel.cancelled() => return self.drain(),
+                _ = self.cancel.cancelled() => return Ok(()),
 
                 received = self.rx.recv() => {
                     let Some(batch) = received else {
@@ -135,28 +135,16 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluste
                         };
                     };
 
-                    self.store_batch(&batch)?;
+                    persist_batch(self.context.store.as_ref(), &batch)?;
+                    self.feed_atlas(&batch);
+
+                    self.context.pending
+                        .drop_slot(batch.slot);
                 }
 
                 _ = ticker.tick() => tick_maintenance(&self.context.store, pass).await,
             }
         }
-    }
-
-    fn store_batch(&self, batch: &ReplayBatch) -> Result<(), NodeError> {
-        persist_batch(self.context.store.as_ref(), batch)?;
-        self.feed_atlas(batch);
-        self.context.pending.drop_slot(batch.slot);
-        Ok(())
-    }
-
-    /// Store the batches already queued, so a graceful restart resumes after every slot the replay lane journaled
-    fn drain(&mut self) -> Result<(), NodeError> {
-        self.rx.close();
-        while let Ok(batch) = self.rx.try_recv() {
-            self.store_batch(&batch)?;
-        }
-        Ok(())
     }
 
     /// Surface freshly stored user objects to the atlas display. This runs on

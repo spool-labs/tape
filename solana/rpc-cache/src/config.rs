@@ -2,15 +2,16 @@
 //! borrowed from `tape-network`'s settings loader.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use tape_forwarded::cidr::CidrBlock;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Address the proxy binds to (e.g. `0.0.0.0:8899`).
     pub listen: SocketAddr,
@@ -55,8 +56,15 @@ pub struct Config {
 
     /// API key required as `?api=<key>` on every JSON-RPC request.
     /// Purely a port-scanner filter — not a security boundary.
-    /// `/v1/health` and `/v1/stats` are intentionally unauthed.
-    pub api_key: String,
+    /// `/v1/health` and `/v1/stats` are intentionally unauthed. Required
+    /// unless `public` is set; a public instance takes no key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+
+    /// Serve the tape CLI to anyone: gate methods, meter callers, and skip
+    /// block ingest. See `docs/public-rpc.md`.
+    #[serde(default)]
+    pub public: Option<PublicConfig>,
 
     /// Soft byte ceiling for the slot store (filtered confirmed blocks).
     /// Moka's weigher evicts oldest entries past this. 4 GiB by default.
@@ -77,6 +85,58 @@ pub struct Config {
     /// Defaults to the four tape-network programs.
     #[serde(default = "default_filter_program_ids")]
     pub filter_program_ids: Vec<String>,
+}
+
+/// Limits for a public instance.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PublicConfig {
+    /// The proxy trusts `X-Forwarded-For` from these addresses. Loopback
+    /// covers nginx on the same host.
+    #[serde(default = "default_trusted_proxies")]
+    pub trusted_proxies: Vec<CidrBlock>,
+
+    /// Each caller's bucket refills this many requests per second. Default 20.
+    #[serde(default = "default_caller_per_second")]
+    pub caller_per_second: f64,
+
+    /// Each caller may send this many requests at once. Default 200, about
+    /// eight 1 MiB writes.
+    #[serde(default = "default_caller_burst")]
+    pub caller_burst: f64,
+
+    /// All callers together may send this many requests per second upstream.
+    /// The upstream key is shared with the fleet cache, so this keeps public
+    /// traffic off the nodes' quota. Default 50.
+    #[serde(default = "default_upstream_per_second")]
+    pub upstream_per_second: f64,
+
+    /// All callers together may send this many upstream requests at once.
+    /// Default 100.
+    #[serde(default = "default_upstream_burst")]
+    pub upstream_burst: f64,
+}
+
+fn default_trusted_proxies() -> Vec<CidrBlock> {
+    vec![
+        CidrBlock::from(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        CidrBlock::from(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+    ]
+}
+
+fn default_caller_per_second() -> f64 {
+    20.0
+}
+
+fn default_caller_burst() -> f64 {
+    200.0
+}
+
+fn default_upstream_per_second() -> f64 {
+    50.0
+}
+
+fn default_upstream_burst() -> f64 {
+    100.0
 }
 
 fn default_min_429() -> Duration {
@@ -117,8 +177,17 @@ impl Config {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;
         let substituted = substitute_env(&raw)?;
-        serde_yaml::from_str(&substituted)
-            .with_context(|| format!("parsing config {}", path.display()))
+        let config: Config = serde_yaml::from_str(&substituted)
+            .with_context(|| format!("parsing config {}", path.display()))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.public.is_none() && self.api_key.is_none() {
+            bail!("`api_key` is required unless `public` is set");
+        }
+        Ok(())
     }
 }
 
@@ -139,24 +208,13 @@ fn substitute_env(input: &str) -> Result<String> {
     Ok(out)
 }
 
-/// YAML (de)serializer for `HashMap<String, Duration>` using the
+/// YAML deserializer for `HashMap<String, Duration>` using the
 /// human-readable string format (e.g. `"30s"`).
 mod humantime_map {
     use std::collections::HashMap;
     use std::time::Duration;
 
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(
-        map: &HashMap<String, Duration>,
-        ser: S,
-    ) -> Result<S::Ok, S::Error> {
-        let stringified: HashMap<&str, String> = map
-            .iter()
-            .map(|(k, v)| (k.as_str(), humantime::format_duration(*v).to_string()))
-            .collect();
-        stringified.serialize(ser)
-    }
+    use serde::{Deserialize, Deserializer};
 
     pub fn deserialize<'de, D: Deserializer<'de>>(
         de: D,
@@ -188,7 +246,8 @@ api_key: "deadbeef"
         assert_eq!(config.min_429_delay, Duration::from_secs(10));
         assert_eq!(config.upstream_max_in_flight, 32);
         assert!(config.log_submits);
-        assert_eq!(config.api_key, "deadbeef");
+        assert_eq!(config.api_key.as_deref(), Some("deadbeef"));
+        assert!(config.public.is_none());
     }
 
     #[test]
@@ -212,5 +271,48 @@ ttls:
             config.ttls.get("getBlock").copied(),
             Some(Duration::from_secs(600))
         );
+    }
+
+    #[test]
+    fn public_defaults() {
+        let yaml = r#"
+listen: "127.0.0.1:8899"
+upstream: "https://api.devnet.solana.com"
+public: {}
+"#;
+        let config: Config = serde_yaml::from_str(yaml).expect("parse");
+        assert!(config.validate().is_ok());
+        let public = config.public.expect("public section");
+        assert_eq!(public.caller_per_second, 20.0);
+        assert_eq!(public.caller_burst, 200.0);
+        assert_eq!(public.upstream_per_second, 50.0);
+        assert_eq!(public.trusted_proxies.len(), 2);
+    }
+
+    #[test]
+    fn public_overrides() {
+        let yaml = r#"
+listen: "127.0.0.1:8899"
+upstream: "https://api.devnet.solana.com"
+public:
+  trusted_proxies: ["127.0.0.1", "173.245.48.0/20"]
+  caller_per_second: 5
+  upstream_burst: 10
+"#;
+        let config: Config = serde_yaml::from_str(yaml).expect("parse");
+        let public = config.public.expect("public section");
+        assert_eq!(public.trusted_proxies[1].to_string(), "173.245.48.0/20");
+        assert_eq!(public.caller_per_second, 5.0);
+        assert_eq!(public.upstream_burst, 10.0);
+    }
+
+    #[test]
+    fn fleet_needs_key() {
+        let yaml = r#"
+listen: "0.0.0.0:8899"
+upstream: "https://api.devnet.solana.com"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).expect("parse");
+        assert!(config.validate().is_err());
     }
 }

@@ -6,7 +6,7 @@ use crate::columns::EventLogCol;
 use crate::error::{Result, TapeStoreError};
 use crate::types::keys::EventLogKey;
 use crate::TapeStore;
-use tape_store_api::{Column, Store, WriteBatch};
+use tape_store_api::{Column, Store};
 use serde::{Deserialize, Serialize};
 use tape_core::snapshot::replay::{ReplayRecord, SnapshotEntry};
 use tape_core::types::{EpochNumber, SlotNumber};
@@ -35,12 +35,13 @@ fn serialize_key(key: &EventLogKey) -> Vec<u8> {
 /// After a snapshot is built and certified for an epoch, the event log for that
 /// epoch can be garbage collected.
 pub trait EventLogOps {
-    /// Write a slot's records keyed by position, so journaling the slot again rewrites the same rows
-    fn journal_slot(
+    /// Append a replay record to the epoch's event log.
+    fn append_record(
         &self,
+        epoch: EpochNumber,
         slot: SlotNumber,
         block_time: Option<i64>,
-        records: &[(EpochNumber, &ReplayRecord)],
+        record: &ReplayRecord,
     ) -> Result<()>;
 
     /// Read all records for an epoch, grouped by slot and ordered by (slot, seq).
@@ -54,28 +55,33 @@ pub trait EventLogOps {
 }
 
 impl<S: Store> EventLogOps for TapeStore<S> {
-    fn journal_slot(
+    fn append_record(
         &self,
+        epoch: EpochNumber,
         slot: SlotNumber,
         block_time: Option<i64>,
-        records: &[(EpochNumber, &ReplayRecord)],
+        record: &ReplayRecord,
     ) -> Result<()> {
-        if records.is_empty() {
-            return Ok(());
-        }
+        let raw = self.inner().inner();
 
-        let mut batch = WriteBatch::new();
-        for (seq, &(epoch, record)) in (0u32..).zip(records) {
-            let key = serialize_key(&EventLogKey::new(epoch.0, slot.0, seq));
-            let value = wincode::serialize(&EventLogValue {
-                block_time,
-                record: record.clone(),
-            })
-            .map_err(|e| TapeStoreError::Serialization(format!("event: {}", e)))?;
-            batch.put_owned(EventLogCol::CF_NAME, key, value);
-        }
+        // Find next sequence number for this (epoch, slot) by counting existing entries.
+        let prefix = {
+            let mut buf = [0u8; 16];
+            buf[0..8].copy_from_slice(&epoch.0.to_be_bytes());
+            buf[8..16].copy_from_slice(&slot.0.to_be_bytes());
+            buf
+        };
 
-        self.inner().inner().write_batch(batch)?;
+        let seq = raw.iter_prefix(EventLogCol::CF_NAME, &prefix)?.count() as u32;
+
+        let key = serialize_key(&EventLogKey::new(epoch.0, slot.0, seq));
+        let value = wincode::serialize(&EventLogValue {
+            block_time,
+            record: record.clone(),
+        })
+        .map_err(|e| TapeStoreError::Serialization(format!("event: {}", e)))?;
+
+        raw.put(EventLogCol::CF_NAME, &key, &value)?;
         Ok(())
     }
 
@@ -177,12 +183,13 @@ mod tests {
         let store = test_store();
         let epoch = EpochNumber(1);
 
-        // Journal events across multiple slots
+        // Append events across multiple slots
         store
-            .journal_slot(
+            .append_record(
+                epoch,
                 SlotNumber(100),
                 Some(1_700_000_000),
-                &[(epoch, &record(ReplayableEvent::AdvanceEpoch {
+                &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(0),
                     new_epoch: EpochNumber(1),
                     timestamp: 0,
@@ -191,35 +198,43 @@ mod tests {
                     preferences: NodePreferences::zeroed(),
                     subsidy: TAPE(0),
                     nonce: Hash::default(),
-                }))],
+                }),
             )
             .unwrap();
 
-        let track = record(ReplayableEvent::Track(ReplayTrack {
-            state: CompressedTrack {
-                tape: Address::new([2u8; 32]),
-                key: Hash::default(),
-                track_number: TrackNumber(1),
-                kind: TrackKind::Inline as u64,
-                state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
-                size: StorageUnits(100),
-                group: GroupIndex::from(7),
-                value_hash: Hash::default(),
-            },
-            epoch,
-            blob: None,
-            object: None,
-        }));
-        let certify = record(ReplayableEvent::CertifyTrack {
-            track: Address::new([1u8; 32]),
-            epoch: EpochNumber(1),
-        });
         store
-            .journal_slot(
+            .append_record(
+                epoch,
                 SlotNumber(150),
                 Some(1_700_000_050),
-                &[(epoch, &track), (epoch, &certify)],
+                &record(ReplayableEvent::Track(ReplayTrack {
+                    state: CompressedTrack {
+                        tape: Address::new([2u8; 32]),
+                        key: Hash::default(),
+                        track_number: TrackNumber(1),
+                        kind: TrackKind::Inline as u64,
+                        state: TrackState::Certified as u64,
+                        visibility: TrackVisibility::Public as u64,
+                        size: StorageUnits(100),
+                        group: GroupIndex::from(7),
+                        value_hash: Hash::default(),
+                    },
+                    epoch,
+                    blob: None,
+                    object: None,
+                })),
+            )
+            .unwrap();
+
+        store
+            .append_record(
+                epoch,
+                SlotNumber(150),
+                Some(1_700_000_050),
+                &record(ReplayableEvent::CertifyTrack {
+                    track: Address::new([1u8; 32]),
+                    epoch: EpochNumber(1),
+                }),
             )
             .unwrap();
 
@@ -242,16 +257,17 @@ mod tests {
         assert!(!store.has_epoch_events(epoch).unwrap());
 
         store
-            .journal_slot(
+            .append_record(
+                epoch,
                 SlotNumber(10),
                 None,
-                &[(epoch, &record(ReplayableEvent::JoinCommittee {
+                &record(ReplayableEvent::JoinCommittee {
                     node: Address::new([1u8; 32]),
                     stake: TAPE(0),
                     key: BlsPubkey::zeroed(),
                     preferences: NodePreferences::zeroed(),
                     activation_epoch: EpochNumber(0),
-                }))],
+                }),
             )
             .unwrap();
 
@@ -264,10 +280,11 @@ mod tests {
         let epoch = EpochNumber(3);
 
         store
-            .journal_slot(
+            .append_record(
+                epoch,
                 SlotNumber(10),
                 None,
-                &[(epoch, &record(ReplayableEvent::AdvanceEpoch {
+                &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(2),
                     new_epoch: EpochNumber(3),
                     timestamp: 0,
@@ -276,19 +293,20 @@ mod tests {
                     preferences: NodePreferences::zeroed(),
                     subsidy: TAPE(0),
                     nonce: Hash::default(),
-                }))],
+                }),
             )
             .unwrap();
 
         store
-            .journal_slot(
+            .append_record(
+                epoch,
                 SlotNumber(20),
                 None,
-                &[(epoch, &record(ReplayableEvent::RegisterNode {
+                &record(ReplayableEvent::RegisterNode {
                     authority: [1u8; 32].into(),
                     node: [2u8; 32].into(),
                     id: NodeId(0),
-                }))],
+                }),
             )
             .unwrap();
 
@@ -306,10 +324,11 @@ mod tests {
 
         // Events in epoch 1
         store
-            .journal_slot(
+            .append_record(
+                EpochNumber(1),
                 SlotNumber(10),
                 None,
-                &[(EpochNumber(1), &record(ReplayableEvent::AdvanceEpoch {
+                &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(0),
                     new_epoch: EpochNumber(1),
                     timestamp: 0,
@@ -318,16 +337,17 @@ mod tests {
                     preferences: NodePreferences::zeroed(),
                     subsidy: TAPE(0),
                     nonce: Hash::default(),
-                }))],
+                }),
             )
             .unwrap();
 
         // Events in epoch 2
         store
-            .journal_slot(
+            .append_record(
+                EpochNumber(2),
                 SlotNumber(100),
                 None,
-                &[(EpochNumber(2), &record(ReplayableEvent::AdvanceEpoch {
+                &record(ReplayableEvent::AdvanceEpoch {
                     old_epoch: EpochNumber(1),
                     new_epoch: EpochNumber(2),
                     timestamp: 0,
@@ -336,7 +356,7 @@ mod tests {
                     preferences: NodePreferences::zeroed(),
                     subsidy: TAPE(0),
                     nonce: Hash::default(),
-                }))],
+                }),
             )
             .unwrap();
 
@@ -360,20 +380,22 @@ mod tests {
         let epoch = EpochNumber(1);
         let slot = SlotNumber(50);
 
-        let mut records = Vec::new();
+        // Append 5 events in same slot
         for i in 0..5u8 {
-            records.push(record(ReplayableEvent::SyncSpool {
-                node: [i; 32].into(),
-                epoch,
-                group: GroupIndex::containing(SpoolIndex(i as u64)),
-                spool: SpoolIndex(i as u64),
-            }));
+            store
+                .append_record(
+                    epoch,
+                    slot,
+                    None,
+                    &record(ReplayableEvent::SyncSpool {
+                        node: [i; 32].into(),
+                        epoch,
+                        group: GroupIndex::containing(SpoolIndex(i as u64)),
+                        spool: SpoolIndex(i as u64),
+                    }),
+                )
+                .unwrap();
         }
-        let rows: Vec<_> = records.iter().map(|record| (epoch, record)).collect();
-
-        // Journaling the slot again keeps one copy of each record
-        store.journal_slot(slot, None, &rows).expect("journal slot");
-        store.journal_slot(slot, None, &rows).expect("journal slot again");
 
         let entries = store.get_epoch_events(epoch).unwrap();
         assert_eq!(entries.len(), 1);

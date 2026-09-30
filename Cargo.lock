@@ -6904,6 +6904,7 @@ dependencies = [
  "tape-cli-common",
  "tape-core",
  "tape-crypto",
+ "tape-forwarded",
  "tape-rpc",
  "thiserror 2.0.20",
  "tokio",

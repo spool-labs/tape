@@ -318,8 +318,8 @@ mod tests {
         let ctx = harness.ctx_for(OWNER_INDEX);
         let our_spools = harness.owned_spools(OWNER_INDEX);
         ctx.store
-            .journal_slot(EVENT_SLOT, None, &[(EPOCH, &record())])
-            .expect("journal slot");
+            .append_record(EPOCH, EVENT_SLOT, None, &record())
+            .expect("append record");
 
         let state = ctx.state();
         let candidate = build_snapshot_blocking(&ctx, &state, EPOCH)

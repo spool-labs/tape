@@ -16,9 +16,12 @@
 pub mod cache;
 pub mod config;
 pub mod filter;
+pub mod gate;
 pub mod key;
+pub mod meter;
 #[cfg(test)]
 pub mod mock_upstream;
+pub mod public;
 pub mod runtime;
 pub mod server;
 pub mod submit_log;
