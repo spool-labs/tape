@@ -252,7 +252,7 @@ mod tests {
             total_stake: TAPE(0),
             committee_count: 10,
             preferences: NodePreferences {
-                storage_capacity: StorageUnits::mb(1000),
+                network_capacity: StorageUnits::mb(1000),
                 storage_price: TAPE(0),
                 committee_size: 0,
                 spool_groups: 0,
@@ -260,6 +260,7 @@ mod tests {
                 subsidy_decay_bps: BasisPoints(0),
                 access_threshold: TAPE(0),
                 epoch_duration: EpochDuration(0),
+                node_capacity: StorageUnits::zero(),
             },
             nonce: Hash::default(),
             subsidy: TAPE(0),

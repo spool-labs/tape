@@ -11,12 +11,12 @@ use tape_core::cert::{
 };
 use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
-use tape_core::system::{BlacklistEntry, Member};
-use tape_core::types::{EpochNumber, SpoolCount, StorageUnits};
+use tape_core::system::{BlacklistEntry, Member, Peer};
+use tape_core::types::{EpochNumber, StorageUnits};
 use tape_crypto::merkle::MerkleLeafTree;
 use tape_crypto::{Address, Hash};
 use tape_protocol::{Api, ProtocolState};
-use tape_spooler::migrate_dhondt;
+use tape_spooler::assign::{Candidate, assign_spools};
 use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
@@ -108,15 +108,9 @@ pub fn build_assignment_blocking<Db: Store>(
     };
 
     let owners = current_owners(state, target_groups)?;
-    let spool_count = SpoolCount((target_groups * GROUP_SIZE) as u64);
-    let assignment = migrate_dhondt(
-        target_groups,
-        &owners,
-        next_committee,
-        &next_epoch.nonce,
-        spool_count,
-    )
-    .map_err(|e| NodeError::Store(format!("assignment spooler: {e:?}")))?;
+    let candidates = assignment_candidates(next_committee, &state.peers)?;
+    let assignment = assign_spools(&weights.sizes, &owners, &candidates, &next_epoch.nonce)
+        .map_err(|e| NodeError::Store(format!("assignment spooler: {e:?}")))?;
 
     let Some(blacklisted) = blacklist_weights(
         store,
@@ -173,6 +167,31 @@ fn current_owners(
         }
     }
     Ok(owners)
+}
+
+// Pair each next-committee member with the capacity it set, which its peer
+// entry carries from join.
+fn assignment_candidates(
+    members: &[Member],
+    peers: &[Peer],
+) -> Result<Vec<Candidate>, NodeError> {
+    let capacities: HashMap<Address, StorageUnits> = peers
+        .iter()
+        .map(|peer| (peer.node, peer.preferences.node_capacity))
+        .collect();
+
+    let mut candidates = Vec::with_capacity(members.len());
+    for member in members {
+        let capacity = *capacities.get(&member.node).ok_or_else(|| {
+            NodeError::Store(format!("assignment member {} has no peer entry", member.node))
+        })?;
+        candidates.push(Candidate {
+            node: member.node,
+            stake: member.stake,
+            capacity,
+        });
+    }
+    Ok(candidates)
 }
 
 // Convert spooler output into payloads the program can verify.
@@ -431,6 +450,23 @@ mod tests {
             StorageUnits::from_bytes(size),
             [StorageUnits::from_bytes(0); GROUP_SIZE],
         )
+    }
+
+    #[test]
+    fn candidates_carry_peer_capacity() {
+        let node = Address::new_unique();
+        let mut peer = Peer::new(node);
+        peer.preferences.node_capacity = StorageUnits::tb(10);
+
+        let candidates = assignment_candidates(&[member(node)], &[peer]).expect("candidates");
+
+        assert_eq!(candidates[0].capacity, StorageUnits::tb(10));
+    }
+
+    #[test]
+    fn candidates_need_peer_entries() {
+        let result = assignment_candidates(&[member(Address::new_unique())], &[]);
+        assert!(result.is_err());
     }
 
     // Every group proof has to verify against the root the same call returned,

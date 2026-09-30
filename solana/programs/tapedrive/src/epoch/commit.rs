@@ -123,7 +123,7 @@ fn aggregate_preferences(
 ) -> Result<NodePreferences, ProgramError> {
 
     let bounds = NodePreferences {
-        storage_capacity: StorageUnits(MIN_STORAGE_CAPACITY as u64),
+        network_capacity: StorageUnits(MIN_STORAGE_CAPACITY as u64),
         storage_price: TAPE(MIN_STORAGE_PRICE as u64),
         committee_size: MIN_COMMITTEE_SIZE as u64,
         spool_groups: system.target_group_count,
@@ -131,6 +131,7 @@ fn aggregate_preferences(
         subsidy_decay_bps: BasisPoints(0),
         access_threshold: TAPE(0),
         epoch_duration: system.min_epoch_duration,
+        node_capacity: StorageUnits::zero(),
     };
 
     aggregate_node_preferences(members, peers, bounds).map_err(|error| match error {
@@ -180,7 +181,7 @@ mod tests {
 
     fn test_preferences() -> NodePreferences {
         NodePreferences {
-            storage_capacity: StorageUnits::mb(2_048),
+            network_capacity: StorageUnits::mb(2_048),
             storage_price: TAPE(950),
             committee_size: 256,
             spool_groups: 75,
@@ -188,6 +189,7 @@ mod tests {
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
+            node_capacity: StorageUnits::zero(),
         }
     }
 

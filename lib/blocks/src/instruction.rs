@@ -726,11 +726,12 @@ pub fn parse_raw_instruction(
         | TapeInstruction::SetStoragePrice
         | TapeInstruction::SetBurnFeeBps
         | TapeInstruction::SetSubsidyDecayBps
-        | TapeInstruction::SetStorageCapacity
+        | TapeInstruction::SetNetworkCapacity
         | TapeInstruction::SetAccessThreshold
         | TapeInstruction::SetCommitteeSize
         | TapeInstruction::SetSpoolGroups
         | TapeInstruction::SetEpochDuration
+        | TapeInstruction::SetNodeCapacity
         | TapeInstruction::SplitPoolStake
         | TapeInstruction::MergePoolStake => Ok(None),
     }

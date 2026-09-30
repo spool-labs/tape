@@ -458,7 +458,7 @@ fn committed_preferences(
     peers: &[Peer],
 ) -> Result<NodePreferences> {
     let bounds = NodePreferences {
-        storage_capacity: StorageUnits(MIN_STORAGE_CAPACITY as u64),
+        network_capacity: StorageUnits(MIN_STORAGE_CAPACITY as u64),
         storage_price: TAPE(MIN_STORAGE_PRICE as u64),
         committee_size: MIN_COMMITTEE_SIZE as u64,
         spool_groups: spec.current_group_count,
@@ -466,6 +466,7 @@ fn committed_preferences(
         subsidy_decay_bps: BasisPoints(0),
         access_threshold: TAPE(0),
         epoch_duration: TEST_MIN_EPOCH_DURATION,
+        node_capacity: StorageUnits::zero(),
     };
 
     aggregate_node_preferences(members, peers, bounds)
@@ -478,7 +479,7 @@ fn node_preferences(
     spool_groups: u64,
 ) -> NodePreferences {
     NodePreferences {
-        storage_capacity: spec.storage_capacity,
+        network_capacity: spec.network_capacity,
         storage_price: spec.storage_price,
         committee_size,
         spool_groups,
@@ -486,6 +487,7 @@ fn node_preferences(
         subsidy_decay_bps: spec.subsidy_decay_bps,
         access_threshold: TAPE(0),
         epoch_duration: TEST_EPOCH_DURATION,
+        node_capacity: StorageUnits::zero(),
     }
 }
 

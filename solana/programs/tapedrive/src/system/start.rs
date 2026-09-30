@@ -80,7 +80,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     archive.schedule = EpochSchedule::new_at(target);
     let genesis_preferences = NodePreferences {
-        storage_capacity: archive.storage_capacity,
+        network_capacity: archive.storage_capacity,
         storage_price: archive.storage_price,
         committee_size,
         spool_groups,
@@ -88,6 +88,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         subsidy_decay_bps: archive.subsidy_decay_bps,
         access_threshold: TAPE(0),
         epoch_duration,
+        node_capacity: StorageUnits::zero(),
     };
 
     subsidy_info

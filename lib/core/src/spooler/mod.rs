@@ -19,15 +19,12 @@ pub use group::*;
 //   passing spool, group, AND lost is redundant; any one of these plus spool is computable from
 //   the other.
 
-/// Errors used across spool allocation and migration.
+/// Errors from spool assignment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpoolerError {
-    CountMismatch,
-    TotalMismatch,
-    BalanceMismatch,
-    InsufficientFree,
+    LengthMismatch,
     InsufficientNodes,
-    SpoolCapExceeded,
+    DuplicateNode,
+    Overflow,
     Infeasible,
-    NotNext,
 }

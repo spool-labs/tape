@@ -438,10 +438,11 @@ async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumbe
         spool_groups: TARGET_GROUPS,
         burn_fee_bps: BURN_FEE_BPS,
         subsidy_decay_bps: SUBSIDY_DECAY_BPS,
-        storage_capacity: archive.storage_capacity,
+        network_capacity: archive.storage_capacity,
         storage_price: archive.storage_price,
         access_threshold: TAPE(0),
         epoch_duration: TEST_EPOCH_DURATION,
+        node_capacity: StorageUnits::zero(),
     };
 
     assert_eq!(

@@ -87,7 +87,7 @@ const SIMNET: GenesisConfig = GenesisConfig {
 impl From<&GenesisConfig> for NodePreferences {
     fn from(config: &GenesisConfig) -> Self {
         NodePreferences {
-            storage_capacity: config.storage_capacity,
+            network_capacity: config.storage_capacity,
             storage_price: config.storage_price,
             committee_size: config.committee_size,
             spool_groups: config.spool_groups,
@@ -95,6 +95,7 @@ impl From<&GenesisConfig> for NodePreferences {
             subsidy_decay_bps: config.subsidy_decay_bps,
             epoch_duration: config.epoch_duration,
             access_threshold: TAPE(0),
+            node_capacity: StorageUnits::zero(),
         }
     }
 }
