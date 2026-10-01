@@ -1,5 +1,6 @@
 use tape_store_api::Store;
 use tape_blocks::capture_block;
+use tape_core::encoding::ErasureCode;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::types::EpochNumber;
 use tape_store::ops::{EventLogOps, MetaOps};
@@ -12,18 +13,22 @@ use crate::features::replay::types::ReplayBatch;
 use crate::features::store::apply::apply_event;
 use crate::features::store::manager::persist_batch;
 
-pub type ReplayPersistFn<Db> = fn(&TapeStore<Db>, &ReplayBatch) -> Result<(), NodeError>;
+pub type ReplayPersistFn<Db> =
+    fn(&TapeStore<Db>, &ReplayBatch, ErasureCode) -> Result<(), NodeError>;
 
 pub struct ReplayEngine<'a, Db: Store> {
     store: &'a TapeStore<Db>,
     current_epoch: EpochNumber,
+    // The network's profile: how wide a commitment is and how big a slice gets.
+    profile: ErasureCode,
 }
 
 impl<'a, Db: Store> ReplayEngine<'a, Db> {
-    pub fn new(store: &'a TapeStore<Db>, current_epoch: EpochNumber) -> Self {
+    pub fn new(store: &'a TapeStore<Db>, current_epoch: EpochNumber, profile: ErasureCode) -> Self {
         Self {
             store,
             current_epoch,
+            profile,
         }
     }
 
@@ -45,6 +50,7 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
             block.slot,
             &block.instructions,
             &block.instruction_tx_ids,
+            usize::from(self.profile.n()),
         )?;
 
         for entry in &captured.events {
@@ -77,7 +83,7 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
         persist: ReplayPersistFn<Db>,
     ) -> Result<usize, NodeError> {
         let (batch, event_count) = self.capture_and_journal(block)?;
-        persist(self.store, &batch)?;
+        persist(self.store, &batch, self.profile)?;
         Ok(event_count)
     }
 
@@ -94,7 +100,13 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
 
         for entry in &log.entries {
             for record in &entry.records {
-                apply_event(self.store, entry.slot, entry.block_time, &record.event)?;
+                apply_event(
+                    self.store,
+                    entry.slot,
+                    entry.block_time,
+                    &record.event,
+                    self.profile,
+                )?;
             }
         }
 

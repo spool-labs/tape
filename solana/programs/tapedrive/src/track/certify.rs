@@ -2,7 +2,6 @@ use tape_solana::*;
 use tape_api::program::prelude::*;
 use tape_api::state::Group;
 use tape_api::event::TrackCertified;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::TrackState;
 use tape_crypto::bls12254::min_sig::*;
 
@@ -83,12 +82,12 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(TapeError::UnexpectedState.into());
     }
 
-    let weight = args.bitmap.count_ones() as u64;
-    if !is_supermajority(weight, GROUP_SIZE as u64) {
+    let indices = system.signers(&args.bitmap)?;
+    let weight = indices.len() as u64;
+    if weight < system.thresholds()?.certify {
         return Err(TapeError::NoQuorum.into());
     }
 
-    let indices = args.bitmap.indices();
     if indices.is_empty() {
         return Err(TapeError::NoSigners.into());
     }
@@ -131,6 +130,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::encoding::RSParams;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::{
@@ -143,11 +143,48 @@ mod tests {
     use tape_crypto::Hash;
     use tape_test::*;
 
-    /// Build a Group whose 20 spools are owned by 20 distinct BLS keys.
+    const NARROW: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
 
     // happy-path BLS-aggregate certification of a track
     #[test]
     fn certify() {
+        certify_case(permissionless_system(), MAX_GROUP_SIZE, &signers(14), None);
+    }
+
+    // tapenet refuses thirteen signers, one short of its fourteen
+    #[test]
+    fn below_quorum() {
+        certify_case(
+            permissionless_system(),
+            MAX_GROUP_SIZE,
+            &signers(13),
+            Some(TapeError::NoQuorum.into()),
+        );
+    }
+
+    // a 3-of-4 cluster certifies on three signers and refuses two
+    #[test]
+    fn trusted_quorum() {
+        certify_case(trusted_system(NARROW), 4, &signers(3), None);
+        certify_case(trusted_system(NARROW), 4, &signers(2), Some(TapeError::NoQuorum.into()));
+    }
+
+    // a signer bit past the network's width adds no weight
+    #[test]
+    fn padding_signer() {
+        certify_case(
+            trusted_system(NARROW),
+            4,
+            &[0, 1, 4],
+            Some(TapeError::BadMember.into()),
+        );
+    }
+
+    fn signers(count: usize) -> Vec<usize> {
+        (0..count).collect()
+    }
+
+    fn certify_case(base: System, width: usize, signed: &[usize], error: Option<ProgramError>) {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let delegate = Pubkey::new_unique();
@@ -159,14 +196,12 @@ mod tests {
         let group_id = GroupIndex(0);
         let (group_address, _) = group_pda(curr, group_id);
 
-        const SIGNERS: usize = 14;
-
-        let (sks, group) = make_group(curr, group_id);
+        let (sks, group) = make_group_of(curr, group_id, width);
 
         let system = System {
             current_epoch: curr,
             committee_size: 128,
-            ..System::zeroed()
+            ..base
         };
 
         let track_number = TrackNumber(0);
@@ -212,14 +247,15 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let signed_indices: Vec<usize> = (0..SIGNERS).collect();
-        let bitmap = SpoolBitmap::from_indices(&signed_indices);
+        let bitmap = SpoolBitmap::from_indices(signed);
 
         let track_message = TrackWriteMessage::new(curr, old_track_hash);
         let message = track_message.to_bytes();
 
-        let partials: Vec<BlsSignature> = signed_indices
+        // A bit past the width has no key behind it, so only the live ones sign.
+        let partials: Vec<BlsSignature> = signed
             .iter()
+            .filter(|&&i| i < width)
             .map(|&i| sks[i].sign(message).unwrap())
             .collect();
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();
@@ -243,6 +279,11 @@ mod tests {
         ];
 
         let env = test_env();
+        if let Some(error) = error {
+            env.process_instruction(&instruction, &accounts, &[Check::err(error)]);
+            return;
+        }
+
         env.process_instruction(
             &instruction,
             &accounts,
@@ -281,7 +322,7 @@ mod tests {
         let system = System {
             current_epoch: curr,
             committee_size: 128,
-            ..System::zeroed()
+            ..permissionless_system()
         };
 
         let track_number = TrackNumber(0);

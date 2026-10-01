@@ -21,7 +21,7 @@ use tracing::{info, warn};
 use crate::chain::register_node::submit_register_node;
 use crate::chain::set_network_tls::submit_set_network_tls;
 use crate::config::node::NodeConfig;
-use crate::context::{AppContext, NodeContextBuilder, NodeStore};
+use crate::context::{fetch_network_params, AppContext, NodeContextBuilder, NodeStore};
 use crate::core::atlas::{self, AtlasBuffer};
 use crate::core::error::NodeError;
 use crate::core::restarts;
@@ -361,6 +361,13 @@ pub async fn ensure_registered<Blockchain: Rpc>(
     let name = to_name(&config.node.name);
     let commission = config.node.commission;
 
+    // A custom preset takes its profile from the chain the node is joining.
+    let params = fetch_network_params(rpc).await?;
+    let genesis = config
+        .genesis_preset
+        .config(&params)
+        .map_err(|error| NodeError::Config(format!("genesis preset: {error}")))?;
+
     info!(
         name = %config.node.name,
         authority = %authority,
@@ -377,7 +384,7 @@ pub async fn ensure_registered<Blockchain: Rpc>(
         local_tls_pubkey,
         bls_pubkey,
         bls_pop,
-        NodePreferences::from(&config.genesis_preset.config()),
+        NodePreferences::from(&genesis),
     )
     .await;
 

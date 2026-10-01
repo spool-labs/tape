@@ -158,8 +158,7 @@ mod tests {
     use super::*;
     use crate::types::SnapshotArtifact;
     use tape_store_memory::MemoryStore;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::types::{SpoolIndex, StorageUnits, StripeCount};
     use tape_crypto::Hash;
@@ -173,10 +172,9 @@ mod tests {
             blob: BlobEncoding {
                 size: StorageUnits::from_bytes(64),
                 commitment: Hash::from([tag; 32]),
-                profile: EncodingProfile::default(),
                 stripe_size: StorageUnits::from_bytes(64),
                 stripe_count: StripeCount(1),
-                leaves: [Hash::from([tag; 32]); GROUP_SIZE],
+                leaves: [Hash::from([tag; 32]); MAX_GROUP_SIZE],
             },
             spool_index: SpoolIndex(tag as u64),
             slice: vec![tag; 32],

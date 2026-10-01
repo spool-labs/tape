@@ -364,9 +364,13 @@ pub enum ParsedInstruction {
 }
 
 /// Parse a single compiled instruction into a RawInstruction.
+///
+/// `width` is the network's slices per track, which a coded track's
+/// commitment is checked over.
 pub fn parse_raw_instruction(
     ix: &CompiledInstruction,
     account_keys: &[Address],
+    width: usize,
 ) -> Result<Option<RawInstruction>, ParseError> {
     // Get the program ID
     let program_id_index = ix.program_id_index as usize;
@@ -528,7 +532,7 @@ pub fn parse_raw_instruction(
             });
             let value = blob.data.to_owned();
             value
-                .meta()
+                .meta(width)
                 .ok_or(ParseError::Deserialization("invalid track commitment".to_string()))?;
             Ok(Some(RawInstruction::TrackWrite {
                 authority,
@@ -757,7 +761,7 @@ mod tests {
     use tape_api::program::tapedrive::ID as TAPE_PROGRAM_ID;
     use tape_core::bls::BlsSignature;
     use tape_core::cert::{AssignmentGroupPayload, ASSIGNMENT_TREE_HEIGHT};
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::VoteKind;
     use tape_core::types::{EpochNumber, SpoolBitmap, StorageUnits};
@@ -804,7 +808,7 @@ mod tests {
             BlsSignature::zeroed(),
             NodePreferences::zeroed(),
         ));
-        match parse_raw_instruction(&ix, &keys).unwrap() {
+        match parse_raw_instruction(&ix, &keys, MAX_GROUP_SIZE).unwrap() {
             Some(RawInstruction::RegisterNode {
                 authority: parsed_authority,
                 name,
@@ -835,7 +839,7 @@ mod tests {
             node,
             "renamed",
         ));
-        match parse_raw_instruction(&ix, &keys).unwrap() {
+        match parse_raw_instruction(&ix, &keys, MAX_GROUP_SIZE).unwrap() {
             Some(RawInstruction::SetName { node: parsed, name }) => {
                 assert_eq!(parsed, node);
                 assert_eq!(&name[..7], b"renamed");
@@ -850,7 +854,7 @@ mod tests {
             node,
             network_address,
         ));
-        match parse_raw_instruction(&ix, &keys).unwrap() {
+        match parse_raw_instruction(&ix, &keys, MAX_GROUP_SIZE).unwrap() {
             Some(RawInstruction::SetNetworkAddress { node: parsed, network_address: value }) => {
                 assert_eq!(parsed, node);
                 assert_eq!(value, network_address);
@@ -865,7 +869,7 @@ mod tests {
             node,
             network_tls,
         ));
-        match parse_raw_instruction(&ix, &keys).unwrap() {
+        match parse_raw_instruction(&ix, &keys, MAX_GROUP_SIZE).unwrap() {
             Some(RawInstruction::SetNetworkTls { node: parsed, network_tls: value }) => {
                 assert_eq!(parsed, node);
                 assert_eq!(value, network_tls);
@@ -881,7 +885,7 @@ mod tests {
             bls_pubkey,
             BlsSignature::zeroed(),
         ));
-        match parse_raw_instruction(&ix, &keys).unwrap() {
+        match parse_raw_instruction(&ix, &keys, MAX_GROUP_SIZE).unwrap() {
             Some(RawInstruction::SetBlsPubkey { node: parsed, bls_pubkey: value }) => {
                 assert_eq!(parsed, node);
                 assert_eq!(value, bls_pubkey);
@@ -900,7 +904,7 @@ mod tests {
             SpoolBitmap::zeroed(),
             BlsSignature::zeroed(),
         ));
-        match parse_raw_instruction(&ix, &keys).unwrap() {
+        match parse_raw_instruction(&ix, &keys, MAX_GROUP_SIZE).unwrap() {
             Some(RawInstruction::VoteSnapshot { hash, group, .. }) => {
                 assert_eq!(hash, Hash::from([0x55; 32]));
                 assert_eq!(group, GroupIndex(3));
@@ -919,7 +923,7 @@ mod tests {
             SpoolBitmap::zeroed(),
             BlsSignature::zeroed(),
         ));
-        match parse_raw_instruction(&ix, &keys).unwrap() {
+        match parse_raw_instruction(&ix, &keys, MAX_GROUP_SIZE).unwrap() {
             Some(RawInstruction::VoteAssignment { hash, group, .. }) => {
                 assert_eq!(hash, Hash::from([0x66; 32]));
                 assert_eq!(group, GroupIndex(3));
@@ -935,7 +939,7 @@ mod tests {
             group,
             core::array::from_fn(|i| i as u64),
             StorageUnits::mb(100),
-            [StorageUnits::zero(); GROUP_SIZE],
+            [StorageUnits::zero(); MAX_GROUP_SIZE],
         );
         let proof = [Hash::zeroed(); ASSIGNMENT_TREE_HEIGHT];
         let (ix, keys) = compiled_instruction(&build_finalize_group_ix(
@@ -945,7 +949,7 @@ mod tests {
             proof,
         ));
 
-        match parse_raw_instruction(&ix, &keys).unwrap() {
+        match parse_raw_instruction(&ix, &keys, MAX_GROUP_SIZE).unwrap() {
             Some(RawInstruction::FinalizeGroup { epoch, group: parsed_group }) => {
                 assert_eq!(epoch, EpochNumber(8));
                 assert_eq!(parsed_group, group);

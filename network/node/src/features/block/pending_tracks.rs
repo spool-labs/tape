@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::RwLock;
 
 use tape_blocks::ParsedInstruction;
+use tape_core::encoding::ErasureCode;
 use tape_core::object::object_etag;
 use tape_core::snapshot::replay::ReplayTrackObject;
 use tape_core::track::data::BlobData;
@@ -194,8 +195,8 @@ impl PendingTracks {
     /// Mirrors the registration and certification subset of
     /// `features/store/apply.rs`. Invalidate and Delete are intentionally
     /// not applied here — those are destructive and remain on the finalized
-    /// path.
-    pub fn apply_block(&self, block: &ParsedBlock) {
+    /// path. The network's profile sets how wide a coded commitment is.
+    pub fn apply_block(&self, block: &ParsedBlock, profile: ErasureCode) {
         for instruction in &block.instructions {
             match instruction {
                 ParsedInstruction::TrackWrite {
@@ -207,7 +208,7 @@ impl PendingTracks {
                     event,
                     ..
                 } => {
-                    let Some(meta) = value.meta() else {
+                    let Some(meta) = value.meta(usize::from(profile.n())) else {
                         continue;
                     };
                     let state = CompressedTrack {
@@ -492,8 +493,7 @@ impl PendingTracks {
 
 #[cfg(test)]
 mod tests {
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{TrackKind, TrackVisibility};
@@ -520,10 +520,9 @@ mod tests {
         BlobEncoding {
             size: StorageUnits::from_bytes(1024),
             commitment: Hash::default(),
-            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(1),
-            leaves: [Hash::default(); GROUP_SIZE],
+            leaves: [Hash::default(); MAX_GROUP_SIZE],
         }
     }
 

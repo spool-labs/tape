@@ -84,7 +84,8 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     if next_committee.epoch != next {
         return Err(TapeError::BadEpochId.into());
     }
-    if (next_committee.members.count as usize) < GROUP_SIZE {
+    // A node holds at most one spool per group, so a group needs n members.
+    if next_committee.members.count < u64::from(system.code()?.n()) {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -125,7 +126,7 @@ fn aggregate_preferences(
     let bounds = NodePreferences {
         network_capacity: StorageUnits(MIN_STORAGE_CAPACITY as u64),
         storage_price: TAPE(MIN_STORAGE_PRICE as u64),
-        committee_size: MIN_COMMITTEE_SIZE as u64,
+        committee_size: u64::from(system.code()?.n()),
         spool_groups: system.target_group_count,
         burn_fee_bps: BasisPoints(0),
         subsidy_decay_bps: BasisPoints(0),
@@ -157,9 +158,10 @@ fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramErr
 mod tests {
     use super::*;
     use tape_api::state::{Committee, PeerSet};
+    use tape_core::encoding::RSParams;
     use tape_test::*;
 
-    const COMMITTEE_SIZE: u64 = GROUP_SIZE as u64;
+    const COMMITTEE_SIZE: u64 = MAX_GROUP_SIZE as u64;
     const SPOOL_GROUPS: u64 = 50;
 
     fn slot_hashes_account() -> (Pubkey, solana_account::Account) {
@@ -194,7 +196,7 @@ mod tests {
     }
 
     fn members() -> Vec<Member> {
-        (0..GROUP_SIZE)
+        (0..MAX_GROUP_SIZE)
             .map(|i| {
                 let mut bytes = [0u8; 32];
                 bytes[0] = (i as u8) + 1;
@@ -256,7 +258,7 @@ mod tests {
             committee_size: COMMITTEE_SIZE,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..System::zeroed()
+            ..permissionless_system()
         };
 
         let curr_epoch = Epoch {
@@ -324,6 +326,10 @@ mod tests {
     }
 
     fn commit_next_committee_case(next_committee: Vec<u8>, check: Check) {
+        commit_case_on(permissionless_system(), next_committee, check);
+    }
+
+    fn commit_case_on(base: System, next_committee: Vec<u8>, check: Check) {
         let fee_payer = Pubkey::new_unique();
         let curr = EpochNumber(10);
         let next = EpochNumber(11);
@@ -339,7 +345,7 @@ mod tests {
             committee_size: COMMITTEE_SIZE,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..System::zeroed()
+            ..base
         };
         let curr_epoch = Epoch {
             id: curr,
@@ -380,7 +386,7 @@ mod tests {
     #[test]
     fn partial_committee_commits() {
         commit_next_committee_case(
-            committee_with(EpochNumber(11), COMMITTEE_SIZE + 4, GROUP_SIZE),
+            committee_with(EpochNumber(11), COMMITTEE_SIZE + 4, MAX_GROUP_SIZE),
             Check::success(),
         );
     }
@@ -388,7 +394,20 @@ mod tests {
     #[test]
     fn undersized_committee_blocks() {
         commit_next_committee_case(
-            committee_with(EpochNumber(11), COMMITTEE_SIZE + 4, GROUP_SIZE - 1),
+            committee_with(EpochNumber(11), COMMITTEE_SIZE + 4, MAX_GROUP_SIZE - 1),
+            Check::err(TapeError::InsufficientCommittee.into()),
+        );
+    }
+
+    // a 3-of-4 cluster commits on four seated members and holds its epoch on three
+    #[test]
+    fn narrow_committee() {
+        let narrow = trusted_system(ErasureCode::ReedSolomon(RSParams::new(3, 1)));
+
+        commit_case_on(narrow, committee_with(EpochNumber(11), 4, 4), Check::success());
+        commit_case_on(
+            narrow,
+            committee_with(EpochNumber(11), 4, 3),
             Check::err(TapeError::InsufficientCommittee.into()),
         );
     }
@@ -436,7 +455,7 @@ mod tests {
             committee_size: COMMITTEE_SIZE,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..System::zeroed()
+            ..permissionless_system()
         };
 
         let curr_epoch = Epoch {

@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::object::object_etag;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
@@ -50,11 +49,11 @@ pub async fn decode_track_bytes<
 
     let blob = coded_blob(state, track_addr, &track)?;
     let slices = fetch_decoding_slices(state, track_addr, track, blob).await?;
-    let profile = blob.profile;
+    let profile = state.context.params().profile;
     let start = std::time::Instant::now();
     let decoded = spawn_blocking(move || {
         let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(position, data)| (*position, data.as_ref())).collect();
-        BlobDecoder::with_profile(profile).decode(&refs)
+        BlobDecoder::try_new(profile)?.decode(&refs)
     })
     .await
     .map_err(|error| RouteError::Internal(format!("decode task: {error}")))?;
@@ -89,7 +88,8 @@ pub fn coded_blob<Db: Store, Cluster: Api, Blockchain: Rpc>(
         crate::metrics::inc_decode_result("data_mismatch");
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };
-    if blob.get_hash() != track.value_hash || blob.commitment_root() != blob.commitment {
+    let width = state.context.params().n();
+    if blob.get_hash() != track.value_hash || blob.commitment_root(width) != Some(blob.commitment) {
         crate::metrics::inc_decode_result("commitment_mismatch");
         return Err(RouteError::Internal("blob commitment mismatch".into()));
     }
@@ -173,10 +173,7 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track: CompressedTrack,
     blob: BlobEncoding,
 ) -> Result<Vec<(SpoolIndex, Bytes)>, RouteError> {
-    let k = blob.profile.k() as usize;
-    if k == 0 || k > GROUP_SIZE {
-        return Err(RouteError::Internal("invalid blob encoding profile".into()));
-    }
+    let k = state.context.params().k();
 
     let peers = state.context.state().group_peers(track.group);
     if peers.is_empty() {

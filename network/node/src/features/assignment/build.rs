@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_api::program::MIN_COMMITTEE_SIZE;
 use tape_core::cert::{
     AssignmentGroupPayload, ASSIGNMENT_TREE_HEIGHT, hash_assignment_group_payload,
 };
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::encoding::ErasureCode;
+use tape_core::erasure::MAX_GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{BlacklistEntry, Member, Peer};
 use tape_core::types::{EpochNumber, StorageUnits};
@@ -54,8 +54,10 @@ where
     Blockchain: Rpc + 'static,
 {
     let store = ctx.store.clone();
-    let task =
-        tokio::task::spawn_blocking(move || build_assignment_blocking(store.as_ref(), &state));
+    let profile = ctx.params().profile;
+    let task = tokio::task::spawn_blocking(move || {
+        build_assignment_blocking(store.as_ref(), &state, profile)
+    });
 
     tokio::select! {
         result = task => result
@@ -66,9 +68,14 @@ where
 }
 
 // Assemble the candidate once the next epoch and committee are known.
+//
+// The spooler works on a packed layout: n holders per group with no gaps. The
+// chain's arrays are MAX_GROUP_SIZE wide, with positions at or past n left
+// zeroed, so owners are packed on the way in and payloads padded on the way out.
 pub fn build_assignment_blocking<Db: Store>(
     store: &TapeStore<Db>,
     state: &ProtocolState,
+    profile: ErasureCode,
 ) -> Result<Option<AssignmentCandidate>, NodeError> {
     let Some(next_epoch) = state.next_epoch.as_ref() else {
         return Ok(None);
@@ -76,7 +83,9 @@ pub fn build_assignment_blocking<Db: Store>(
     let Some(next_committee) = state.next_committee.as_deref() else {
         return Ok(None);
     };
-    if next_committee.len() < MIN_COMMITTEE_SIZE {
+    // A group puts each of its n spools on its own member.
+    let width = usize::from(profile.n());
+    if next_committee.len() < width {
         return Ok(None);
     }
 
@@ -97,7 +106,7 @@ pub fn build_assignment_blocking<Db: Store>(
         )));
     }
 
-    let weights = match group_weights(store, state.epoch(), next_epoch.id, target_groups)
+    let weights = match group_weights(store, state.epoch(), next_epoch.id, target_groups, profile)
         .map_err(|e| NodeError::Store(format!("assignment size calculation: {e}")))?
     {
         GroupWeights::Ready(weights) => weights,
@@ -107,10 +116,11 @@ pub fn build_assignment_blocking<Db: Store>(
         }
     };
 
-    let owners = current_owners(state, target_groups)?;
+    let owners = current_owners(state, target_groups, profile)?;
     let candidates = assignment_candidates(next_committee, &state.peers)?;
-    let assignment = assign_spools(&weights.sizes, &owners, &candidates, &next_epoch.nonce)
-        .map_err(|e| NodeError::Store(format!("assignment spooler: {e:?}")))?;
+    let assignment =
+        assign_spools(&weights.sizes, &owners, &candidates, &next_epoch.nonce, width)
+            .map_err(|e| NodeError::Store(format!("assignment spooler: {e:?}")))?;
 
     let Some(blacklisted) = blacklist_weights(
         store,
@@ -120,6 +130,7 @@ pub fn build_assignment_blocking<Db: Store>(
         state.epoch(),
         next_epoch.id,
         &weights.tracks,
+        profile,
     )? else {
         return Ok(None);
     };
@@ -130,6 +141,7 @@ pub fn build_assignment_blocking<Db: Store>(
         next_committee,
         &weights.sizes,
         &blacklisted,
+        profile,
     )?;
 
     let (root, groups) = group_candidates(payloads)?;
@@ -143,12 +155,16 @@ pub fn build_assignment_blocking<Db: Store>(
     }))
 }
 
-// Flatten current group ownership into the spooler input format.
+// Pack current group ownership into the spooler input format: the first n
+// spools of every group, back to back. A group's zeroed positions past n are
+// left out, so the spooler has no empty slot there to fill.
 fn current_owners(
     state: &ProtocolState,
     target_groups: usize,
+    profile: ErasureCode,
 ) -> Result<Vec<Option<Address>>, NodeError> {
-    let mut owners = vec![None; target_groups * GROUP_SIZE];
+    let width = usize::from(profile.n());
+    let mut owners = vec![None; target_groups * width];
     for group in &state.current.groups {
         let group_index = usize::try_from(group.id.0)
             .map_err(|_| NodeError::Store("assignment group index overflow".into()))?;
@@ -159,8 +175,8 @@ fn current_owners(
             )));
         }
 
-        let start = group_index * GROUP_SIZE;
-        for (offset, spool) in group.spools.iter().enumerate() {
+        let start = group_index * width;
+        for (offset, spool) in group.spools.iter().take(width).enumerate() {
             if spool.node != Address::default() {
                 owners[start + offset] = Some(spool.node);
             }
@@ -194,22 +210,26 @@ fn assignment_candidates(
     Ok(candidates)
 }
 
-// Convert spooler output into payloads the program can verify.
+// Convert spooler output into payloads the program can verify. The packed
+// assignment holds n nodes per group. A payload's arrays are MAX_GROUP_SIZE
+// wide, and positions at or past n stay zero.
 fn group_payloads(
     target_epoch: EpochNumber,
     assignment: &[Address],
     members: &[Member],
     sizes: &[StorageUnits],
-    blacklisted_by_group: &[[StorageUnits; GROUP_SIZE]],
+    blacklisted_by_group: &[[StorageUnits; MAX_GROUP_SIZE]],
+    profile: ErasureCode,
 ) -> Result<Vec<AssignmentGroupPayload>, NodeError> {
+    let width = usize::from(profile.n());
     let member_indices = members
         .iter()
         .enumerate()
         .map(|(index, member)| (member.node, index as u64))
         .collect::<HashMap<_, _>>();
-    let mut payloads = Vec::with_capacity(assignment.len() / GROUP_SIZE);
+    let mut payloads = Vec::with_capacity(assignment.len() / width);
 
-    for (group_index, chunk) in assignment.chunks_exact(GROUP_SIZE).enumerate() {
+    for (group_index, chunk) in assignment.chunks_exact(width).enumerate() {
         let group = GroupIndex(group_index as u64);
         let size = *sizes.get(group_index).ok_or_else(|| {
             NodeError::Store(format!(
@@ -225,7 +245,7 @@ fn group_payloads(
             ))
         })?;
 
-        let mut indices = [0u64; GROUP_SIZE];
+        let mut indices = [0u64; MAX_GROUP_SIZE];
         for (offset, node) in chunk.iter().enumerate() {
             if blacklisted[offset] > size {
                 return Err(NodeError::Store(format!(
@@ -291,7 +311,8 @@ fn blacklist_weights<Db: Store>(
     voting_epoch: EpochNumber,
     target_epoch: EpochNumber,
     active_tracks: &[ActiveTrackFootprint],
-) -> Result<Option<Vec<[StorageUnits; GROUP_SIZE]>>, NodeError> {
+    profile: ErasureCode,
+) -> Result<Option<Vec<[StorageUnits; MAX_GROUP_SIZE]>>, NodeError> {
     let mut entries: HashMap<Address, HashSet<BlacklistEntry>> = HashMap::new();
     for member in next_committee {
         match blacklist_entries_for_assignment(store, member.node, voting_epoch, target_epoch)? {
@@ -315,8 +336,9 @@ fn blacklist_weights<Db: Store>(
         tracks[group_index].push(*track);
     }
 
-    let mut blacklisted = vec![[StorageUnits::zero(); GROUP_SIZE]; target_groups];
-    for (group_index, chunk) in assignment.chunks_exact(GROUP_SIZE).enumerate() {
+    let width = usize::from(profile.n());
+    let mut blacklisted = vec![[StorageUnits::zero(); MAX_GROUP_SIZE]; target_groups];
+    for (group_index, chunk) in assignment.chunks_exact(width).enumerate() {
         for (offset, node) in chunk.iter().enumerate() {
             let Some(entries) = entries.get(node) else {
                 continue;
@@ -355,7 +377,12 @@ mod tests {
     use tape_store::types::{ObjectInfo, TapeInfo};
 
     use super::*;
+    use tape_api::state::Group;
     use tape_core::cert::verify_assignment_group_payload;
+    use tape_core::encoding::{RSParams, TAPENET_PROFILE};
+
+    /// Spools in a tapenet group.
+    const WIDTH: usize = TAPENET_PROFILE.n() as usize;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -446,10 +473,45 @@ mod tests {
     fn payload(group: u64, size: u64) -> AssignmentGroupPayload {
         AssignmentGroupPayload::new(
             GroupIndex(group),
-            [group; GROUP_SIZE],
+            [group; MAX_GROUP_SIZE],
             StorageUnits::from_bytes(size),
-            [StorageUnits::from_bytes(0); GROUP_SIZE],
+            [StorageUnits::from_bytes(0); MAX_GROUP_SIZE],
         )
+    }
+
+    // a 3 of 4 network packs four owners a group for the spooler and pads the
+    // payload it votes on back out to the chain's array width
+    #[test]
+    fn small_network_layout() {
+        let profile = ErasureCode::ReedSolomon(RSParams::new(3, 1));
+        let nodes: Vec<Address> = (0..4).map(|_| Address::new_unique()).collect();
+        let committee: Vec<Member> = nodes.iter().map(|node| member(*node)).collect();
+
+        let mut state = ProtocolState::default();
+        for id in 0..2u64 {
+            let mut group = Group { id: GroupIndex(id), ..Group::zeroed() };
+            for (position, node) in nodes.iter().enumerate() {
+                group.spools[position].node = *node;
+            }
+            state.current.groups.push(group);
+        }
+
+        let owners = current_owners(&state, 2, profile).expect("owners");
+        let expected: Vec<Option<Address>> = nodes.iter().chain(&nodes).copied().map(Some).collect();
+        assert_eq!(owners, expected);
+
+        let assignment: Vec<Address> = owners.into_iter().flatten().collect();
+        let sizes = [StorageUnits::from_bytes(64); 2];
+        let blacklisted = [[StorageUnits::zero(); MAX_GROUP_SIZE]; 2];
+        let payloads =
+            group_payloads(EpochNumber(5), &assignment, &committee, &sizes, &blacklisted, profile)
+                .expect("payloads");
+
+        assert_eq!(payloads.len(), 2);
+        for payload in &payloads {
+            assert_eq!(payload.member_indices[..4], [0, 1, 2, 3]);
+            assert!(payload.member_indices[4..].iter().all(|index| *index == 0));
+        }
     }
 
     #[test]
@@ -519,7 +581,7 @@ mod tests {
             active_track(track_a, tape, GroupIndex(0), 100),
             active_track(track_b, tape, GroupIndex(0), 200),
         ];
-        let mut assignment = vec![other; GROUP_SIZE];
+        let mut assignment = vec![other; WIDTH];
         assignment[0] = node;
         let committee = vec![member(node), member(other)];
 
@@ -531,6 +593,7 @@ mod tests {
             EpochNumber(10),
             target_epoch,
             &active_tracks,
+            TAPENET_PROFILE,
         )
         .unwrap()
         .unwrap();
@@ -551,7 +614,7 @@ mod tests {
         put_blacklist_entry(&store, blacklist, 0, EpochNumber(8), BlacklistEntry::track(track));
 
         let active_tracks = vec![active_track(track, tape, GroupIndex(0), 100)];
-        let assignment = vec![node; GROUP_SIZE];
+        let assignment = vec![node; WIDTH];
         let committee = vec![member(node)];
 
         let blacklisted = blacklist_weights(
@@ -562,6 +625,7 @@ mod tests {
             EpochNumber(10),
             target_epoch,
             &active_tracks,
+            TAPENET_PROFILE,
         )
         .unwrap()
         .unwrap();
@@ -606,7 +670,7 @@ mod tests {
             .unwrap();
 
         let active_tracks = vec![active_track(track, tape, GroupIndex(0), 100)];
-        let assignment = vec![node; GROUP_SIZE];
+        let assignment = vec![node; WIDTH];
         let committee = vec![member(node)];
 
         let blacklisted = blacklist_weights(
@@ -617,6 +681,7 @@ mod tests {
             EpochNumber(10),
             target_epoch,
             &active_tracks,
+            TAPENET_PROFILE,
         )
         .unwrap();
 
@@ -635,7 +700,7 @@ mod tests {
         put_blacklist_entry(&store, blacklist, 0, EpochNumber(10), BlacklistEntry::track(track));
 
         let active_tracks = vec![active_track(track, tape, GroupIndex(0), 100)];
-        let assignment = vec![node; GROUP_SIZE];
+        let assignment = vec![node; WIDTH];
         let committee = vec![member(node)];
 
         let blacklisted = blacklist_weights(
@@ -646,6 +711,7 @@ mod tests {
             EpochNumber(10),
             target_epoch,
             &active_tracks,
+            TAPENET_PROFILE,
         )
         .unwrap()
         .unwrap();

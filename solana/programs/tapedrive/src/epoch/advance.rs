@@ -129,7 +129,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     if next_committee.members.capacity != system.committee_size {
         return Err(TapeError::InsufficientCommittee.into());
     }
-    if (next_committee.members.count as usize) < GROUP_SIZE {
+    if next_committee.members.count < u64::from(system.code()?.n()) {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -227,7 +227,7 @@ fn validate_preferences(system: &System, preferences: NodePreferences) -> Progra
     if preferences.storage_price.0 < MIN_STORAGE_PRICE as u64 {
         return Err(TapeError::UnexpectedState.into());
     }
-    if preferences.committee_size < MIN_COMMITTEE_SIZE as u64 {
+    if preferences.committee_size < u64::from(system.code()?.n()) {
         return Err(TapeError::InsufficientCommittee.into());
     }
     if preferences.spool_groups < system.target_group_count {
@@ -336,7 +336,7 @@ mod tests {
             live_group_count: 50,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..System::zeroed()
+            ..permissionless_system()
         };
 
         let mut archive = Archive::zeroed();
@@ -509,7 +509,7 @@ mod tests {
             live_group_count: 75,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..System::zeroed()
+            ..permissionless_system()
         };
 
         let archive = Archive {

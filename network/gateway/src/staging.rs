@@ -389,6 +389,7 @@ impl<Db: Store> StagingStore<Db> {
 #[cfg(test)]
 mod tests {
     use tape_store_memory::MemoryStore;
+    use tape_core::encoding::TAPENET_PROFILE;
     use tape_sdk::track::write::content_etag;
     use tape_store::types::PENDING_WRITE_CHUNK_BYTES;
 
@@ -458,7 +459,7 @@ mod tests {
     }
 
     async fn plan_for(size: usize) -> (Hash, UploadPlan) {
-        let computed = content_etag(pattern(size)).await.expect("etag");
+        let computed = content_etag(TAPENET_PROFILE, pattern(size)).await.expect("etag");
         (computed.etag, computed.plan.expect("coded plan"))
     }
 

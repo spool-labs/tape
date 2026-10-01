@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tape_api::program::tapedrive::track_pda;
+use tape_core::encoding::ErasureCode;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::archive::TrackArchive;
@@ -22,7 +23,7 @@ use tape_core::types::{ChunkNumber, EpochNumber, SpoolIndex, TrackNumber};
 use tape_crypto::address::Address;
 use tape_snapshot::{
     assemble_snapshot_log, decode_chunk_payload, snapshot_track_group_count,
-    validate_snapshot_track_list, verify_snapshot_track_set, SnapshotError, K_INNER,
+    validate_snapshot_track_list, verify_snapshot_track_set, SnapshotError,
 };
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -79,6 +80,9 @@ pub enum SnapshotReaderError {
     #[error("only {got}/{need} verified slices for group {group}")]
     SliceShortfall { group: u64, got: usize, need: usize },
 
+    #[error("protocol state holds no valid encoding profile")]
+    NoProfile,
+
     #[error("snapshot read cancelled")]
     Cancelled,
 
@@ -91,7 +95,8 @@ pub enum SnapshotReaderError {
 /// [`SnapshotLog`] alongside the verified chunk records used to decode it.
 ///
 /// `state` provides routing (committee peers + group ownership) for the *current*
-/// epoch, which holds custody of every historical snapshot's spool data.
+/// epoch, which holds custody of every historical snapshot's spool data. Its
+/// `System` also holds the profile every chunk was encoded with.
 pub async fn read_snapshot_epoch<A: Api + 'static>(
     api: &Arc<A>,
     state: &ProtocolState,
@@ -100,6 +105,10 @@ pub async fn read_snapshot_epoch<A: Api + 'static>(
     epoch: EpochNumber,
     cancel: &CancellationToken,
 ) -> Result<DecodedSnapshot, SnapshotReaderError> {
+    let profile = state
+        .system
+        .code()
+        .map_err(|_| SnapshotReaderError::NoProfile)?;
     let candidates = list_track_candidates(api.as_ref(), state, tape).await?;
 
     let mut last_error = None;
@@ -110,7 +119,9 @@ pub async fn read_snapshot_epoch<A: Api + 'static>(
             continue;
         }
 
-        match decode_snapshot_tracks(api, state, tape, epoch, tracks.clone(), cancel).await {
+        let decoded =
+            decode_snapshot_tracks(api, state, tape, epoch, tracks.clone(), profile, cancel).await;
+        match decoded {
             Ok(decoded) => return Ok(decoded),
             Err(error) => {
                 warn!(node = %peer, ?error, "snapshot reader: candidate track list failed");
@@ -128,6 +139,7 @@ async fn decode_snapshot_tracks<A: Api + 'static>(
     tape: Address,
     epoch: EpochNumber,
     tracks: Vec<CompressedTrack>,
+    profile: ErasureCode,
     cancel: &CancellationToken,
 ) -> Result<DecodedSnapshot, SnapshotReaderError> {
     validate_snapshot_track_list(epoch, tape, &tracks)?;
@@ -140,8 +152,8 @@ async fn decode_snapshot_tracks<A: Api + 'static>(
         "snapshot reader: decoding chunk-track list"
     );
 
-    // Fan out: fetch + Clay-decode every track in parallel. Each task returns the
-    // `(group, chunk, outer-symbol)` triple recovered from the Clay payload. Tasks
+    // Fan out: fetch + inner-decode every track in parallel. Each task returns the
+    // `(group, chunk, outer-symbol)` triple recovered from the inner payload. Tasks
     // that fail are logged and skipped; outer RS recovers as long as enough groups
     // succeed per segment for this snapshot's group count.
     let mut join = JoinSet::new();
@@ -153,7 +165,9 @@ async fn decode_snapshot_tracks<A: Api + 'static>(
         }
         let api = api.clone();
         let cancel = cancel.clone();
-        join.spawn(async move { fetch_and_decode_track(api, epoch, track, peers, cancel).await });
+        join.spawn(async move {
+            fetch_and_decode_track(api, epoch, track, peers, profile, cancel).await
+        });
     }
 
     let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> = BTreeMap::new();
@@ -192,12 +206,13 @@ struct Decoded {
     blob: BlobEncoding,
 }
 
-/// Fetch verified slices for one chunk track and Clay-decode them.
+/// Fetch verified slices for one chunk track and inner-decode them.
 async fn fetch_and_decode_track<A: Api>(
     api: Arc<A>,
     epoch: EpochNumber,
     track: CompressedTrack,
     peers: Vec<(SpoolIndex, Address)>,
+    profile: ErasureCode,
     cancel: CancellationToken,
 ) -> Result<Decoded, SnapshotReaderError> {
     let group = track.group;
@@ -212,10 +227,11 @@ async fn fetch_and_decode_track<A: Api>(
     }
 
     let slices =
-        fetch_verified_slices(api.as_ref(), &peers, group, track_address, &blob, &cancel).await?;
+        fetch_verified_slices(api.as_ref(), &peers, group, track_address, &blob, profile, &cancel)
+            .await?;
 
     let refs: Vec<(usize, &[u8])> = slices.iter().map(|(i, d)| (*i, d.as_slice())).collect();
-    let (chunk, symbol) = decode_chunk_payload(&refs)?;
+    let (chunk, symbol) = decode_chunk_payload(&refs, profile)?;
 
     debug!(
         epoch = epoch.0,
@@ -240,9 +256,11 @@ async fn fetch_verified_slices<A: Api>(
     group: GroupIndex,
     track: Address,
     blob: &BlobEncoding,
+    profile: ErasureCode,
     cancel: &CancellationToken,
 ) -> Result<Vec<(usize, Vec<u8>)>, SnapshotReaderError> {
-    let mut out: Vec<(usize, Vec<u8>)> = Vec::with_capacity(K_INNER);
+    let needed = usize::from(profile.k());
+    let mut out: Vec<(usize, Vec<u8>)> = Vec::with_capacity(needed);
     for (spool, peer) in peers {
         if cancel.is_cancelled() {
             return Err(SnapshotReaderError::Cancelled);
@@ -257,7 +275,7 @@ async fn fetch_verified_slices<A: Api>(
                     continue;
                 }
                 out.push((leaf_idx, Vec::from(res.data)));
-                if out.len() >= K_INNER {
+                if out.len() >= needed {
                     return Ok(out);
                 }
             }
@@ -269,7 +287,7 @@ async fn fetch_verified_slices<A: Api>(
     Err(SnapshotReaderError::SliceShortfall {
         group: group.0,
         got: out.len(),
-        need: K_INNER,
+        need: needed,
     })
 }
 

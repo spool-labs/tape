@@ -23,7 +23,7 @@ use tape_protocol::Api;
 use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::helpers::load_ed25519_keypair;
 use tape_sdk::keys::operator::TapeDelegate;
-use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
+use tape_sdk::stream::manifest::max_track_size;
 use tape_sdk::bootstrap::Reputation;
 use tape_sdk::object::{ObjectBatchItem, ObjectBatchReceipt};
 use tape_sdk::track::write::UploadPlan;
@@ -143,7 +143,7 @@ impl S3WriteContext {
         let client = self.client(context)?;
         let operator = self.operator(tape)?;
 
-        if data.len() <= MAX_TRACK_SIZE {
+        if data.len() <= max_track_size(context.params().profile) {
             // The canonical ETag, the same one the object index will record, so
             // a client is never told one value now and served another once the
             // index catches up.

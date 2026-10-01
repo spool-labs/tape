@@ -3,14 +3,14 @@
 //! This module provides `BlobEncoder` which wraps slicers to encode
 //! raw blobs into network-ready slices with merkle commitments.
 
-use tape_core::encoding::{EncodingProfile, EncodingType};
-use tape_core::erasure::{GROUP_SIZE, slice_root};
+use tape_core::encoding::ErasureCode;
+use tape_core::erasure::{MAX_GROUP_SIZE, slice_root};
 use tape_core::types::SpoolIndex;
 use tape_crypto::merkle::MerkleLeafTree;
 use tape_crypto::Hash;
 use tape_slicer::{
-    ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder, SLICE_TREE_HEIGHT,
-    build_blob_merkle_tree, BlobMerkleRoot, STRIPE_CAP,
+    Slicer, StripedCoder, ErasureCoder, SLICE_TREE_HEIGHT,
+    build_blob_merkle_tree, BlobMerkleRoot,
 };
 
 use crate::error::UploadError;
@@ -24,104 +24,37 @@ pub type SliceMerkleProof = [Hash; SLICE_TREE_HEIGHT];
 
 /// Encodes blobs into slices for network distribution.
 ///
-/// Supports multiple encoding types:
-/// - `Basic`: Single RS pass, for testing/debugging only (small blobs)
-/// - `Clay`: Clay erasure codes with rotation for fair load distribution (default)
+/// The network's profile picks the code and its numbers. Every code stripes
+/// the blob and rotates slices for fair load distribution across nodes.
 pub struct BlobEncoder {
-    profile: EncodingProfile,
-    basic: Option<ReedSolomonCoder>,
-    clay: Option<Slicer<ClayCoder>>,
-}
-
-impl Default for BlobEncoder {
-    fn default() -> Self {
-        Self::new()
-    }
+    profile: ErasureCode,
+    slicer: Slicer<StripedCoder>,
 }
 
 impl BlobEncoder {
-    /// Create a new encoder with default encoding profile (Clay with default params).
-    ///
-    /// Clay encoding uses MSR erasure codes with per-stripe rotation
-    /// for fair load distribution across all nodes.
-    pub fn new() -> Self {
-        Self::with_profile(EncodingProfile::clay_default())
-    }
+    /// Create the encoder for a network's profile.
+    pub fn try_new(profile: ErasureCode) -> Result<Self, UploadError> {
+        let slicer = Slicer::try_from_profile(profile)
+            .map_err(|e| UploadError::Encoding(e.to_string()))?;
 
-    /// Create an encoder with a specific encoding profile.
-    ///
-    /// # Arguments
-    /// * `profile` - The encoding profile (type + params)
-    pub fn with_profile(profile: EncodingProfile) -> Self {
-        let encoding_type = profile.encoding_type().unwrap_or(EncodingType::Unknown);
-
-        let mut encoder = Self {
-            profile,
-            basic: None,
-            clay: None,
-        };
-
-        match encoding_type {
-            EncodingType::Basic => {
-                let params = profile.rs_params();
-                encoder.basic = Some(ReedSolomonCoder::new(params.k() as usize, params.m() as usize));
-            }
-            EncodingType::Clay | EncodingType::Unknown => {
-                encoder.clay = Some(Slicer::with_profile(
-                    ClayCoder::from_params(profile.clay_params()),
-                    true, // rotated
-                    profile,
-                ));
-            }
-        }
-
-        encoder
-    }
-
-    /// Create an encoder with a specific encoding type (uses default params for that type).
-    ///
-    /// # Arguments
-    /// * `encoding_type` - The encoding algorithm to use
-    pub fn with_encoding(encoding_type: EncodingType) -> Self {
-        let profile = match encoding_type {
-            EncodingType::Basic => EncodingProfile::basic_default(),
-            EncodingType::Clay | EncodingType::Unknown => EncodingProfile::clay_default(),
-        };
-        Self::with_profile(profile)
-    }
-
-    /// Get the encoding type used by this encoder.
-    pub fn encoding_type(&self) -> EncodingType {
-        self.profile.encoding_type().unwrap_or(EncodingType::Unknown)
+        Ok(Self { profile, slicer })
     }
 
     /// Get the encoding profile used by this encoder.
-    pub fn profile(&self) -> EncodingProfile {
+    pub fn profile(&self) -> ErasureCode {
         self.profile
     }
 
-    /// Stripe size the last clay encode used; the cap before any encode.
+    /// Stripe size the last encode used; 0 before any encode.
     pub fn stripe_size(&self) -> usize {
-        match &self.clay {
-            Some(slicer) => slicer.stripe_size(),
-            None => STRIPE_CAP,
-        }
+        self.slicer.stripe_size()
     }
 
-    /// Internal encoding dispatch that returns the raw chunks.
+    /// Internal encoding that returns the raw chunks.
     fn encode_internal(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, UploadError> {
-        match self.encoding_type() {
-            EncodingType::Basic => {
-                self.basic.as_mut().unwrap()
-                    .encode(data)
-                    .map_err(|e| UploadError::Encoding(e.to_string()))
-            }
-            EncodingType::Clay | EncodingType::Unknown => {
-                self.clay.as_mut().unwrap()
-                    .encode(data)
-                    .map_err(|e| UploadError::Encoding(e.to_string()))
-            }
-        }
+        self.slicer
+            .encode(data)
+            .map_err(|e| UploadError::Encoding(e.to_string()))
     }
 
     /// Encode a blob into network-ready slices.
@@ -133,7 +66,7 @@ impl BlobEncoder {
     /// * `data` - Raw blob data to encode
     ///
     /// # Returns
-    /// Vector of (index, data) tuples for all GROUP_SIZE slices.
+    /// Vector of (index, data) tuples for all n slices.
     pub fn encode(&mut self, data: Vec<u8>) -> Result<Vec<(SpoolIndex, Vec<u8>)>, UploadError> {
         let chunks = self.encode_internal(&data)?;
 
@@ -148,7 +81,7 @@ impl BlobEncoder {
 
     /// Encode and return raw slice data vectors (for uploader compatibility).
     ///
-    /// This method returns slices in order (0 to GROUP_SIZE-1), suitable
+    /// This method returns slices in order (0 to n-1), suitable
     /// for passing directly to `DistributedUploader`.
     ///
     /// # Arguments
@@ -239,7 +172,7 @@ impl BlobEncoder {
             .ok_or_else(|| {
                 UploadError::Encoding("slice exceeds sub-leaf tree capacity".to_string())
             })?;
-        // One fold serves the root and all GROUP_SIZE proofs.
+        // One fold serves the root and all n proofs.
         let tree = MerkleLeafTree::new(&leaf_hashes, SLICE_TREE_HEIGHT)
             .map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
         let root = tree.root();
@@ -269,13 +202,13 @@ impl BlobEncoder {
     /// Encode a blob and return slices with proofs, root, and leaf hashes.
     ///
     /// Returns the leaf hashes as a fixed-size array suitable for passing
-    /// to the RegisterTrack instruction.
+    /// to the RegisterTrack instruction. Leaves at or past n stay zero.
     pub fn encode_with_leaves(
         &mut self,
         data: &[u8],
-    ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot, [Hash; GROUP_SIZE]), UploadError> {
+    ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot, [Hash; MAX_GROUP_SIZE]), UploadError> {
         let (slices, root) = self.encode_with_proofs(data)?;
-        let mut leaves = [Hash::default(); GROUP_SIZE];
+        let mut leaves = [Hash::default(); MAX_GROUP_SIZE];
         for s in &slices {
             leaves[s.index.as_usize()] = s.leaf_hash;
         }
@@ -286,11 +219,18 @@ impl BlobEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::encoding::{ClayParams, RSParams, RepParams, TAPENET_PROFILE};
+    use tape_core::track::blob::BlobEncoding;
+    use tape_core::types::{StorageUnits, StripeCount};
 
-    /// Create a test encoder using ReedSolomonCoder (supports blobs up to ~40 KB).
+    /// A small Reed-Solomon profile: any 4 of 6 slices recover.
+    const SMALL: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(4, 2));
+
+    /// Slices the small profile codes a blob into.
+    const WIDTH: usize = SMALL.n() as usize;
+
     fn test_encoder() -> BlobEncoder {
-        BlobEncoder::with_encoding(EncodingType::Basic)
+        BlobEncoder::try_new(SMALL).unwrap()
     }
 
     #[test]
@@ -299,7 +239,7 @@ mod tests {
         let data = vec![0u8; 10_000];
         let slices = encoder.encode(data).unwrap();
 
-        assert_eq!(slices.len(), GROUP_SIZE);
+        assert_eq!(slices.len(), WIDTH);
 
         // Verify indices are sequential
         for (idx, (slice_idx, _)) in slices.iter().enumerate() {
@@ -313,7 +253,7 @@ mod tests {
         let data = vec![42u8; 5_000];
         let slices = encoder.encode_to_vec(data).unwrap();
 
-        assert_eq!(slices.len(), GROUP_SIZE);
+        assert_eq!(slices.len(), WIDTH);
     }
 
     #[test]
@@ -322,7 +262,7 @@ mod tests {
         let data = vec![0xAB; 20_000];
         let (slices, root) = encoder.encode_with_root(data).unwrap();
 
-        assert_eq!(slices.len(), GROUP_SIZE);
+        assert_eq!(slices.len(), WIDTH);
 
         // Root should be non-zero
         assert_ne!(root.as_ref(), &[0u8; 32]);
@@ -358,8 +298,8 @@ mod tests {
         let data = vec![];
         let slices = encoder.encode(data).unwrap();
 
-        // Even empty data produces GROUP_SIZE slices
-        assert_eq!(slices.len(), GROUP_SIZE);
+        // Even empty data produces n slices
+        assert_eq!(slices.len(), WIDTH);
     }
 
     #[test]
@@ -370,7 +310,7 @@ mod tests {
         let data = vec![0x42; 20_000];
         let (slices_with_proofs, root) = encoder.encode_with_proofs(&data).unwrap();
 
-        assert_eq!(slices_with_proofs.len(), GROUP_SIZE);
+        assert_eq!(slices_with_proofs.len(), WIDTH);
 
         // The top tree commits to slice roots, so the proof starts from the root
         for slice in &slices_with_proofs {
@@ -422,36 +362,73 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_encoding_type_default() {
-        let encoder = BlobEncoder::new();
-        assert_eq!(encoder.encoding_type(), EncodingType::Clay);
+    /// One profile per code, plus tapenet's.
+    fn profiles() -> [ErasureCode; 5] {
+        [
+            TAPENET_PROFILE,
+            ErasureCode::Clay(ClayParams::new(4, 2, 3)),
+            ErasureCode::ReedSolomon(RSParams::new(3, 1)),
+            SMALL,
+            ErasureCode::Replication(RepParams::new(2)),
+        ]
     }
 
     #[test]
-    fn test_encoding_type_basic() {
-        let encoder = BlobEncoder::with_encoding(EncodingType::Basic);
-        assert_eq!(encoder.encoding_type(), EncodingType::Basic);
+    fn profile_kept() {
+        for profile in profiles() {
+            let encoder = BlobEncoder::try_new(profile).unwrap();
+            assert_eq!(encoder.profile(), profile);
+        }
+    }
+
+    // a profile no network can have builds no encoder
+    #[test]
+    fn bad_profile() {
+        let profile = ErasureCode::ReedSolomon(RSParams::new(0, 4));
+        assert!(BlobEncoder::try_new(profile).is_err());
+    }
+
+    // every code writes n slices, leaves the other leaves zero, and commits
+    // to the root the chain rebuilds from those leaves
+    #[test]
+    fn chain_commitment() {
+        let data = vec![0x5A; 30_000];
+
+        for profile in profiles() {
+            let width = usize::from(profile.n());
+            let mut encoder = BlobEncoder::try_new(profile).unwrap();
+            let (slices, root, leaves) = encoder.encode_with_leaves(&data).unwrap();
+
+            assert_eq!(slices.len(), width);
+            assert!(leaves[..width].iter().all(|leaf| *leaf != Hash::default()));
+            assert!(leaves[width..].iter().all(|leaf| *leaf == Hash::default()));
+
+            let blob = BlobEncoding {
+                size: StorageUnits::from_bytes(data.len() as u64),
+                commitment: root,
+                stripe_size: StorageUnits::from_bytes(encoder.stripe_size() as u64),
+                stripe_count: StripeCount(1),
+                leaves,
+            };
+            assert_eq!(blob.commitment_root(width), Some(root));
+        }
     }
 
     #[test]
-    fn test_encoding_type_clay() {
-        let encoder = BlobEncoder::with_encoding(EncodingType::Clay);
-        assert_eq!(encoder.encoding_type(), EncodingType::Clay);
-    }
-
-    #[test]
-    fn test_clay_roundtrip_with_decoder() {
+    fn test_roundtrip_with_decoder() {
         use crate::codec::decoder::BlobDecoder;
 
         let original = vec![0xAB; 10_000];
-        let mut encoder = BlobEncoder::with_encoding(EncodingType::Clay);
-        let decoder = BlobDecoder::with_encoding(EncodingType::Clay);
 
-        let slices = encoder.encode(original.clone()).unwrap();
-        let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(idx, data)| (*idx, data.as_slice())).collect();
-        let recovered = decoder.decode(&refs).unwrap();
+        for profile in profiles() {
+            let mut encoder = BlobEncoder::try_new(profile).unwrap();
+            let decoder = BlobDecoder::try_new(profile).unwrap();
 
-        assert_eq!(original, recovered);
+            let slices = encoder.encode(original.clone()).unwrap();
+            let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(idx, data)| (*idx, data.as_slice())).collect();
+            let recovered = decoder.decode(&refs).unwrap();
+
+            assert_eq!(original, recovered);
+        }
     }
 }

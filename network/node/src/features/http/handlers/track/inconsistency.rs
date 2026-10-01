@@ -7,9 +7,7 @@ use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::bft::is_supermajority;
 use tape_core::cert::track::TrackInvalidateMessage;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BitmapRead, EpochNumber};
@@ -61,7 +59,8 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };
 
-    if blob.commitment_root() == request.proof.observed_root {
+    let width = state.context.params().n();
+    if blob.commitment_root(width) == Some(request.proof.observed_root) {
         return Err(RouteError::BadRequest("roots match, no inconsistency".into()));
     }
 
@@ -99,6 +98,7 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     proof: &InconsistencyProof,
 ) -> Result<(), RouteError> {
 
+    let params = state.context.params();
     let protocol = state.context.state();
     if protocol.epoch() != epoch || protocol.current.committee.is_empty() {
         return Err(RouteError::BadRequest("committee missing".into()));
@@ -120,15 +120,17 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .ok_or_else(|| RouteError::BadRequest("track group missing".into()))?;
 
     for signer_index in signer_indices {
+        // A bit at or past n is an empty spool, as the program's check has it.
         let spool = group
             .spools
             .get(signer_index)
+            .filter(|_| signer_index < params.n())
             .ok_or_else(|| RouteError::BadRequest("unknown signer in bitmap".into()))?;
 
         signer_pubkeys.push(spool.bls_pubkey);
     }
 
-    if !is_supermajority(signer_pubkeys.len() as u64, GROUP_SIZE as u64) {
+    if (signer_pubkeys.len() as u64) < params.thresholds.invalidate {
         return Err(RouteError::BadRequest(
             "inconsistency proof lacks quorum for spool group".into(),
         ));
@@ -158,8 +160,7 @@ mod tests {
 
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
     use tape_core::bls::BlsSignature;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
+    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_snapshot::snapshot_chunk_key;
     use tape_core::spooler::GroupIndex;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
@@ -192,12 +193,11 @@ mod tests {
     async fn matching_root_rejected() {
         let ctx = test_context().await;
 
-        let leaves = [Hash::from([0x44; 32]); GROUP_SIZE];
+        let leaves = [Hash::from([0x44; 32]); MAX_GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         let blob = BlobEncoding {
             size: StorageUnits::from_bytes(1_537),
             commitment,
-            profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),
             stripe_count: StripeCount(4),
             leaves,
@@ -261,7 +261,7 @@ mod tests {
 
         let request = InconsistencyRequest {
             proof: InconsistencyProof {
-                observed_root: blob.commitment_root(),
+                observed_root: blob.commitment_root(ctx.params().n()).expect("root"),
                 spool_bitmap: tape_core::types::SpoolBitmap::zeroed(),
                 signature: BlsSignature::zeroed(),
             },

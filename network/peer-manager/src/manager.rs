@@ -380,7 +380,7 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::state::Group;
     use tape_core::bls::BlsPubkey;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{Member, Peer, Spool};
     use tape_core::types::EpochNumber;
@@ -468,7 +468,7 @@ mod tests {
             id: GroupIndex(0),
             ..Group::zeroed()
         };
-        for i in 0..GROUP_SIZE {
+        for i in 0..MAX_GROUP_SIZE {
             group.spools[i] = Spool {
                 node: owner,
                 ..Spool::zeroed()

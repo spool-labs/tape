@@ -10,6 +10,7 @@ use tape_rpc::{Rpc, RpcError};
 use tape_store_api::Store;
 use tape_blocks::parse_and_merge_with_sources;
 use tape_blocks::wire::Block as WireBlock;
+use tape_core::encoding::ErasureCode;
 use tape_core::types::SlotNumber;
 use tape_crypto::Hash;
 use tape_protocol::Api;
@@ -70,7 +71,7 @@ where
         progress.record_fetch(slot.0);
         let error = match context.rpc.get_block(slot.0).await {
             Ok(block) => {
-                let parsed = Arc::new(parse_block(slot, &block)?);
+                let parsed = Arc::new(parse_block(slot, &block, context.params().profile)?);
                 debug!(
                     slot = parsed.slot.0,
                     extracted = parsed.instructions.len(),
@@ -127,14 +128,19 @@ where
 }
 
 /// Convert a fetched block into the replay input shared by live ingest and
-/// offline tooling
-pub fn parse_block(slot: SlotNumber, block: &WireBlock) -> Result<ParsedBlock, NodeError> {
+/// offline tooling. The network's profile sets how wide a track commitment is,
+/// which the parser checks the way the chain does.
+pub fn parse_block(
+    slot: SlotNumber,
+    block: &WireBlock,
+    profile: ErasureCode,
+) -> Result<ParsedBlock, NodeError> {
     let parent_slot = SlotNumber(block.parent_slot);
     let blockhash = parse_chain_hash(slot, "blockhash", &block.blockhash)?;
     let previous_blockhash =
         parse_chain_hash(slot, "previous_blockhash", &block.previous_blockhash)?;
 
-    let sourced = match parse_and_merge_with_sources(block) {
+    let sourced = match parse_and_merge_with_sources(block, usize::from(profile.n())) {
         Ok(instructions) => instructions,
         Err(error) => {
             error!(

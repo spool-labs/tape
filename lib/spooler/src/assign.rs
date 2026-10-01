@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::erasure::MAX_GROUP_SIZE;
 use tape_core::spooler::{GroupIndex, SpoolerError};
 use tape_core::types::{BasisPoints, Coin, StorageUnits, TAPE};
 use tape_crypto::address::Address;
@@ -35,18 +35,20 @@ pub struct Candidate {
 
 /// Assign every spool of `sizes.len()` groups to the candidates.
 ///
-/// `sizes` holds each group's bytes per spool, `current` the previous holder of
-/// every spool (`GROUP_SIZE` per group, in group order). Returns one address per
-/// spool in the same order.
+/// `width` is the network's spools per group. `sizes` holds each group's bytes
+/// per spool, `current` the previous holder of every spool (`width` per group,
+/// in group order, with no gaps between groups). Returns one address per spool
+/// in the same order.
 pub fn assign_spools(
     sizes: &[StorageUnits],
     current: &[Option<Address>],
     candidates: &[Candidate],
     nonce: &Hash,
+    width: usize,
 ) -> Result<Vec<Address>, SpoolerError> {
-    validate(sizes, current, candidates)?;
+    validate(sizes, current, candidates, width)?;
 
-    let mut layout = Layout::new(sizes, candidates, *nonce)?;
+    let mut layout = Layout::new(sizes, candidates, *nonce, width)?;
     layout.keep(current);
     layout.release();
     layout.fill()?;
@@ -58,11 +60,16 @@ fn validate(
     sizes: &[StorageUnits],
     current: &[Option<Address>],
     candidates: &[Candidate],
+    width: usize,
 ) -> Result<(), SpoolerError> {
-    if current.len() != sizes.len() * GROUP_SIZE {
+    if width == 0 || width > MAX_GROUP_SIZE {
         return Err(SpoolerError::LengthMismatch);
     }
-    if candidates.len() < GROUP_SIZE {
+    if current.len() != sizes.len() * width {
+        return Err(SpoolerError::LengthMismatch);
+    }
+    // A node holds at most one spool per group, so a group needs `width` nodes
+    if candidates.len() < width {
         return Err(SpoolerError::InsufficientNodes);
     }
 
@@ -101,6 +108,7 @@ impl NodeState {
 
 struct Layout {
     nonce: Hash,
+    width: usize,
     sizes: Vec<StorageUnits>,
     weights: Vec<StorageUnits>,
     stored: StorageUnits,
@@ -114,6 +122,7 @@ impl Layout {
         sizes: &[StorageUnits],
         candidates: &[Candidate],
         nonce: Hash,
+        width: usize,
     ) -> Result<Self, SpoolerError> {
         // An empty group still weighs a byte per spool, so its spools spread by stake
         let mut weights = Vec::with_capacity(sizes.len());
@@ -128,7 +137,7 @@ impl Layout {
             weights.push(weight);
         }
         let stored = per_spool_total
-            .checked_mul(StorageUnits(GROUP_SIZE as u64))
+            .checked_mul(StorageUnits(width as u64))
             .ok_or(SpoolerError::Overflow)?;
 
         let stakes: Vec<Coin<TAPE>> = candidates.iter().map(|candidate| candidate.stake).collect();
@@ -151,11 +160,12 @@ impl Layout {
 
         Ok(Self {
             nonce,
+            width,
             sizes: sizes.to_vec(),
             weights,
             stored,
             nodes,
-            holders: vec![None; sizes.len() * GROUP_SIZE],
+            holders: vec![None; sizes.len() * width],
             is_holding: vec![false; sizes.len() * candidates.len()],
         })
     }
@@ -169,13 +179,13 @@ impl Layout {
     }
 
     fn place(&mut self, group: usize, offset: usize, node: usize) {
-        self.holders[group * GROUP_SIZE + offset] = Some(node);
+        self.holders[group * self.width + offset] = Some(node);
         self.is_holding[group * self.nodes.len() + node] = true;
         self.nodes[node].load = StorageUnits(self.nodes[node].load.0 + self.weights[group].0);
     }
 
     fn vacate(&mut self, group: usize, offset: usize) {
-        let Some(node) = self.holders[group * GROUP_SIZE + offset].take() else {
+        let Some(node) = self.holders[group * self.width + offset].take() else {
             return;
         };
         self.is_holding[group * self.nodes.len() + node] = false;
@@ -201,9 +211,9 @@ impl Layout {
             let Some(node) = holder.and_then(|address| index.get(&address).copied()) else {
                 continue;
             };
-            let group = spool / GROUP_SIZE;
+            let group = spool / self.width;
             if !self.holds(group, node) {
-                self.place(group, spool % GROUP_SIZE, node);
+                self.place(group, spool % self.width, node);
             }
         }
     }
@@ -245,8 +255,8 @@ impl Layout {
     }
 
     fn offset_of(&self, group: usize, node: usize) -> Option<usize> {
-        let start = group * GROUP_SIZE;
-        self.holders[start..start + GROUP_SIZE]
+        let start = group * self.width;
+        self.holders[start..start + self.width]
             .iter()
             .position(|holder| *holder == Some(node))
     }
@@ -257,8 +267,8 @@ impl Layout {
         order.sort_by(|a, b| self.weights[*b].cmp(&self.weights[*a]).then(a.cmp(b)));
 
         for group in order {
-            for offset in 0..GROUP_SIZE {
-                if self.holders[group * GROUP_SIZE + offset].is_some() {
+            for offset in 0..self.width {
+                if self.holders[group * self.width + offset].is_some() {
                     continue;
                 }
                 let (node, _) = self
@@ -292,7 +302,7 @@ impl Layout {
         let weight = self.weights[group];
         let mut best: Option<(usize, Score)> = None;
 
-        for holder in &self.holders[group * GROUP_SIZE..(group + 1) * GROUP_SIZE] {
+        for holder in &self.holders[group * self.width..(group + 1) * self.width] {
             let Some(node) = *holder else {
                 continue;
             };

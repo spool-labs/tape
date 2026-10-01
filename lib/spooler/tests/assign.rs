@@ -2,14 +2,24 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::erasure::MAX_GROUP_SIZE;
 use tape_core::spooler::SpoolerError;
 use tape_core::types::{StorageUnits, TAPE};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
-use tape_spooler::assign::{Candidate, assign_spools};
+use tape_spooler::assign::{Candidate, assign_spools as assign_at};
 
 const MB: u64 = StorageUnits::MB;
+
+/// Assign at tapenet's width, which every scenario below runs at unless it says otherwise.
+fn assign_spools(
+    sizes: &[StorageUnits],
+    current: &[Option<Address>],
+    candidates: &[Candidate],
+    nonce: &Hash,
+) -> Result<Vec<Address>, SpoolerError> {
+    assign_at(sizes, current, candidates, nonce, MAX_GROUP_SIZE)
+}
 
 fn address(index: u64) -> Address {
     let mut bytes = [0u8; 32];
@@ -35,7 +45,7 @@ fn sizes(megabytes: &[u64]) -> Vec<StorageUnits> {
 }
 
 fn empty(groups: usize) -> Vec<Option<Address>> {
-    vec![None; groups * GROUP_SIZE]
+    vec![None; groups * MAX_GROUP_SIZE]
 }
 
 fn previous(assignment: &[Address]) -> Vec<Option<Address>> {
@@ -49,13 +59,13 @@ fn nonce(seed: u8) -> Hash {
 fn loads(assignment: &[Address], sizes: &[StorageUnits]) -> BTreeMap<Address, u64> {
     let mut loads = BTreeMap::new();
     for (spool, node) in assignment.iter().enumerate() {
-        *loads.entry(*node).or_insert(0) += sizes[spool / GROUP_SIZE].0;
+        *loads.entry(*node).or_insert(0) += sizes[spool / MAX_GROUP_SIZE].0;
     }
     loads
 }
 
 fn targets(candidates: &[Candidate], sizes: &[StorageUnits]) -> BTreeMap<Address, f64> {
-    let stored: u64 = sizes.iter().map(|size| size.0 * GROUP_SIZE as u64).sum();
+    let stored: u64 = sizes.iter().map(|size| size.0 * MAX_GROUP_SIZE as u64).sum();
     let total_stake: u64 = candidates.iter().map(|candidate| candidate.stake.0).sum();
     candidates
         .iter()
@@ -68,7 +78,7 @@ fn targets(candidates: &[Candidate], sizes: &[StorageUnits]) -> BTreeMap<Address
 
 /// Share of stored bytes held beyond stake share
 fn misplaced(assignment: &[Address], candidates: &[Candidate], sizes: &[StorageUnits]) -> f64 {
-    let stored: u64 = sizes.iter().map(|size| size.0 * GROUP_SIZE as u64).sum();
+    let stored: u64 = sizes.iter().map(|size| size.0 * MAX_GROUP_SIZE as u64).sum();
     let loads = loads(assignment, sizes);
     let targets = targets(candidates, sizes);
     let mut total = 0.0;
@@ -83,16 +93,16 @@ fn moved_bytes(before: &[Address], after: &[Address], sizes: &[StorageUnits]) ->
     let mut moved = 0;
     for (spool, (old, new)) in before.iter().zip(after).enumerate() {
         if old != new {
-            moved += sizes[spool / GROUP_SIZE].0;
+            moved += sizes[spool / MAX_GROUP_SIZE].0;
         }
     }
     moved
 }
 
 fn assert_distinct(assignment: &[Address]) {
-    for (group, holders) in assignment.chunks(GROUP_SIZE).enumerate() {
+    for (group, holders) in assignment.chunks(MAX_GROUP_SIZE).enumerate() {
         let unique: BTreeSet<&Address> = holders.iter().collect();
-        assert_eq!(unique.len(), GROUP_SIZE, "group {group} repeats a node");
+        assert_eq!(unique.len(), MAX_GROUP_SIZE, "group {group} repeats a node");
     }
 }
 
@@ -127,7 +137,7 @@ fn fills_every_group() {
     let sizes = uneven_sizes(10);
     let assignment = assign_spools(&sizes, &empty(10), &candidates, &nonce(1)).expect("assign");
 
-    assert_eq!(assignment.len(), 10 * GROUP_SIZE);
+    assert_eq!(assignment.len(), 10 * MAX_GROUP_SIZE);
     assert_distinct(&assignment);
 }
 
@@ -201,7 +211,7 @@ fn departed_spools_refill() {
     assert_distinct(&next);
     assert!(!next.contains(&departed));
     let departed_bytes = loads(&settled, &sizes)[&departed];
-    let stored: u64 = sizes.iter().map(|size| size.0 * GROUP_SIZE as u64).sum();
+    let stored: u64 = sizes.iter().map(|size| size.0 * MAX_GROUP_SIZE as u64).sum();
     // The departed node's spools move, plus at most the rebalance budget
     assert!(moved_bytes(&settled, &next, &sizes) <= departed_bytes + stored / 20);
 }
@@ -265,7 +275,7 @@ fn expansion_keeps_old_spools() {
 fn skew_heals_within_budget() {
     let candidates = committee(&ramp(40));
     let sizes = uneven_sizes(10);
-    let stored: u64 = sizes.iter().map(|size| size.0 * GROUP_SIZE as u64).sum();
+    let stored: u64 = sizes.iter().map(|size| size.0 * MAX_GROUP_SIZE as u64).sum();
 
     // The 20 largest stakers hold every group, as D'Hondt left devnet
     let top: Vec<Address> = candidates[20..].iter().map(|candidate| candidate.node).collect();
@@ -332,4 +342,74 @@ fn duplicate_node() {
     candidates[1].node = candidates[0].node;
     let result = assign_spools(&uneven_sizes(2), &empty(2), &candidates, &nonce(1));
     assert_eq!(result, Err(SpoolerError::DuplicateNode));
+}
+
+// a 4-wide cluster on exactly four nodes gives every node one spool of every group
+#[test]
+fn narrow_groups() {
+    let candidates = committee(&ramp(4));
+    let sizes = uneven_sizes(5);
+    let assignment = assign_at(&sizes, &vec![None; 5 * 4], &candidates, &nonce(1), 4).expect("assign");
+
+    assert_eq!(assignment.len(), 5 * 4);
+    for holders in assignment.chunks(4) {
+        let unique: BTreeSet<&Address> = holders.iter().collect();
+        assert_eq!(unique.len(), 4);
+    }
+}
+
+// more nodes than the width share the groups by stake
+#[test]
+fn narrow_spreads() {
+    let candidates = committee(&[1_000; 12]);
+    let sizes = sizes(&[100; 30]);
+    let assignment = assign_at(&sizes, &vec![None; 30 * 4], &candidates, &nonce(1), 4).expect("assign");
+
+    let mut counts: BTreeMap<Address, u64> = BTreeMap::new();
+    for node in &assignment {
+        *counts.entry(*node).or_insert(0) += 1;
+    }
+    for candidate in &candidates {
+        let count = *counts.get(&candidate.node).unwrap_or(&0);
+        assert!((9..=11).contains(&count), "node {} holds {count} of 120 spools", candidate.node);
+    }
+}
+
+// a settled narrow layout stays where it is
+#[test]
+fn narrow_settled() {
+    let candidates = committee(&ramp(6));
+    let sizes = uneven_sizes(8);
+    let first = assign_at(&sizes, &vec![None; 8 * 4], &candidates, &nonce(1), 4).expect("first");
+    let second = assign_at(&sizes, &previous(&first), &candidates, &nonce(2), 4).expect("second");
+
+    assert_eq!(first, second);
+}
+
+// a cluster needs as many nodes as its width
+#[test]
+fn narrow_too_few() {
+    let result = assign_at(&uneven_sizes(2), &vec![None; 2 * 4], &committee(&ramp(3)), &nonce(1), 4);
+    assert_eq!(result, Err(SpoolerError::InsufficientNodes));
+}
+
+// a single drive holds the one spool of every group
+#[test]
+fn single_drive() {
+    let candidates = committee(&ramp(1));
+    let assignment = assign_at(&uneven_sizes(3), &[None; 3], &candidates, &nonce(1), 1).expect("assign");
+
+    assert_eq!(assignment, vec![candidates[0].node; 3]);
+}
+
+// a width of zero or past the widest group is refused
+#[test]
+fn bad_width() {
+    let candidates = committee(&ramp(30));
+
+    for width in [0, MAX_GROUP_SIZE + 1] {
+        let current = vec![None; 2 * width];
+        let result = assign_at(&uneven_sizes(2), &current, &candidates, &nonce(1), width);
+        assert_eq!(result, Err(SpoolerError::LengthMismatch));
+    }
 }

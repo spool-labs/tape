@@ -1,13 +1,19 @@
 use tape_api::program::tapedrive::DEFAULT_SUBSIDY_DECAY_BPS;
 
 use crate::TEST_EPOCH_DURATION;
+use tape_core::encoding::ErasureCode;
 use tape_core::system::{EpochPhase, EpochState};
+use tape_core::thresholds::TrustModel;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
 use bytemuck::Zeroable;
 
 #[derive(Clone, Debug)]
 pub struct HarnessSpec {
+    /// The network's erasure code, tapenet's unless a test picks another.
+    pub profile: ErasureCode,
+    /// What the network assumes about its nodes.
+    pub trust_model: TrustModel,
     pub epoch: EpochNumber,
     pub phase: EpochPhase,
     pub last_epoch: i64,

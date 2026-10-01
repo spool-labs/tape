@@ -136,7 +136,6 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::encoding::EncodingProfile;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
@@ -163,7 +162,6 @@ mod tests {
     }
 
     fn track(group: GroupIndex) -> CompressedTrack {
-        let _profile = EncodingProfile::clay_default();
         CompressedTrack {
             tape: Address::from([0; 32]),
             key: Hash::new_unique(),

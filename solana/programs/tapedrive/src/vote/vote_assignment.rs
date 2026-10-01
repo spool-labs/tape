@@ -49,12 +49,12 @@ pub fn process_vote_assignment(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         .is_group(voting_epoch_id, group_id)?
         .as_account::<Group>(&tapedrive::ID)?;
 
-    let weight = args.bitmap.count_ones() as u64;
-    if !has_honest_signer(weight, GROUP_SIZE as u64) {
+    let indices = system.signers(&args.bitmap)?;
+    let weight = indices.len() as u64;
+    if weight < system.thresholds()?.assignment {
         return Err(TapeError::NoQuorum.into());
     }
 
-    let indices = args.bitmap.indices();
     if indices.is_empty() {
         return Err(TapeError::NoSigners.into());
     }
@@ -138,11 +138,30 @@ pub fn process_vote_assignment(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::encoding::RSParams;
     use tape_test::*;
 
-
+    // tapenet lands a group's assignment vote on f + 1 signers and refuses f
     #[test]
     fn vote_assignment() {
+        let tapenet = permissionless_system();
+        assert_eq!(tapenet.thresholds().unwrap().assignment, 7);
+
+        assignment_case(tapenet, MAX_GROUP_SIZE);
+    }
+
+    // a 3-of-4 cluster lands a group's assignment vote on three signers and refuses two
+    #[test]
+    fn trusted_vote() {
+        let narrow = trusted_system(ErasureCode::ReedSolomon(RSParams::new(3, 1)));
+        assert_eq!(narrow.thresholds().unwrap().assignment, 3);
+
+        assignment_case(narrow, 4);
+    }
+
+    /// A vote lands at the System's assignment threshold and is refused one below it.
+    fn assignment_case(base: System, width: usize) {
+        let threshold = base.thresholds().unwrap().assignment as usize;
         let fee_payer = Pubkey::new_unique();
         let voting_epoch_id = EpochNumber(12);
         let target_epoch_id = EpochNumber(13);
@@ -159,11 +178,11 @@ mod tests {
         let (vote_address, _) =
             assignment_vote_pda(voting_epoch_id, target_epoch_id, hash);
 
-        let (sks, group) = make_group(voting_epoch_id, group_id);
+        let (sks, group) = make_group_of(voting_epoch_id, group_id, width);
 
         let system = System {
             current_epoch: voting_epoch_id,
-            ..System::zeroed()
+            ..base
         };
 
         let voting_epoch = Epoch {
@@ -191,8 +210,6 @@ mod tests {
             bitmap: Tail::new(bitmap_len as u64, bitmap_len as u64),
         };
 
-        const SIGNERS: usize = 8;
-
         let message =
             AssignmentVoteMessage::new(target_epoch_id, nonce, hash).to_bytes();
         let signed = |count: usize| {
@@ -207,7 +224,7 @@ mod tests {
             )
         };
 
-        let (bitmap, agg_sig) = signed(SIGNERS);
+        let (bitmap, agg_sig) = signed(threshold);
         let instruction = build_vote_assignment_ix(
             fee_payer.into(),
             voting_epoch_id,
@@ -217,13 +234,25 @@ mod tests {
             agg_sig,
         );
 
-        let (low_bitmap, low_sig) = signed(SIGNERS - 1);
+        let (low_bitmap, low_sig) = signed(threshold - 1);
         let low_instruction = build_vote_assignment_ix(
             fee_payer.into(),
             voting_epoch_id,
             hash,
             group_id,
             low_bitmap,
+            low_sig,
+        );
+
+        // One live signer short, topped up with a bit past the width.
+        let mut padded: Vec<usize> = (0..threshold - 1).collect();
+        padded.push(MAX_GROUP_SIZE - 1);
+        let padded_instruction = build_vote_assignment_ix(
+            fee_payer.into(),
+            voting_epoch_id,
+            hash,
+            group_id,
+            SpoolBitmap::from_indices(&padded),
             low_sig,
         );
 
@@ -248,6 +277,13 @@ mod tests {
             &accounts,
             &[Check::err(TapeError::NoQuorum.into())],
         );
+        if width < MAX_GROUP_SIZE {
+            env.process_instruction(
+                &padded_instruction,
+                &accounts,
+                &[Check::err(TapeError::BadMember.into())],
+            );
+        }
         env.process_instruction(
             &instruction,
             &accounts,

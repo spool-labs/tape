@@ -1,6 +1,6 @@
 //! Network-free snapshot reader.
 //!
-//! Given a snapshot tape's chunk-track list and the fetched Clay/outer slices,
+//! Given a snapshot tape's chunk-track list and the fetched inner/outer slices,
 //! this crate verifies the track set against the committed track-merkle root and
 //! decodes the slices back into a [`SnapshotLog`]. It carries no encoder and no
 //! consensus logic, so it is shared by the node (bootstrap) and external clients
@@ -16,7 +16,7 @@ pub use chunk::{
 };
 pub use decode::{
     assemble_snapshot_log, decode_chunk_payload, snapshot_track_group_count,
-    validate_snapshot_track_list, K_INNER,
+    validate_snapshot_track_list,
 };
 pub use encode::{
     encode_chunk, encode_snapshot, encode_snapshot_streaming, BuiltChunk, SnapshotChunk,
@@ -54,17 +54,14 @@ pub enum SnapshotError {
     #[error("snapshot log serialize failed: {0}")]
     Serialize(String),
 
-    #[error("clay encode failed: {0}")]
-    ClayEncode(String),
-
-    #[error("clay encode produced {got} slices, expected {expected}")]
-    ClayEncodeArity { got: usize, expected: usize },
+    #[error("inner encode failed: {0}")]
+    InnerEncode(String),
 
     #[error("outer rs encode failed: {0}")]
     OuterEncode(String),
 
-    #[error("clay decode failed: {0}")]
-    ClayDecode(String),
+    #[error("inner decode failed: {0}")]
+    InnerDecode(String),
 
     #[error("outer rs decode failed: {0}")]
     OuterDecode(String),

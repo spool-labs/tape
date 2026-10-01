@@ -37,11 +37,15 @@ pub struct CaptureOutput {
 
 
 /// Capture a block's instructions into replayable events.
+///
+/// `width` is the network's slices per track, which a coded track's
+/// commitment is checked over.
 pub fn capture_block(
     initial_epoch: EpochNumber,
     slot: SlotNumber,
     instructions: &[ParsedInstruction],
     tx_ids: &[Txid],
+    width: usize,
 ) -> Result<CaptureOutput, ParseError> {
     let mut current_epoch = initial_epoch;
     let mut events = Vec::new();
@@ -55,7 +59,8 @@ pub fn capture_block(
             ))
         })?;
 
-        let Some(captured) = capture_instruction(&mut current_epoch, instruction, tx_id)? else {
+        let Some(captured) = capture_instruction(&mut current_epoch, instruction, tx_id, width)?
+        else {
             continue;
         };
         if let Some(raw_track) = captured.raw_track {
@@ -80,6 +85,7 @@ fn capture_instruction(
     current_epoch: &mut EpochNumber,
     instruction: &ParsedInstruction,
     tx_id: Txid,
+    width: usize,
 ) -> Result<Option<Captured>, ParseError> {
     let actor = actor_for(instruction);
     let captured = match instruction {
@@ -257,6 +263,7 @@ fn capture_instruction(
             *visibility,
             object.clone(),
             value.as_slice(),
+            width,
         )?,
         ParsedInstruction::DeleteTrack { event, .. } => {
             capture_delete(*current_epoch, tx_id, actor, event)
@@ -364,6 +371,7 @@ fn capture_instruction(
             TrackVisibility::Public,
             None,
             BlobDataSlice::Inline(bytes_of(entry)),
+            width,
         )?,
         ParsedInstruction::RemoveFromBlacklist { event, .. } => {
             capture_delete(*current_epoch, tx_id, actor, event)
@@ -377,6 +385,7 @@ fn capture_instruction(
             TrackVisibility::Public,
             None,
             BlobDataSlice::Inline(bytes_of(span)),
+            width,
         )?,
 
         // No corresponding ReplayableEvent variant yet — silently drop.
@@ -417,9 +426,10 @@ fn capture_track(
     visibility: TrackVisibility,
     object: Option<ReplayTrackObject>,
     data: BlobDataSlice<'_>,
+    width: usize,
 ) -> Result<Captured, ParseError> {
     let meta = data
-        .meta()
+        .meta(width)
         .ok_or_else(|| ParseError::Deserialization("invalid track payload".into()))?;
 
     let state = CompressedTrack {
@@ -594,8 +604,7 @@ mod tests {
         TrackWritten,
     };
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
+    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{BlacklistEntry, NodePreferences};
@@ -624,7 +633,6 @@ mod tests {
         BlobEncoding {
             size: StorageUnits::from_bytes(64 * slices.len() as u64),
             commitment,
-            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(slices.len() as u64),
             leaves,
@@ -632,7 +640,7 @@ mod tests {
     }
 
     fn default_blob() -> BlobEncoding {
-        let payload = vec![vec![0xAA; 64]; GROUP_SIZE];
+        let payload = vec![vec![0xAA; 64]; MAX_GROUP_SIZE];
         blob_encoding(&payload)
     }
 
@@ -645,7 +653,7 @@ mod tests {
         epoch: EpochNumber,
         visibility: TrackVisibility,
     ) -> TrackWritten {
-        let meta = value.meta().unwrap();
+        let meta = value.meta(MAX_GROUP_SIZE).unwrap();
         let state = CompressedTrack {
             tape,
             key,
@@ -796,7 +804,7 @@ mod tests {
         instructions: Vec<ParsedInstruction>,
     ) -> CaptureOutput {
         let tx_ids = vec![Txid::default(); instructions.len()];
-        capture_block(epoch, slot, &instructions, &tx_ids).unwrap()
+        capture_block(epoch, slot, &instructions, &tx_ids, MAX_GROUP_SIZE).unwrap()
     }
 
     #[test]
