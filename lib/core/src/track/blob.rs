@@ -8,6 +8,7 @@ use tape_crypto::hash::hash;
 use tape_crypto::merkle::root_from_leaf_hashes;
 use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf, verify_proof_hash};
 
+use crate::encoding::ErasureCode;
 use crate::erasure::{
     MAX_GROUP_SIZE, SAMPLE_WINDOW_BYTES, SLICE_TREE_HEIGHT, SUB_LEAF_BYTES, SUB_TREE_HEIGHT, slice_root,
     slice_root_from_sidecar, sub_leaf_hashes, window_root,
@@ -78,13 +79,13 @@ impl BlobEncoding {
         value
     }
 
-    /// Recompute the commitment root over the first `width` leaves.
+    /// Recompute the commitment root over the profile's n leaves.
     ///
-    /// None when the width is outside the array or a leaf past it is set. The
-    /// value hash covers every leaf, so a set leaf the root ignores would let
-    /// one commitment carry many values.
-    pub fn commitment_root(&self, width: usize) -> Option<Hash> {
-        let (live, padding) = self.leaves.split_at_checked(width)?;
+    /// None when n is outside the array or a leaf past it is set. The value
+    /// hash covers every leaf, so a set leaf the root ignores would let one
+    /// commitment carry many values.
+    pub fn commitment_root(&self, profile: ErasureCode) -> Option<Hash> {
+        let (live, padding) = self.leaves.split_at_checked(usize::from(profile.n()))?;
         if live.is_empty() {
             return None;
         }
@@ -224,8 +225,14 @@ impl<'de> SchemaRead<'de> for BlobEncoding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encoding::{RepParams, TAPENET_PROFILE};
     use crate::erasure::{slice_sidecar, sub_leaf_count};
     use crate::track::data::BlobDataSlice;
+
+    /// A profile of n copies, which gives a group of any size
+    fn copies(n: usize) -> ErasureCode {
+        ErasureCode::Replication(RepParams::new(n as u8))
+    }
 
     fn sample_blob_encoding() -> BlobEncoding {
         BlobEncoding {
@@ -296,12 +303,12 @@ mod tests {
         (blob, slices)
     }
 
-    // the full width gives the root over all twenty leaves
+    // tapenet's profile gives the root over every leaf
     #[test]
     fn full_root() {
         let (blob, _) = coded_blob();
 
-        assert_eq!(blob.commitment_root(MAX_GROUP_SIZE), Some(blob.commitment));
+        assert_eq!(blob.commitment_root(TAPENET_PROFILE), Some(blob.commitment));
     }
 
     // a narrow root covers the live leaves only, so zeroed padding can't stand in for them
@@ -312,31 +319,31 @@ mod tests {
         leaves[..4].copy_from_slice(&full.leaves[..4]);
         let blob = BlobEncoding { leaves, ..full };
 
-        let root = blob.commitment_root(4).expect("zero tail");
+        let root = blob.commitment_root(copies(4)).expect("zero tail");
 
         assert_eq!(root, root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves[..4]));
-        assert_ne!(Some(root), blob.commitment_root(MAX_GROUP_SIZE));
+        assert_ne!(Some(root), blob.commitment_root(TAPENET_PROFILE));
     }
 
-    // a set leaf past the width, or a width outside the array, has no root
+    // a set leaf past the profile's n, or an n outside the array, has no root
     #[test]
     fn padding_rejected() {
         let (blob, _) = coded_blob();
 
-        assert_eq!(blob.commitment_root(4), None);
-        assert_eq!(blob.commitment_root(MAX_GROUP_SIZE - 1), None);
-        assert_eq!(blob.commitment_root(0), None);
-        assert_eq!(blob.commitment_root(MAX_GROUP_SIZE + 1), None);
+        assert_eq!(blob.commitment_root(copies(4)), None);
+        assert_eq!(blob.commitment_root(copies(MAX_GROUP_SIZE - 1)), None);
+        assert_eq!(blob.commitment_root(copies(0)), None);
+        assert_eq!(blob.commitment_root(copies(MAX_GROUP_SIZE + 1)), None);
     }
 
-    // a coded blob yields metadata only at the width its commitment covers
+    // a coded blob yields metadata only under the profile its commitment covers
     #[test]
-    fn meta_width() {
+    fn meta_profile() {
         let (blob, _) = coded_blob();
         let data = BlobDataSlice::Coded(blob);
 
-        assert!(data.meta(MAX_GROUP_SIZE).is_some());
-        assert!(data.meta(MAX_GROUP_SIZE - 1).is_none());
+        assert!(data.meta(TAPENET_PROFILE).is_some());
+        assert!(data.meta(copies(MAX_GROUP_SIZE - 1)).is_none());
     }
 
     #[test]

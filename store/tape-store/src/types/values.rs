@@ -519,6 +519,7 @@ pub struct PendingWriteChunk {
 
 #[cfg(test)]
 mod tests {
+    use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, PackedTrack};
@@ -881,6 +882,6 @@ mod tests {
             leaves,
         };
 
-        assert_eq!(info.commitment_root(MAX_GROUP_SIZE), Some(info.commitment));
+        assert_eq!(info.commitment_root(TAPENET_PROFILE), Some(info.commitment));
     }
 }

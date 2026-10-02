@@ -132,7 +132,6 @@ mod tests {
     // a seeded track and the group that signs for it
     struct Case {
         base: System,
-        width: usize,
         kind: TrackKind,
         state: TrackState,
         size: StorageUnits,
@@ -142,7 +141,6 @@ mod tests {
         fn permissionless() -> Self {
             Self {
                 base: permissionless_system(),
-                width: MAX_GROUP_SIZE,
                 kind: TrackKind::Coded,
                 state: TrackState::Certified,
                 size: StorageUnits::mb(250),
@@ -150,7 +148,7 @@ mod tests {
         }
 
         fn narrow() -> Self {
-            Self { base: trusted_system(NARROW), width: 4, ..Self::permissionless() }
+            Self { base: trusted_system(NARROW), ..Self::permissionless() }
         }
     }
 
@@ -165,7 +163,8 @@ mod tests {
 
     // invalidation of one seeded track by the given signer bits
     fn invalidate_case(case: Case, signed: &[usize], error: Option<ProgramError>) {
-        let Case { base, width, kind, state, size } = case;
+        let Case { base, kind, state, size } = case;
+        let profile = base.code().unwrap();
 
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
@@ -177,7 +176,7 @@ mod tests {
         let group_id = GroupIndex(0);
         let (group_address, _) = group_pda(curr, group_id);
 
-        let (sks, group) = make_group_of(curr, group_id, width);
+        let (sks, group) = make_group_of(curr, group_id, profile);
 
         let system = System {
             current_epoch: curr,
@@ -236,10 +235,10 @@ mod tests {
         );
         let message = invalidate_message.to_bytes();
 
-        // A bit past the width has no key behind it, so only the live ones sign.
+        // A bit past the profile's n has no key behind it, so only the live ones sign.
         let partials: Vec<BlsSignature> = signed
             .iter()
-            .filter(|&&i| i < width)
+            .filter(|&&i| i < sks.len())
             .map(|&i| sks[i].sign(message).unwrap())
             .collect();
 

@@ -9,11 +9,12 @@ use tape_api::program::tapedrive::track_pda;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::bls::BlsSignature;
 use tape_core::cert::track::TrackInvalidateMessage;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{BasisPoints, SpoolBitmap, StorageUnits};
 use tape_crypto::address::Address;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
+use tape_e2e_simnet::{
+    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, run_simnet_test,
+};
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
 
@@ -207,7 +208,7 @@ async fn submit_invalidate(
     }
     assert_eq!(
         indices.len(),
-        GROUP_SIZE,
+        TAPENET_GROUP_SIZE,
         "every group spool should belong to a harness node"
     );
 

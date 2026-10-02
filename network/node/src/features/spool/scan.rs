@@ -237,7 +237,7 @@ mod tests {
     async fn skips_other_groups() {
         let ctx = test_context().await;
         let a = addr(1);
-        let other_group = GroupIndex::containing(SPOOL + SpoolIndex(20)); // Different group.
+        let other_group = GroupIndex(GroupIndex::containing(SPOOL).0 + 1);
 
         ctx.store.put_track(a, track(other_group)).unwrap();
 

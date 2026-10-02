@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 
+use tape_core::encoding::ErasureCode;
 use tape_core::erasure::MAX_GROUP_SIZE;
 use tape_core::spooler::{GroupIndex, SpoolerError};
 use tape_core::types::{BasisPoints, Coin, StorageUnits, TAPE};
@@ -35,20 +36,20 @@ pub struct Candidate {
 
 /// Assign every spool of `sizes.len()` groups to the candidates.
 ///
-/// `width` is the network's spools per group. `sizes` holds each group's bytes
-/// per spool, `current` the previous holder of every spool (`width` per group,
-/// in group order, with no gaps between groups). Returns one address per spool
-/// in the same order.
+/// A group has the profile's n spools. `sizes` holds each group's bytes per
+/// spool, `current` the previous holder of every spool (n per group, in group
+/// order, with no gaps between groups). Returns one address per spool in the
+/// same order.
 pub fn assign_spools(
     sizes: &[StorageUnits],
     current: &[Option<Address>],
     candidates: &[Candidate],
     nonce: &Hash,
-    width: usize,
+    profile: ErasureCode,
 ) -> Result<Vec<Address>, SpoolerError> {
-    validate(sizes, current, candidates, width)?;
+    validate(sizes, current, candidates, profile)?;
 
-    let mut layout = Layout::new(sizes, candidates, *nonce, width)?;
+    let mut layout = Layout::new(sizes, candidates, *nonce, profile)?;
     layout.keep(current);
     layout.release();
     layout.fill()?;
@@ -60,15 +61,16 @@ fn validate(
     sizes: &[StorageUnits],
     current: &[Option<Address>],
     candidates: &[Candidate],
-    width: usize,
+    profile: ErasureCode,
 ) -> Result<(), SpoolerError> {
+    let width = usize::from(profile.n());
     if width == 0 || width > MAX_GROUP_SIZE {
         return Err(SpoolerError::LengthMismatch);
     }
     if current.len() != sizes.len() * width {
         return Err(SpoolerError::LengthMismatch);
     }
-    // A node holds at most one spool per group, so a group needs `width` nodes
+    // A node holds at most one spool per group, so a group needs n nodes
     if candidates.len() < width {
         return Err(SpoolerError::InsufficientNodes);
     }
@@ -122,8 +124,10 @@ impl Layout {
         sizes: &[StorageUnits],
         candidates: &[Candidate],
         nonce: Hash,
-        width: usize,
+        profile: ErasureCode,
     ) -> Result<Self, SpoolerError> {
+        let width = usize::from(profile.n());
+
         // An empty group still weighs a byte per spool, so its spools spread by stake
         let mut weights = Vec::with_capacity(sizes.len());
         let mut per_spool_total = StorageUnits::zero();

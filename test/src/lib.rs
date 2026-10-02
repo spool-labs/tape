@@ -113,16 +113,17 @@ pub fn trusted_system(profile: ErasureCode) -> System {
 /// Build a full group of spools with fresh BLS keys, returning the private
 /// keys alongside the group so tests can sign group vote messages.
 pub fn make_group(epoch: EpochNumber, group_id: GroupIndex) -> (Vec<BlsPrivateKey>, Group) {
-    make_group_of(epoch, group_id, MAX_GROUP_SIZE)
+    make_group_of(epoch, group_id, TAPENET_PROFILE)
 }
 
-/// Build a group whose first `width` spools have fresh BLS keys, leaving the
-/// rest zeroed as a network of that width does.
+/// Build a group whose first n spools have fresh BLS keys, leaving the rest
+/// zeroed as a network on that profile does.
 pub fn make_group_of(
     epoch: EpochNumber,
     group_id: GroupIndex,
-    width: usize,
+    profile: ErasureCode,
 ) -> (Vec<BlsPrivateKey>, Group) {
+    let width = usize::from(profile.n());
     let mut group = Group::zeroed();
     group.epoch = epoch;
     group.id = group_id;

@@ -93,9 +93,9 @@ impl SimnetScenario<'_> {
     /// the timeout allows.
     ///
     /// A raised committee size is not promised in any one epoch: the program
-    /// commits an epoch once GROUP_SIZE members are seated, so joiners that miss
-    /// a window are seated in a later one. Tests that assert a target size must
-    /// wait for it to converge rather than name the epoch it lands in.
+    /// commits an epoch once one member per spool of a group is seated, so
+    /// joiners that miss a window are seated in a later one. Tests that assert a
+    /// target size must wait for it to converge.
     pub async fn wait_committee_size(&self, min_size: usize, timeout: Duration) -> Result<usize> {
         let start = Instant::now();
         loop {

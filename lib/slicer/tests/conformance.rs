@@ -257,7 +257,7 @@ fn commitment_matches_chain() {
         let blob = BlobEncoding { leaves, ..BlobEncoding::zeroed() };
 
         assert_eq!(
-            blob.commitment_root(slices.len()),
+            blob.commitment_root(profile),
             Some(blob_merkle_root(&slices)),
             "{profile:?}"
         );

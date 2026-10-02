@@ -33,7 +33,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     // network's n leaves and every leaf past them has to be zero.
     let meta = blob
         .data
-        .meta(usize::from(system.code()?.n()))
+        .meta(system.code()?)
         .ok_or(TapeError::InvalidCommitment)?;
 
     let key = track_key(blob.name(), &blob.data);
@@ -92,14 +92,14 @@ mod tests {
 
     const NARROW: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
 
-    // A blob whose first `set` leaves are filled, committed over the first `width`.
-    fn blob_of(set: usize, width: usize) -> BlobEncoding {
+    // A blob whose first `set` leaves are filled, committed over the profile's n leaves.
+    fn blob_of(set: usize, profile: ErasureCode) -> BlobEncoding {
         let mut leaves = [Hash::default(); MAX_GROUP_SIZE];
         leaves[..set].fill(Hash::from([0x11; 32]));
 
         BlobEncoding {
             size: StorageUnits::mb(100),
-            commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves[..width]),
+            commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves[..usize::from(profile.n())]),
             stripe_size: StorageUnits::from_bytes(1024),
             stripe_count: StripeCount(1),
             leaves,
@@ -108,22 +108,22 @@ mod tests {
 
     #[test]
     fn register_track() {
-        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, MAX_GROUP_SIZE), None);
+        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), None);
     }
 
     // a 3-of-4 cluster registers a blob committed over its four live leaves
     #[test]
     fn narrow_commitment() {
-        write_case(trusted_system(NARROW), blob_of(4, 4), None);
+        write_case(trusted_system(NARROW), blob_of(4, NARROW), None);
     }
 
-    // a leaf set past the width, or a root over the full array, is no commitment
+    // a leaf set past the profile's n, or a root over the full array, is no commitment
     #[test]
     fn padded_commitment() {
         let refused = Some(TapeError::InvalidCommitment.into());
 
-        write_case(trusted_system(NARROW), blob_of(5, 4), refused.clone());
-        write_case(trusted_system(NARROW), blob_of(4, MAX_GROUP_SIZE), refused);
+        write_case(trusted_system(NARROW), blob_of(5, NARROW), refused.clone());
+        write_case(trusted_system(NARROW), blob_of(4, TAPENET_PROFILE), refused);
     }
 
     fn write_case(base: System, blob: BlobEncoding, error: Option<ProgramError>) {

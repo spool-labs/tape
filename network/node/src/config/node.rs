@@ -174,16 +174,24 @@ impl GenesisPreset {
         }
     }
 
+    /// A tapenet preset's genesis values; `custom` has none of its own.
+    pub fn tapenet(self) -> Option<GenesisConfig> {
+        match self {
+            GenesisPreset::Mainnet => Some(GenesisConfig::mainnet()),
+            GenesisPreset::Devnet => Some(GenesisConfig::devnet()),
+            GenesisPreset::Localnet => Some(GenesisConfig::localnet()),
+            GenesisPreset::Simnet => Some(GenesisConfig::simnet()),
+            GenesisPreset::Custom => None,
+        }
+    }
+
     /// The preset's genesis values, which set a node's preferences when it
     /// registers. `custom` takes the profile and trust model of the chain the
     /// node is joining, so its committee size preference is that chain's n.
     pub fn config(self, params: &NetworkParams) -> Result<GenesisConfig, ThresholdError> {
-        match self {
-            GenesisPreset::Mainnet => Ok(GenesisConfig::mainnet()),
-            GenesisPreset::Devnet => Ok(GenesisConfig::devnet()),
-            GenesisPreset::Localnet => Ok(GenesisConfig::localnet()),
-            GenesisPreset::Simnet => Ok(GenesisConfig::simnet()),
-            GenesisPreset::Custom => GenesisConfig::try_custom(params.profile, params.trust),
+        match self.tapenet() {
+            Some(config) => Ok(config),
+            None => GenesisConfig::try_custom(params.profile, params.trust),
         }
     }
 }
@@ -1045,16 +1053,12 @@ challenge:
     fn custom_preset() {
         use tape_api::genesis::GenesisConfig;
         use tape_core::encoding::{ErasureCode, RSParams, TAPENET_PROFILE};
-        use tape_core::thresholds::{NetworkParams, Thresholds, TrustModel};
+        use tape_core::thresholds::{NetworkParams, TrustModel};
 
-        let params = |profile: ErasureCode, trust: TrustModel| NetworkParams {
-            profile,
-            trust,
-            thresholds: Thresholds::try_new(trust, u64::from(profile.n()), u64::from(profile.k()))
-                .expect("thresholds"),
-        };
-        let small = params(ErasureCode::ReedSolomon(RSParams::new(3, 1)), TrustModel::Trusted);
-        let tapenet = params(TAPENET_PROFILE, TrustModel::Permissionless);
+        let narrow = ErasureCode::ReedSolomon(RSParams::new(3, 1));
+        let small = NetworkParams::try_new(narrow, TrustModel::Trusted).expect("3 of 4");
+        let tapenet = NetworkParams::try_new(TAPENET_PROFILE, TrustModel::Permissionless)
+            .expect("tapenet");
 
         let config = NodeConfig::from_yaml_str("genesis_preset: custom").expect("valid preset");
         assert_eq!(config.genesis_preset, GenesisPreset::Custom);

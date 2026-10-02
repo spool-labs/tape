@@ -1,6 +1,7 @@
 //! Encoding profile types for erasure-coded track data.
 
 use core::fmt::{Display, Formatter};
+use core::str::FromStr;
 
 use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -32,6 +33,9 @@ pub enum ProfileError {
 
     /// d is outside k + 1 ..= n - 1
     Helpers,
+
+    /// The text is none of `clay:n,k,d`, `rs:n,k` and `copies:n`
+    Syntax,
 }
 
 impl Display for ProfileError {
@@ -41,6 +45,7 @@ impl Display for ProfileError {
             Self::Width => write!(f, "n is outside 1..={MAX_GROUP_SIZE}"),
             Self::Recovery => write!(f, "k is outside 1..n"),
             Self::Helpers => write!(f, "d is outside k + 1..n"),
+            Self::Syntax => write!(f, "expected clay:n,k,d, rs:n,k or copies:n"),
         }
     }
 }
@@ -220,6 +225,44 @@ impl From<ErasureCode> for EncodingProfile {
             ErasureCode::ReedSolomon(params) => Self::reed_solomon(params),
             ErasureCode::Replication(params) => Self::replication(params),
         }
+    }
+}
+
+/// Writes `clay:n,k,d`, `rs:n,k` or `copies:n`, the form a flag or config takes.
+impl Display for ErasureCode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Clay(params) => write!(f, "clay:{},{},{}", params.n(), params.k(), params.d()),
+            Self::ReedSolomon(params) => write!(f, "rs:{},{}", params.n(), params.k()),
+            Self::Replication(params) => write!(f, "copies:{}", params.n()),
+        }
+    }
+}
+
+/// Reads the form `Display` writes and checks the code's rules.
+impl FromStr for ErasureCode {
+    type Err = ProfileError;
+
+    fn from_str(text: &str) -> Result<Self, ProfileError> {
+        let (name, list) = text.split_once(':').ok_or(ProfileError::Syntax)?;
+
+        let mut numbers = [0u8; 3];
+        let mut count = 0;
+        for number in list.split(',') {
+            let slot = numbers.get_mut(count).ok_or(ProfileError::Syntax)?;
+            *slot = number.trim().parse().map_err(|_| ProfileError::Syntax)?;
+            count += 1;
+        }
+
+        let code = match (name.trim(), &numbers[..count]) {
+            ("clay", [n, k, d]) => Self::Clay(ClayParams::new(*n, *k, *d)),
+            ("rs", [n, k]) => Self::ReedSolomon(RSParams::new(*k, n.saturating_sub(*k))),
+            ("copies", [n]) => Self::Replication(RepParams::new(*n)),
+            _ => return Err(ProfileError::Syntax),
+        };
+        code.validate()?;
+
+        Ok(code)
     }
 }
 
@@ -642,6 +685,31 @@ mod tests {
 
         assert_eq!(ErasureCode::try_from(wide), Err(ProfileError::Width));
         assert_eq!(ErasureCode::try_from(no_parity), Err(ProfileError::Recovery));
+    }
+
+    // every code reads back from the text it writes
+    #[test]
+    fn text_form() {
+        let codes = [
+            (TAPENET_PROFILE, "clay:20,7,16"),
+            (ErasureCode::ReedSolomon(RSParams::new(3, 1)), "rs:4,3"),
+            (ErasureCode::Replication(RepParams::new(2)), "copies:2"),
+        ];
+
+        for (code, text) in codes {
+            assert_eq!(code.to_string(), text);
+            assert_eq!(text.parse(), Ok(code));
+        }
+    }
+
+    // text that is no code, or a code its rules refuse, does not parse
+    #[test]
+    fn bad_text() {
+        for text in ["", "clay", "clay:20,7", "rs:4,3,2", "copies:two", "raid:4,3"] {
+            assert_eq!(text.parse::<ErasureCode>(), Err(ProfileError::Syntax), "{text}");
+        }
+        assert_eq!("rs:4,4".parse::<ErasureCode>(), Err(ProfileError::Recovery));
+        assert_eq!("copies:21".parse::<ErasureCode>(), Err(ProfileError::Width));
     }
 
     // alpha and the alignment stay total over every packed byte pattern

@@ -140,7 +140,7 @@ pub fn parse_block(
     let previous_blockhash =
         parse_chain_hash(slot, "previous_blockhash", &block.previous_blockhash)?;
 
-    let sourced = match parse_and_merge_with_sources(block, usize::from(profile.n())) {
+    let sourced = match parse_and_merge_with_sources(block, profile) {
         Ok(instructions) => instructions,
         Err(error) => {
             error!(

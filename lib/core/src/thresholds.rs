@@ -1,4 +1,5 @@
 use core::fmt::{Display, Formatter};
+use core::str::FromStr;
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
@@ -15,6 +16,28 @@ pub enum TrustModel {
     Trusted = 2,
 }
 
+/// Writes `permissionless` or `trusted`, the form a flag or config takes.
+impl Display for TrustModel {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Permissionless => write!(f, "permissionless"),
+            Self::Trusted => write!(f, "trusted"),
+        }
+    }
+}
+
+impl FromStr for TrustModel {
+    type Err = ThresholdError;
+
+    fn from_str(text: &str) -> Result<Self, ThresholdError> {
+        match text.trim() {
+            "permissionless" => Ok(Self::Permissionless),
+            "trusted" => Ok(Self::Trusted),
+            _ => Err(ThresholdError::TrustModel),
+        }
+    }
+}
+
 /// A group size or recovery count that no network can have
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ThresholdError {
@@ -22,6 +45,7 @@ pub enum ThresholdError {
     Recovery { n: u64, k: u64 },
     Profile(ProfileError),
     PermissionlessRecovery { n: u64, k: u64, limit: u64 },
+    TrustModel,
 }
 
 impl Display for ThresholdError {
@@ -34,6 +58,7 @@ impl Display for ThresholdError {
                 f,
                 "a permissionless network of {n} recovers from at most {limit}, got {k}"
             ),
+            Self::TrustModel => write!(f, "expected permissionless or trusted"),
         }
     }
 }
@@ -125,6 +150,14 @@ pub struct NetworkParams {
 }
 
 impl NetworkParams {
+    /// The settings of a network on this profile and trust model
+    pub fn try_new(profile: ErasureCode, trust: TrustModel) -> Result<Self, ThresholdError> {
+        let thresholds =
+            Thresholds::try_new(trust, u64::from(profile.n()), u64::from(profile.k()))?;
+
+        Ok(Self { profile, trust, thresholds })
+    }
+
     /// Spools in a group, which is also the slices in a coded track
     pub fn n(&self) -> usize {
         usize::from(self.profile.n())
@@ -308,6 +341,15 @@ mod tests {
         assert_eq!(TrustModel::try_from(1u64), Ok(TrustModel::Permissionless));
         assert_eq!(TrustModel::try_from(2u64), Ok(TrustModel::Trusted));
         assert!(TrustModel::try_from(3u64).is_err());
+    }
+
+    // each trust model reads back from the text it writes
+    #[test]
+    fn model_text() {
+        for trust in [TrustModel::Permissionless, TrustModel::Trusted] {
+            assert_eq!(trust.to_string().parse(), Ok(trust));
+        }
+        assert_eq!("open".parse::<TrustModel>(), Err(ThresholdError::TrustModel));
     }
 
     // tapenet's profile sits exactly at the permissionless limit

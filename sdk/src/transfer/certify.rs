@@ -19,7 +19,7 @@ use thiserror::Error;
 use tape_api::instruction::build_certify_track_ix;
 use tape_core::bls::BlsSignature;
 use tape_core::spooler::GroupIndex;
-use tape_core::thresholds::Thresholds;
+use tape_core::thresholds::{NetworkParams, Thresholds};
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{BitmapRead, EpochNumber, SpoolBitmap};
 use tape_protocol::api::{Api, ApiError, CertifyReq, CertifyRes};
@@ -229,7 +229,7 @@ impl CertificationCollector {
                     unasked = signature_requests.len(),
                     "Spool group certify count already banked, asking no one"
                 );
-                return settle(bucket, epoch_key, Vec::new(), width);
+                return settle(bucket, epoch_key, Vec::new(), &params);
             }
         }
 
@@ -295,7 +295,7 @@ impl CertificationCollector {
                             remaining_weight = remaining_node_weight,
                             "Spool group certify count reached, exiting early"
                         );
-                        return settle(bucket, epoch_key, failures, width);
+                        return settle(bucket, epoch_key, failures, &params);
                     }
                 }
                 Err(e) => {
@@ -497,7 +497,7 @@ fn settle(
     bucket: &SignatureBucket,
     epoch_key: u64,
     failures: Vec<(Address, NodeSignError)>,
-    width: usize,
+    params: &NetworkParams,
 ) -> Result<CollectedSignatures, CertificationError> {
     let aggregated_signature = BlsSignature::aggregate(&bucket.signatures)
         .map_err(|e| CertificationError::AggregationFailed(format!("{:?}", e)))?;
@@ -506,7 +506,7 @@ fn settle(
         aggregated_signature,
         bitmap: SpoolBitmap::from_indices(&bucket.positions),
         signature_count: bucket.responses.len(),
-        spool_count: width,
+        spool_count: params.n(),
         epoch: epoch_key,
         responses: bucket.responses.clone(),
         failures,

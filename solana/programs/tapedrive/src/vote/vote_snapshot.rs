@@ -143,7 +143,7 @@ mod tests {
         let tapenet = permissionless_system();
         assert_eq!(tapenet.thresholds().unwrap().snapshot, 7);
 
-        snapshot_case(tapenet, MAX_GROUP_SIZE);
+        snapshot_case(tapenet);
     }
 
     // a 3-of-4 cluster lands a group's snapshot vote on three signers and refuses two
@@ -152,11 +152,12 @@ mod tests {
         let narrow = trusted_system(ErasureCode::ReedSolomon(RSParams::new(3, 1)));
         assert_eq!(narrow.thresholds().unwrap().snapshot, 3);
 
-        snapshot_case(narrow, 4);
+        snapshot_case(narrow);
     }
 
     /// A vote lands at the System's snapshot threshold and is refused one below it.
-    fn snapshot_case(base: System, width: usize) {
+    fn snapshot_case(base: System) {
+        let profile = base.code().unwrap();
         let threshold = base.thresholds().unwrap().snapshot as usize;
         let fee_payer = Pubkey::new_unique();
         let voting_epoch_id = EpochNumber(12);
@@ -173,7 +174,7 @@ mod tests {
         let (vote_address, _) =
             snapshot_vote_pda(voting_epoch_id, target_epoch_id, hash);
 
-        let (sks, group) = make_group_of(voting_epoch_id, group_id, width);
+        let (sks, group) = make_group_of(voting_epoch_id, group_id, profile);
 
         let system = System {
             current_epoch: voting_epoch_id,
@@ -237,7 +238,7 @@ mod tests {
             low_sig,
         );
 
-        // One live signer short, topped up with a bit past the width.
+        // One live signer short, topped up with a bit past the profile's n.
         let mut padded: Vec<usize> = (0..threshold - 1).collect();
         padded.push(MAX_GROUP_SIZE - 1);
         let padded_instruction = build_vote_snapshot_ix(
@@ -271,7 +272,7 @@ mod tests {
             &accounts,
             &[Check::err(TapeError::NoQuorum.into())],
         );
-        if width < MAX_GROUP_SIZE {
+        if usize::from(profile.n()) < MAX_GROUP_SIZE {
             env.process_instruction(
                 &padded_instruction,
                 &accounts,

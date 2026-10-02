@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use tape_core::encoding::{ErasureCode, RSParams, RepParams, TAPENET_PROFILE};
 use tape_core::erasure::MAX_GROUP_SIZE;
 use tape_core::spooler::SpoolerError;
 use tape_core::types::{StorageUnits, TAPE};
@@ -11,14 +12,22 @@ use tape_spooler::assign::{Candidate, assign_spools as assign_at};
 
 const MB: u64 = StorageUnits::MB;
 
-/// Assign at tapenet's width, which every scenario below runs at unless it says otherwise.
+/// A 3-of-4 cluster, the narrow profile the scenarios below use
+const NARROW: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
+
+/// Assign under tapenet's profile, which every scenario below uses unless it says otherwise.
 fn assign_spools(
     sizes: &[StorageUnits],
     current: &[Option<Address>],
     candidates: &[Candidate],
     nonce: &Hash,
 ) -> Result<Vec<Address>, SpoolerError> {
-    assign_at(sizes, current, candidates, nonce, MAX_GROUP_SIZE)
+    assign_at(sizes, current, candidates, nonce, TAPENET_PROFILE)
+}
+
+/// A profile of n copies, which gives a group of any size
+fn copies(n: usize) -> ErasureCode {
+    ErasureCode::Replication(RepParams::new(n as u8))
 }
 
 fn address(index: u64) -> Address {
@@ -349,7 +358,7 @@ fn duplicate_node() {
 fn narrow_groups() {
     let candidates = committee(&ramp(4));
     let sizes = uneven_sizes(5);
-    let assignment = assign_at(&sizes, &vec![None; 5 * 4], &candidates, &nonce(1), 4).expect("assign");
+    let assignment = assign_at(&sizes, &vec![None; 5 * 4], &candidates, &nonce(1), NARROW).expect("assign");
 
     assert_eq!(assignment.len(), 5 * 4);
     for holders in assignment.chunks(4) {
@@ -358,12 +367,12 @@ fn narrow_groups() {
     }
 }
 
-// more nodes than the width share the groups by stake
+// more nodes than a group has spools share the groups by stake
 #[test]
 fn narrow_spreads() {
     let candidates = committee(&[1_000; 12]);
     let sizes = sizes(&[100; 30]);
-    let assignment = assign_at(&sizes, &vec![None; 30 * 4], &candidates, &nonce(1), 4).expect("assign");
+    let assignment = assign_at(&sizes, &vec![None; 30 * 4], &candidates, &nonce(1), NARROW).expect("assign");
 
     let mut counts: BTreeMap<Address, u64> = BTreeMap::new();
     for node in &assignment {
@@ -380,16 +389,16 @@ fn narrow_spreads() {
 fn narrow_settled() {
     let candidates = committee(&ramp(6));
     let sizes = uneven_sizes(8);
-    let first = assign_at(&sizes, &vec![None; 8 * 4], &candidates, &nonce(1), 4).expect("first");
-    let second = assign_at(&sizes, &previous(&first), &candidates, &nonce(2), 4).expect("second");
+    let first = assign_at(&sizes, &vec![None; 8 * 4], &candidates, &nonce(1), NARROW).expect("first");
+    let second = assign_at(&sizes, &previous(&first), &candidates, &nonce(2), NARROW).expect("second");
 
     assert_eq!(first, second);
 }
 
-// a cluster needs as many nodes as its width
+// a cluster needs as many nodes as a group has spools
 #[test]
 fn narrow_too_few() {
-    let result = assign_at(&uneven_sizes(2), &vec![None; 2 * 4], &committee(&ramp(3)), &nonce(1), 4);
+    let result = assign_at(&uneven_sizes(2), &vec![None; 2 * 4], &committee(&ramp(3)), &nonce(1), NARROW);
     assert_eq!(result, Err(SpoolerError::InsufficientNodes));
 }
 
@@ -397,19 +406,20 @@ fn narrow_too_few() {
 #[test]
 fn single_drive() {
     let candidates = committee(&ramp(1));
-    let assignment = assign_at(&uneven_sizes(3), &[None; 3], &candidates, &nonce(1), 1).expect("assign");
+    let assignment =
+        assign_at(&uneven_sizes(3), &[None; 3], &candidates, &nonce(1), copies(1)).expect("assign");
 
     assert_eq!(assignment, vec![candidates[0].node; 3]);
 }
 
-// a width of zero or past the widest group is refused
+// a profile with no spools, or more than the widest group holds, is refused
 #[test]
-fn bad_width() {
+fn bad_profile() {
     let candidates = committee(&ramp(30));
 
-    for width in [0, MAX_GROUP_SIZE + 1] {
-        let current = vec![None; 2 * width];
-        let result = assign_at(&uneven_sizes(2), &current, &candidates, &nonce(1), width);
+    for n in [0, MAX_GROUP_SIZE + 1] {
+        let current = vec![None; 2 * n];
+        let result = assign_at(&uneven_sizes(2), &current, &candidates, &nonce(1), copies(n));
         assert_eq!(result, Err(SpoolerError::LengthMismatch));
     }
 }

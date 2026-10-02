@@ -10,7 +10,6 @@ use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use tape_store_reel::Reserve;
 use tape_store_api::{Column, Store};
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::EpochNumber;
 use tape_sdk::keys::helpers::load_solana_keypair;
 use tape_store::columns::SliceCol;
@@ -49,7 +48,12 @@ impl Orchestrator {
             info!(admin = %admin.pubkey(), path = %admin_path.display(), "loaded localnet admin keypair");
         }
 
-        let chain = ChainManager::new(&config.rpc_url, admin).context("create chain manager")?;
+        let genesis = config
+            .genesis()
+            .map_err(|error| anyhow::anyhow!("localnet profile: {error}"))?;
+        info!(profile = %genesis.profile, trust_model = %genesis.trust_model, "localnet genesis");
+        let chain =
+            ChainManager::new(&config.rpc_url, admin, genesis).context("create chain manager")?;
 
         let mut processes = ProcessSupervisor::new(
             config.node_binary.clone(),
@@ -272,17 +276,19 @@ impl Orchestrator {
             return Ok(());
         }
 
+        // Genesis seats one node on each spool of the first group.
+        let genesis_nodes = usize::from(self.chain.genesis().profile.n());
         let running = self.processes.running_node_ids();
-        if running.len() < GROUP_SIZE {
+        if running.len() < genesis_nodes {
             info!(
                 running = running.len(),
-                required = GROUP_SIZE,
+                required = genesis_nodes,
                 "genesis network not ready to start"
             );
             return Ok(());
         }
 
-        let genesis_ids = running.into_iter().take(GROUP_SIZE).collect::<Vec<_>>();
+        let genesis_ids = running.into_iter().take(genesis_nodes).collect::<Vec<_>>();
         let genesis_authorities = genesis_ids
             .iter()
             .map(|id| clone_keypair(&self.processes.node(*id).authority))

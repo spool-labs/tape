@@ -84,8 +84,7 @@ pub fn build_assignment_blocking<Db: Store>(
         return Ok(None);
     };
     // A group puts each of its n spools on its own member.
-    let width = usize::from(profile.n());
-    if next_committee.len() < width {
+    if next_committee.len() < usize::from(profile.n()) {
         return Ok(None);
     }
 
@@ -119,7 +118,7 @@ pub fn build_assignment_blocking<Db: Store>(
     let owners = current_owners(state, target_groups, profile)?;
     let candidates = assignment_candidates(next_committee, &state.peers)?;
     let assignment =
-        assign_spools(&weights.sizes, &owners, &candidates, &next_epoch.nonce, width)
+        assign_spools(&weights.sizes, &owners, &candidates, &next_epoch.nonce, profile)
             .map_err(|e| NodeError::Store(format!("assignment spooler: {e:?}")))?;
 
     let Some(blacklisted) = blacklist_weights(

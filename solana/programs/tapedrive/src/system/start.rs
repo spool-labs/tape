@@ -304,7 +304,8 @@ mod tests {
     use tape_core::system::{sort_members_for_committee, Peer};
     use tape_test::*;
 
-    fn genesis_committee(width: usize) -> (Vec<Member>, Vec<Member>, Vec<Peer>) {
+    fn genesis_committee(profile: ErasureCode) -> (Vec<Member>, Vec<Member>, Vec<Peer>) {
+        let width = usize::from(profile.n());
         let mut staged_members: Vec<Member> = Vec::with_capacity(width);
         let mut expected_peers: Vec<Peer> = Vec::with_capacity(width);
         for i in 0..width {
@@ -418,7 +419,7 @@ mod tests {
         let (group_address, _) = group_pda(target, group_id);
 
         let width = usize::from(config.profile.n());
-        let (staged_members, expected_members, expected_peers) = genesis_committee(width);
+        let (staged_members, expected_members, expected_peers) = genesis_committee(config.profile);
 
         let committee_size = config.committee_size;
         let peer_capacity = committee_size;
@@ -597,7 +598,7 @@ mod tests {
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
 
-        let (mut staged_members, _, expected_peers) = genesis_committee(MAX_GROUP_SIZE);
+        let (mut staged_members, _, expected_peers) = genesis_committee(TAPENET_PROFILE);
         staged_members[0].stake = TAPE::zero();
 
         let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::simnet() };
@@ -690,7 +691,7 @@ mod tests {
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
 
-        let (staged_members, _, expected_peers) = genesis_committee(MAX_GROUP_SIZE);
+        let (staged_members, _, expected_peers) = genesis_committee(TAPENET_PROFILE);
         let staged_members = &staged_members[..MAX_GROUP_SIZE - 1];
 
         let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::simnet() };
@@ -781,7 +782,7 @@ mod tests {
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
 
-        let (staged_members, _, expected_peers) = genesis_committee(MAX_GROUP_SIZE);
+        let (staged_members, _, expected_peers) = genesis_committee(TAPENET_PROFILE);
         let expected_peers = &expected_peers[..MAX_GROUP_SIZE - 1];
 
         let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::simnet() };

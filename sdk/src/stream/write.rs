@@ -1907,7 +1907,7 @@ mod tests {
                 None => BlobDataSlice::Inline(&bytes),
             };
             let metadata = data
-                .meta(usize::from(TAPENET_PROFILE.n()))
+                .meta(TAPENET_PROFILE)
                 .expect("valid manifest metadata");
             let track = CompressedTrack {
                 tape: tape_key.address(),

@@ -75,6 +75,8 @@ pub const UNTYPED_TRACK: ContentType = ContentType::Unknown;
 
 #[derive(Clone)]
 pub struct UploadPlan {
+    /// The slices were encoded with this profile
+    pub profile: ErasureCode,
     /// One slice per spool in a group, so n of them
     pub slices: Vec<SliceWithProof>,
     pub commitment_hash: Hash,
@@ -786,6 +788,7 @@ fn prepare_plan(profile: ErasureCode, data: &[u8]) -> Result<UploadPlan, Tapedri
     let stripe_size = encoder.stripe_size();
 
     Ok(UploadPlan {
+        profile,
         slices,
         commitment_hash: merkle_root,
         storage_units: StorageUnits::from_bytes(data_len as u64),
@@ -1265,7 +1268,7 @@ pub(crate) async fn resolve_sent_blob<Blockchain: Rpc, Cluster: Api>(
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
     let written = fetch_track_written_event(client, &sent.signature).await?;
     let track_address: Address = written.track;
-    let meta = BlobDataSlice::Coded(sent.blob).meta(sent.plan.slices.len())
+    let meta = BlobDataSlice::Coded(sent.blob).meta(sent.plan.profile)
         .ok_or(TapedriveError::InvalidArgument("invalid blob commitment".into()))?;
 
     let track = CompressedTrack {
@@ -2030,7 +2033,7 @@ pub(crate) async fn coded_identity<Blockchain: Rpc, Cluster: Api>(
 fn coded_key(name: &[u8], plan: &UploadPlan) -> Result<(Hash, Hash), TapedriveError> {
     let slice = BlobDataSlice::Coded(plan_blob(plan));
     let meta = slice
-        .meta(plan.slices.len())
+        .meta(plan.profile)
         .ok_or_else(|| TapedriveError::Encoding("coded blob has no commitment".into()))?;
     Ok((track_key(name, &slice), meta.value_hash))
 }
@@ -2376,11 +2379,8 @@ mod tests {
 
         assert_eq!(plan.slices.len(), width);
         assert!(plan.leaves[width..].iter().all(|leaf| *leaf == Hash::default()));
-        assert_eq!(plan_blob(&plan).commitment_root(width), Some(plan.commitment_hash));
-        assert_ne!(
-            plan_blob(&plan).commitment_root(usize::from(TAPENET_PROFILE.n())),
-            Some(plan.commitment_hash)
-        );
+        assert_eq!(plan_blob(&plan).commitment_root(profile), Some(plan.commitment_hash));
+        assert_ne!(plan_blob(&plan).commitment_root(TAPENET_PROFILE), Some(plan.commitment_hash));
         assert!(coded_key(b"name", &plan).is_ok());
     }
 

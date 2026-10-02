@@ -1,40 +1,9 @@
 /// A type alias for a (value, weight) pair.
 pub type ValueAndWeight = (u64, u64);
 
-/// Returns the BFT tolerance bound floor((n − 1)/3) for a non-zero participant count.
-pub const fn max_faulty(total: u64) -> u64 {
-    debug_assert!(total > 0);
-
-    let n = total;
-    (n - 1) / 3
-}
-
-/// Returns the minimum number of correct participants, computed as n minus floor((n − 1)/3).
-pub const fn min_correct(total: u64) -> u64 {
-    debug_assert!(total > 0);
-
-    let n = total;
-    let f = max_faulty(total);
-    let result = n - f;
-
-    debug_assert!(result > 0, "result must be non-zero");
-
-    result
-}
-
 /// Returns true when weight is at least two thirds of total.
 pub const fn is_supermajority(weight: u64, total: u64) -> bool {
     3 * weight >= 2 * total + 1
-}
-
-/// Participants required to reconstruct the data with at least one honest owner.
-pub const fn recovery_threshold(total: u64, reconstruct_k: u64) -> u64 {
-    let honest = max_faulty(total) + 1;
-    if reconstruct_k > honest {
-        reconstruct_k
-    } else {
-        honest
-    }
 }
 
 /// Finds the highest value where the cumulative weight of all votes for that value and higher
@@ -82,21 +51,6 @@ pub fn quorum_below(pairs: &[ValueAndWeight], total: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn bft_bounds() {
-        for n in 1..=100u64 {
-            let f = max_faulty(n);
-            let m = min_correct(n);
-
-            assert_eq!(f, (n - 1) / 3);
-            assert_eq!(m, n - f);
-            assert!(3 * f < n);
-            assert!(m > 2 * f);
-            assert_eq!(m + f, n);
-            assert!(m > 0);
-        }
-    }
 
     #[test]
     fn supermajority_edges() {
@@ -161,12 +115,5 @@ mod tests {
         assert!(hp > 0);
         assert!(lf > 0);
         assert!(lf >= hp);
-    }
-
-    #[test]
-    fn recovery() {
-        assert_eq!(recovery_threshold(20, 7), 7);
-        assert_eq!(recovery_threshold(20, 9), 9);
-        assert_eq!(recovery_threshold(4, 2), 2);
     }
 }

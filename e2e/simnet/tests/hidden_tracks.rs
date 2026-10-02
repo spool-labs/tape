@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 use tape_peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::share::{ShareToken, ALL_TRACKS};
 use tape_core::track::types::TrackVisibility;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -12,7 +11,9 @@ use tape_core::types::{BasisPoints, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_crypto::hash::{hash, Hash};
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
+use tape_e2e_simnet::{
+    NodeRuntimeMode, SimnetBuilder, SimnetScenario, TAPENET_GROUP_SIZE, run_simnet_test,
+};
 use tape_protocol::api::FindTrackVersion;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::read_options::ReadOptions;
@@ -32,7 +33,7 @@ fn hidden_tracks() {
 }
 
 async fn hidden_tracks_inner() {
-    let node_count = GROUP_SIZE;
+    let node_count = TAPENET_GROUP_SIZE;
     let mut harness = SimnetBuilder::new()
         .node_count(node_count)
         .runtime_mode(NodeRuntimeMode::Full)

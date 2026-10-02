@@ -59,8 +59,8 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };
 
-    let width = state.context.params().n();
-    if blob.commitment_root(width) == Some(request.proof.observed_root) {
+    let profile = state.context.params().profile;
+    if blob.commitment_root(profile) == Some(request.proof.observed_root) {
         return Err(RouteError::BadRequest("roots match, no inconsistency".into()));
     }
 
@@ -261,7 +261,7 @@ mod tests {
 
         let request = InconsistencyRequest {
             proof: InconsistencyProof {
-                observed_root: blob.commitment_root(ctx.params().n()).expect("root"),
+                observed_root: blob.commitment_root(ctx.params().profile).expect("root"),
                 spool_bitmap: tape_core::types::SpoolBitmap::zeroed(),
                 signature: BlsSignature::zeroed(),
             },

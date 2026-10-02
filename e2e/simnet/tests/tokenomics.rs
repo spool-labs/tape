@@ -14,7 +14,6 @@ use tape_api::program::tapedrive::{
 };
 use tape_api::program::token::{MINT_ADDRESS, TOKEN_DECIMALS};
 use tape_api::utils::ata;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, NodePreferences};
 use tape_core::tape::{remaining_tape_epochs, tape_reservation_cost};
@@ -22,12 +21,13 @@ use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
 use tape_crypto::Address;
 use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetHarness, SimnetScenario, run_simnet_test,
+    NodeRuntimeMode, SimnetBuilder, SimnetHarness, SimnetScenario, TAPENET_GROUP_SIZE,
+    run_simnet_test,
 };
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_store::ops::{ObjectInfoOps, TrackDataOps, TrackOps};
 
-const NODE_COUNT: usize = GROUP_SIZE;
+const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
 const TARGET_GROUPS: u64 = 1;
 const BURN_FEE_BPS: BasisPoints = BasisPoints(1_000);
 const SUBSIDY_DECAY_BPS: BasisPoints = DEFAULT_SUBSIDY_DECAY_BPS;
@@ -434,7 +434,7 @@ async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumbe
     );
 
     let expected = NodePreferences {
-        committee_size: GROUP_SIZE as u64,
+        committee_size: TAPENET_GROUP_SIZE as u64,
         spool_groups: TARGET_GROUPS,
         burn_fee_bps: BURN_FEE_BPS,
         subsidy_decay_bps: SUBSIDY_DECAY_BPS,

@@ -63,11 +63,8 @@ impl System {
     /// The profile, trust model and thresholds together, for a client or node
     /// that reads them once and keeps them.
     pub fn params(&self) -> Result<NetworkParams, ProgramError> {
-        Ok(NetworkParams {
-            profile: self.code()?,
-            trust: self.trust()?,
-            thresholds: self.thresholds()?,
-        })
+        NetworkParams::try_new(self.code()?, self.trust()?)
+            .map_err(|_| TapeError::UnexpectedState.into())
     }
 
     /// Group positions set in a signer bitmap.

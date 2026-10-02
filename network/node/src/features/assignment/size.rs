@@ -246,7 +246,7 @@ fn track_footprint<Db: Store>(
     if blob.get_hash() != metadata.value_hash {
         return Err(invalid_track(track, "blob hash does not match track metadata"));
     }
-    if blob.commitment_root(usize::from(profile.n())) != Some(blob.commitment) {
+    if blob.commitment_root(profile) != Some(blob.commitment) {
         return Err(invalid_track(track, "blob commitment is invalid"));
     }
 

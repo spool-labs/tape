@@ -148,43 +148,34 @@ mod tests {
     // happy-path BLS-aggregate certification of a track
     #[test]
     fn certify() {
-        certify_case(permissionless_system(), MAX_GROUP_SIZE, &signers(14), None);
+        certify_case(permissionless_system(), &signers(14), None);
     }
 
     // tapenet refuses thirteen signers, one short of its fourteen
     #[test]
     fn below_quorum() {
-        certify_case(
-            permissionless_system(),
-            MAX_GROUP_SIZE,
-            &signers(13),
-            Some(TapeError::NoQuorum.into()),
-        );
+        certify_case(permissionless_system(), &signers(13), Some(TapeError::NoQuorum.into()));
     }
 
     // a 3-of-4 cluster certifies on three signers and refuses two
     #[test]
     fn trusted_quorum() {
-        certify_case(trusted_system(NARROW), 4, &signers(3), None);
-        certify_case(trusted_system(NARROW), 4, &signers(2), Some(TapeError::NoQuorum.into()));
+        certify_case(trusted_system(NARROW), &signers(3), None);
+        certify_case(trusted_system(NARROW), &signers(2), Some(TapeError::NoQuorum.into()));
     }
 
-    // a signer bit past the network's width adds no weight
+    // a signer bit past the profile's n adds no weight
     #[test]
     fn padding_signer() {
-        certify_case(
-            trusted_system(NARROW),
-            4,
-            &[0, 1, 4],
-            Some(TapeError::BadMember.into()),
-        );
+        certify_case(trusted_system(NARROW), &[0, 1, 4], Some(TapeError::BadMember.into()));
     }
 
     fn signers(count: usize) -> Vec<usize> {
         (0..count).collect()
     }
 
-    fn certify_case(base: System, width: usize, signed: &[usize], error: Option<ProgramError>) {
+    fn certify_case(base: System, signed: &[usize], error: Option<ProgramError>) {
+        let profile = base.code().unwrap();
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let delegate = Pubkey::new_unique();
@@ -196,7 +187,7 @@ mod tests {
         let group_id = GroupIndex(0);
         let (group_address, _) = group_pda(curr, group_id);
 
-        let (sks, group) = make_group_of(curr, group_id, width);
+        let (sks, group) = make_group_of(curr, group_id, profile);
 
         let system = System {
             current_epoch: curr,
@@ -252,10 +243,10 @@ mod tests {
         let track_message = TrackWriteMessage::new(curr, old_track_hash);
         let message = track_message.to_bytes();
 
-        // A bit past the width has no key behind it, so only the live ones sign.
+        // A bit past the profile's n has no key behind it, so only the live ones sign.
         let partials: Vec<BlsSignature> = signed
             .iter()
-            .filter(|&&i| i < width)
+            .filter(|&&i| i < sks.len())
             .map(|&i| sks[i].sign(message).unwrap())
             .collect();
         let agg_sig = BlsSignature::aggregate(&partials).unwrap();

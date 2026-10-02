@@ -410,7 +410,7 @@ mod tests {
                 stripe_count: StripeCount(1),
                 leaves,
             };
-            assert_eq!(blob.commitment_root(width), Some(root));
+            assert_eq!(blob.commitment_root(profile), Some(root));
         }
     }
 

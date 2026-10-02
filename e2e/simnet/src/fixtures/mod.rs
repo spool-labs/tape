@@ -1,4 +1,3 @@
-pub mod bft;
 pub mod cluster;
 pub mod control_plane;
 pub mod data_plane;

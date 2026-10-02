@@ -50,7 +50,7 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
             block.slot,
             &block.instructions,
             &block.instruction_tx_ids,
-            usize::from(self.profile.n()),
+            self.profile,
         )?;
 
         for entry in &captured.events {

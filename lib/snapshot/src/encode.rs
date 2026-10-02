@@ -442,7 +442,7 @@ mod tests {
                 BTreeMap::new();
             for c in &chunks {
                 assert_eq!(c.slices.len(), n, "{profile:?}");
-                assert_eq!(c.blob.commitment_root(n), Some(c.blob.commitment), "{profile:?}");
+                assert_eq!(c.blob.commitment_root(profile), Some(c.blob.commitment), "{profile:?}");
 
                 let (chunk, symbol) =
                     decode_chunk_payload(&inner_slices(c, k), profile).unwrap();

@@ -88,8 +88,8 @@ pub fn coded_blob<Db: Store, Cluster: Api, Blockchain: Rpc>(
         crate::metrics::inc_decode_result("data_mismatch");
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };
-    let width = state.context.params().n();
-    if blob.get_hash() != track.value_hash || blob.commitment_root(width) != Some(blob.commitment) {
+    let profile = state.context.params().profile;
+    if blob.get_hash() != track.value_hash || blob.commitment_root(profile) != Some(blob.commitment) {
         crate::metrics::inc_decode_result("commitment_mismatch");
         return Err(RouteError::Internal("blob commitment mismatch".into()));
     }

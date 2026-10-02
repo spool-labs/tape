@@ -3,6 +3,7 @@
 use tape_crypto::hash::hash;
 use tape_crypto::Hash;
 
+use crate::encoding::ErasureCode;
 use crate::track::blob::BlobEncoding;
 use crate::track::types::{TrackKind, TrackState};
 use crate::types::{ContentType, StorageUnits};
@@ -35,8 +36,8 @@ impl BlobData {
     }
 
     #[inline(always)]
-    pub fn meta(&self, width: usize) -> Option<TrackMeta> {
-        self.as_slice().meta(width)
+    pub fn meta(&self, profile: ErasureCode) -> Option<TrackMeta> {
+        self.as_slice().meta(profile)
     }
 }
 
@@ -72,13 +73,13 @@ impl<'source> BlobDataSlice<'source> {
         }
     }
 
-    /// Derive the track's metadata, checking a coded blob's commitment over `width` slices.
+    /// Derive the track's metadata, checking a coded blob's commitment under the network profile.
     #[inline(always)]
-    pub fn meta(self, width: usize) -> Option<TrackMeta> {
+    pub fn meta(self, profile: ErasureCode) -> Option<TrackMeta> {
         match self {
             Self::Inline(bytes) => Some(TrackMeta::inline(bytes)),
             Self::Coded(blob) => {
-                if blob.commitment_root(width) != Some(blob.commitment) {
+                if blob.commitment_root(profile) != Some(blob.commitment) {
                     return None;
                 }
 

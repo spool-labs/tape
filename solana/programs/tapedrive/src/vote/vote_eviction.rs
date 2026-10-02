@@ -219,7 +219,7 @@ mod tests {
 
         // A 3-of-4 cluster, where three of a group's four members sign.
         fn narrow() -> Self {
-            let (sks, group) = make_group_of(VOTING_EPOCH, GroupIndex(0), 4);
+            let (sks, group) = make_group_of(VOTING_EPOCH, GroupIndex(0), NARROW);
 
             Self {
                 base: trusted_system(NARROW),

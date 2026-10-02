@@ -18,11 +18,6 @@ impl SliceIndex {
         debug_assert!(index < MAX_GROUP_SIZE, "SliceIndex out of bounds: {index}");
         Self(index)
     }
-
-    /// Every slice index of a group of `width` slices.
-    pub fn all(width: usize) -> impl Iterator<Item = Self> {
-        (0..width).map(Self)
-    }
 }
 
 impl Deref for SliceIndex {

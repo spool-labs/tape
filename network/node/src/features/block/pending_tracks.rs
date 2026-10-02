@@ -208,7 +208,7 @@ impl PendingTracks {
                     event,
                     ..
                 } => {
-                    let Some(meta) = value.meta(usize::from(profile.n())) else {
+                    let Some(meta) = value.meta(profile) else {
                         continue;
                     };
                     let state = CompressedTrack {

@@ -198,17 +198,18 @@ mod tests {
     };
     use tape_test::*;
 
-    // A payload seating members 0..width, with the padding entries left at zero.
+    // A payload seating members 0..n, with the padding entries left at zero.
     fn assignment_inputs(
         group_id: GroupIndex,
         size: StorageUnits,
         blacklisted: [StorageUnits; MAX_GROUP_SIZE],
-        width: usize,
+        profile: ErasureCode,
     ) -> (
         AssignmentGroupPayload,
         Hash,
         [Hash; ASSIGNMENT_TREE_HEIGHT],
     ) {
+        let width = usize::from(profile.n());
         let member_indices = core::array::from_fn(|i| if i < width { i as u64 } else { 0 });
         let payload =
             AssignmentGroupPayload::new(group_id, member_indices, size, blacklisted);
@@ -226,7 +227,8 @@ mod tests {
         (payload, assignment_hash, proof)
     }
 
-    fn members_and_peers(width: usize) -> (Vec<Member>, Vec<Peer>) {
+    fn members_and_peers(profile: ErasureCode) -> (Vec<Member>, Vec<Peer>) {
+        let width = usize::from(profile.n());
         let mut members = Vec::with_capacity(width);
         let mut peers = Vec::with_capacity(width);
 
@@ -256,7 +258,7 @@ mod tests {
 
     #[test]
     fn finalize_group() {
-        finalize_case(permissionless_system(), MAX_GROUP_SIZE);
+        finalize_case(permissionless_system());
     }
 
     // a 3-of-4 cluster seats four members, ignores the padding entries and
@@ -265,10 +267,12 @@ mod tests {
     fn narrow_group() {
         let narrow = trusted_system(ErasureCode::ReedSolomon(RSParams::new(3, 1)));
 
-        finalize_case(narrow, 4);
+        finalize_case(narrow);
     }
 
-    fn finalize_case(base: System, width: usize) {
+    fn finalize_case(base: System) {
+        let profile = base.code().unwrap();
+        let width = usize::from(profile.n());
         let fee_payer = Pubkey::new_unique();
 
         let current_epoch_id = EpochNumber(12);
@@ -278,7 +282,7 @@ mod tests {
         let size = StorageUnits::gb(2);
         let blacklisted = [StorageUnits::zero(); MAX_GROUP_SIZE];
         let (payload, assignment_hash, proof) =
-            assignment_inputs(group_id, size, blacklisted, width);
+            assignment_inputs(group_id, size, blacklisted, profile);
 
         let (system_address, _) = system_pda();
         let (target_epoch_address, _) = epoch_pda(target_epoch_id);
@@ -298,7 +302,7 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let (members, mut peers) = members_and_peers(width);
+        let (members, mut peers) = members_and_peers(profile);
         peers.reverse();
 
         let committee = Committee {
@@ -392,7 +396,7 @@ mod tests {
         let size = StorageUnits((u64::MAX / MAX_GROUP_SIZE as u64) + 1);
         let blacklisted = [StorageUnits::zero(); MAX_GROUP_SIZE];
         let (payload, assignment_hash, proof) =
-            assignment_inputs(group_id, size, blacklisted, MAX_GROUP_SIZE);
+            assignment_inputs(group_id, size, blacklisted, TAPENET_PROFILE);
 
         let (system_address, _) = system_pda();
         let (target_epoch_address, _) = epoch_pda(target_epoch_id);
@@ -412,7 +416,7 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let (members, peers) = members_and_peers(MAX_GROUP_SIZE);
+        let (members, peers) = members_and_peers(TAPENET_PROFILE);
 
         let committee = Committee {
             epoch: target_epoch_id,
