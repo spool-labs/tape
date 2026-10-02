@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::BasisPoints;
 use tape_crypto::Address;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
+use tape_e2e_simnet::{
+    NodeRuntimeMode, SimnetBuilder, SimnetScenario, TAPENET_GROUP_SIZE, run_simnet_test,
+};
 
 const TARGET_GROUPS: u64 = 20;
 
@@ -126,7 +127,7 @@ async fn assert_group_counts(
                 .iter()
                 .filter(|spool| spool.node != Address::default())
                 .count(),
-            GROUP_SIZE,
+            TAPENET_GROUP_SIZE,
             "group {index} is not fully assigned"
         );
     }

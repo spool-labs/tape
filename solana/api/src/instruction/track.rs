@@ -325,18 +325,16 @@ fn make_track_write(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::track::data::TrackObjectInfo;
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
 
     fn valid_blob(size: StorageUnits) -> BlobEncoding {
-        let leaves = [Hash::from([0x11; 32]); GROUP_SIZE];
+        let leaves = [Hash::from([0x11; 32]); MAX_GROUP_SIZE];
         BlobEncoding {
             size,
             commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves),
-            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(1),
             leaves,

@@ -3,6 +3,7 @@
 use bytemuck::bytes_of;
 use tape_api::event::{TapeExtended, TapeReserved, TrackDeleted, TrackWritten};
 use tape_api::program::tapedrive::track_pda;
+use tape_core::encoding::ErasureCode;
 use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayTrackObject, ReplayableEvent};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::data::BlobDataSlice;
@@ -37,11 +38,15 @@ pub struct CaptureOutput {
 
 
 /// Capture a block's instructions into replayable events.
+///
+/// A coded track's commitment is checked under `profile`, the network's
+/// erasure code.
 pub fn capture_block(
     initial_epoch: EpochNumber,
     slot: SlotNumber,
     instructions: &[ParsedInstruction],
     tx_ids: &[Txid],
+    profile: ErasureCode,
 ) -> Result<CaptureOutput, ParseError> {
     let mut current_epoch = initial_epoch;
     let mut events = Vec::new();
@@ -55,7 +60,8 @@ pub fn capture_block(
             ))
         })?;
 
-        let Some(captured) = capture_instruction(&mut current_epoch, instruction, tx_id)? else {
+        let Some(captured) = capture_instruction(&mut current_epoch, instruction, tx_id, profile)?
+        else {
             continue;
         };
         if let Some(raw_track) = captured.raw_track {
@@ -80,6 +86,7 @@ fn capture_instruction(
     current_epoch: &mut EpochNumber,
     instruction: &ParsedInstruction,
     tx_id: Txid,
+    profile: ErasureCode,
 ) -> Result<Option<Captured>, ParseError> {
     let actor = actor_for(instruction);
     let captured = match instruction {
@@ -257,6 +264,7 @@ fn capture_instruction(
             *visibility,
             object.clone(),
             value.as_slice(),
+            profile,
         )?,
         ParsedInstruction::DeleteTrack { event, .. } => {
             capture_delete(*current_epoch, tx_id, actor, event)
@@ -364,6 +372,7 @@ fn capture_instruction(
             TrackVisibility::Public,
             None,
             BlobDataSlice::Inline(bytes_of(entry)),
+            profile,
         )?,
         ParsedInstruction::RemoveFromBlacklist { event, .. } => {
             capture_delete(*current_epoch, tx_id, actor, event)
@@ -377,6 +386,7 @@ fn capture_instruction(
             TrackVisibility::Public,
             None,
             BlobDataSlice::Inline(bytes_of(span)),
+            profile,
         )?,
 
         // No corresponding ReplayableEvent variant yet — silently drop.
@@ -417,9 +427,10 @@ fn capture_track(
     visibility: TrackVisibility,
     object: Option<ReplayTrackObject>,
     data: BlobDataSlice<'_>,
+    profile: ErasureCode,
 ) -> Result<Captured, ParseError> {
     let meta = data
-        .meta()
+        .meta(profile)
         .ok_or_else(|| ParseError::Deserialization("invalid track payload".into()))?;
 
     let state = CompressedTrack {
@@ -594,8 +605,8 @@ mod tests {
         TrackWritten,
     };
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{BlacklistEntry, NodePreferences};
@@ -624,7 +635,6 @@ mod tests {
         BlobEncoding {
             size: StorageUnits::from_bytes(64 * slices.len() as u64),
             commitment,
-            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(slices.len() as u64),
             leaves,
@@ -632,7 +642,7 @@ mod tests {
     }
 
     fn default_blob() -> BlobEncoding {
-        let payload = vec![vec![0xAA; 64]; GROUP_SIZE];
+        let payload = vec![vec![0xAA; 64]; MAX_GROUP_SIZE];
         blob_encoding(&payload)
     }
 
@@ -645,7 +655,7 @@ mod tests {
         epoch: EpochNumber,
         visibility: TrackVisibility,
     ) -> TrackWritten {
-        let meta = value.meta().unwrap();
+        let meta = value.meta(TAPENET_PROFILE).unwrap();
         let state = CompressedTrack {
             tape,
             key,
@@ -796,7 +806,7 @@ mod tests {
         instructions: Vec<ParsedInstruction>,
     ) -> CaptureOutput {
         let tx_ids = vec![Txid::default(); instructions.len()];
-        capture_block(epoch, slot, &instructions, &tx_ids).unwrap()
+        capture_block(epoch, slot, &instructions, &tx_ids, TAPENET_PROFILE).unwrap()
     }
 
     #[test]

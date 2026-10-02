@@ -67,6 +67,9 @@ pub enum UploadError {
 
     #[error("epoch changed during upload: {not_responsible} slices rejected")]
     EpochChanged { not_responsible: usize },
+
+    #[error("network state holds no valid encoding profile and trust model")]
+    NoNetworkParams,
 }
 
 /// Errors that can occur during download.

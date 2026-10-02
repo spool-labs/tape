@@ -518,7 +518,7 @@ mod tests {
         TrackWritten, VoteProposed, VoteRecorded,
     };
     use tape_core::bls::BlsPubkey;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::prelude::*;
     use tape_core::spooler::GroupIndex;
     use tape_core::staking::RateSpan;
@@ -901,10 +901,9 @@ mod tests {
                 value: BlobData::Coded(BlobEncoding {
                     size: StorageUnits::mb(100),
                     commitment: Hash::default(),
-                    profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
                     stripe_count: StripeCount(1),
-                    leaves: [Hash::default(); GROUP_SIZE],
+                    leaves: [Hash::default(); MAX_GROUP_SIZE],
                 }),
             },
             RawInstruction::CertifyTrack { track: track2 },
@@ -962,10 +961,9 @@ mod tests {
                 value: BlobData::Coded(BlobEncoding {
                     size: StorageUnits::mb(1_024),
                     commitment: Hash::default(),
-                    profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
                     stripe_count: StripeCount(1),
-                    leaves: [Hash::default(); GROUP_SIZE],
+                    leaves: [Hash::default(); MAX_GROUP_SIZE],
                 }),
             },
             RawInstruction::AdvanceShareNonce {
@@ -1028,10 +1026,9 @@ mod tests {
                     value: BlobData::Coded(BlobEncoding {
                         size: StorageUnits::mb(1_024),
                         commitment: Hash::default(),
-                        profile: EncodingProfile::default(),
                         stripe_size: StorageUnits::from_bytes(64),
                         stripe_count: StripeCount(1),
-                        leaves: [Hash::default(); GROUP_SIZE],
+                        leaves: [Hash::default(); MAX_GROUP_SIZE],
                     }),
                 },
                 TapedriveEvent::TrackWritten(TrackWritten {

@@ -7,12 +7,12 @@ use tape_crypto::merkle::{create_proof_from_level, fold_level, hash_leaves, root
 
 use crate::types::{GroupIndex, SpoolIndex};
 
-/// Number of slices per group (fixed network constant).
-/// Individual encoding profiles may use n ≤ GROUP_SIZE.
-pub const GROUP_SIZE: usize = 20;
+/// Widest group a network can run, and the width of every per-group array.
+/// A network uses positions 0..n of each group, with n from its profile.
+pub const MAX_GROUP_SIZE: usize = 20;
 
 /// Merkle tree height for slice commitments.
-/// Derived from GROUP_SIZE: 2^5 = 32 >= 20 leaves.
+/// Derived from MAX_GROUP_SIZE: 2^5 = 32 >= 20 leaves.
 pub const SLICE_TREE_HEIGHT: usize = 5;
 
 /// Bytes covered by one sample leaf beneath a slice root.
@@ -144,12 +144,12 @@ pub fn slice_root(slice: &[u8]) -> Option<Hash> {
 
 /// The slice position a spool holds within its group.
 ///
-/// A spool index is network-wide while a commitment leaf index runs 0..GROUP_SIZE,
+/// A spool index is network-wide while a commitment leaf index runs 0..MAX_GROUP_SIZE,
 /// so anything indexing `leaves` has to convert first. Total, because every spool
 /// index belongs to the group it divides into.
 #[inline]
 pub fn leaf_position(spool: SpoolIndex) -> SpoolIndex {
-    SpoolIndex(spool.as_u64() % GROUP_SIZE as u64)
+    SpoolIndex(spool.as_u64() % MAX_GROUP_SIZE as u64)
 }
 
 /// Get the group index for a given spool.
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_spool_group_size() {
-        assert_eq!(GROUP_SIZE, 20);
+        assert_eq!(MAX_GROUP_SIZE, 20);
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod tests {
         for spool in [0u64, 1, 20, 137, 999] {
             let spool = SpoolIndex(spool);
             let position = leaf_position(spool);
-            assert!(position.as_usize() < GROUP_SIZE);
+            assert!(position.as_usize() < MAX_GROUP_SIZE);
             assert_eq!(group_for_spool(spool).position_of(spool), Some(position.as_usize()));
         }
     }

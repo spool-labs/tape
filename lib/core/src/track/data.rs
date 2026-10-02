@@ -3,6 +3,7 @@
 use tape_crypto::hash::hash;
 use tape_crypto::Hash;
 
+use crate::encoding::ErasureCode;
 use crate::track::blob::BlobEncoding;
 use crate::track::types::{TrackKind, TrackState};
 use crate::types::{ContentType, StorageUnits};
@@ -35,8 +36,8 @@ impl BlobData {
     }
 
     #[inline(always)]
-    pub fn meta(&self) -> Option<TrackMeta> {
-        self.as_slice().meta()
+    pub fn meta(&self, profile: ErasureCode) -> Option<TrackMeta> {
+        self.as_slice().meta(profile)
     }
 }
 
@@ -72,17 +73,13 @@ impl<'source> BlobDataSlice<'source> {
         }
     }
 
+    /// Derive the track's metadata, checking a coded blob's commitment under the network profile.
     #[inline(always)]
-    pub fn meta(self) -> Option<TrackMeta> {
+    pub fn meta(self, profile: ErasureCode) -> Option<TrackMeta> {
         match self {
-            Self::Inline(bytes) => Some(TrackMeta {
-                kind: TrackKind::Inline,
-                size: StorageUnits::from_bytes(bytes.len() as u64),
-                state: TrackState::Certified,
-                value_hash: hash(bytes),
-            }),
+            Self::Inline(bytes) => Some(TrackMeta::inline(bytes)),
             Self::Coded(blob) => {
-                if blob.commitment_root() != blob.commitment {
+                if blob.commitment_root(profile) != Some(blob.commitment) {
                     return None;
                 }
 
@@ -103,6 +100,19 @@ pub struct TrackMeta {
     pub size: StorageUnits,
     pub state: TrackState,
     pub value_hash: Hash,
+}
+
+impl TrackMeta {
+    /// Metadata of an inline track, which its own bytes certify.
+    #[inline(always)]
+    pub fn inline(bytes: &[u8]) -> Self {
+        Self {
+            kind: TrackKind::Inline,
+            size: StorageUnits::from_bytes(bytes.len() as u64),
+            state: TrackState::Certified,
+            value_hash: hash(bytes),
+        }
+    }
 }
 
 /// Owned object write envelope.
@@ -193,18 +203,16 @@ pub fn track_key(name: &[u8], data: &BlobDataSlice<'_>) -> Hash {
 #[cfg(feature = "wincode")]
 mod tests {
     use super::*;
-    use crate::encoding::EncodingProfile;
-    use crate::erasure::GROUP_SIZE;
+    use crate::erasure::MAX_GROUP_SIZE;
     use crate::types::StripeCount;
 
     fn sample_blob_encoding() -> BlobEncoding {
         BlobEncoding {
             size: StorageUnits::from_bytes(1024),
             commitment: Hash::from([0x22; 32]),
-            profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(4),
-            leaves: [Hash::from([0x33; 32]); GROUP_SIZE],
+            leaves: [Hash::from([0x33; 32]); MAX_GROUP_SIZE],
         }
     }
 

@@ -1245,7 +1245,8 @@ where
     let size = data.len() as u64;
     // The name trailer shares the inline budget with the payload, so the
     // ETag has to follow the same inline-or-coded decision the write makes.
-    let computed = match content_etag_named(key.as_bytes(), data.clone()).await {
+    let profile = state.context.params().profile;
+    let computed = match content_etag_named(profile, key.as_bytes(), data.clone()).await {
         Ok(computed) => computed,
         Err(error) => {
             permit.refund(state);

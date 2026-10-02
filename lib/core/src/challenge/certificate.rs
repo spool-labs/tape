@@ -10,12 +10,13 @@ use tape_crypto::hash::Hash;
 
 use crate::bls::{BlsPubkey, BlsSignature};
 use crate::cert::challenge::ChallengeAttestMessage;
+use crate::thresholds::Thresholds;
 use crate::types::{EpochNumber, GroupIndex, RoundNumber, SpoolIndex};
 
 /// Why a certificate would not stand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CertificateRejection {
-    /// Fewer signatures than the group's agreement threshold.
+    /// Fewer signatures than the network's challenge threshold.
     BelowQuorum,
     /// Nobody but the challenged owner signed.
     OwnerOnly,
@@ -81,12 +82,12 @@ impl SuccessCertificate {
     #[cfg(not(target_os = "solana"))]
     pub fn verify_summed(
         &self,
-        threshold: usize,
+        thresholds: &Thresholds,
         owner: Address,
         members: &[Address],
         quorum: &crate::bls::BlsQuorumKey,
     ) -> Result<(), CertificateRejection> {
-        if self.signers.len() < threshold {
+        if (self.signers.len() as u64) < thresholds.challenge {
             return Err(CertificateRejection::BelowQuorum);
         }
         if self.signers.iter().any(|signer| !members.contains(signer)) {
@@ -105,17 +106,18 @@ impl SuccessCertificate {
 
     /// Whether this certificate stands.
     ///
-    /// `members` is the challenged group's roster. The threshold is a fraction
-    /// of it, so without the roster check any `threshold` nodes in the network
-    /// could certify a round nobody in the group answered.
+    /// `members` is the challenged group's roster. The challenge threshold
+    /// counts group members, so without the roster check that many nodes from
+    /// anywhere in the network could certify a round nobody in the group
+    /// answered.
     pub fn verify(
         &self,
-        threshold: usize,
+        thresholds: &Thresholds,
         owner: Address,
         members: &[Address],
         key_of: impl Fn(Address) -> Option<BlsPubkey>,
     ) -> Result<(), CertificateRejection> {
-        if self.signers.len() < threshold {
+        if (self.signers.len() as u64) < thresholds.challenge {
             return Err(CertificateRejection::BelowQuorum);
         }
 
@@ -151,9 +153,18 @@ impl SuccessCertificate {
 mod tests {
     use super::*;
     use crate::bls::BlsPrivateKey;
+    use crate::thresholds::TrustModel;
     use std::collections::HashMap;
 
+    /// Signers a certificate needs on the network these tests use.
     const THRESHOLD: usize = 4;
+
+    /// A trusted 4 of 5 network, where every count is four.
+    fn thresholds() -> Thresholds {
+        let thresholds = Thresholds::try_new(TrustModel::Trusted, 5, 4).expect("4 of 5");
+        assert_eq!(thresholds.challenge, THRESHOLD as u64);
+        thresholds
+    }
 
     struct Group {
         keys: HashMap<Address, BlsPubkey>,
@@ -213,7 +224,7 @@ mod tests {
         let certificate = certificate(&group, 0xAA);
 
         assert_eq!(
-            certificate.verify(THRESHOLD, group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
+            certificate.verify(&thresholds(), group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
             Ok(())
         );
     }
@@ -245,7 +256,7 @@ mod tests {
         let certificate = certificate(&group, 0xAA);
 
         assert_eq!(
-            certificate.verify(THRESHOLD, group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
+            certificate.verify(&thresholds(), group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
             Err(CertificateRejection::BelowQuorum)
         );
     }
@@ -261,7 +272,7 @@ mod tests {
 
         let certificate = certificate(&group, 0xAA);
         assert_eq!(
-            certificate.verify(THRESHOLD, group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
+            certificate.verify(&thresholds(), group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
             Ok(())
         );
     }
@@ -275,9 +286,11 @@ mod tests {
             .signed
             .push((group.owner, key.sign(message(0xAA).to_bytes()).expect("sign")));
 
+        // A 2-copy mirror needs one signer, and it can't be the owner.
+        let mirror = Thresholds::try_new(TrustModel::Trusted, 2, 1).expect("mirror");
         let certificate = certificate(&group, 0xAA);
         assert_eq!(
-            certificate.verify(1, group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
+            certificate.verify(&mirror, group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
             Err(CertificateRejection::OwnerOnly)
         );
     }
@@ -289,7 +302,7 @@ mod tests {
         doubled.signers[1] = doubled.signers[0];
 
         assert_eq!(
-            doubled.verify(THRESHOLD, group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
+            doubled.verify(&thresholds(), group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
             Err(CertificateRejection::DuplicateSigner)
         );
     }
@@ -301,7 +314,7 @@ mod tests {
         let stranger = certificate.signers[0];
 
         assert_eq!(
-            certificate.verify(THRESHOLD, group.owner, &group.roster(), |s| {
+            certificate.verify(&thresholds(), group.owner, &group.roster(), |s| {
                 if s == stranger {
                     None
                 } else {
@@ -326,11 +339,11 @@ mod tests {
         let quorum = crate::bls::BlsQuorumKey::sum(&keys).expect("sum");
 
         assert_eq!(
-            certificate.verify_summed(THRESHOLD, group.owner, &group.roster(), &quorum),
+            certificate.verify_summed(&thresholds(), group.owner, &group.roster(), &quorum),
             Ok(())
         );
         assert_eq!(
-            certificate.verify_summed(THRESHOLD, group.owner, &[group.owner], &quorum),
+            certificate.verify_summed(&thresholds(), group.owner, &[group.owner], &quorum),
             Err(CertificateRejection::OutsideGroup)
         );
     }
@@ -345,7 +358,7 @@ mod tests {
         // Everyone signed honestly, but none of them hold a position in the
         // group being asked.
         assert_eq!(
-            certificate.verify(THRESHOLD, group.owner, &[group.owner], |s| group
+            certificate.verify(&thresholds(), group.owner, &[group.owner], |s| group
                 .keys
                 .get(&s)
                 .copied()),
@@ -356,7 +369,7 @@ mod tests {
         let mut roster = group.roster();
         roster.retain(|member| *member != certificate.signers[0]);
         assert_eq!(
-            certificate.verify(THRESHOLD, group.owner, &roster, |s| group
+            certificate.verify(&thresholds(), group.owner, &roster, |s| group
                 .keys
                 .get(&s)
                 .copied()),
@@ -373,7 +386,7 @@ mod tests {
 
         let certificate = certificate(&group, 0xAA);
         assert_eq!(
-            certificate.verify(THRESHOLD, group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
+            certificate.verify(&thresholds(), group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
             Err(CertificateRejection::BadAggregate)
         );
     }
@@ -385,7 +398,7 @@ mod tests {
         moved.round = RoundNumber(6);
 
         assert_eq!(
-            moved.verify(THRESHOLD, group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
+            moved.verify(&thresholds(), group.owner, &group.roster(), |s| group.keys.get(&s).copied()),
             Err(CertificateRejection::BadAggregate)
         );
     }

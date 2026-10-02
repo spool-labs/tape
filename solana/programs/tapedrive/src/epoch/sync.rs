@@ -1,6 +1,5 @@
 use tape_api::program::prelude::*;
 use tape_api::event::SpoolSynced;
-use tape_core::encoding::ClayParams;
 
 pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SyncSpool::try_from_bytes(data)?;
@@ -66,10 +65,7 @@ pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(TapeError::AlreadySynced.into());
     }
 
-    let required = recovery_threshold(
-        GROUP_SIZE as u64,
-        ClayParams::DEFAULT.k() as u64,
-    );
+    let required = system.thresholds()?.synced;
     let was_recoverable = group.synced.count_ones() as u64 >= required;
     group.synced.set(slice_idx);
     let is_recoverable = group.synced.count_ones() as u64 >= required;
@@ -97,6 +93,7 @@ pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::encoding::RSParams;
     use tape_test::*;
 
     fn group_with_owner(
@@ -131,7 +128,7 @@ mod tests {
             current_epoch: curr,
             target_group_count: 50,
             live_group_count: 50,
-            ..System::zeroed()
+            ..permissionless_system()
         };
 
         let epoch = Epoch {
@@ -191,14 +188,82 @@ mod tests {
         );
     }
 
+    // tapenet readies a group at f + 1 synced spools and leaves it waiting at f
     #[test]
     fn sync_transition() {
+        transition_case(permissionless_system(), 7, 6, true);
+        transition_case(permissionless_system(), 7, 5, false);
+    }
+
+    // a 3-of-4 cluster readies a group on its third synced spool
+    #[test]
+    fn trusted_transition() {
+        let narrow = trusted_system(ErasureCode::ReedSolomon(RSParams::new(3, 1)));
+
+        transition_case(narrow, 3, 2, true);
+        transition_case(narrow, 3, 1, false);
+    }
+
+    // a spool past the network's width has no owner to sync it
+    #[test]
+    fn past_width() {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let curr = EpochNumber(42);
+        let group_id = GroupIndex(0);
+        let (node_address, _) = node_pda(authority.into());
+
+        let system = System {
+            current_epoch: curr,
+            target_group_count: 1,
+            live_group_count: 1,
+            ..trusted_system(ErasureCode::ReedSolomon(RSParams::new(3, 1)))
+        };
+        let epoch = Epoch {
+            id: curr,
+            state: EpochState {
+                phase: EpochPhase::Sync as u64,
+                ..EpochState::zeroed()
+            },
+            total_groups: 1,
+            ..Epoch::zeroed()
+        };
+        let group = group_with_owner(curr, group_id, 0, node_address);
+        let node = Node {
+            authority: authority.into(),
+            ..Node::zeroed()
+        };
+
+        let instruction = build_sync_spool_ix(
+            fee_payer.into(),
+            authority.into(),
+            node_address,
+            curr,
+            group_id,
+            group_id.spool_at(4),
+        );
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_pda().0, system.pack(), tapedrive::ID),
+            pda(epoch_pda(curr).0, epoch.pack(), tapedrive::ID),
+            pda(group_pda(curr, group_id).0, group.pack(), tapedrive::ID),
+            pda(node_address, node.pack(), tapedrive::ID),
+        ];
+
+        test_env().process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(TapeError::NotInCommittee.into())],
+        );
+    }
+
+    fn transition_case(base: System, slice_in_group: usize, synced_before: usize, is_ready: bool) {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
         let curr = EpochNumber(42);
         let group_id = GroupIndex(0);
-        let slice_in_group = 7usize;
         let spool = group_id.spool_at(slice_in_group);
 
         let (system_address, _) = system_pda();
@@ -210,7 +275,7 @@ mod tests {
             current_epoch: curr,
             target_group_count: 1,
             live_group_count: 1,
-            ..System::zeroed()
+            ..base
         };
 
         let epoch = Epoch {
@@ -223,10 +288,8 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        // Six spools already synced; this call is the seventh, crossing
-        // max(k, f+1) and completing the only live group.
         let mut group = group_with_owner(curr, group_id, slice_in_group, node_address);
-        for slot in 0..slice_in_group - 1 {
+        for slot in 0..synced_before {
             group.synced.set(slot);
         }
 
@@ -256,14 +319,11 @@ mod tests {
         let mut expected_group = group;
         expected_group.synced.set(slice_in_group);
 
-        let expected_epoch = Epoch {
-            state: EpochState {
-                phase: EpochPhase::Snapshot as u64,
-                synced_count: 1,
-                ..EpochState::zeroed()
-            },
-            ..epoch
-        };
+        let mut expected_epoch = epoch;
+        if is_ready {
+            expected_epoch.state.phase = EpochPhase::Snapshot as u64;
+            expected_epoch.state.synced_count = 1;
+        }
 
         let env = test_env();
         env.process_instruction(

@@ -9,6 +9,7 @@ use tape_rpc::Rpc;
 use tape_rpc_client::RpcClient;
 use tape_api::program::tapedrive;
 use tape_core::prelude::{CompressedTrack, StorageUnits};
+use tape_core::thresholds::NetworkParams;
 use tape_core::types::coin::{SOL, TAPE};
 use tape_core::types::ContentType;
 use tape_crypto::prelude::{Address, Keypair};
@@ -28,6 +29,7 @@ use crate::stream::{
     receipt::StreamReceipt,
     write::{write_bytes as write_stream_bytes, write_stream as write_reader_stream},
 };
+use crate::track::network_params;
 use crate::track::write::{write_or_resume, UNNAMED_TRACK, UNTYPED_TRACK};
 
 /// High-level client for the Tapedrive storage network.
@@ -173,6 +175,12 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Load the current protocol state (lock-free).
     pub fn state(&self) -> arc_swap::Guard<Arc<ProtocolState>> {
         self.state.load()
+    }
+
+    /// The network's profile, trust model and thresholds, fetching the
+    /// network state first if this client has none yet.
+    pub async fn params(&self) -> Result<NetworkParams, TapedriveError> {
+        network_params(self, None).await
     }
 
     /// Return the payer keypair required for mutating operations.

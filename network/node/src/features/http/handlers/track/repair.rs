@@ -78,7 +78,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .get_track_data(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
-    let BlobData::Coded(blob) = track_data else {
+    let BlobData::Coded(_) = track_data else {
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };
 
@@ -90,8 +90,8 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .ok_or(RouteError::NotFound)?;
 
     let output = extract_repair_data(
-        &blob,
-        &request.stripes, 
+        state.context.params().profile,
+        &request.stripes,
         &helper_slice
     ).map_err(|error| RouteError::BadRequest(error.to_string()))?;
 
@@ -114,7 +114,8 @@ mod tests {
     use axum::response::IntoResponse;
 
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
-    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE, slice_root};
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_snapshot::snapshot_chunk_key;
     use tape_core::spooler::GroupIndex;
@@ -156,21 +157,20 @@ mod tests {
         // the per-slice metadata suffix that the repair extractor parses.
         let chunk = vec![0xCDu8; 2048];
         let group = GroupIndex(2);
-        let mut slicer = Slicer::clay_default();
+        let mut slicer = Slicer::try_from_profile(TAPENET_PROFILE).expect("tapenet slicer");
         slicer.set_chunk_index(ChunkNumber(group.0));
 
         let slices = slicer.encode(&chunk).expect("slicer encode");
         let stripe_size = slicer.stripe_size();
         let stripe_count = chunk.len().div_ceil(stripe_size);
 
-        let leaves: [Hash; GROUP_SIZE] =
+        let leaves: [Hash; MAX_GROUP_SIZE] =
             core::array::from_fn(|index| slice_root(&slices[index]).expect("slice within capacity"));
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
         let blob = BlobEncoding {
             size: StorageUnits::from_bytes(chunk.len() as u64),
             commitment,
-            profile: slicer.profile(),
             stripe_size: StorageUnits::from_bytes(stripe_size as u64),
             stripe_count: StripeCount(stripe_count as u64),
             leaves,

@@ -7,14 +7,14 @@
 use thiserror::Error;
 
 use tape_store_api::Store;
-use tape_core::encoding::EncodingType;
+use tape_core::encoding::ErasureCode;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, StorageUnits};
 use tape_crypto::Address;
-use tape_slicer::{num_stripes, ClayCoder, SliceMetadata};
+use tape_slicer::{num_stripes, stripe_chunk_len, SliceMetadata};
 use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
 use tape_store::types::ObjectInfo;
 use tape_store::TapeStore;
@@ -73,12 +73,14 @@ enum TrackWeight {
 ///   - return zero for empty/new groups;
 ///   - report Pending while a coded track's blob metadata has yet to arrive,
 ///     since every peer counts that track once it lands;
-///   - derive blob per-spool footprint from BlobEncoding encoding metadata.
+///   - derive blob per-spool footprint from the BlobEncoding metadata and the
+///     network's profile.
 pub fn group_weights<Db: Store>(
     store: &TapeStore<Db>,
     voting_epoch: EpochNumber,
     target_epoch: EpochNumber,
     target_groups: usize,
+    profile: ErasureCode,
 ) -> Result<GroupWeights, AssignmentSizeError> {
     let mut sizes = vec![StorageUnits::zero(); target_groups];
     let mut active_tracks = Vec::new();
@@ -97,8 +99,15 @@ pub fn group_weights<Db: Store>(
         let infos = store.get_object_infos(&addresses).map_err(store_error)?;
 
         for ((track, metadata), info) in tracks.iter().zip(infos) {
-            let weight =
-                active_track_footprint(store, *track, metadata, info, voting_epoch, target_epoch)?;
+            let weight = active_track_footprint(
+                store,
+                *track,
+                metadata,
+                info,
+                voting_epoch,
+                target_epoch,
+                profile,
+            )?;
             let active = match weight {
                 TrackWeight::Counted(active) => active,
                 TrackWeight::Excluded => continue,
@@ -150,6 +159,7 @@ fn active_track_footprint<Db: Store>(
     info: Option<ObjectInfo>,
     voting_epoch: EpochNumber,
     target_epoch: EpochNumber,
+    profile: ErasureCode,
 ) -> Result<TrackWeight, AssignmentSizeError> {
     // Only ObjectInfo::Valid is accounted user data. System-owned tracks are
     // kept live for repair/GC without entering assignment sizing.
@@ -194,7 +204,7 @@ fn active_track_footprint<Db: Store>(
         return Ok(TrackWeight::Excluded);
     }
 
-    let Some(footprint) = track_footprint(store, track, metadata)? else {
+    let Some(footprint) = track_footprint(store, track, metadata, profile)? else {
         return Ok(TrackWeight::Pending);
     };
 
@@ -211,6 +221,7 @@ fn track_footprint<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
     metadata: &CompressedTrack,
+    profile: ErasureCode,
 ) -> Result<Option<StorageUnits>, AssignmentSizeError> {
     if metadata.is_inline() {
         return Ok(Some(metadata.size));
@@ -235,14 +246,19 @@ fn track_footprint<Db: Store>(
     if blob.get_hash() != metadata.value_hash {
         return Err(invalid_track(track, "blob hash does not match track metadata"));
     }
-    if blob.commitment_root() != blob.commitment {
+    if blob.commitment_root(profile) != Some(blob.commitment) {
         return Err(invalid_track(track, "blob commitment is invalid"));
     }
 
-    blob_footprint(track, blob).map(Some)
+    blob_footprint(track, blob, profile).map(Some)
 }
 
-fn blob_footprint(track: Address, blob: BlobEncoding) -> Result<StorageUnits, AssignmentSizeError> {
+/// Bytes one spool holds for a coded track: its slice, metadata included.
+fn blob_footprint(
+    track: Address,
+    blob: BlobEncoding,
+    profile: ErasureCode,
+) -> Result<StorageUnits, AssignmentSizeError> {
     let stripe_size = usize::try_from(blob.stripe_size.as_u64())
         .map_err(|_| invalid_track(track, "stripe size overflows usize"))?;
 
@@ -263,28 +279,7 @@ fn blob_footprint(track: Address, blob: BlobEncoding) -> Result<StorageUnits, As
         ));
     }
 
-    let chunk_size = match blob.profile.encoding_type() {
-        Some(EncodingType::Clay) => {
-            let coder = ClayCoder::from_params(blob.profile.clay_params());
-            coder.track_chunk_size(stripe_size, blob_len)
-        }
-        Some(EncodingType::Basic) => {
-            let k = blob.profile.rs_params().k() as usize;
-            if k == 0 {
-                return Err(invalid_track(track, "basic encoding k is zero"));
-            }
-            let effective_len = stripe_size.min(blob_len);
-            if effective_len == 0 {
-                64
-            } else {
-                let raw = effective_len.div_ceil(k);
-                raw.div_ceil(64) * 64
-            }
-        }
-        Some(EncodingType::Unknown) | None => {
-            return Err(invalid_track(track, "unknown blob encoding profile"));
-        }
-    };
+    let chunk_size = stripe_chunk_len(profile, stripe_size, blob_len);
 
     let bytes = (stripe_count as u128)
         .checked_mul(chunk_size as u128)
@@ -311,9 +306,12 @@ fn invalid_track(track: Address, reason: impl Into<String>) -> AssignmentSizeErr
 mod tests {
     use bytemuck::Zeroable;
     use tape_store_memory::MemoryStore;
+    use tape_core::encoding::{RSParams, RepParams, TAPENET_CLAY, TAPENET_PROFILE};
     use tape_core::spooler::GroupIndex;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
+    use tape_core::types::{
+        EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
+    };
     use tape_crypto::Hash;
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
@@ -330,7 +328,7 @@ mod tests {
         target_epoch: EpochNumber,
         target_groups: usize,
     ) -> Option<Vec<StorageUnits>> {
-        match group_weights(store, voting_epoch, target_epoch, target_groups)
+        match group_weights(store, voting_epoch, target_epoch, target_groups, TAPENET_PROFILE)
             .expect("weights build")
         {
             GroupWeights::Ready(weights) => Some(weights.sizes),
@@ -500,10 +498,65 @@ mod tests {
             .put_object_info(coded, valid_object(coded, EpochNumber(8), SlotNumber(1)))
             .expect("coded object info stored");
 
-        let weights =
-            group_weights(&store, EpochNumber(10), EpochNumber(11), 2).expect("weights build");
+        let weights = group_weights(&store, EpochNumber(10), EpochNumber(11), 2, TAPENET_PROFILE)
+            .expect("weights build");
 
         assert_eq!(weights, GroupWeights::Pending { track: coded });
+    }
+
+    /// A blob of `len` bytes striped the way a writer on `profile` stripes it.
+    fn striped_blob(profile: ErasureCode, len: usize) -> BlobEncoding {
+        use tape_slicer::Slicer;
+
+        let slicer = Slicer::try_from_profile(profile).expect("valid profile");
+        let stripe_size = slicer.derived_stripe_size(len);
+
+        let mut blob = BlobEncoding::zeroed();
+        blob.size = StorageUnits::from_bytes(len as u64);
+        blob.stripe_size = StorageUnits::from_bytes(stripe_size as u64);
+        blob.stripe_count = StripeCount(num_stripes(len, stripe_size) as u64);
+        blob
+    }
+
+    // tapenet's per-spool footprint is the Clay chunk size it always was, so
+    // every node keeps agreeing on the assignment sizes
+    #[test]
+    fn tapenet_footprint() {
+        use tape_slicer::ClayCoder;
+
+        let coder = ClayCoder::from_params(TAPENET_CLAY);
+
+        for len in [1usize, 700, 1_400, 99_999, 1_000_000, 1_000_001, 7_654_321, 64 * 1024 * 1024] {
+            let blob = striped_blob(TAPENET_PROFILE, len);
+            let stripe_size = blob.stripe_size.as_usize();
+            let stripes = blob.stripe_count.0 as usize;
+            let expected = stripes * coder.track_chunk_size(stripe_size, len) + SliceMetadata::SIZE;
+
+            let footprint = blob_footprint(Address::default(), blob, TAPENET_PROFILE).expect("footprint");
+
+            assert_eq!(footprint, StorageUnits::from_bytes(expected as u64), "len {len}");
+        }
+    }
+
+    // a spool's footprint is the slice its code writes: about a third of the
+    // track at 3 of 4, and the whole track for a copy
+    #[test]
+    fn small_profile_footprints() {
+        use tape_slicer::{ErasureCoder, Slicer};
+
+        let len = 300_000usize;
+        for profile in [
+            ErasureCode::ReedSolomon(RSParams::new(3, 1)),
+            ErasureCode::Replication(RepParams::new(2)),
+        ] {
+            let mut slicer = Slicer::try_from_profile(profile).expect("valid profile");
+            let slices = slicer.encode(&vec![0x5Au8; len]).expect("encode");
+            let blob = striped_blob(profile, len);
+
+            let footprint = blob_footprint(Address::default(), blob, profile).expect("footprint");
+
+            assert_eq!(footprint, StorageUnits::from_bytes(slices[0].len() as u64), "{profile:?}");
+        }
     }
 
     // a stored blob whose size disagrees with the track row is refused
@@ -531,7 +584,7 @@ mod tests {
             .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
             .expect("object info stored");
 
-        let error = group_weights(&store, EpochNumber(10), EpochNumber(11), 1)
+        let error = group_weights(&store, EpochNumber(10), EpochNumber(11), 1, TAPENET_PROFILE)
             .expect_err("mismatch refused");
 
         assert!(matches!(

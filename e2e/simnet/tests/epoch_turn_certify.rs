@@ -3,11 +3,10 @@ use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use rpc_litesvm::LiteSvmRpc;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::prelude::CompressedTrack;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits};
 use tape_crypto::Address;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE, run_simnet_test};
 use tape_peer_http::HttpApi;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::metrics::{InMemory, Operation, Phase};
@@ -27,7 +26,7 @@ fn epoch_turn_certify() {
 /// A batch stored under one epoch and certified after the chain turned signs
 /// again and lands, without a reseed and without a peer proof.
 async fn epoch_turn_certify_inner() {
-    let node_count = GROUP_SIZE;
+    let node_count = TAPENET_GROUP_SIZE;
     let mut harness = SimnetBuilder::new()
         .node_count(node_count)
         .runtime_mode(NodeRuntimeMode::Full)

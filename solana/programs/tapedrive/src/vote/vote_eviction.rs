@@ -53,12 +53,12 @@ pub fn process_vote_eviction(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .is_group(voting_epoch_id, group_id)?
         .as_account::<Group>(&tapedrive::ID)?;
 
-    let weight = args.bitmap.count_ones() as u64;
-    if !is_supermajority(weight, GROUP_SIZE as u64) {
+    let indices = system.signers(&args.bitmap)?;
+    let weight = indices.len() as u64;
+    if weight < system.thresholds()?.evict {
         return Err(TapeError::NoQuorum.into());
     }
 
-    let indices = args.bitmap.indices();
     let mut pubkeys = Vec::with_capacity(indices.len());
     for spool_index in &indices {
         let spool = curr_group.spools.get(*spool_index).ok_or(TapeError::BadMember)?;
@@ -162,16 +162,19 @@ pub fn process_vote_eviction(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::encoding::RSParams;
     use tape_crypto::Hash;
     use tape_test::*;
 
     const VOTING_EPOCH: EpochNumber = EpochNumber(12);
     const TARGET_EPOCH: EpochNumber = EpochNumber(13);
     const SUPERMAJORITY: usize = 14;
+    const NARROW: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
 
     // Single-group eviction vote scenario. The defaults land the vote with the
     // target seated in the next committee; each knob isolates one rejection.
     struct Fixture {
+        base: System,
         fee_payer: Pubkey,
         node: Address,
         nonce: Hash,
@@ -198,6 +201,7 @@ mod tests {
             let (sks, group) = make_group(VOTING_EPOCH, group_id);
 
             Self {
+                base: permissionless_system(),
                 fee_payer: Pubkey::new_unique(),
                 node,
                 nonce,
@@ -210,6 +214,19 @@ mod tests {
                 sign_nonce: nonce,
                 vote_bitmap: vec![0u8; bytes_for_members(total_groups as usize)],
                 seated: node,
+            }
+        }
+
+        // A 3-of-4 cluster, where three of a group's four members sign.
+        fn narrow() -> Self {
+            let (sks, group) = make_group_of(VOTING_EPOCH, GroupIndex(0), NARROW);
+
+            Self {
+                base: trusted_system(NARROW),
+                sks,
+                group,
+                signers: 3,
+                ..Self::new()
             }
         }
 
@@ -252,7 +269,7 @@ mod tests {
         fn run(&self, checks: &[Check]) {
             let system = System {
                 current_epoch: VOTING_EPOCH,
-                ..System::zeroed()
+                ..self.base
             };
             let voting_epoch = Epoch {
                 id: VOTING_EPOCH,
@@ -396,6 +413,34 @@ mod tests {
     fn vote_eviction_below_quorum() {
         let mut fixture = Fixture::new();
         fixture.signers = SUPERMAJORITY - 1;
+
+        fixture.run(&[Check::err(TapeError::NoQuorum.into())]);
+    }
+
+    // a 3-of-4 cluster lands a group's eviction vote on three signers
+    #[test]
+    fn trusted_lands() {
+        let fixture = Fixture::narrow();
+
+        let expected_node = Node {
+            authority: fixture.node,
+            suspended_until: TARGET_EPOCH,
+            ..Node::zeroed()
+        };
+
+        fixture.run(&[
+            Check::success(),
+            Check::account(&Pubkey::from(fixture.node))
+                .data(expected_node.pack().as_ref())
+                .build(),
+        ]);
+    }
+
+    // a 3-of-4 cluster refuses an eviction vote with two signers
+    #[test]
+    fn trusted_below_quorum() {
+        let mut fixture = Fixture::narrow();
+        fixture.signers = 2;
 
         fixture.run(&[Check::err(TapeError::NoQuorum.into())]);
     }

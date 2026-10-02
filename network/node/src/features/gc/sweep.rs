@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use tokio::task::yield_now;
 
 use tape_store_api::Store;
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::encoding::ErasureCode;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_core::types::{EpochNumber, SlotNumber};
@@ -46,12 +46,16 @@ pub async fn sweep_epoch<Db: Store>(
     owned_spools: &HashSet<SpoolIndex>,
     pending: &PendingTracks,
     at_tip: bool,
+    profile: ErasureCode,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
 
-    stats += sweep_expired_tapes(store, config, current_epoch, epoch_start_slot, at_tip).await?;
-    stats += sweep_uncertified_tracks(store, config, current_epoch, owned_spools, at_tip).await?;
-    stats += sweep_orphan_tracks(store, config, epoch_start_slot, at_tip).await?;
+    stats += sweep_expired_tapes(store, config, current_epoch, epoch_start_slot, at_tip, profile)
+        .await?;
+    stats +=
+        sweep_uncertified_tracks(store, config, current_epoch, owned_spools, at_tip, profile)
+            .await?;
+    stats += sweep_orphan_tracks(store, config, epoch_start_slot, at_tip, profile).await?;
     stats += sweep_orphan_slices(store, config, pending, at_tip).await?;
 
     sweep_stale_recoveries(store, pending, at_tip).await?;
@@ -73,6 +77,7 @@ pub async fn sweep_expired_tapes<Db: Store>(
     current_epoch: EpochNumber,
     epoch_start_slot: SlotNumber,
     at_tip: bool,
+    profile: ErasureCode,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
 
@@ -85,7 +90,9 @@ pub async fn sweep_expired_tapes<Db: Store>(
     let tapes = store.iter_all_tapes().map_err(store_error)?;
     for (index, (tape, info)) in tapes.into_iter().enumerate() {
         if info.end_epoch <= current_epoch {
-            stats += delete_tape_local(store, tape, track_batch(config), epoch_start_slot)?.into();
+            stats +=
+                delete_tape_local(store, tape, track_batch(config), epoch_start_slot, profile)?
+                    .into();
         }
 
         if should_yield(index) {
@@ -102,6 +109,7 @@ async fn sweep_uncertified_tracks<Db: Store>(
     current_epoch: EpochNumber,
     owned_spools: &HashSet<SpoolIndex>,
     at_tip: bool,
+    profile: ErasureCode,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
 
@@ -140,6 +148,7 @@ async fn sweep_uncertified_tracks<Db: Store>(
                         *track,
                         info.group,
                         owned_spools,
+                        profile,
                     )?;
                 }
             }
@@ -160,10 +169,11 @@ fn cleanup_unowned_track_slices<Db: Store>(
     track: Address,
     group: GroupIndex,
     owned_spools: &HashSet<SpoolIndex>,
+    profile: ErasureCode,
 ) -> Result<usize, NodeError> {
     let mut deleted_slices = 0usize;
 
-    for slice_index in 0..GROUP_SIZE {
+    for slice_index in 0..usize::from(profile.n()) {
         let spool_id = group.spool_at(slice_index);
 
         if owned_spools.contains(&spool_id) {
@@ -195,6 +205,7 @@ async fn sweep_orphan_tracks<Db: Store>(
     config: &GcConfig,
     epoch_start_slot: SlotNumber,
     at_tip: bool,
+    profile: ErasureCode,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
     let mut cursor: Option<Vec<u8>> = None;
@@ -229,7 +240,7 @@ async fn sweep_orphan_tracks<Db: Store>(
                     track_number = info.track_number.0,
                     "gc deleting orphan track with missing parent tape"
                 );
-                stats += delete_track_local(store, *track, epoch_start_slot)?.into();
+                stats += delete_track_local(store, *track, epoch_start_slot, profile)?.into();
                 continue;
             }
 
@@ -241,7 +252,7 @@ async fn sweep_orphan_tracks<Db: Store>(
 
             if reclaim {
                 stats.slices_deleted +=
-                    cleanup_track_slices(store, *track, info.group, epoch_start_slot)?;
+                    cleanup_track_slices(store, *track, info.group, epoch_start_slot, profile)?;
             }
         }
 
@@ -432,6 +443,7 @@ mod tests {
     };
 
     use tape_api::program::tapedrive::track_pda;
+    use tape_core::encoding::TAPENET_PROFILE;
 
     use super::{should_delete_slice, sweep_epoch, PendingTracks};
     use crate::features::store::cleanup::{
@@ -512,7 +524,7 @@ mod tests {
             .unwrap();
         store.put_slice(spool_id, track, vec![1, 2, 3]).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(3), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(3), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
             .unwrap();
 
@@ -544,13 +556,13 @@ mod tests {
             )
             .expect("put tape");
 
-        sweep_epoch(&store, &config, EpochNumber(3), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), false)
+        sweep_epoch(&store, &config, EpochNumber(3), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), false, TAPENET_PROFILE)
             .await
             .expect("sweep behind tip");
 
         assert!(store.get_tape(tape).expect("get tape").is_some());
 
-        sweep_epoch(&store, &config, EpochNumber(3), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(3), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
             .expect("sweep at tip");
 
@@ -574,7 +586,7 @@ mod tests {
             .unwrap();
         store.put_slice(spool_id, track, vec![5, 6, 7]).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
             .unwrap();
 
@@ -620,7 +632,7 @@ mod tests {
             .unwrap();
         store.put_slice(spool_id, track, vec![8, 8, 8]).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
             .unwrap();
 
@@ -675,7 +687,7 @@ mod tests {
         store.put_slice(spool_id, track, vec![8, 8, 8]).unwrap();
         store.add_pending_recovery(spool_id, track).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
             .unwrap();
 
@@ -728,7 +740,7 @@ mod tests {
             .unwrap();
         store.add_pending_recovery(spool_id, track).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
             .unwrap();
 
@@ -766,10 +778,10 @@ mod tests {
             .unwrap();
         store.put_slice(spool_id, track, vec![1]).unwrap();
 
-        sweep_epoch(&store, &config, EpochNumber(5), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(5), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
             .unwrap();
-        sweep_epoch(&store, &config, EpochNumber(5), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true)
+        sweep_epoch(&store, &config, EpochNumber(5), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
             .unwrap();
 
@@ -842,6 +854,7 @@ mod tests {
             &owned_spools(&[owned_spool]),
             &PendingTracks::new(),
             true,
+            TAPENET_PROFILE,
         )
         .await
         .unwrap();
@@ -945,7 +958,7 @@ mod tests {
             )
             .unwrap();
 
-        cleanup_track_slices(&store, track, group, SlotNumber(10)).unwrap();
+        cleanup_track_slices(&store, track, group, SlotNumber(10), TAPENET_PROFILE).unwrap();
         assert!(
             store.get_slice(spool, track).unwrap().is_some(),
             "the delete took bytes a live round still asks for"
@@ -957,13 +970,13 @@ mod tests {
 
         // Inside the horizon a round can still draw it, so the bytes stay.
         let inside = SlotNumber(10 + DELETED_SLICE_HORIZON_SLOTS);
-        assert_eq!(sweep_deleted_slices(&store, inside).unwrap().tracks, 0);
+        assert_eq!(sweep_deleted_slices(&store, inside, TAPENET_PROFILE).unwrap().tracks, 0);
         assert!(store.get_slice(spool, track).unwrap().is_some());
 
         // Past it, nothing can, and the row goes with its slices and encoding.
         // One horizon owns all three, or whichever went first strands the rest.
         let past = SlotNumber(11 + DELETED_SLICE_HORIZON_SLOTS);
-        let swept = sweep_deleted_slices(&store, past).unwrap();
+        let swept = sweep_deleted_slices(&store, past, TAPENET_PROFILE).unwrap();
         assert_eq!((swept.tracks, swept.slices), (1, 1));
         assert!(store.get_slice(spool, track).unwrap().is_none());
         assert!(store.get_track_data(track).unwrap().is_none());
@@ -992,6 +1005,7 @@ mod tests {
             &owned_spools(&[]),
             &PendingTracks::new(),
             true,
+            TAPENET_PROFILE,
         )
         .await
         .unwrap();

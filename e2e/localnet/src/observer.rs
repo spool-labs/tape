@@ -8,7 +8,7 @@ use tape_rpc_client::RpcClient;
 use tape_rpc_solana::{RpcConfig, SolanaRpc};
 use solana_pubkey::Pubkey;
 use tape_api::program::tapedrive::node_pda;
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::erasure::MAX_GROUP_SIZE;
 use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
@@ -35,10 +35,13 @@ struct ObservedChainState {
     phase: EpochPhase,
     phase_weight: Option<u64>,
     live_group_count: u64,
+    /// Spools a group holds on this chain's profile
+    group_size: usize,
     committee_prev_size: usize,
     committee_size: usize,
     committee_next_size: usize,
     total_nodes_registered: u64,
+    /// One entry per spool index, so a group spans `MAX_GROUP_SIZE` entries
     spool_owners: Vec<Option<Address>>,
 }
 
@@ -88,6 +91,9 @@ impl Observer {
         };
         let total_nodes_registered = system.total_nodes;
         let live_group_count = system.live_group_count;
+        let profile = system
+            .code()
+            .map_err(|_| anyhow::anyhow!("System holds no valid encoding profile"))?;
         let committee_prev_size = self
             .committee_size(system.current_epoch.prev())
             .await
@@ -103,7 +109,7 @@ impl Observer {
 
         let total_spools = usize::try_from(live_group_count)
             .ok()
-            .and_then(|groups| groups.checked_mul(GROUP_SIZE))
+            .and_then(|groups| groups.checked_mul(MAX_GROUP_SIZE))
             .unwrap_or(0);
         let mut spool_owners = vec![None; total_spools];
         if live_group_count > 0 {
@@ -130,6 +136,7 @@ impl Observer {
             phase,
             phase_weight,
             live_group_count,
+            group_size: usize::from(profile.n()),
             committee_prev_size,
             committee_size,
             committee_next_size,
@@ -309,6 +316,7 @@ impl Observer {
                 phase_weight: chain.phase_weight,
                 slot: chain.slot.0,
                 live_group_count: chain.live_group_count,
+                group_size: chain.group_size,
                 committee_prev_size: chain.committee_prev_size,
                 committee_size: chain.committee_size,
                 committee_next_size: chain.committee_next_size,

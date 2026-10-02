@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use tape_core::bls::BlsSignature;
 use tape_core::challenge::ProofOfAccess;
+use tape_core::thresholds::Thresholds;
 use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
@@ -128,12 +129,13 @@ impl RoundBuffer {
     }
 
     /// Claims a round once its answer and quorum are present.
-    pub fn claim_certificate(&self, key: RoundKey, threshold: usize) -> bool {
+    pub fn claim_certificate(&self, key: RoundKey, thresholds: &Thresholds) -> bool {
         let mut entries = self.entries.lock().expect("round buffer");
         let Some(entry) = entries.get_mut(&key) else {
             return false;
         };
-        if entry.certified || entry.answer.is_none() || entry.attestations.len() < threshold {
+        let has_quorum = entry.attestations.len() as u64 >= thresholds.challenge;
+        if entry.certified || entry.answer.is_none() || !has_quorum {
             return false;
         }
 
@@ -176,8 +178,14 @@ mod tests {
     use super::*;
     use tape_core::bls::BlsPrivateKey;
     use tape_core::challenge::proof::SampleProof;
+    use tape_core::thresholds::TrustModel;
     use tape_core::track::blob::SubLeafProof;
     use tape_core::types::GroupIndex;
+
+    /// A trusted 4 of 5 network, where a certificate needs four signers.
+    fn four_of_five() -> Thresholds {
+        Thresholds::try_new(TrustModel::Trusted, 5, 4).expect("4 of 5")
+    }
 
     fn key(round: u64, spool: u64) -> RoundKey {
         RoundKey {
@@ -282,15 +290,16 @@ mod tests {
         for _ in 0..3 {
             buffer.accept_attestation(key, Address::new_unique(), signature());
         }
-        assert!(!buffer.claim_certificate(key, 4), "certified under the threshold");
+        let thresholds = four_of_five();
+        assert!(!buffer.claim_certificate(key, &thresholds), "certified under the threshold");
 
         buffer.accept_attestation(key, Address::new_unique(), signature());
-        assert!(buffer.claim_certificate(key, 4));
+        assert!(buffer.claim_certificate(key, &thresholds));
         assert!(buffer.is_certified(key));
 
         // Attestations keep arriving after the threshold. The round is recorded once.
         buffer.accept_attestation(key, Address::new_unique(), signature());
-        assert!(!buffer.claim_certificate(key, 4));
+        assert!(!buffer.claim_certificate(key, &thresholds));
     }
 
     // attestations alone are not evidence, because they attest to an answer
@@ -303,7 +312,7 @@ mod tests {
         for _ in 0..8 {
             buffer.accept_attestation(key, Address::new_unique(), signature());
         }
-        assert!(!buffer.claim_certificate(key, 4));
+        assert!(!buffer.claim_certificate(key, &four_of_five()));
     }
 
     // retiring drops the rounds before the cutoff and keeps the rest
@@ -338,7 +347,7 @@ mod tests {
         for _ in 0..4 {
             buffer.accept_attestation(pending, Address::new_unique(), signature());
         }
-        assert!(buffer.claim_certificate(pending, 4));
+        assert!(buffer.claim_certificate(pending, &four_of_five()));
 
         // The oldest round still open is the pending one, so retiring behind it
         // keeps it even though another group has moved to the next epoch.
@@ -381,7 +390,7 @@ mod tests {
         for _ in 0..4 {
             buffer.accept_attestation(theirs, Address::new_unique(), signature());
         }
-        assert!(buffer.claim_certificate(theirs, 4));
+        assert!(buffer.claim_certificate(theirs, &four_of_five()));
 
         assert!(buffer.answer(mine).is_none());
         assert!(!buffer.is_certified(mine));
@@ -398,7 +407,7 @@ mod protocol_tests {
     use tape_core::challenge::certificate::CertificateRejection;
     use tape_core::challenge::schedule::Schedule;
     use tape_core::erasure::{
-        GROUP_SIZE, SUB_LEAF_BYTES, group_for_spool, leaf_position, prove_sub_leaf_windowed,
+        SUB_LEAF_BYTES, group_for_spool, leaf_position, prove_sub_leaf_windowed,
         sample_window, slice_sidecar, sub_leaf_count,
     };
     use tape_core::track::blob::SubLeafProof;
@@ -420,7 +429,6 @@ mod protocol_tests {
         Round, accept_answer, admits_round, attest_message, expected_sample,
     };
     use crate::features::challenge::refusal::RefusalReason;
-    use crate::features::challenge::certify::agreement_threshold;
     use crate::harness::{NodeHarness, TestContext, coded_track};
 
     const PAYLOAD_BYTES: usize = 300_000;
@@ -776,9 +784,15 @@ mod protocol_tests {
 
         fn check(&self, target: SpoolIndex, certificate: &SuccessCertificate) -> Result<(), CertificateRejection> {
             let owner = self.state.spool_owner(target).expect("owner");
-            certificate.verify(agreement_threshold(GROUP_SIZE), owner, &self.members(), |signer| {
+            let thresholds = &self.ctx.params().thresholds;
+            certificate.verify(thresholds, owner, &self.members(), |signer| {
                 self.state.peer(signer).map(|peer| peer.bls_pubkey)
             })
+        }
+
+        /// Signers a certificate needs on this network.
+        fn quorum(&self) -> usize {
+            self.ctx.params().thresholds.challenge as usize
         }
 
         /// A spool in this group that is not ours.
@@ -804,7 +818,7 @@ mod protocol_tests {
             Ok(())
         );
 
-        let signed = fixture.attestations(target, agreement_threshold(GROUP_SIZE));
+        let signed = fixture.attestations(target, fixture.quorum());
         let certificate = fixture.certify(target, signed);
         assert_eq!(fixture.check(target, &certificate), Ok(()));
     }
@@ -824,7 +838,7 @@ mod protocol_tests {
             .map(|(sample, _)| asked_leaf(&sample))
             .collect();
 
-        assert_eq!(leaves.len(), GROUP_SIZE);
+        assert_eq!(leaves.len(), fixture.ctx.params().n());
         let distinct: std::collections::HashSet<usize> = leaves.iter().copied().collect();
         assert!(distinct.len() > 1, "every spool drew the same leaf: {leaves:?}");
     }
@@ -1106,7 +1120,7 @@ mod protocol_tests {
         let fixture = fixture().await;
         let target = fixture.other();
 
-        let short = fixture.attestations(target, agreement_threshold(GROUP_SIZE) - 1);
+        let short = fixture.attestations(target, fixture.quorum() - 1);
         let certificate = fixture.certify(target, short);
         assert_eq!(
             fixture.check(target, &certificate),
@@ -1123,7 +1137,7 @@ mod protocol_tests {
         let target = fixture.other();
         let owner = fixture.state.spool_owner(target).expect("owner");
 
-        let short = fixture.attestations(target, agreement_threshold(GROUP_SIZE) - 1);
+        let short = fixture.attestations(target, fixture.quorum() - 1);
         let certificate = fixture.certify(target, short.clone());
         assert_eq!(
             fixture.check(target, &certificate),
@@ -1150,7 +1164,7 @@ mod protocol_tests {
         let fixture = fixture().await;
         let target = fixture.other();
 
-        let threshold = agreement_threshold(GROUP_SIZE);
+        let threshold = fixture.quorum();
         let mut signed = fixture.attestations(target, threshold - 1);
 
         let other_branch = Round {
@@ -1208,7 +1222,7 @@ mod protocol_tests {
             Ok(())
         );
 
-        let signed = fixture.attestations(target, agreement_threshold(GROUP_SIZE));
+        let signed = fixture.attestations(target, fixture.quorum());
         let certificate = fixture.certify(target, signed);
         assert_eq!(fixture.check(target, &certificate), Ok(()));
     }

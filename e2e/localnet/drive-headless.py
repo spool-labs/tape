@@ -15,6 +15,9 @@ keystroke sent is the `q` that shuts every node down cleanly.
 Environment, all optional:
 
     LOCALNET_NODES          nodes to start, default 20
+    LOCALNET_PROFILE        erasure profile of a custom cluster, such as rs:4,3;
+                            unset runs tapenet's
+    LOCALNET_TRUST_MODEL    permissionless or trusted, set with the profile
     LOCALNET_RUN_SECONDS    seconds to hold the fleet up, default 600
     LOCALNET_BOOT_TIMEOUT   seconds to wait for the api, default 900
     LOCALNET_UPLOADS        uploads to start during the run, default 1
@@ -45,6 +48,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 API = f"http://127.0.0.1:{os.environ.get('LOCALNET_API_PORT', '9000')}"
 
 NODES = int(os.environ.get("LOCALNET_NODES", "20"))
+PROFILE = os.environ.get("LOCALNET_PROFILE")
+TRUST_MODEL = os.environ.get("LOCALNET_TRUST_MODEL")
 RUN_SECONDS = int(os.environ.get("LOCALNET_RUN_SECONDS", "600"))
 BOOT_TIMEOUT = int(os.environ.get("LOCALNET_BOOT_TIMEOUT", "900"))
 UPLOADS = int(os.environ.get("LOCALNET_UPLOADS", "1"))
@@ -80,6 +85,10 @@ def main():
         "--api-port", os.environ.get("LOCALNET_API_PORT", "9000"),
         "--init-nodes", str(NODES),
     ]
+    if PROFILE:
+        argv += ["--profile", PROFILE]
+    if TRUST_MODEL:
+        argv += ["--trust-model", TRUST_MODEL]
     say(f"spawning: {' '.join(argv)}")
     # Its own process group, so a stuck run can be killed without taking the
     # shell with it, and so the nodes it spawned go with it.
@@ -155,13 +164,15 @@ def main():
                 continue
             cluster = snapshot["cluster"]
             healthy = sum(1 for node in snapshot["nodes"] if node["healthy"])
+            # The list has a row per spool index, and a small profile leaves some unowned.
+            owned = sum(1 for spool in snapshot["spools"] if spool["owner_node"])
             snaps.write(json.dumps({"at": now, **snapshot}) + "\n")
             snaps.flush()
             last_uploads = snapshot["uploads"]
             say(
                 f"epoch {cluster['epoch']} phase {cluster['phase']} slot {cluster['slot']} "
                 f"committee {cluster['committee_size']} healthy {healthy}/{len(snapshot['nodes'])} "
-                f"spools {len(snapshot['spools'])} "
+                f"spools {owned} "
                 f"uploads {[u['cert_status'] for u in snapshot['uploads']]}"
             )
         time.sleep(1)

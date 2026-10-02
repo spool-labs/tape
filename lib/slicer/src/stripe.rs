@@ -5,10 +5,10 @@
 //! padding never exceeds one alignment unit per stripe, and the cap holds peak
 //! encode memory flat regardless of blob size.
 
-use tape_core::encoding::EncodingProfile;
+use tape_core::encoding::ErasureCode;
 
-use crate::clay::ClayCoder;
 use crate::metadata::SliceMetadata;
+use crate::reed_solomon::slice_bytes;
 
 /// Largest stripe a writer emits. Encode throughput peaks here and flattens
 /// above it, so the cap buys nothing to raise and holds peak encode memory
@@ -46,19 +46,35 @@ pub fn stripe_size_accepted(
     stripe_size == derive_stripe_size(blob_len, alignment, cap)
 }
 
+/// Chunk length one stripe of a track encodes to, from the profile alone.
+///
+/// A blob shorter than its stripe encodes what it has, and each coder pads
+/// that to its own granularity. Mirrors the coders, pinned by
+/// `derived_length_matches_encoding`.
+pub fn stripe_chunk_len(profile: ErasureCode, stripe_size: usize, blob_len: usize) -> usize {
+    let input = stripe_size.min(blob_len);
+
+    match profile {
+        ErasureCode::Clay(params) => {
+            let alignment = params.stripe_alignment() as usize;
+            input.div_ceil(alignment).max(1) * alignment / params.k() as usize
+        }
+        ErasureCode::ReedSolomon(params) => slice_bytes(params.k() as usize, input),
+        ErasureCode::Replication(_) => input.max(1),
+    }
+}
+
 /// Byte length of one coded slice, from a registered encoding alone.
 ///
 /// Lets a caller weight a slice without holding it. Mirrors what `encode` lays
-/// out, one chunk per stripe then the metadata, pinned by
-/// `derived_length_matches_encoding`.
+/// out, one chunk per stripe then the metadata.
 pub fn coded_slice_len(
-    profile: EncodingProfile,
+    profile: ErasureCode,
     size: usize,
     stripe_size: usize,
     stripe_count: usize,
 ) -> usize {
-    let chunk = ClayCoder::from_params(profile.clay_params()).track_chunk_size(stripe_size, size);
-    stripe_count * chunk + SliceMetadata::SIZE
+    stripe_count * stripe_chunk_len(profile, stripe_size, size) + SliceMetadata::SIZE
 }
 
 // Alignment and padding bounds are pinned over the full track range by the
@@ -66,6 +82,8 @@ pub fn coded_slice_len(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::encoding::{ClayParams, RSParams, RepParams, TAPENET_PROFILE};
+
     use crate::coder::ErasureCoder;
     use crate::slicer::Slicer;
 
@@ -82,22 +100,32 @@ mod tests {
             .collect()
     }
 
+    // the length derived from a profile is the length every code's slicer writes
     #[test]
     fn derived_length_matches_encoding() {
-        for size in [1usize, 1_000, 100_000, 1_000_001, 4 * 1024 * 1024] {
-            let mut slicer = Slicer::clay_default();
-            let slices = slicer.encode(&payload(size)).expect("encode");
+        let profiles = [
+            TAPENET_PROFILE,
+            ErasureCode::Clay(ClayParams::new(4, 2, 3)),
+            ErasureCode::ReedSolomon(RSParams::new(3, 1)),
+            ErasureCode::ReedSolomon(RSParams::new(4, 2)),
+            ErasureCode::Replication(RepParams::new(2)),
+        ];
 
-            let derived = coded_slice_len(
-                slicer.profile(),
-                size,
-                slicer.stripe_size(),
-                num_stripes(size, slicer.stripe_size()),
-            );
+        for profile in profiles {
+            for size in [0usize, 1, 1_000, 100_000, 1_000_001, 4 * 1024 * 1024] {
+                let mut slicer = Slicer::try_from_profile(profile).expect("valid profile");
+                let slices = slicer.encode(&payload(size)).expect("encode");
 
-            assert_eq!(derived, slices[0].len(), "size {size}");
-            for slice in &slices {
-                assert_eq!(slice.len(), derived, "size {size}, uneven slices");
+                let derived = coded_slice_len(
+                    profile,
+                    size,
+                    slicer.stripe_size(),
+                    num_stripes(size, slicer.stripe_size()),
+                );
+
+                for slice in &slices {
+                    assert_eq!(slice.len(), derived, "{profile:?} size {size}");
+                }
             }
         }
     }

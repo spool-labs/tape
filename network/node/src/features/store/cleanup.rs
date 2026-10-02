@@ -3,7 +3,7 @@ use tape_api::program::tapedrive::track_pda;
 use tape_core::challenge::schedule::{
     SAMPLE_LOOKBACK_SLOTS, SETTLE_DEADLINE_SLOTS, round_width_slots,
 };
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::encoding::ErasureCode;
 use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{SlotNumber, SpoolIndex};
@@ -26,12 +26,14 @@ pub fn delete_track_local<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
     deleted_at: SlotNumber,
+    profile: ErasureCode,
 ) -> Result<CleanupStats, NodeError> {
     let mut stats = CleanupStats::default();
 
     if let Some(info) = store.get_track(track).map_err(store_error)? {
         remove_object_listing_for_track(store, track, &info)?;
-        stats.slices_deleted += cleanup_track_slices(store, track, info.group, deleted_at)?;
+        stats.slices_deleted +=
+            cleanup_track_slices(store, track, info.group, deleted_at, profile)?;
         stats.tracks_deleted += 1;
     }
 
@@ -49,6 +51,7 @@ pub fn delete_tape_local<Db: Store>(
     tape: Address,
     track_batch: usize,
     deleted_at: SlotNumber,
+    profile: ErasureCode,
 ) -> Result<CleanupStats, NodeError> {
     let mut stats = CleanupStats::default();
     if store.get_tape(tape).map_err(store_error)?.is_some() {
@@ -70,7 +73,8 @@ pub fn delete_tape_local<Db: Store>(
         for info in &tracks {
             let track = track_pda(tape, info.track_number).0;
             remove_object_listing_for_track(store, track, info)?;
-            stats.slices_deleted += cleanup_track_slices(store, track, info.group, deleted_at)?;
+            stats.slices_deleted +=
+                cleanup_track_slices(store, track, info.group, deleted_at, profile)?;
             store.delete_track(track).map_err(store_error)?;
             store.delete_object_info(track).map_err(store_error)?;
             store.delete_object_metadata(track).map_err(store_error)?;
@@ -87,6 +91,7 @@ pub fn cleanup_track_slices<Db: Store>(
     track: Address,
     group: GroupIndex,
     deleted_at: SlotNumber,
+    profile: ErasureCode,
 ) -> Result<usize, NodeError> {
     // A round whose window opened before the deletion still asks about this
     // track, so the row stays until no round can. The slices stay with it: the
@@ -97,7 +102,7 @@ pub fn cleanup_track_slices<Db: Store>(
         .mark_track_sample_deleted(group, track, deleted_at)
         .map_err(store_error)?;
 
-    for slice_index in 0..GROUP_SIZE {
+    for slice_index in 0..usize::from(profile.n()) {
         let spool_id = group.spool_at(slice_index);
         store
             .remove_pending_repair(spool_id, track)
@@ -122,6 +127,7 @@ pub const DELETED_SLICE_HORIZON_SLOTS: u64 =
 pub fn sweep_deleted_slices<Db: Store>(
     store: &TapeStore<Db>,
     now: SlotNumber,
+    profile: ErasureCode,
 ) -> Result<DeletedSweep, NodeError> {
     let cutoff = SlotNumber(now.as_u64().saturating_sub(DELETED_SLICE_HORIZON_SLOTS));
     let mut swept = DeletedSweep::default();
@@ -130,7 +136,7 @@ pub fn sweep_deleted_slices<Db: Store>(
         .track_samples_deleted_before(cutoff)
         .map_err(store_error)?
     {
-        swept.slices += drop_track_slices(store, track, group)?;
+        swept.slices += drop_track_slices(store, track, group, profile)?;
         store
             .delete_track_sample(group, track)
             .map_err(store_error)?;
@@ -149,9 +155,10 @@ pub fn drop_track_slices<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
     group: GroupIndex,
+    profile: ErasureCode,
 ) -> Result<usize, NodeError> {
     let mut deleted = 0usize;
-    for slice_index in 0..GROUP_SIZE {
+    for slice_index in 0..usize::from(profile.n()) {
         let spool_id = group.spool_at(slice_index);
         if store.has_slice(spool_id, track).map_err(store_error)? {
             deleted += 1;
@@ -219,6 +226,7 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 mod tests {
     use super::*;
     use tape_store_memory::MemoryStore;
+    use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::Hash;
@@ -254,7 +262,7 @@ mod tests {
             )
             .unwrap();
 
-        for position in 0..GROUP_SIZE {
+        for position in 0..usize::from(TAPENET_PROFILE.n()) {
             store
                 .put_slice(group.spool_at(position), track, vec![7u8; 8])
                 .unwrap();
@@ -278,7 +286,8 @@ mod tests {
             .collect();
 
         // Batch under the track count, so the tape cursor has to advance.
-        let stats = delete_tape_local(&store, target, 2, SlotNumber(10)).unwrap();
+        let stats =
+            delete_tape_local(&store, target, 2, SlotNumber(10), TAPENET_PROFILE).unwrap();
 
         assert_eq!(stats.tracks_deleted, mine.len());
         assert_eq!(stats.slices_deleted, 0);

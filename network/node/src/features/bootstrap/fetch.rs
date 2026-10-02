@@ -124,8 +124,7 @@ fn store_err(error: impl std::fmt::Display) -> NodeError {
 mod tests {
     use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::snapshot::replay::SnapshotLog;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
@@ -151,10 +150,9 @@ mod tests {
         BlobEncoding {
             size: StorageUnits::from_bytes(128),
             commitment: Hash::new_unique(),
-            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(2),
-            leaves: [Hash::default(); GROUP_SIZE],
+            leaves: [Hash::default(); MAX_GROUP_SIZE],
         }
     }
 
