@@ -63,7 +63,7 @@ impl SimnetBuilder {
         self
     }
 
-    /// Whether nodes propose and sign evictions, on by default.
+    /// Whether nodes propose and sign evictions, off by default.
     pub fn eviction(mut self, enabled: bool) -> Self {
         self.config.eviction.enabled = enabled;
         self

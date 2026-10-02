@@ -23,8 +23,8 @@ const STAKE: u64 = 1_000;
 const RESERVE_EPOCHS: u64 = 32;
 const EPOCHS: u64 = 3;
 
-/// Epochs a cluster may still advance through after a node stops, before it holds
-const HOLD_ATTEMPTS: usize = 4;
+/// Epochs a cluster may still advance through after a node stops, before it stalls
+const STALL_ATTEMPTS: usize = 4;
 
 /// Epochs a new group count may take to go live
 const GROWTH_EPOCHS: usize = 4;
@@ -86,13 +86,13 @@ async fn add_group_inner() {
 }
 
 // a cluster of exactly n nodes that loses one keeps writing and reading, and
-// holds its epoch until the node's keys return on a new drive
+// its epoch stalls until the node's keys return on a new drive
 #[test]
-fn held_epoch() {
-    run_simnet_test(held_epoch_inner);
+fn stalled_epoch() {
+    run_simnet_test(stalled_epoch_inner);
 }
 
-async fn held_epoch_inner() {
+async fn stalled_epoch_inner() {
     const LOST: usize = 3;
 
     let node_count = usize::from(THREE_OF_FOUR.n());
@@ -107,13 +107,13 @@ async fn held_epoch_inner() {
     let after = payload(300 * 1024);
     let (second, second_track) = write(&harness, &after).await;
 
-    wait_held_epoch(&harness).await;
+    wait_stalled_epoch(&harness).await;
     let seated = harness
         .scenario()
         .committee_next_size()
         .await
         .expect("next committee size");
-    assert!(seated < node_count, "the next committee is full, so nothing holds the epoch");
+    assert!(seated < node_count, "the next committee is full, so nothing stalls the epoch");
     assert_eq!(read(&harness, first).await, before, "an old track reads on three nodes");
     assert_eq!(read(&harness, second).await, after, "a new track reads on three nodes");
 
@@ -134,7 +134,7 @@ async fn held_epoch_inner() {
     harness.stop_all().await.expect("stop runtimes");
 }
 
-// with a spare in the committee, losing a node holds nothing: the epoch moves
+// with a spare in the committee, losing a node stalls nothing: the epoch moves
 // on and the survivors rebuild the lost spool between them
 #[test]
 fn spare_node() {
@@ -278,7 +278,7 @@ fn mirror_eviction() {
 async fn eviction_inner(profile: ErasureCode) {
     let group_size = usize::from(profile.n());
     let node_count = group_size + 1;
-    let mut harness = start_cluster(profile, node_count, 1).await;
+    let mut harness = start(cluster(profile, node_count).eviction(true), 1).await;
 
     let data = payload(256 * 1024);
     let (track, written) = write(&harness, &data).await;
@@ -330,17 +330,25 @@ async fn eviction_inner(profile: ErasureCode) {
     harness.stop_all().await.expect("stop runtimes");
 }
 
-/// Start a trusted cluster on `profile` with every node registered, staked,
-/// active and seated in the committee
-async fn start_cluster(profile: ErasureCode, node_count: usize, groups: u64) -> SimnetHarness {
-    let group_size = usize::from(profile.n());
-    let mut harness = SimnetBuilder::new()
+/// A trusted cluster on `profile`, ready to build
+fn cluster(profile: ErasureCode, node_count: usize) -> SimnetBuilder {
+    SimnetBuilder::new()
         .network(profile, TrustModel::Trusted)
         .node_count(node_count)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
-        .build()
-        .expect("build harness");
+}
+
+async fn start_cluster(profile: ErasureCode, node_count: usize, groups: u64) -> SimnetHarness {
+    start(cluster(profile, node_count), groups).await
+}
+
+/// Build the cluster and start it with every node registered, staked, active
+/// and seated in the committee
+async fn start(builder: SimnetBuilder, groups: u64) -> SimnetHarness {
+    let mut harness = builder.build().expect("build harness");
+    let node_count = harness.nodes().len();
+    let group_size = usize::from(harness.config().profile.n());
     let all: Vec<usize> = (0..node_count).collect();
 
     {
@@ -531,17 +539,17 @@ async fn wait_groups(harness: &SimnetHarness, groups: u64) {
 }
 
 /// Wait for an epoch that stops advancing, and return its number
-async fn wait_held_epoch(harness: &SimnetHarness) -> u64 {
-    // Longer than a healthy epoch takes here, so a slow epoch is never taken for a held one.
-    let hold = Duration::from_secs(GenesisConfig::simnet().epoch_duration.0 * 5);
+async fn wait_stalled_epoch(harness: &SimnetHarness) -> u64 {
+    // Longer than a healthy epoch takes here, so a slow epoch is never taken for a stalled one.
+    let timeout = Duration::from_secs(GenesisConfig::simnet().epoch_duration.0 * 5);
 
-    for _ in 0..HOLD_ATTEMPTS {
+    for _ in 0..STALL_ATTEMPTS {
         let epoch = harness
             .scenario()
             .current_epoch_number()
             .await
             .expect("current epoch");
-        let changed = harness.scenario().wait_epoch_change(epoch, hold).await;
+        let changed = harness.scenario().wait_epoch_change(epoch, timeout).await;
         if changed.is_err() {
             return epoch;
         }

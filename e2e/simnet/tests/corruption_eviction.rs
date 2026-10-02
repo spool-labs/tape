@@ -48,6 +48,7 @@ fn corruption_eviction() {
 async fn corruption_eviction_inner() {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
+        .eviction(true)
         .eviction_policy(EVICTION_POLICY)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)

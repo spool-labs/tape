@@ -958,7 +958,7 @@ network:
     }
 
     #[test]
-    fn eviction_is_on_unless_turned_off() {
+    fn eviction_off_by_default() {
         let config = NodeConfig::from_yaml_str(
             r#"
 node:
@@ -969,7 +969,8 @@ network:
         )
         .unwrap();
 
-        assert!(config.eviction.enabled);
+        assert!(!config.eviction.enabled);
+        assert!(!config.eviction_enabled());
     }
 
     #[test]

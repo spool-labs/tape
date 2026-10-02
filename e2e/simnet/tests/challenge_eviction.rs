@@ -43,6 +43,7 @@ fn challenge_eviction() {
 async fn challenge_eviction_inner() {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
+        .eviction(true)
         .eviction_policy(EVICTION_POLICY)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)

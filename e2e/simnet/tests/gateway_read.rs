@@ -34,7 +34,6 @@ async fn staked_gateway_inner() {
         .node_count(NODE_COUNT)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
-        .eviction(false)
         .build()
         .expect("build harness");
     let mut gateway =
