@@ -275,7 +275,7 @@ fn blacklist_track_is_before_cutoff<Db: Store>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use bytemuck::bytes_of;
     use tape_api::program::tapedrive::TrackAddress;
     use tape_core::spooler::VirtualGroup;
@@ -293,7 +293,7 @@ mod tests {
     }
 
     /// Writes one entry onto the node's blacklist tape the way a replayed add leaves it.
-    fn seed_entry(
+    pub(crate) fn seed_entry(
         store: &TapeStore<MemoryStore>,
         node: Address,
         track_number: TrackNumber,
