@@ -18,6 +18,11 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         return Err(ProgramError::NotEnoughAccountKeys);
     };
 
+    let meta = blob
+        .data
+        .meta()
+        .ok_or(TapeError::InvalidCommitment)?;
+
     fee_payer_info
         .is_signer()?
         .is_writable()?;
@@ -28,13 +33,6 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     let system = system_info
         .is_system()?
         .as_account::<System>(&tapedrive::ID)?;
-
-    // A coded blob commits to one leaf per slice, so the root covers the
-    // network's n leaves and every leaf past them has to be zero.
-    let meta = blob
-        .data
-        .meta(system.code()?)
-        .ok_or(TapeError::InvalidCommitment)?;
 
     let key = track_key(blob.name(), &blob.data);
 
@@ -66,8 +64,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 mod tests {
     use super::*;
     use solana_account::Account;
-    use tape_core::encoding::RSParams;
-    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::{BlobData, BlobInfo};
@@ -90,50 +87,29 @@ mod tests {
         })
     }
 
-    const NARROW: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
-
-    // A blob whose first `set` leaves are filled, committed over the profile's n leaves.
-    fn blob_of(set: usize, profile: ErasureCode) -> BlobEncoding {
-        let mut leaves = [Hash::default(); MAX_GROUP_SIZE];
-        leaves[..set].fill(Hash::from([0x11; 32]));
-
-        BlobEncoding {
-            size: StorageUnits::mb(100),
-            commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves[..usize::from(profile.n())]),
-            stripe_size: StorageUnits::from_bytes(1024),
-            stripe_count: StripeCount(1),
-            leaves,
-        }
-    }
-
     #[test]
     fn register_track() {
-        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), None);
-    }
+        use tape_core::encoding::EncodingProfile;
 
-    // a 3-of-4 cluster registers a blob committed over its four live leaves
-    #[test]
-    fn narrow_commitment() {
-        write_case(trusted_system(NARROW), blob_of(4, NARROW), None);
-    }
-
-    // a leaf set past the profile's n, or a root over the full array, is no commitment
-    #[test]
-    fn padded_commitment() {
-        let refused = Some(TapeError::InvalidCommitment.into());
-
-        write_case(trusted_system(NARROW), blob_of(5, NARROW), refused.clone());
-        write_case(trusted_system(NARROW), blob_of(4, TAPENET_PROFILE), refused);
-    }
-
-    fn write_case(base: System, blob: BlobEncoding, error: Option<ProgramError>) {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let delegate = Pubkey::new_unique();
-        let storage_units = blob.size;
+        let storage_units = StorageUnits::mb(100);
 
         let name = b"photos/cat.jpg".to_vec();
         let key = hash(&name);
+        let profile = EncodingProfile::clay_default();
+
+        let leaves = [Hash::default(); GROUP_SIZE];
+        let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
+        let blob = BlobEncoding {
+            size: storage_units,
+            commitment,
+            profile,
+            stripe_size: StorageUnits::from_bytes(1024),
+            stripe_count: StripeCount(1),
+            leaves,
+        };
 
         let (system_address, _) = system_pda();
         let (tape_address, _) = tape_pda(authority.into());
@@ -157,7 +133,7 @@ mod tests {
         let system = System {
             current_epoch: EpochNumber(0),
             live_group_count: 50,
-            ..base
+            ..System::zeroed()
         };
         let tape = Tape {
             id: TapeNumber(1),
@@ -211,11 +187,6 @@ mod tests {
         expected_tree.add_leaf_hash(track_hash).unwrap();
 
         let env = test_env();
-        if let Some(error) = error {
-            env.process_instruction(&instruction, &accounts, &[Check::err(error)]);
-            return;
-        }
-
         env.process_instruction(
             &instruction,
             &accounts,

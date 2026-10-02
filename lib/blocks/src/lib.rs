@@ -7,7 +7,7 @@
 //!
 //! ## Event-only parsing (for UI/monitoring)
 //! ```ignore
-//! let parsed = tape_blocks::parse(&block, profile)?;
+//! let parsed = tape_blocks::parse(&block)?;
 //! for event in parsed.events {
 //!     // Process events directly
 //! }
@@ -15,7 +15,7 @@
 //!
 //! ## Instruction parsing with event merging (for node operation)
 //! ```ignore
-//! let parsed = tape_blocks::parse(&block, profile)?;
+//! let parsed = tape_blocks::parse(&block)?;
 //! let merged = tape_blocks::merge(parsed.raw_instructions, parsed.events)?;
 //! for instruction in merged {
 //!     // Process instructions with embedded events
@@ -24,10 +24,8 @@
 //!
 //! Or call the transaction-safe helper:
 //! ```ignore
-//! let merged = tape_blocks::parse_and_merge(&block, profile)?;
+//! let merged = tape_blocks::parse_and_merge(&block)?;
 //! ```
-//!
-//! `profile` is the network's erasure code, read from the `System` account.
 
 mod block;
 mod capture;

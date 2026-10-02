@@ -16,7 +16,7 @@ use tape_node::core::error::NodeError;
 use tape_protocol::Api;
 use tape_sdk::error::TapedriveError;
 use tape_sdk::object::{MAX_OBJECT_BATCH_BYTES, MAX_OBJECT_BATCH_ITEMS, ObjectBatchItem};
-use tape_sdk::stream::manifest::max_track_size;
+use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_store::types::{PendingOp, PendingState, PendingWrite};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -436,8 +436,7 @@ where
             return None;
         };
         let name = String::from_utf8(key.to_vec()).ok()?;
-        let max_size = max_track_size(self.context.params().profile) as u64;
-        if name.is_empty() || name.contains(['\0', '\n', '\r']) || size > max_size {
+        if name.is_empty() || name.contains(['\0', '\n', '\r']) || size > MAX_TRACK_SIZE as u64 {
             return None;
         }
         // The single path handles matching content, whether landed or left to finish.
@@ -759,7 +758,6 @@ fn retry_delay(steps: u32, is_parked: bool) -> Duration {
 mod tests {
     use tape_core::types::StorageUnits;
     use tape_sdk::error::UploadError;
-    use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 
     use super::*;
 

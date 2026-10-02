@@ -73,12 +73,10 @@ where
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use tape_core::encoding::TAPENET_PROFILE;
-
     use super::*;
 
-    const GROUP: usize = TAPENET_PROFILE.n() as usize;
-    const NEEDED: usize = TAPENET_PROFILE.k() as usize;
+    const GROUP: usize = 20;
+    const NEEDED: usize = 7;
 
     fn candidates() -> Vec<usize> {
         (0..GROUP).collect()

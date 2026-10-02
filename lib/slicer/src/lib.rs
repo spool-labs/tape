@@ -10,24 +10,17 @@ pub mod range;
 pub mod reed_solomon;
 pub mod clay;
 pub mod repair;
-pub mod replication;
 pub mod slice_index;
 pub mod slicer;
-pub mod striped;
 
 pub use tape_core::erasure::SLICE_TREE_HEIGHT;
 pub use errors::{EncodeError, DecodeError, RepairError};
 pub use coder::ErasureCoder;
 pub use clay::ClayCoder;
 pub use reed_solomon::ReedSolomonCoder;
-pub use replication::ReplicationCoder;
-pub use striped::StripedCoder;
 pub use metadata::SliceMetadata;
-pub use slicer::{Slicer, MappingStrategy, rotation_step, shard_to_slice, slice_to_shard};
-pub use stripe::{
-    coded_slice_len, derive_stripe_size, num_stripes, stripe_chunk_len, stripe_size_accepted,
-    STRIPE_CAP,
-};
+pub use slicer::{Slicer, MappingStrategy, ROTATION_STEP, shard_to_slice, slice_to_shard};
+pub use stripe::{coded_slice_len, derive_stripe_size, num_stripes, stripe_size_accepted, STRIPE_CAP};
 pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree, blob_merkle_root};
 pub use slice_index::SliceIndex;
 pub use repair::{RepairPlan, StripeRepair, HelperPlan, extract_repair_data};

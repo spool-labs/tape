@@ -2,12 +2,11 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::NodeStatus;
 use tape_core::types::BasisPoints;
 use tape_crypto::Address;
-use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetScenario, TAPENET_GROUP_SIZE, run_simnet_test,
-};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 
 const TARGET_GROUPS: u64 = 10;
 
@@ -118,7 +117,7 @@ async fn committee_increase_inner() {
     assert_group_owners(&scenario, TARGET_GROUPS, 1).await;
 
     // The seating is not promised in any one epoch: an epoch commits once
-    // TAPENET_GROUP_SIZE members are in, so a joiner that misses the window is seated in
+    // GROUP_SIZE members are in, so a joiner that misses the window is seated in
     // a later one. Wait for the size to converge rather than name the epoch.
     scenario
         .wait_committee_size(node_count, expansion_timeout)
@@ -166,7 +165,7 @@ async fn assert_group_owners(
         .expect("read current groups");
     assert_eq!(groups.len(), expected_live as usize, "unexpected group count");
 
-    let mut owners = Vec::with_capacity(expected_live as usize * TAPENET_GROUP_SIZE);
+    let mut owners = Vec::with_capacity(expected_live as usize * GROUP_SIZE);
     for (index, group) in groups.iter().enumerate() {
         assert_eq!(
             group.epoch, system.current_epoch,

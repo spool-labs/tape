@@ -689,6 +689,7 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::event::{EpochCommitted, SnapshotFinalized};
     use tape_blocks::ParsedInstruction;
+    use tape_core::erasure::GROUP_SIZE;
 
     use super::*;
     use crate::core::ingest::IngestState;
@@ -1351,7 +1352,7 @@ mod tests {
         let me = ctx.node_address();
         let mates = group_mates(&ctx.state(), me);
 
-        assert_eq!(mates.len(), ctx.params().n() - 1);
+        assert_eq!(mates.len(), GROUP_SIZE - 1);
         assert!(!mates.contains(&me), "a node cannot challenge itself");
 
         let mut sorted = mates.clone();
@@ -1386,7 +1387,7 @@ mod tests {
         assert_eq!(groups.len(), spread, "two spools in one group");
         assert!(spread > 1, "the harness seated this node in one group only");
         for group in groups {
-            assert_eq!(group_spools(&state, group).len(), ctx.params().n());
+            assert_eq!(group_spools(&state, group).len(), GROUP_SIZE);
         }
     }
 

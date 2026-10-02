@@ -335,16 +335,10 @@ fn group_inner(groups: &[Group], group: GroupIndex) -> Option<&Group> {
     groups.iter().find(|candidate| candidate.id == group)
 }
 
-// A group's array is as wide as the widest group. A network with n spools per
-// group assigns the first n and leaves the rest zeroed, so skipping unassigned
-// positions stops every walk at n.
 fn spool_inner(groups: &[Group], spool: SpoolIndex) -> Option<&Spool> {
     let group = GroupIndex::containing(spool);
     let position = group.position_of(spool)?;
-    group_inner(groups, group)?
-        .spools
-        .get(position)
-        .filter(|spool| assigned_node(spool.node).is_some())
+    group_inner(groups, group)?.spools.get(position)
 }
 
 fn spools_in_group_inner(
@@ -356,7 +350,6 @@ fn spools_in_group_inner(
             .spools
             .iter()
             .enumerate()
-            .filter(|(_, spool)| assigned_node(spool.node).is_some())
             .map(move |(position, spool)| (group.spool_at(position), spool)),
     )
 }
@@ -426,7 +419,7 @@ fn monotonic_ms() -> u64 {
 mod tests {
     use super::*;
     use bytemuck::Zeroable;
-    use tape_core::erasure::MAX_GROUP_SIZE;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::system::Spool;
     use tape_core::types::coin::TAPE;
     use tape_core::types::{BitmapWrite, StorageUnits};
@@ -449,17 +442,12 @@ mod tests {
     }
 
     fn group(epoch: EpochNumber, id: GroupIndex, owners: &[Address]) -> Group {
-        group_of(epoch, id, owners, MAX_GROUP_SIZE)
-    }
-
-    /// A group whose first `width` spools cycle through `owners`.
-    fn group_of(epoch: EpochNumber, id: GroupIndex, owners: &[Address], width: usize) -> Group {
         let mut group = Group {
             epoch,
             id,
             ..Group::zeroed()
         };
-        for i in 0..width {
+        for i in 0..GROUP_SIZE {
             group.spools[i] = Spool {
                 node: owners[i % owners.len()],
                 ..Spool::zeroed()
@@ -505,42 +493,9 @@ mod tests {
     fn group_peers_all_spools() {
         let state = state_with_groups();
         let peers = state.group_peers(GroupIndex(0));
-        assert_eq!(peers.len(), MAX_GROUP_SIZE);
+        assert_eq!(peers.len(), GROUP_SIZE);
         assert_eq!(peers[0], (SpoolIndex(0), address(1)));
         assert_eq!(peers[1], (SpoolIndex(1), address(2)));
-    }
-
-    // a 4-wide network's group walks stop at its four assigned spools
-    #[test]
-    fn narrow_group() {
-        let epoch = EpochNumber(5);
-        let owners = [address(1), address(2), address(3), address(4)];
-        let second = GroupIndex(1);
-        let state = ProtocolState {
-            current: EpochBundle {
-                epoch: Epoch { id: epoch, ..Epoch::zeroed() },
-                committee: owners.iter().map(|owner| member(*owner, 100)).collect(),
-                groups: vec![
-                    group_of(epoch, GroupIndex(0), &owners, 4),
-                    group_of(epoch, second, &owners, 4),
-                ],
-            },
-            ..ProtocolState::default()
-        };
-
-        let spools: Vec<SpoolIndex> = state
-            .spools_in_group(second)
-            .expect("group")
-            .map(|(spool, _)| spool)
-            .collect();
-
-        assert_eq!(spools, vec![SpoolIndex(20), SpoolIndex(21), SpoolIndex(22), SpoolIndex(23)]);
-        assert_eq!(state.group_peers(second).len(), 4);
-        assert_eq!(state.group_member_count(second), 4);
-        assert_eq!(state.member_spools(address(1)), vec![SpoolIndex(0), SpoolIndex(20)]);
-        assert_eq!(state.spool_owner(SpoolIndex(23)), Some(address(4)));
-        assert!(state.spool(SpoolIndex(24)).is_none());
-        assert!(state.spool_owner(SpoolIndex(24)).is_none());
     }
 
     #[test]

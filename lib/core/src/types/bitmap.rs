@@ -1,13 +1,13 @@
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 use bytemuck::{Pod, Zeroable};
-use crate::erasure::MAX_GROUP_SIZE;
+use crate::erasure::GROUP_SIZE;
 
 /// Bitmap for Groups.
 pub type GroupBitmap = DynamicBitmap;
 
 /// Bitmap for Spools within a Group (fixed size)
-pub type SpoolBitmap = Bitmap<MAX_GROUP_SIZE, { aligned_bytes_for_members(MAX_GROUP_SIZE, 8) }>;
+pub type SpoolBitmap = Bitmap<GROUP_SIZE, { aligned_bytes_for_members(GROUP_SIZE, 8) }>;
 
 
 /// Read operations over a bit-addressed `[u8]` region.

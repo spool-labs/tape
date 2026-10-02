@@ -16,7 +16,8 @@ pub fn object_etag(track: &CompressedTrack, blob: Option<&BlobEncoding>) -> Hash
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::erasure::MAX_GROUP_SIZE;
+    use crate::encoding::EncodingProfile;
+    use crate::erasure::GROUP_SIZE;
     use crate::spooler::GroupIndex;
     use crate::track::types::{TrackKind, TrackState, TrackVisibility};
     use crate::types::{StorageUnits, StripeCount};
@@ -49,9 +50,10 @@ mod tests {
         let blob = BlobEncoding {
             size: StorageUnits::from_bytes(17),
             commitment,
+            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(8),
             stripe_count: StripeCount(1),
-            leaves: [Hash::default(); MAX_GROUP_SIZE],
+            leaves: [Hash::default(); GROUP_SIZE],
         };
 
         assert_eq!(object_etag(&track(value_hash), Some(&blob)), commitment);

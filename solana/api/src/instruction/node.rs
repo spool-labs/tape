@@ -96,14 +96,8 @@ pub struct SetEpochDuration {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SetNetworkCapacity {
-    pub capacity: StorageUnits,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SetNodeCapacity {
-    pub capacity: StorageUnits,
+pub struct SetStorageCapacity {
+    pub size: StorageUnits,
 }
 
 #[repr(C)]
@@ -385,11 +379,11 @@ pub fn build_claim_commission_ix(
     }
 }
 
-pub fn build_set_network_capacity_ix(
+pub fn build_set_storage_capacity_ix(
     fee_payer: Address,
     authority: Address,
     node_address: Address,
-    capacity: StorageUnits,
+    size: StorageUnits,
 ) -> Instruction {
     Instruction {
         program_id: tapedrive::ID,
@@ -398,27 +392,8 @@ pub fn build_set_network_capacity_ix(
             AccountMeta::new_readonly(authority.into(), true),
             AccountMeta::new(node_address.into(), false),
         ],
-        data: SetNetworkCapacity {
-            capacity,
-        }.to_bytes(),
-    }
-}
-
-pub fn build_set_node_capacity_ix(
-    fee_payer: Address,
-    authority: Address,
-    node_address: Address,
-    capacity: StorageUnits,
-) -> Instruction {
-    Instruction {
-        program_id: tapedrive::ID,
-        accounts: vec![
-            AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new_readonly(authority.into(), true),
-            AccountMeta::new(node_address.into(), false),
-        ],
-        data: SetNodeCapacity {
-            capacity,
+        data: SetStorageCapacity {
+            size,
         }.to_bytes(),
     }
 }

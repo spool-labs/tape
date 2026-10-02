@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use tape_rpc::Rpc;
 use tape_api::program::tapedrive;
-use tape_core::thresholds::NetworkParams;
 use tape_crypto::hash::Hash;
 use tape_protocol::fetch::{EpochGuess, fetch_state_current, fetch_state_speculative};
 use tape_protocol::{Api, ProtocolState};
@@ -73,27 +72,6 @@ pub async fn bootstrap_network_state<Blockchain: Rpc, Cluster: Api>(
 
     client.store_state(state);
     Ok(client.state())
-}
-
-/// The network's profile, trust model and thresholds.
-///
-/// They are set at genesis and never change, so the bootstrapped `System`
-/// answers for the client's whole lifetime.
-pub async fn network_params<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    operation: Option<Operation>,
-) -> Result<NetworkParams, TapedriveError> {
-    let state = bootstrap_network_state(client, operation).await?;
-    params_of(&state)
-}
-
-/// Read the fixed settings off a bootstrapped state.
-pub(crate) fn params_of(state: &ProtocolState) -> Result<NetworkParams, TapedriveError> {
-    state.system.params().map_err(|_| {
-        TapedriveError::InvalidArgument(
-            "the network's system account holds no valid encoding profile and trust model".into(),
-        )
-    })
 }
 
 /// Fetch protocol state, guessing the epoch when a previous run left one.

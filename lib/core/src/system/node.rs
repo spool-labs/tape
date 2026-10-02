@@ -44,7 +44,7 @@ pub struct NodePreferences {
     pub subsidy_decay_bps: BasisPoints,
 
     /// The preferred total archive size.
-    pub network_capacity: StorageUnits,
+    pub storage_capacity: StorageUnits,
 
     /// The preferred price per storage unit.
     pub storage_price: Coin<TAPE>,
@@ -55,11 +55,6 @@ pub struct NodePreferences {
     /// The preferred epoch duration in seconds.
     /// Reference targets: ~20s simnet, ~100s localnet, ~3_600s devnet, ~604_800s mainnet.
     pub epoch_duration: EpochDuration,
-
-    /// The most bytes this node can store; zero means no limit.
-    /// Spools count at twice their size against it, leaving room to grow.
-    /// Each node sets its own, and it is never aggregated.
-    pub node_capacity: StorageUnits,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,7 +73,7 @@ pub fn aggregate_node_preferences(
     let mut spool_group_counts: Vec<(u64, u64)> = Vec::new();
     let mut burn_fee_bps: Vec<(u64, u64)> = Vec::new();
     let mut subsidy_decay_bps: Vec<(u64, u64)> = Vec::new();
-    let mut network_capacities: Vec<(u64, u64)> = Vec::new();
+    let mut storage_capacities: Vec<(u64, u64)> = Vec::new();
     let mut storage_prices: Vec<(u64, u64)> = Vec::new();
     let mut access_thresholds: Vec<(u64, u64)> = Vec::new();
     let mut epoch_durations: Vec<(u64, u64)> = Vec::new();
@@ -94,7 +89,7 @@ pub fn aggregate_node_preferences(
         spool_group_counts.push((peer.preferences.spool_groups, weight));
         burn_fee_bps.push((peer.preferences.burn_fee_bps.0, weight));
         subsidy_decay_bps.push((peer.preferences.subsidy_decay_bps.0, weight));
-        network_capacities.push((peer.preferences.network_capacity.0, weight));
+        storage_capacities.push((peer.preferences.storage_capacity.0, weight));
         storage_prices.push((peer.preferences.storage_price.0, weight));
         access_thresholds.push((peer.preferences.access_threshold.0, weight));
         epoch_durations.push((peer.preferences.epoch_duration.0, weight));
@@ -121,9 +116,9 @@ pub fn aggregate_node_preferences(
                 .min(BasisPoints::MAX)
                 .max(bounds.subsidy_decay_bps.0),
         ),
-        network_capacity: StorageUnits(
-            quorum_above(&network_capacities, total_weight)
-                .max(bounds.network_capacity.0),
+        storage_capacity: StorageUnits(
+            quorum_above(&storage_capacities, total_weight)
+                .max(bounds.storage_capacity.0),
         ),
         storage_price: TAPE(
             quorum_below(&storage_prices, total_weight)
@@ -137,6 +132,5 @@ pub fn aggregate_node_preferences(
             quorum_above(&epoch_durations, total_weight)
                 .max(bounds.epoch_duration.0),
         ),
-        node_capacity: StorageUnits::zero(),
     })
 }

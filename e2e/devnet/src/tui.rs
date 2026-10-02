@@ -15,7 +15,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Frame, Terminal};
-use tape_core::erasure::MAX_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 
 use crate::app::{node_color, Command, PollSnapshot, NODE_EVENT_HISTORY_EPOCHS};
 use crate::sparkline::{render_braille_sparkline, render_node_sparkline};
@@ -117,7 +117,7 @@ fn render_frame(frame: &mut Frame<'_>, snap: &PollSnapshot, disconnected: bool) 
     );
     let term_h = area.height as usize;
 
-    let group_count = snap.spools.len().div_ceil(MAX_GROUP_SIZE).max(1);
+    let group_count = snap.spools.len().div_ceil(GROUP_SIZE).max(1);
     let spool_inner_w = area.width.saturating_sub(2) as usize;
     let groups_per_row = ((spool_inner_w + 1) / (GROUP_WIDTH + 1)).max(1);
     let bands = group_count.div_ceil(groups_per_row);
@@ -238,9 +238,7 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
         return;
     }
 
-    // The snapshot holds one entry per spool index, a stride of MAX_GROUP_SIZE
-    // per group. This harness runs tapenet's profile, which fills every one.
-    let group_count = snap.spools.len().div_ceil(MAX_GROUP_SIZE);
+    let group_count = snap.spools.len().div_ceil(GROUP_SIZE);
     let groups_per_row = ((inner.width as usize + 1) / (GROUP_WIDTH + 1)).max(1);
     let bands = group_count.div_ceil(groups_per_row);
 
@@ -268,11 +266,11 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, snap: &PollSnapshot) {
                 }
                 for c in 0..GROUP_SPOOL_COLS {
                     let spool_in_group = row * GROUP_SPOOL_COLS + c;
-                    if spool_in_group >= MAX_GROUP_SIZE {
+                    if spool_in_group >= GROUP_SIZE {
                         spans.push(Span::raw(" "));
                         continue;
                     }
-                    let spool_idx = group * MAX_GROUP_SIZE + spool_in_group;
+                    let spool_idx = group * GROUP_SIZE + spool_in_group;
                     let Some(spool) = snap.spools.get(spool_idx) else {
                         spans.push(Span::raw(" "));
                         continue;

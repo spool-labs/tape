@@ -29,12 +29,11 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::BasisPoints;
 use tape_crypto::Address;
-use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetScenario, TAPENET_GROUP_SIZE, run_simnet_test,
-};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 
 const TARGET_GROUPS: u64 = 5;
 const NODE_COUNT: usize = 25;
@@ -85,8 +84,8 @@ async fn inner() {
         .build()
         .expect("build harness");
 
-    let genesis_committee: Vec<usize> = (0..TAPENET_GROUP_SIZE).collect();
-    let late_nodes: Vec<usize> = (TAPENET_GROUP_SIZE..NODE_COUNT).collect();
+    let genesis_committee: Vec<usize> = (0..GROUP_SIZE).collect();
+    let late_nodes: Vec<usize> = (GROUP_SIZE..NODE_COUNT).collect();
     let all: Vec<usize> = (0..NODE_COUNT).collect();
 
     {
@@ -206,7 +205,7 @@ async fn wait_migrated_owners(
 
         if start.elapsed() >= timeout {
             bail!(
-                "only {migrated} of {TAPENET_GROUP_SIZE} spool owners changed, so recovery was barely exercised"
+                "only {migrated} of {GROUP_SIZE} spool owners changed, so recovery was barely exercised"
             );
         }
 
@@ -239,13 +238,13 @@ async fn wait_current_owner_slices(
             .count_current_owner_slices(track, group)
             .await
             .expect("count current owner slices");
-        if observed == TAPENET_GROUP_SIZE {
+        if observed == GROUP_SIZE {
             return Ok(());
         }
 
         if start.elapsed() >= timeout {
             bail!(
-                "timed out waiting for current group owners to hold {TAPENET_GROUP_SIZE} slices, observed {observed}"
+                "timed out waiting for current group owners to hold {GROUP_SIZE} slices, observed {observed}"
             );
         }
 

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::prelude::{EpochNumber, GroupIndex, SpoolIndex, SpoolState, SpoolStatus};
 use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps};
@@ -547,7 +548,7 @@ fn make_sync_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut state = SpoolState::new(SpoolStatus::Sync, epoch);
 
     state.prev_owner = protocol.spool_owner_prev(spool);
-    for slice in 0..ctx.params().n() {
+    for slice in 0..GROUP_SIZE {
         state.prev_helpers[slice] = protocol.spool_owner_prev(group.spool_at(slice));
     }
 
@@ -630,7 +631,7 @@ fn check_expiry(
 
 #[cfg(test)]
 mod tests {
-    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::system::{EpochPhase, SpoolState, SpoolStatus};
     use tape_core::types::{EpochNumber, SpoolIndex};
     use tape_crypto::address::Address;
@@ -646,9 +647,6 @@ mod tests {
 
     const EPOCH: EpochNumber = EpochNumber(2);
     const SPOOL: SpoolIndex = SpoolIndex(5);
-
-    /// Spools in a tapenet group.
-    const WIDTH: usize = TAPENET_PROFILE.n() as usize;
 
     async fn test_context() -> TestContext {
         NodeHarness::builder()
@@ -960,7 +958,7 @@ mod tests {
     #[tokio::test]
     async fn kept_spool_active() {
         let next_epoch = EpochNumber(3);
-        let ctx = context_with_prev_owners((0..WIDTH).collect()).await;
+        let ctx = context_with_prev_owners((0..GROUP_SIZE).collect()).await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .expect("set spool state");
@@ -1002,7 +1000,7 @@ mod tests {
     // a queued repair puts the kept spool straight into Repair
     #[tokio::test]
     async fn kept_spool_repair() {
-        let ctx = context_with_prev_owners((0..WIDTH).collect()).await;
+        let ctx = context_with_prev_owners((0..GROUP_SIZE).collect()).await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .expect("set spool state");
@@ -1032,7 +1030,7 @@ mod tests {
     // a spool taken over from another node starts in Sync
     #[tokio::test]
     async fn moved_spool_syncs() {
-        let ctx = context_with_prev_owners((1..=WIDTH).collect()).await;
+        let ctx = context_with_prev_owners((1..=GROUP_SIZE).collect()).await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .expect("set spool state");
@@ -1060,7 +1058,7 @@ mod tests {
     // a spool the epoch turn interrupted mid-sync starts over
     #[tokio::test]
     async fn interrupted_sync_restarts() {
-        let ctx = context_with_prev_owners((0..WIDTH).collect()).await;
+        let ctx = context_with_prev_owners((0..GROUP_SIZE).collect()).await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Sync, EpochNumber(1)))
             .expect("set spool state");

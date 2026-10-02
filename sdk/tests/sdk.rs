@@ -10,10 +10,9 @@ use rpc_litesvm::LiteSvmRpc;
 use tape_api::program::tapedrive::{self, tape_pda, track_pda};
 use tape_api::state::{Group, Tape};
 use tape_core::bls::BlsPubkey;
-use tape_core::encoding::TAPENET_PROFILE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, NodePreferences, Spool};
-use tape_core::thresholds::TrustModel;
 use tape_core::track::data::{track_key, BlobData, BlobDataSlice};
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{
@@ -266,8 +265,6 @@ fn setup() -> Fixture {
     peer_manager.add_peer(make_peer(node, 3001));
 
     let mut state = ProtocolState::default();
-    state.system.profile = TAPENET_PROFILE.into();
-    state.system.trust_model = TrustModel::Permissionless.into();
     state.current.epoch.id = EpochNumber(1);
     state
         .current
@@ -279,7 +276,7 @@ fn setup() -> Fixture {
         size: StorageUnits::mb(1),
         ..Group::zeroed()
     };
-    for position in 0..usize::from(TAPENET_PROFILE.n()) {
+    for position in 0..GROUP_SIZE {
         group.spools[position] = Spool::new(node, BlsPubkey::zeroed());
     }
     state.current.groups.push(group);

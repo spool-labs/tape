@@ -6,8 +6,6 @@ use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
 use tape_core::challenge::schedule::SLOT_MS;
 use tape_core::challenge::EvictionPolicy;
-use tape_core::encoding::ErasureCode;
-use tape_core::thresholds::TrustModel;
 use tape_node::config::challenge::ChallengeConfig;
 use tokio::task::JoinHandle;
 
@@ -33,13 +31,6 @@ impl SimnetBuilder {
 
     pub fn node_count(mut self, node_count: usize) -> Self {
         self.config.node_count = node_count;
-        self
-    }
-
-    /// Create the chain on this profile and trust model; tapenet's by default.
-    pub fn network(mut self, profile: ErasureCode, trust_model: TrustModel) -> Self {
-        self.config.profile = profile;
-        self.config.trust_model = trust_model;
         self
     }
 
@@ -98,9 +89,6 @@ impl SimnetBuilder {
         if self.config.node_count == 0 {
             return Err(anyhow!("node_count must be > 0"));
         }
-        self.config
-            .genesis()
-            .map_err(|error| anyhow!("simnet profile: {error}"))?;
 
         if self.config.file_log {
             log::init_log();
@@ -222,18 +210,6 @@ impl SimnetHarness {
                 .get_mut(i)
                 .ok_or_else(|| anyhow!("node {i} out of range"))?;
             node.kill();
-        }
-        Ok(())
-    }
-
-    /// Give each stopped node an empty store, as if its drive was lost
-    pub fn wipe_nodes(&mut self, indices: &[usize]) -> Result<()> {
-        for &i in indices {
-            let node = self
-                .nodes
-                .get_mut(i)
-                .ok_or_else(|| anyhow!("node {i} out of range"))?;
-            node.wipe()?;
         }
         Ok(())
     }

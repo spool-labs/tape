@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use bytes::Bytes;
 use tape_store_api::{Column, Direction, Store};
-use tape_core::erasure::MAX_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
@@ -164,7 +164,7 @@ impl<Db: Store> GatewaySliceCache<Db> {
 
     /// Delete every cached slice of a track across its group
     pub fn purge_track(&self, track_address: Address, group: GroupIndex) -> Result<(), GatewayCacheError> {
-        for position in 0..MAX_GROUP_SIZE {
+        for position in 0..GROUP_SIZE {
             self.core
                 .delete_cached(SliceCacheKey::new(group.spool_at(position), track_address))?;
         }

@@ -10,6 +10,7 @@ use tape_api::instruction::build_invalidate_track_ix;
 use tape_api::program::tapedrive::track_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::cert::track::TrackInvalidateMessage;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{SpoolBitmap, StorageUnits};
 use tape_crypto::address::Address;
@@ -98,9 +99,6 @@ async fn main() -> Result<()> {
 
     let system = sdk.rpc().get_system().await.context("get system")?;
     let epoch = system.current_epoch;
-    let profile = system
-        .code()
-        .map_err(|_| anyhow::anyhow!("System holds no valid encoding profile"))?;
     let group = sdk
         .rpc()
         .get_group(epoch, proof.state.group)
@@ -136,7 +134,7 @@ async fn main() -> Result<()> {
         indices.push(spool_index);
     }
     ensure!(
-        indices.len() == usize::from(profile.n()),
+        indices.len() == GROUP_SIZE,
         "expected every group spool key locally, found {}",
         indices.len()
     );

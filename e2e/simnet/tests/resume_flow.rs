@@ -18,10 +18,11 @@ use rand::{RngCore, SeedableRng};
 use tape_rpc::Rpc;
 use tape_api::program::tapedrive::track_pda;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
-use tape_e2e_simnet::{run_simnet_test, NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE};
+use tape_e2e_simnet::{run_simnet_test, NodeRuntimeMode, SimnetBuilder};
 use tape_protocol::Api;
 use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::tape_key::TapeKey;
@@ -29,7 +30,7 @@ use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_sdk::tapedrive::Tapedrive;
 
 const TARGET_GROUPS: u64 = 5;
-const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
+const NODE_COUNT: usize = GROUP_SIZE;
 const OBJECT_NAME: &str = "resume/obj";
 // Simnet epochs auto-advance on wall-clock, so a multi-case run crosses several
 // boundaries; reserve well past the whole run so no tape expires mid-test.

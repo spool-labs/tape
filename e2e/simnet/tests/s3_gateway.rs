@@ -51,18 +51,18 @@ use solana_signer::Signer;
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::instruction::MAX_NAME_LEN;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::TrackKind;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_sdk::error::TapedriveError;
 use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, TestGateway,
-    run_simnet_test,
+    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TestGateway, run_simnet_test,
 };
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::object::{ListedObject, ListObjectsQuery};
 
-const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
+const NODE_COUNT: usize = GROUP_SIZE;
 const TARGET_GROUPS: u64 = 1;
 const GATEWAY_STAKE: u64 = 2_000;
 const STORAGE_NODE_STAKE: u64 = 1_000;

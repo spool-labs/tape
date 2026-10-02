@@ -519,8 +519,8 @@ pub struct PendingWriteChunk {
 
 #[cfg(test)]
 mod tests {
-    use tape_core::encoding::TAPENET_PROFILE;
-    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, PackedTrack};
     use tape_core::types::{StorageUnits, StripeCount};
@@ -860,9 +860,10 @@ mod tests {
         let info = BlobEncoding {
             size: StorageUnits(512),
             commitment: Hash::from([3u8; 32]),
+            profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(2),
-            leaves: [Hash::default(); MAX_GROUP_SIZE],
+            leaves: [Hash::default(); GROUP_SIZE],
         };
 
         let bytes = wincode::serialize(&info).unwrap();
@@ -873,15 +874,16 @@ mod tests {
     // the blob commitment root matches its commitment
     #[test]
     fn commitment_root() {
-        let leaves = [Hash::default(); MAX_GROUP_SIZE];
+        let leaves = [Hash::default(); GROUP_SIZE];
         let info = BlobEncoding {
             size: StorageUnits(1024),
             commitment: root_from_leaf_hashes::<{ SLICE_TREE_HEIGHT }>(&leaves),
+            profile: EncodingProfile::clay_default(),
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(1),
             leaves,
         };
 
-        assert_eq!(info.commitment_root(TAPENET_PROFILE), Some(info.commitment));
+        assert_eq!(info.commitment_root(), info.commitment);
     }
 }

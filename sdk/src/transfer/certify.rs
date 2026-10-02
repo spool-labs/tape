@@ -6,7 +6,7 @@
 //! # Certification Flow
 //!
 //! 1. **Collect Signatures**: Query committee members in parallel for BLS signatures
-//! 2. **Verify Quorum**: Ensure the signer weight reaches the network's certify count
+//! 2. **Verify Supermajority**: Ensure we have at least 2f+1 signatures
 //! 3. **Aggregate Signatures**: Combine individual BLS signatures into one
 //! 4. **Build Transaction**: Create the CertifyTrack instruction with bitmap + aggregated signature
 
@@ -17,9 +17,10 @@ use tape_crypto::address::Address;
 use thiserror::Error;
 
 use tape_api::instruction::build_certify_track_ix;
+use tape_core::bft::is_supermajority;
 use tape_core::bls::BlsSignature;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
-use tape_core::thresholds::{NetworkParams, Thresholds};
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{BitmapRead, EpochNumber, SpoolBitmap};
 use tape_protocol::api::{Api, ApiError, CertifyReq, CertifyRes};
@@ -29,9 +30,9 @@ use tape_retry::{retry, RetryConfig};
 /// Errors that can occur during certification.
 #[derive(Debug, Error)]
 pub enum CertificationError {
-    /// Not enough signer weight collected to certify.
-    #[error("insufficient signatures: got {got}, need {need}")]
-    InsufficientSignatures { got: usize, need: usize },
+    /// Not enough signatures collected for supermajority.
+    #[error("insufficient signatures: got {got} of {total}, need supermajority")]
+    InsufficientSignatures { got: usize, total: usize },
 
     /// No committee members available.
     #[error("no committee members available")]
@@ -110,7 +111,7 @@ pub struct CertificationConfig {
     pub max_concurrent: usize,
     /// Maximum retries per node.
     pub max_retries: usize,
-    /// Whether to exit early once the certify count is reached.
+    /// Whether to exit early once supermajority is reached.
     pub early_exit: bool,
 }
 
@@ -161,7 +162,7 @@ pub struct CollectedSignatures {
     pub responses: Vec<CertifyRes>,
     /// Nodes that failed and why (for diagnostics).
     pub failures: Vec<(Address, NodeSignError)>,
-    /// Whether collection exited early (certify count reached before all responses).
+    /// Whether collection exited early (supermajority reached before all responses).
     pub early_exit: bool,
 }
 
@@ -190,13 +191,7 @@ impl CertificationCollector {
         state: &ProtocolState,
         banked: &[CertifyRes],
     ) -> Result<CollectedSignatures, CertificationError> {
-        let params = state.system.params().map_err(|_| {
-            CertificationError::SystemState(
-                "system holds no valid encoding profile and trust model".into(),
-            )
-        })?;
-        let width = params.n();
-        let thresholds = params.thresholds;
+        let group_total_weight = GROUP_SIZE as u64;
 
         if state.current.committee.is_empty() {
             return Err(CertificationError::NoCommitteeMembers);
@@ -206,7 +201,7 @@ impl CertificationCollector {
         if signature_requests.is_empty() {
             return Err(CertificationError::InsufficientSignatures {
                 got: 0,
-                need: thresholds.certify as usize,
+                total: group_total_weight as usize,
             });
         }
 
@@ -214,22 +209,23 @@ impl CertificationCollector {
         bank_receipts(&mut epoch_buckets, &mut signature_requests, banked, state.epoch());
 
         // The bank often already carries the answer. The uploader takes a receipt
-        // from every node that accepts a slice and stops sending once enough
-        // of them have one, so what is left to ask is exactly the set it
+        // from every node that accepts a slice and stops sending once a
+        // supermajority has one, so what is left to ask is exactly the set it
         // wrote off: nodes with no track data, each costing its full retry budget
         // to say so. Checking here rather than only on a fresh response is the
         // difference between returning now and waiting out that budget.
         if self.config.early_exit {
-            if let Some(epoch_key) = select_certified_epoch(&epoch_buckets, &thresholds) {
+            if let Some(epoch_key) = select_supermajority_epoch(&epoch_buckets, group_total_weight)
+            {
                 let bucket = &epoch_buckets[&epoch_key];
                 tracing::info!(
                     signatures = bucket.responses.len(),
                     weight = bucket.weight,
-                    group_size = width,
+                    group_size = GROUP_SIZE,
                     unasked = signature_requests.len(),
-                    "Spool group certify count already banked, asking no one"
+                    "Spool group supermajority already banked, asking no one"
                 );
-                return settle(bucket, epoch_key, Vec::new(), &params);
+                return settle(bucket, epoch_key, Vec::new());
             }
         }
 
@@ -287,15 +283,17 @@ impl CertificationCollector {
                         .get(&epoch_key)
                         .expect("epoch bucket inserted");
 
-                    if self.config.early_exit && bucket.weight >= thresholds.certify {
+                    if self.config.early_exit
+                        && is_supermajority(bucket.weight, group_total_weight)
+                    {
                         tracing::info!(
                             signatures = bucket.responses.len(),
                             weight = bucket.weight,
-                            group_size = width,
+                            group_size = GROUP_SIZE,
                             remaining_weight = remaining_node_weight,
-                            "Spool group certify count reached, exiting early"
+                            "Spool group supermajority reached, exiting early"
                         );
-                        return settle(bucket, epoch_key, failures, &params);
+                        return settle(bucket, epoch_key, failures);
                     }
                 }
                 Err(e) => {
@@ -318,20 +316,23 @@ impl CertificationCollector {
                 }
             }
 
-            let can_reach_quorum =
-                can_reach_certify(&epoch_buckets, remaining_node_weight, &thresholds);
+            let can_reach_quorum = can_reach_supermajority(
+                &epoch_buckets,
+                remaining_node_weight,
+                group_total_weight,
+            );
             if !can_reach_quorum {
                 break;
             }
         }
 
-        let selected_epoch = select_certified_epoch(&epoch_buckets, &thresholds);
+        let selected_epoch = select_supermajority_epoch(&epoch_buckets, group_total_weight);
 
         if selected_epoch.is_none() {
             let (_, best_weight, _) = select_best_epoch(&epoch_buckets);
             return Err(CertificationError::InsufficientSignatures {
                 got: best_weight,
-                need: thresholds.certify as usize,
+                total: group_total_weight as usize,
             });
         }
 
@@ -340,10 +341,10 @@ impl CertificationCollector {
         let signature_count = selected_bucket.responses.len();
         let check_bitmap = SpoolBitmap::from_indices(&selected_bucket.positions);
         let final_weight = check_bitmap.count_ones() as u64;
-        if final_weight < thresholds.certify {
+        if !is_supermajority(final_weight, group_total_weight) {
             return Err(CertificationError::InsufficientSignatures {
                 got: final_weight as usize,
-                need: thresholds.certify as usize,
+                total: group_total_weight as usize,
             });
         }
 
@@ -357,7 +358,7 @@ impl CertificationCollector {
             aggregated_signature,
             bitmap,
             signature_count,
-            spool_count: width,
+            spool_count: GROUP_SIZE,
             epoch: selected_epoch,
             responses,
             failures,
@@ -481,23 +482,22 @@ fn record_signature_response(
         .extend(std::iter::repeat_n(signature, positions.len()));
 }
 
-fn can_reach_certify(
+fn can_reach_supermajority(
     epoch_buckets: &HashMap<u64, SignatureBucket>,
     remaining_node_weight: u64,
-    thresholds: &Thresholds,
+    group_total_weight: u64,
 ) -> bool {
-    remaining_node_weight >= thresholds.certify
+    is_supermajority(remaining_node_weight, group_total_weight)
         || epoch_buckets
             .values()
-            .any(|bucket| bucket.weight + remaining_node_weight >= thresholds.certify)
+            .any(|bucket| is_supermajority(bucket.weight + remaining_node_weight, group_total_weight))
 }
 
-/// Build the collected result from a bucket that already holds the certify count.
+/// Build the collected result from a bucket that already holds a supermajority.
 fn settle(
     bucket: &SignatureBucket,
     epoch_key: u64,
     failures: Vec<(Address, NodeSignError)>,
-    params: &NetworkParams,
 ) -> Result<CollectedSignatures, CertificationError> {
     let aggregated_signature = BlsSignature::aggregate(&bucket.signatures)
         .map_err(|e| CertificationError::AggregationFailed(format!("{:?}", e)))?;
@@ -506,7 +506,7 @@ fn settle(
         aggregated_signature,
         bitmap: SpoolBitmap::from_indices(&bucket.positions),
         signature_count: bucket.responses.len(),
-        spool_count: params.n(),
+        spool_count: GROUP_SIZE,
         epoch: epoch_key,
         responses: bucket.responses.clone(),
         failures,
@@ -514,15 +514,15 @@ fn settle(
     })
 }
 
-fn select_certified_epoch(
+fn select_supermajority_epoch(
     epoch_buckets: &HashMap<u64, SignatureBucket>,
-    thresholds: &Thresholds,
+    group_total_weight: u64,
 ) -> Option<u64> {
     let mut selected_epoch = None;
     let mut selected_weight = 0u64;
 
     for (epoch, bucket) in epoch_buckets.iter() {
-        if bucket.weight < thresholds.certify {
+        if !is_supermajority(bucket.weight, group_total_weight) {
             continue;
         }
 
@@ -566,17 +566,8 @@ fn select_best_epoch(epoch_buckets: &HashMap<u64, SignatureBucket>) -> (Option<u
 #[cfg(test)]
 mod tests {
     use bytemuck::Zeroable;
-    use tape_core::encoding::TAPENET_PROFILE;
-    use tape_core::thresholds::TrustModel;
 
     use super::*;
-
-    /// Tapenet's thresholds. The bucket weights below sit around its certify count.
-    fn tapenet() -> Thresholds {
-        let n = u64::from(TAPENET_PROFILE.n());
-        let k = u64::from(TAPENET_PROFILE.k());
-        Thresholds::try_new(TrustModel::Permissionless, n, k).expect("tapenet")
-    }
 
     fn receipt(node: Address, epoch: u64) -> CertifyRes {
         CertifyRes {
@@ -712,7 +703,7 @@ mod tests {
 
     #[test]
     fn certification_error_display() {
-        let err = CertificationError::InsufficientSignatures { got: 5, need: 10 };
+        let err = CertificationError::InsufficientSignatures { got: 5, total: 10 };
         let msg = format!("{}", err);
         assert!(msg.contains("5"));
         assert!(msg.contains("10"));
@@ -750,32 +741,13 @@ mod tests {
     }
 
     #[test]
-    fn reach_certify_by_remaining() {
+    fn reach_supermajority_by_remaining() {
         let buckets = HashMap::new();
-        assert!(can_reach_certify(&buckets, 14, &tapenet()));
-        assert!(!can_reach_certify(&buckets, 13, &tapenet()));
-    }
-
-    // a trusted network certifies on k signatures: three for 3 of 4, two for 2 of 4
-    #[test]
-    fn reach_certify_trusted() {
-        let three = Thresholds::try_new(TrustModel::Trusted, 4, 3).expect("3 of 4");
-        let two = Thresholds::try_new(TrustModel::Trusted, 4, 2).expect("2 of 4");
-        let buckets = HashMap::from([(8, SignatureBucket {
-            responses: Vec::new(),
-            signatures: Vec::new(),
-            weight: 2,
-            positions: Vec::new(),
-        })]);
-
-        assert!(can_reach_certify(&buckets, 1, &three));
-        assert!(!can_reach_certify(&buckets, 0, &three));
-        assert_eq!(select_certified_epoch(&buckets, &three), None);
-        assert_eq!(select_certified_epoch(&buckets, &two), Some(8));
+        assert!(can_reach_supermajority(&buckets, 14, 20));
     }
 
     #[test]
-    fn reach_certify_by_bucket() {
+    fn reach_supermajority_by_bucket() {
         let buckets = HashMap::from([
             (8, SignatureBucket {
                 responses: Vec::new(),
@@ -791,12 +763,12 @@ mod tests {
             }),
         ]);
 
-        assert!(can_reach_certify(&buckets, 5, &tapenet()));
-        assert!(!can_reach_certify(&buckets, 4, &tapenet()));
+        assert!(can_reach_supermajority(&buckets, 5, 20));
+        assert!(!can_reach_supermajority(&buckets, 4, 20));
     }
 
     #[test]
-    fn reach_certify_impossible() {
+    fn reach_supermajority_impossible() {
         let buckets = HashMap::from([
             (8, SignatureBucket {
                 responses: Vec::new(),
@@ -812,11 +784,11 @@ mod tests {
             }),
         ]);
 
-        assert!(!can_reach_certify(&buckets, 4, &tapenet()));
+        assert!(!can_reach_supermajority(&buckets, 4, 20));
     }
 
     #[test]
-    fn test_select_certified_epoch() {
+    fn test_select_supermajority_epoch() {
         let buckets = HashMap::from([
             (7, SignatureBucket {
                 responses: Vec::new(),
@@ -838,7 +810,7 @@ mod tests {
             }),
         ]);
 
-        assert_eq!(select_certified_epoch(&buckets, &tapenet()), Some(9));
+        assert_eq!(select_supermajority_epoch(&buckets, 20), Some(9));
     }
 
     #[test]

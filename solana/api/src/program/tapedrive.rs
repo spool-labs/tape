@@ -8,6 +8,7 @@ use tape_crypto::{Address, Hash};
 
 use super::token::MINT_ADDRESS;
 
+pub const MIN_COMMITTEE_SIZE:     usize = 20;
 pub const MIN_STORAGE_CAPACITY:   usize = 1 << 30; // 1GiB
 pub const MIN_STORAGE_PRICE:      usize = 1;       // per GiB in TAPE per epoch
 

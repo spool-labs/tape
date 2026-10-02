@@ -373,8 +373,9 @@ mod tests {
     use crate::track::types::{TrackKind, TrackState, TrackVisibility};
     use tape_crypto::hash::Hash;
     #[cfg(feature = "wincode")]
+    use crate::encoding::EncodingProfile;
     #[cfg(feature = "wincode")]
-    use crate::erasure::MAX_GROUP_SIZE;
+    use crate::erasure::GROUP_SIZE;
     #[cfg(feature = "wincode")]
     use crate::types::{StorageUnits, StripeCount};
     use super::*;
@@ -424,9 +425,10 @@ mod tests {
             blob: Some(BlobEncoding {
                 size: StorageUnits::from_bytes(1024),
                 commitment: Hash::from([6u8; 32]),
+                profile: EncodingProfile::basic_default(),
                 stripe_size: StorageUnits::from_bytes(128),
                 stripe_count: StripeCount(4),
-                leaves: [Hash::from([7u8; 32]); MAX_GROUP_SIZE],
+                leaves: [Hash::from([7u8; 32]); GROUP_SIZE],
             }),
             object: None,
         }

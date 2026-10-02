@@ -4,7 +4,6 @@ use std::sync::Arc;
 use tape_peer_manager::PeerManager;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::encoding::{ClayParams, ErasureCode};
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_core::system::SpoolState;
@@ -37,9 +36,6 @@ const REPAIR_FETCH_CONCURRENCY: usize = 4;
 // "Escalate" means: remove from pending_repairs, add to pending_recoveries.
 // Both queues are presence-based, so adds are idempotent.
 //
-// Partial repair is a Clay feature. On a Reed-Solomon or copies network the
-// whole queue is escalated, and the Recover task rebuilds from k slices.
-//
 // Algorithm:
 // 1. Load spool state. Derive group and our slice index within it.
 //    Build two peer maps from spool_state.prev_helpers (previous)
@@ -52,11 +48,12 @@ const REPAIR_FETCH_CONCURRENCY: usize = 4;
 //      a. Check cancellation.
 //      b. Skip if slice already present (has_slice). Remove from pending_repairs.
 //      c. Load track_info. If missing, remove from pending_repairs, continue.
-//      d. Validate stripe params are non-zero.
+//      d. Validate encoding is Clay and stripe params are non-zero.
 //         If not → escalate, continue.
 //
 //      e. Build repair plan:
-//         - Slicer::with_rotation(ClayCoder::from_params(the network's Clay params))
+//         - ClayCoder::from_params(track_info.profile().clay_params())
+//         - Slicer::with_profile(coder, rotated=true, profile)
 //         - slicer.repair_plan_from_params(lost, &available, original_size, stripe_size)
 //         - If plan fails → escalate, continue.
 //
@@ -71,7 +68,7 @@ const REPAIR_FETCH_CONCURRENCY: usize = 4;
 //         - If any required helper is unavailable in both maps → escalate, continue.
 //
 //      h. Reconstruct:
-//         - SliceMetadata::new(original_size, stripe_size)
+//         - SliceMetadata::with_profile(original_size, stripe_size, profile)
 //         - slicer.repair(&plan, &helper_data, &metadata_bytes)
 //         - If decode fails → escalate, continue.
 //
@@ -104,14 +101,6 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     let spool_state = match ctx.store.get_spool_state(spool) {
         Ok(Some(state)) => state,
         _ => return RepairResult::Done { unrepairable: 0 },
-    };
-
-    let clay = match ctx.params().profile {
-        ErasureCode::Clay(params) => params,
-        ErasureCode::ReedSolomon(_) | ErasureCode::Replication(_) => {
-            let unrepairable = escalate_queue(ctx.as_ref(), config, spool, token);
-            return RepairResult::Done { unrepairable };
-        }
     };
 
     let peers = group_peers(ctx.as_ref(), &spool_state, spool);
@@ -206,9 +195,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 }
             }
 
-            let repaired =
-                repair_track(ctx.as_ref(), clay, spool, &peers, track, &track_data, token).await;
-            match repaired {
+            match repair_track(ctx.as_ref(), config, spool, &peers, track, &track_data, token).await {
                 Ok(data) => {
                     let repaired_len = data.len() as u64;
                     if let Err(error) = ctx.store.put_slice(spool, track, data) {
@@ -236,45 +223,6 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     }
 
     RepairResult::Done { unrepairable }
-}
-
-/// Move a spool's whole repair queue to the recovery queue, and count what moved.
-fn escalate_queue<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    config: &RecoveryConfig,
-    spool: SpoolIndex,
-    token: &CancellationToken,
-) -> usize {
-    let mut escalated = 0usize;
-
-    while !token.is_cancelled() {
-        let pending = match ctx
-            .store
-            .iter_pending_repairs(spool, config.repair_batch.max(1))
-        {
-            Ok(pending) => pending,
-            Err(error) => {
-                warn!(spool = %spool, %error, "iter_pending_repairs failed");
-                break;
-            }
-        };
-
-        if pending.is_empty() {
-            break;
-        }
-
-        for track in pending {
-            // A track that stays queued would come back on the next read, so stop.
-            if let Err(error) = ctx.store.add_pending_recovery(spool, track) {
-                warn!(spool = %spool, track = %track, %error, "add_pending_recovery failed, keeping in repair");
-                return escalated;
-            }
-            let _ = ctx.store.remove_pending_repair(spool, track);
-            escalated += 1;
-        }
-    }
-
-    escalated
 }
 
 /// Two peer maps: previous epoch helpers and current committee assignments.
@@ -322,7 +270,7 @@ pub fn group_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
 /// Returns Ok(repaired_data) or Err(()) to signal escalation.
 async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
-    clay: ClayParams,
+    _config: &RecoveryConfig,
     spool: SpoolIndex,
     peers: &GroupPeers,
     track: Address,
@@ -330,7 +278,9 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     token: &CancellationToken,
 ) -> Result<Vec<u8>, ()> {
 
-    if track_data.stripe_size == StorageUnits::zero()
+    let profile = track_data.profile;
+    if !profile.is_clay()
+        || track_data.stripe_size == StorageUnits::zero()
         || track_data.stripe_count == StripeCount::zero()
     {
         return Err(());
@@ -359,7 +309,11 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         return Err(());
     }
 
-    let slicer = Slicer::with_rotation(ClayCoder::from_params(clay));
+    let slicer = Slicer::with_profile(
+        ClayCoder::from_params(profile.clay_params()),
+        true,
+        profile,
+    );
 
     let plan = slicer
         .repair_plan_from_params(
@@ -374,9 +328,10 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         ctx, spool, &plan, peers, track, token,
     ).await?;
 
-    let metadata = SliceMetadata::new(
+    let metadata = SliceMetadata::with_profile(
         track_data.size.0 as usize,
         track_data.stripe_size.as_usize(),
+        profile,
     )
     .to_bytes();
 
@@ -536,19 +491,19 @@ fn per_helper_reqs(
 
 
 /// Extract sub-chunk data from a local slice to serve a repair request.
-/// Called by the HTTP handler when a peer asks for repair data. Only a Clay
-/// network has sub-chunks to serve.
+/// Called by the HTTP handler when a peer asks for repair data.
 pub fn extract_repair_data(
-    profile: ErasureCode,
+    track_info: &BlobEncoding,
     stripes: &[StripeSubChunkRequest],
     slice_data: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let ErasureCode::Clay(clay) = profile else {
-        return Err("partial repair needs a clay network".into());
-    };
+    let profile = track_info.profile;
+    if !profile.is_clay() {
+        return Err("repair only supported for clay tracks".into());
+    }
 
-    let coder = ClayCoder::from_params(clay);
-    let metadata = SliceMetadata::parse(slice_data)
+    let coder = ClayCoder::from_params(profile.clay_params());
+    let metadata = SliceMetadata::from_slice(slice_data)
         .map_err(|error| format!("parse slice metadata failed: {error}"))?;
 
     let num_stripes = if metadata.blob_len() == 0 {
@@ -600,10 +555,9 @@ pub fn extract_repair_data(
 mod tests {
     use super::*;
     use peer_memory::MemoryApi;
-    use tape_core::encoding::{RSParams, TAPENET_PROFILE};
+    use tape_core::encoding::EncodingProfile;
     use tape_core::erasure::{SLICE_TREE_HEIGHT, slice_root};
     use tape_core::system::SpoolStatus;
-    use tape_core::thresholds::TrustModel;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
@@ -612,18 +566,13 @@ mod tests {
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_protocol::api::ops::{PeerReq, PeerRes, RepairRes};
-    use tape_slicer::{ErasureCoder, StripedCoder};
+    use tape_slicer::{ClayCoder, ErasureCoder, Slicer};
     use tape_store::ops::ObjectInfoOps;
     use tape_store::types::ObjectInfo;
 
     use crate::harness::{NodeHarness, TestContext};
 
     const SPOOL: SpoolIndex = SpoolIndex(5);
-
-    /// The slicer a tapenet node encodes with.
-    fn tapenet_slicer() -> Slicer<StripedCoder> {
-        Slicer::try_from_profile(TAPENET_PROFILE).unwrap()
-    }
 
     fn addr(n: u8) -> Address {
         Address::from([n; 32])
@@ -660,13 +609,14 @@ mod tests {
     }
 
     fn clay_blob(size: u64, slices: &[Vec<u8>]) -> BlobEncoding {
-        let metadata = SliceMetadata::parse(&slices[0]).unwrap();
+        let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
         let stripe_size = metadata.stripe_size() as u64;
         let leaves = core::array::from_fn(|index| slice_root(&slices[index]).expect("slice within capacity"));
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         BlobEncoding {
             size: StorageUnits::from_bytes(size),
             commitment,
+            profile: EncodingProfile::clay_default(),
             stripe_size: StorageUnits::from_bytes(stripe_size),
             stripe_count: StripeCount(size.div_ceil(stripe_size)),
             leaves,
@@ -719,7 +669,12 @@ mod tests {
 
     #[tokio::test]
     async fn clay_repair() {
-        let mut slicer = tapenet_slicer();
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            true,
+            profile,
+        );
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
         let track = addr(9);
@@ -728,6 +683,7 @@ mod tests {
         let expected = slices[lost_pos].clone();
         let track_info = clay_track(1024, &slices);
         let track_blob = clay_blob(1024, &slices);
+        let track_blob_for_api = track_blob;
         let slices_for_api = slices.clone();
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
@@ -735,7 +691,7 @@ mod tests {
                 let helper_slice = &slices_for_api[group.position_of(req.helper_spool).unwrap()];
 
                 let data = extract_repair_data(
-                    TAPENET_PROFILE,
+                    &track_blob_for_api,
                     &req.stripes,
                     helper_slice,
                 ).unwrap();
@@ -764,7 +720,12 @@ mod tests {
     async fn escalates_failure() {
         let ctx = test_context().await; // noop api, no peers
         let a = addr(1);
-        let mut slicer = tapenet_slicer();
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            true,
+            profile,
+        );
         let slices = slicer.encode(&vec![0x24; 1024]).unwrap();
         let track_blob = clay_blob(1024, &slices);
 
@@ -780,34 +741,6 @@ mod tests {
         assert_eq!(result, RepairResult::Done { unrepairable: 1 });
         assert!(ctx.store.has_pending_recovery(SPOOL, a).unwrap());
         assert!(!ctx.store.has_pending_repair(SPOOL, a).unwrap());
-    }
-
-    // a reed-solomon network has no partial repair, so a queued repair goes
-    // to recovery without asking any peer
-    #[tokio::test]
-    async fn no_partial_repair() {
-        let profile = ErasureCode::ReedSolomon(RSParams::new(3, 1));
-        let ctx: TestContext = NodeHarness::builder()
-            .network(profile, TrustModel::Trusted)
-            .nodes(6)
-            .no_prev_snapshot_tape()
-            .build()
-            .await
-            .expect("build harness")
-            .ctx_for(0);
-        let spool = SpoolIndex(1);
-        let track = addr(7);
-
-        ctx.store
-            .set_spool_state(spool, repair_state(EpochNumber(3)))
-            .unwrap();
-        ctx.store.add_pending_repair(spool, track).unwrap();
-
-        let result = run(ctx.clone(), &RecoveryConfig::default(), spool, &CancellationToken::new()).await;
-
-        assert_eq!(result, RepairResult::Done { unrepairable: 1 });
-        assert!(ctx.store.has_pending_recovery(spool, track).unwrap());
-        assert!(!ctx.store.has_pending_repair(spool, track).unwrap());
     }
 
     #[tokio::test]
@@ -827,7 +760,12 @@ mod tests {
     async fn skips_uncertified() {
         let ctx = test_context().await;
         let a = addr(2);
-        let mut slicer = tapenet_slicer();
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            true,
+            profile,
+        );
         let slices = slicer.encode(&vec![0x33; 1024]).unwrap();
         let track_blob = clay_blob(1024, &slices);
 
@@ -858,7 +796,12 @@ mod tests {
     /// with current helpers from protocol state and complete the repair.
     #[tokio::test]
     async fn split_peers() {
-        let mut slicer = tapenet_slicer();
+        let profile = EncodingProfile::clay_default();
+        let mut slicer = Slicer::with_profile(
+            ClayCoder::from_params(profile.clay_params()),
+            true,
+            profile,
+        );
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
         let track = addr(9);
@@ -867,13 +810,14 @@ mod tests {
         let expected = slices[lost_pos].clone();
         let track_info = clay_track(1024, &slices);
         let track_blob = clay_blob(1024, &slices);
+        let track_blob_for_api = track_blob;
         let slices_for_api = slices.clone();
 
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
             PeerReq::Repair(ref req) => {
                 let helper_slice = &slices_for_api[group.position_of(req.helper_spool).unwrap()];
                 let data = extract_repair_data(
-                    TAPENET_PROFILE,
+                    &track_blob_for_api,
                     &req.stripes,
                     helper_slice,
                 ).unwrap();
