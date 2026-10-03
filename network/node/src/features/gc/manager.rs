@@ -93,7 +93,7 @@ async fn run_tick<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<(), NodeError> {
     // every tick, since a deleted track only has to outlive the rounds that can still ask for it
     let slot = SlotNumber(context.ingest.progress().last_dispatched_slot());
-    match sweep_deleted_slices(context.store.as_ref(), slot, context.params().profile) {
+    match sweep_deleted_slices(context.store.as_ref(), slot) {
         Ok(swept) if swept.tracks > 0 => debug!(
             tracks = swept.tracks,
             slices = swept.slices,
@@ -157,7 +157,6 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
         &owned_spools,
         context.pending.as_ref(),
         at_tip,
-        context.params().profile,
     )
     .await?;
     prune_handed_off_records(context.as_ref())?;

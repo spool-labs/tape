@@ -129,7 +129,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     if next_committee.members.capacity != system.committee_size {
         return Err(TapeError::InsufficientCommittee.into());
     }
-    if next_committee.members.count < u64::from(system.code()?.n()) {
+    if (next_committee.members.count as usize) < GROUP_SIZE {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -186,7 +186,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .saturating_add(leftover);
     archive.rewards_paid = TAPE::zero();
     archive.recent_usage = epoch_usage.reserved();
-    archive.storage_capacity = preferences.network_capacity;
+    archive.storage_capacity = preferences.storage_capacity;
     archive.storage_price = preferences.storage_price;
     archive.burn_fee_bps = preferences.burn_fee_bps;
     archive.subsidy_decay_bps = preferences.subsidy_decay_bps;
@@ -221,13 +221,13 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 }
 
 fn validate_preferences(system: &System, preferences: NodePreferences) -> ProgramResult {
-    if preferences.network_capacity.0 < MIN_STORAGE_CAPACITY as u64 {
+    if preferences.storage_capacity.0 < MIN_STORAGE_CAPACITY as u64 {
         return Err(TapeError::UnexpectedState.into());
     }
     if preferences.storage_price.0 < MIN_STORAGE_PRICE as u64 {
         return Err(TapeError::UnexpectedState.into());
     }
-    if preferences.committee_size < u64::from(system.code()?.n()) {
+    if preferences.committee_size < MIN_COMMITTEE_SIZE as u64 {
         return Err(TapeError::InsufficientCommittee.into());
     }
     if preferences.spool_groups < system.target_group_count {
@@ -272,7 +272,7 @@ mod tests {
 
     fn pref(capacity_mb: u64, price: u64, committee: u64, spool_groups: u64) -> NodePreferences {
         NodePreferences {
-            network_capacity: StorageUnits::mb(capacity_mb),
+            storage_capacity: StorageUnits::mb(capacity_mb),
             storage_price: TAPE(price),
             committee_size: committee,
             spool_groups,
@@ -280,7 +280,6 @@ mod tests {
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
-            node_capacity: StorageUnits::zero(),
         }
     }
 
@@ -336,7 +335,7 @@ mod tests {
             live_group_count: 50,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..permissionless_system()
+            ..System::zeroed()
         };
 
         let mut archive = Archive::zeroed();
@@ -509,7 +508,7 @@ mod tests {
             live_group_count: 75,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..permissionless_system()
+            ..System::zeroed()
         };
 
         let archive = Archive {

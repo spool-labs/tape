@@ -21,6 +21,7 @@ use tape_api::instruction::{
 };
 use tape_api::genesis::GenesisConfig;
 use tape_api::program::tapedrive::node_pda;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::coin::TAPE;
 use tape_core::types::EpochNumber;
 use tape_protocol::fetch::fetch_state_with_commitment;
@@ -36,11 +37,10 @@ pub struct ChainManager {
     sol_rpc: SolRpcClient,
     admin: Keypair,
     admin_signer: CryptoKeypair,
-    genesis: GenesisConfig,
 }
 
 impl ChainManager {
-    pub fn new(rpc_url: &str, admin: Keypair, genesis: GenesisConfig) -> Result<Self> {
+    pub fn new(rpc_url: &str, admin: Keypair) -> Result<Self> {
         let rpc = RpcClient::new(RpcConfig {
             endpoints: vec![rpc_url.to_string()],
             ..Default::default()
@@ -59,13 +59,7 @@ impl ChainManager {
             sol_rpc,
             admin,
             admin_signer,
-            genesis,
         })
-    }
-
-    /// The genesis config this chain is created with
-    pub fn genesis(&self) -> &GenesisConfig {
-        &self.genesis
     }
 
     pub fn rpc(&self) -> &RpcClient<SolanaRpc> {
@@ -123,7 +117,7 @@ impl ChainManager {
 
         self.send_idempotent(
             "create_system",
-            vec![build_create_system_ix(admin_address, admin_address, &self.genesis)],
+            vec![build_create_system_ix(admin_address, admin_address, &GenesisConfig::localnet())],
         )
         .await?;
 
@@ -135,7 +129,7 @@ impl ChainManager {
 
         self.send_idempotent(
             "create_archive",
-            vec![build_create_archive_ix(admin_address, admin_address, &self.genesis)],
+            vec![build_create_archive_ix(admin_address, admin_address, &GenesisConfig::localnet())],
         )
         .await?;
 
@@ -317,11 +311,9 @@ impl ChainManager {
             return Ok(());
         }
 
-        // Genesis seats one node on each spool of the first group.
-        let genesis_nodes = usize::from(self.genesis.profile.n());
-        if genesis_authorities.len() != genesis_nodes {
+        if genesis_authorities.len() != GROUP_SIZE {
             anyhow::bail!(
-                "start_network requires exactly {genesis_nodes} genesis nodes, got {}",
+                "start_network requires exactly {GROUP_SIZE} genesis nodes, got {}",
                 genesis_authorities.len()
             );
         }
@@ -337,7 +329,7 @@ impl ChainManager {
 
         let config = GenesisConfig {
             spool_groups,
-            ..self.genesis
+            ..GenesisConfig::localnet()
         };
         let ix = build_start_network_ix(
             self.admin.pubkey().into(),

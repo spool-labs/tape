@@ -2,7 +2,7 @@ use bytemuck::{Pod, Zeroable, bytes_of};
 use tape_crypto::Hash;
 use tape_crypto::merkle::{hash_leaf, verify_proof};
 
-use crate::erasure::MAX_GROUP_SIZE;
+use crate::erasure::GROUP_SIZE;
 use crate::spooler::GroupIndex;
 use crate::types::StorageUnits;
 
@@ -15,21 +15,21 @@ pub struct AssignmentGroupPayload {
     pub group: GroupIndex,
 
     /// Indices into the target epoch committee.
-    pub member_indices: [u64; MAX_GROUP_SIZE],
+    pub member_indices: [u64; GROUP_SIZE],
 
     /// Uniform size assigned to every spool in this group.
     pub size: StorageUnits,
 
     /// Blacklisted size for each assigned spool owner in this group.
-    pub blacklisted: [StorageUnits; MAX_GROUP_SIZE],
+    pub blacklisted: [StorageUnits; GROUP_SIZE],
 }
 
 impl AssignmentGroupPayload {
     pub const fn new(
         group: GroupIndex,
-        member_indices: [u64; MAX_GROUP_SIZE],
+        member_indices: [u64; GROUP_SIZE],
         size: StorageUnits,
-        blacklisted: [StorageUnits; MAX_GROUP_SIZE],
+        blacklisted: [StorageUnits; GROUP_SIZE],
     ) -> Self {
         Self {
             group,
@@ -78,7 +78,7 @@ mod tests {
             GroupIndex(3),
             core::array::from_fn(|i| i as u64),
             StorageUnits::mb(100),
-            [StorageUnits::zero(); MAX_GROUP_SIZE],
+            [StorageUnits::zero(); GROUP_SIZE],
         );
 
         assert_eq!(payload.hash(), payload.hash());
@@ -90,7 +90,7 @@ mod tests {
             GroupIndex(3),
             core::array::from_fn(|i| i as u64),
             StorageUnits::mb(100),
-            [StorageUnits::zero(); MAX_GROUP_SIZE],
+            [StorageUnits::zero(); GROUP_SIZE],
         );
         let mut payload2 = payload1;
         payload2.member_indices[0] = 99;

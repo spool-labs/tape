@@ -945,7 +945,7 @@ mod tests {
 
     fn test_preferences() -> NodePreferences {
         NodePreferences {
-            network_capacity: StorageUnits::zero(),
+            storage_capacity: StorageUnits::zero(),
             storage_price: TAPE(0),
             committee_size: 0,
             spool_groups: 0,
@@ -953,7 +953,6 @@ mod tests {
             subsidy_decay_bps: BasisPoints(0),
             epoch_duration: EpochDuration(0),
             access_threshold: TAPE(0),
-            node_capacity: StorageUnits::zero(),
         }
     }
 

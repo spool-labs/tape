@@ -132,7 +132,6 @@ where
         epoch,
         &snapshot_log,
         total_groups,
-        ctx.params().profile,
         |chunk| -> Result<(), NodeError> {
             keep_chunk(ctx, epoch, &our_spools, &mut tape, &mut tracks, chunk)
         },
@@ -338,7 +337,6 @@ mod tests {
             EPOCH,
             &log,
             GROUP_COUNT as usize,
-            ctx.params().profile,
         )
         .expect("full encode");
 

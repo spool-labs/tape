@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 use rand::thread_rng;
 use reqwest::StatusCode;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, StorageUnits};
 use tape_crypto::ed25519::Keypair as EdKeypair;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE, run_simnet_test};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
 use tape_observe_api::AtlasRecent;
 use tape_protocol::api::{ListTracksByTapeReq, OBSERVE_ATLAS_PATH};
 use tape_protocol::Api;
@@ -25,7 +26,7 @@ fn atlas_feed() {
 async fn atlas_feed_inner() {
     tape_peer_tls::install_default_provider();
 
-    let node_count = TAPENET_GROUP_SIZE;
+    let node_count = GROUP_SIZE;
     let mut harness = SimnetBuilder::new()
         .node_count(node_count)
         .runtime_mode(NodeRuntimeMode::Full)

@@ -5,12 +5,10 @@ use std::time::{Duration, Instant};
 use tape_store_api::{Column, Store};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::challenge::EvictionPolicy;
-use tape_core::erasure::group_for_spool;
+use tape_core::erasure::{GROUP_SIZE, group_for_spool};
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
-use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, run_simnet_test,
-};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
 use tape_store::columns::SliceCol;
 use tape_core::track::data::BlobData;
 use tape_store::ops::{SampleOps, SliceOps, SpoolOps, TrackDataOps};
@@ -24,7 +22,7 @@ const EVICTION_POLICY: EvictionPolicy = EvictionPolicy {
     minimum_success_rate_bps: BasisPoints(5_000),
 };
 
-const COMMITTEE_NODES: usize = TAPENET_GROUP_SIZE;
+const COMMITTEE_NODES: usize = GROUP_SIZE;
 const NODE_COUNT: usize = COMMITTEE_NODES + 1;
 const SPARE_NODE: usize = COMMITTEE_NODES;
 const VICTIM: usize = 1;
@@ -48,7 +46,6 @@ fn corruption_eviction() {
 async fn corruption_eviction_inner() {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
-        .eviction(true)
         .eviction_policy(EVICTION_POLICY)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)

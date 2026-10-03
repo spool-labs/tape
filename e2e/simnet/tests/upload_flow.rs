@@ -5,12 +5,10 @@ use rand::{RngCore, SeedableRng};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::instruction::MAX_INLINE_WRITE;
 use tape_api::program::tapedrive::track_pda;
-use tape_core::encoding::TAPENET_PROFILE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits};
-use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetScenario, TAPENET_GROUP_SIZE, run_simnet_test,
-};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_sdk::track::write::content_etag;
@@ -134,7 +132,7 @@ async fn upload_flow_inner() {
     // A caller that already encoded these bytes to decide whether to write at
     // all hands that plan over, and the write must land exactly what a fresh
     // encode would have. Only the sync path passes a plan in production.
-    let plan = content_etag(TAPENET_PROFILE, plan_data.clone())
+    let plan = content_etag(plan_data.clone())
         .await
         .expect("content etag")
         .plan
@@ -241,13 +239,13 @@ async fn upload_flow_inner() {
             let count = scenario
                 .count_slices(&track_address, track.group)
                 .expect("count blob slices");
-            if count == TAPENET_GROUP_SIZE || Instant::now() >= deadline {
+            if count == GROUP_SIZE || Instant::now() >= deadline {
                 break count;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         };
         assert_eq!(
-            slice_count, TAPENET_GROUP_SIZE,
+            slice_count, GROUP_SIZE,
             "blob track should be stored across the full group"
         );
     }
@@ -275,9 +273,9 @@ async fn wait_coded_track_slices(
             let observed = scenario
                 .count_current_owner_slices(&track_address, track.group)
                 .await?;
-            if observed != TAPENET_GROUP_SIZE {
+            if observed != GROUP_SIZE {
                 pending.push(format!(
-                    "track {} group {}: {observed}/{TAPENET_GROUP_SIZE}",
+                    "track {} group {}: {observed}/{GROUP_SIZE}",
                     track.track_number.0, track.group.0
                 ));
             }

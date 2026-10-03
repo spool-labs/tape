@@ -73,7 +73,7 @@ pub fn process_resize_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     let target_capacity = next_epoch.preferences.committee_size;
 
-    if target_capacity < u64::from(system.code()?.n()) {
+    if target_capacity < MIN_COMMITTEE_SIZE as u64 {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -139,7 +139,7 @@ mod tests {
         let system = System {
             current_epoch: curr,
             committee_size,
-            ..permissionless_system()
+            ..System::zeroed()
         };
 
         let committee = Committee { epoch: target, members: Tail::empty(committee_size) }

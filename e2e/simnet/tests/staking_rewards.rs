@@ -8,20 +8,20 @@ use tape_api::instruction::build_claim_commission_ix;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::program::tapedrive::track_pda;
 use tape_api::utils::ata;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::Member;
 use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
 use tape_crypto::Address;
 use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetHarness, SimnetScenario, TAPENET_GROUP_SIZE,
-    run_simnet_test,
+    NodeRuntimeMode, SimnetBuilder, SimnetHarness, SimnetScenario, run_simnet_test,
 };
 use tape_sdk::keys::stake_key::StakeKey;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_store::ops::{ObjectInfoOps, TrackDataOps, TrackOps};
 
-const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
+const NODE_COUNT: usize = GROUP_SIZE;
 const TARGET_GROUPS: u64 = 1;
 const POOL: usize = 0;
 const COMMISSION: BasisPoints = BasisPoints(1_000);

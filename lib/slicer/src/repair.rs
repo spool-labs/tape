@@ -133,6 +133,7 @@ impl Slicer<ClayCoder> {
     /// Compute a repair plan from locally-known parameters.
     ///
     /// `blob_len` and `stripe_size` come from TrackInfo in the tape-store.
+    /// The encoding profile is already configured on the Slicer.
     pub fn repair_plan_from_params(
         &self,
         lost: SliceIndex,
@@ -377,12 +378,12 @@ mod tests {
 
     use super::*;
     use crate::ErasureCoder;
-    use tape_core::encoding::TAPENET_CLAY;
+    use tape_core::encoding::{ClayParams, EncodingProfile};
 
     const N: usize = 20;
 
     fn test_coder() -> ClayCoder {
-        ClayCoder::from_params(TAPENET_CLAY)
+        ClayCoder::from_params(ClayParams::default())
     }
 
     fn mk(len: usize) -> Vec<u8> {
@@ -452,7 +453,11 @@ mod tests {
 
     #[test]
     fn repair_full_rotated() {
-        let mut slicer = Slicer::with_rotation(test_coder());
+        let mut slicer = Slicer::with_profile(
+            test_coder(),
+            true,
+            EncodingProfile::clay_default(),
+        );
         slicer.set_stripe_cap(2_000);
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -514,7 +519,11 @@ mod tests {
 
     #[test]
     fn repair_plan_rotation() {
-        let mut slicer = Slicer::with_rotation(test_coder());
+        let mut slicer = Slicer::with_profile(
+            test_coder(),
+            true,
+            EncodingProfile::clay_default(),
+        );
         let payload = mk(2_500_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -584,7 +593,11 @@ mod tests {
 
     #[test]
     fn repair_plan_from_params_rotated() {
-        let mut slicer = Slicer::with_rotation(test_coder());
+        let mut slicer = Slicer::with_profile(
+            test_coder(),
+            true,
+            EncodingProfile::clay_default(),
+        );
         slicer.set_stripe_cap(2_000);
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();

@@ -9,8 +9,6 @@ use std::future::IntoFuture;
 
 use arc_swap::ArcSwap;
 use clap::Parser;
-use tape_core::encoding::{ErasureCode, TAPENET_PROFILE};
-use tape_core::thresholds::TrustModel;
 use tape_e2e_localnet::action::ActionLog;
 use tape_e2e_localnet::api::{self, AppState};
 use tape_e2e_localnet::config::LocalnetConfig;
@@ -53,14 +51,6 @@ struct Cli {
 
     #[arg(long, default_value_t = 1)]
     spool_groups: u64,
-
-    /// Erasure code the chain is created with: clay:n,k,d, rs:n,k or copies:n
-    #[arg(long, default_value_t = TAPENET_PROFILE)]
-    profile: ErasureCode,
-
-    /// What the chain assumes about its nodes: permissionless or trusted
-    #[arg(long, default_value_t = TrustModel::Permissionless)]
-    trust_model: TrustModel,
 
     /// Leave the challenge mechanism off on every node
     #[arg(long)]
@@ -112,8 +102,7 @@ async fn async_main() -> ExitCode {
         spool_groups: cli.spool_groups,
         should_challenge: !cli.no_challenge,
         is_admission_open: cli.open_admission,
-        profile: cli.profile,
-        trust_model: cli.trust_model,
+        ..LocalnetConfig::default()
     };
 
     let observer = match Observer::new(&cli.rpc_url) {

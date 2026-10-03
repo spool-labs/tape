@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::encoding::ErasureCode;
+use tape_api::program::MIN_COMMITTEE_SIZE;
 use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;
 use tape_protocol::{Api, ProtocolState};
@@ -65,7 +65,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         }
 
-        let step = next_setup_step(&state, next_epoch, candidate_epoch, ctx.params().profile);
+        let step = next_setup_step(&state, next_epoch, candidate_epoch);
         drop(state);
 
         match step {
@@ -111,7 +111,6 @@ fn next_setup_step(
     state: &ProtocolState,
     next_epoch: EpochNumber,
     candidate_epoch: EpochNumber,
-    profile: ErasureCode,
 ) -> SetupStep {
     let committee_target = state
         .next_epoch
@@ -120,12 +119,10 @@ fn next_setup_step(
         .map(|epoch| epoch.preferences.committee_size)
         .unwrap_or(0);
 
-    // A committee smaller than a group can't put each spool on its own node.
-    let committee_floor = u64::from(profile.n());
-    if committee_target < committee_floor {
+    if committee_target < MIN_COMMITTEE_SIZE as u64 {
         return SetupStep::InvalidCommitteeCapacity {
             capacity: committee_target,
-            target: committee_floor,
+            target: MIN_COMMITTEE_SIZE as u64,
         };
     }
 

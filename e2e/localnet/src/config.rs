@@ -1,9 +1,5 @@
 use std::path::PathBuf;
 
-use tape_api::genesis::GenesisConfig;
-use tape_core::encoding::{ErasureCode, TAPENET_PROFILE};
-use tape_core::thresholds::{validate_profile, ThresholdError, TrustModel};
-
 pub struct LocalnetConfig {
     pub rpc_url: String,
     pub node_binary: PathBuf,
@@ -14,26 +10,6 @@ pub struct LocalnetConfig {
     pub spool_groups: u64,
     pub should_challenge: bool,
     pub is_admission_open: bool,
-    /// Erasure code the local chain is created with
-    pub profile: ErasureCode,
-    /// What the local chain assumes about its nodes
-    pub trust_model: TrustModel,
-}
-
-impl LocalnetConfig {
-    /// The genesis config the local chain starts from: localnet's values on
-    /// this config's profile and trust model, with one committee seat per
-    /// spool of a group.
-    pub fn genesis(&self) -> Result<GenesisConfig, ThresholdError> {
-        let profile = validate_profile(self.trust_model, self.profile.into())?;
-
-        Ok(GenesisConfig {
-            profile,
-            trust_model: self.trust_model,
-            committee_size: u64::from(profile.n()),
-            ..GenesisConfig::localnet()
-        })
-    }
 }
 
 impl Default for LocalnetConfig {
@@ -48,8 +24,6 @@ impl Default for LocalnetConfig {
             spool_groups: 1,
             should_challenge: true,
             is_admission_open: false,
-            profile: TAPENET_PROFILE,
-            trust_model: TrustModel::Permissionless,
         }
     }
 }

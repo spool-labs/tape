@@ -8,7 +8,7 @@ use tape_rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use tape_store_reel::ReelStore;
 use tape_store_api::Store;
-use tape_core::erasure::MAX_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::EpochPhase;
 use tape_crypto::Address;
@@ -309,14 +309,11 @@ async fn poll_once(
     let mut current_committee_size = 0;
     let mut next_committee_size = 0;
     let mut live_group_count = 0;
-    let mut group_size = 0u64;
     let mut spools = Vec::new();
     let mut group_bytes = Vec::new();
 
     if let Some(system) = system {
         live_group_count = system.live_group_count;
-        // Spools a group holds on this chain's profile.
-        group_size = system.code().map(|profile| u64::from(profile.n())).unwrap_or(0);
 
         if let Ok(members) = state.rpc.get_committee(system.current_epoch).await {
             current_committee_size = members.len();
@@ -342,10 +339,9 @@ async fn poll_once(
             .map(|node| (node.ctx.node_address(), node.id))
             .collect();
 
-        // One entry per spool index, so a group spans MAX_GROUP_SIZE entries.
         let total_spools = usize::try_from(live_group_count)
             .ok()
-            .and_then(|groups| groups.checked_mul(MAX_GROUP_SIZE))
+            .and_then(|groups| groups.checked_mul(GROUP_SIZE))
             .unwrap_or(0);
         spools = vec![SpoolSnapshot::default(); total_spools];
         group_bytes = vec![0u64; usize::try_from(live_group_count).unwrap_or(0)];
@@ -407,7 +403,7 @@ async fn poll_once(
 
     let group_spool_bytes = group_bytes
         .into_iter()
-        .map(|bytes| bytes.checked_div(group_size).unwrap_or(0))
+        .map(|bytes| bytes / GROUP_SIZE as u64)
         .collect::<Vec<_>>();
 
     let mut total_sync_delta = 0u64;

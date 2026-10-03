@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_api::errors::TapeError;
+use tape_core::bft::has_honest_signer;
 use tape_core::bls::BlsSignature;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, SpoolBitmap};
 use tape_protocol::{Api, ProtocolState};
@@ -195,7 +197,7 @@ where
             partials.push(signature);
         }
 
-        if (partials.len() as u64) < ctx.params().thresholds.assignment {
+        if !has_honest_signer(partials.len() as u64, GROUP_SIZE as u64) {
             continue;
         }
 

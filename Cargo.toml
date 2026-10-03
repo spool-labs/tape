@@ -56,7 +56,6 @@ members = [
   "tools/tape-recover-assignment",
   "tools/tape-cue",
   "tools/tape-measure",
-  "tools/tape-spool-sim",
 ]
 
 # store-rocks compiles RocksDB from scratch, about 20 minutes, and nothing in a

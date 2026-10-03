@@ -4,7 +4,7 @@
 //! that buys, the analytic model the padding claims rest on, and the alignment
 //! granularity everything is built from.
 
-use tape_core::encoding::TAPENET_CLAY;
+use tape_core::encoding::ClayParams;
 use tape_slicer::{
     derive_stripe_size, num_stripes, ClayCoder, ErasureCoder, SliceMetadata, Slicer, STRIPE_CAP,
 };
@@ -26,7 +26,7 @@ fn stored_payload_bytes(slicer: &mut Slicer<ClayCoder>, blob: &[u8]) -> usize {
 
 /// Stored bytes for a blob, derived from chunk arithmetic.
 fn modeled_bytes(blob_len: usize) -> usize {
-    let coder = ClayCoder::from_params(TAPENET_CLAY);
+    let coder = ClayCoder::from_params(ClayParams::default());
     let stripe_size = derive_stripe_size(blob_len, coder.stripe_alignment(), STRIPE_CAP);
     let stripes = num_stripes(blob_len, stripe_size);
     stripes * coder.track_chunk_size(stripe_size, blob_len) * coder.n()
@@ -34,14 +34,14 @@ fn modeled_bytes(blob_len: usize) -> usize {
 
 /// Minimum coded bytes for a blob at rate k/n, before any stripe padding.
 fn ideal_payload_bytes(blob_len: usize) -> usize {
-    let coder = ClayCoder::from_params(TAPENET_CLAY);
+    let coder = ClayCoder::from_params(ClayParams::default());
     blob_len * coder.n() / coder.k()
 }
 
 // the analytic model used below reproduces the encoder exactly
 #[test]
 fn analytic_model_matches_encoder() {
-    let mut slicer = Slicer::with_rotation(ClayCoder::from_params(TAPENET_CLAY));
+    let mut slicer = Slicer::clay_default();
     for len in [1, 1_400, 100_000, 100_001, 250_000, 1_000_000, 1_000_001, 1_500_000] {
         assert_eq!(
             modeled_bytes(len),
@@ -65,12 +65,12 @@ fn padding_stays_at_alignment_floor() {
     assert!(cap_ratio < 1.001, "overhead at cap: {cap_ratio:.5}");
 }
 
-// the floor the scheme is built on: tapenet's Clay profile encodes in
+// the floor the scheme is built on: the default Clay profile encodes in
 // multiples of k * alpha * 2 = 1400 bytes, and the params arithmetic agrees
 // with the constructed coder
 #[test]
 fn clay_alignment_floor_is_1400_bytes() {
-    let params = TAPENET_CLAY;
+    let params = ClayParams::default();
     let coder = ClayCoder::from_params(params);
 
     assert_eq!(coder.k(), 7);

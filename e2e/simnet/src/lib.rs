@@ -10,7 +10,6 @@ use std::future::Future;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use tape_core::encoding::TAPENET_PROFILE;
 use tempfile::TempDir;
 
 pub mod chain;
@@ -31,10 +30,6 @@ pub use scenario::SimnetScenario;
 pub use simnet::{SimnetBuilder, SimnetHarness};
 
 pub const SIMNET_TEST_STACK_SIZE: usize = 32 * 1024 * 1024;
-
-/// Spools in a group on tapenet's profile, which a simnet runs on unless its
-/// builder is given another network
-pub const TAPENET_GROUP_SIZE: usize = TAPENET_PROFILE.n() as usize;
 
 /// Directory under the workspace target that holds this run's node volumes
 const VOLUME_SUBDIR: &str = "simnet";

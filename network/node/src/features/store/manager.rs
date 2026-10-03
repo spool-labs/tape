@@ -4,7 +4,6 @@ use std::time::Duration;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_api::program::tapedrive::track_pda;
-use tape_core::encoding::ErasureCode;
 use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent};
 use tape_core::track::data::BlobData;
 use tape_core::types::SlotNumber;
@@ -136,8 +135,7 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluste
                         };
                     };
 
-                    let profile = self.context.params().profile;
-                    persist_batch(self.context.store.as_ref(), &batch, profile)?;
+                    persist_batch(self.context.store.as_ref(), &batch)?;
                     self.feed_atlas(&batch);
 
                     self.context.pending
@@ -184,19 +182,17 @@ pub enum RawTrackPolicy {
 pub fn persist_batch<Db: Store>(
     store: &TapeStore<Db>,
     batch: &ReplayBatch,
-    profile: ErasureCode,
 ) -> Result<(), NodeError> {
-    persist_batch_with(store, batch, RawTrackPolicy::OwnedGroups, profile)
+    persist_batch_with(store, batch, RawTrackPolicy::OwnedGroups)
 }
 
 pub fn persist_batch_with<Db: Store>(
     store: &TapeStore<Db>,
     batch: &ReplayBatch,
     policy: RawTrackPolicy,
-    profile: ErasureCode,
 ) -> Result<(), NodeError> {
-    apply_records(store, batch.slot, batch.block_time, &batch.records, profile)?;
-    persist_raw_tracks(store, &batch.raw_tracks, policy, profile)?;
+    apply_records(store, batch.slot, batch.block_time, &batch.records)?;
+    persist_raw_tracks(store, &batch.raw_tracks, policy)?;
 
     store
         .set_sync_cursor(batch.slot, Some(batch.blockhash))
@@ -208,22 +204,18 @@ fn apply_records<Db: Store>(
     slot: SlotNumber,
     block_time: Option<i64>,
     records: &[ReplayRecord],
-    profile: ErasureCode,
 ) -> Result<(), NodeError> {
     let events: Vec<_> = records.iter().map(|record| record.event.clone()).collect();
-    apply_slot(store, slot, block_time, &events, profile)
+    apply_slot(store, slot, block_time, &events)
 }
 
 fn persist_raw_tracks<Db: Store>(
     store: &TapeStore<Db>,
     raw_tracks: &[RawTrack],
     policy: RawTrackPolicy,
-    profile: ErasureCode,
 ) -> Result<(), NodeError> {
     for raw_track in raw_tracks {
-        if policy == RawTrackPolicy::OwnedGroups
-            && !is_responsible_for_group(store, raw_track.group, profile)?
-        {
+        if policy == RawTrackPolicy::OwnedGroups && !is_responsible_for_group(store, raw_track.group)? {
             continue;
         }
 
@@ -238,7 +230,6 @@ fn persist_raw_tracks<Db: Store>(
 #[cfg(test)]
 mod tests {
     use tape_store_memory::MemoryStore;
-    use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
     use tape_core::spooler::GroupIndex;
     use tape_core::track::data::BlobData;
@@ -277,7 +268,7 @@ mod tests {
             raw_tracks: Vec::new(),
         };
 
-        persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");
+        persist_batch(&store, &batch).expect("persist batch");
 
         assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(99)));
     }
@@ -308,7 +299,7 @@ mod tests {
             raw_tracks: Vec::new(),
         };
 
-        persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");
+        persist_batch(&store, &batch).expect("persist batch");
         assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(77)));
     }
 
@@ -338,7 +329,7 @@ mod tests {
             }],
         };
 
-        persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");
+        persist_batch(&store, &batch).expect("persist batch");
         assert_eq!(store.get_track_data(track).expect("track data"), Some(BlobData::Inline(raw)));
         assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(78)));
     }
@@ -361,7 +352,7 @@ mod tests {
             }],
         };
 
-        persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");
+        persist_batch(&store, &batch).expect("persist batch");
         assert_eq!(store.get_track_data(track).expect("track data"), None);
         assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(79)));
     }

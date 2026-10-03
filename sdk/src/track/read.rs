@@ -17,7 +17,7 @@ use crate::codec::encoder::BlobEncoder;
 use crate::error::{ClientError, TapedriveError};
 use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
-use crate::track::{bootstrap_network_state, network_params, params_of};
+use crate::track::bootstrap_network_state;
 use crate::transfer::downloader::ParallelDownloader;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
@@ -113,14 +113,13 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         }
 
         let group = track_info.group;
+        let k = blob.profile.k() as usize;
 
         let locate = client.timer(operation, Phase::Locate);
         let state = bootstrap_network_state(client, Some(operation)).await;
         locate.finish_result(&state);
 
         let state = state?;
-        let profile = params_of(&state)?.profile;
-        let k = usize::from(profile.k());
         let slice_to_node: HashMap<SpoolIndex, Address> =
             state.group_peers(group).into_iter().collect();
 
@@ -128,7 +127,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
             *track,
             slice_to_node,
             k,
-            client.read_options.slice_concurrency.unwrap_or(k + 1),
+            client.read_options.slice_concurrency,
         )
         .with_reputation(client.reputation.clone());
         let download = client.timer(operation, Phase::Download);
@@ -148,8 +147,9 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         let slices = slices?;
 
         let decode = client.timer(operation, Phase::Decode);
+        let profile = blob.profile;
         let data = spawn_blocking(move || {
-            BlobDecoder::try_new(profile)?.decode(&localize_slices(group, &slices))
+            BlobDecoder::with_profile(profile).decode(&localize_slices(group, &slices))
         })
         .await
         .map_err(|error| TapedriveError::Download(ClientError::Decoding(error.to_string())))
@@ -176,7 +176,7 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     track: &Address,
     data: &[u8],
 ) -> Result<bool, TapedriveError> {
-    let profile = network_params(client, Some(Operation::Verify)).await?.profile;
+    bootstrap_network_state(client, Some(Operation::Verify)).await?;
 
     let metadata = client.timer(Operation::Verify, Phase::TrackMetadata);
     let track_info = client.get_track(track).await;
@@ -203,8 +203,9 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     let encode = client
         .timer(Operation::Verify, Phase::Encode)
         .bytes(data.len() as u64);
-    let result = BlobEncoder::try_new(profile)
-        .and_then(|mut encoder| encoder.encode_with_root(data.to_vec()))
+    let mut encoder = BlobEncoder::with_profile(blob.profile);
+    let result = encoder
+        .encode_with_root(data.to_vec())
         .map_err(|e| TapedriveError::Encoding(e.to_string()));
     encode.finish_result(&result);
     let (_, root) = result?;

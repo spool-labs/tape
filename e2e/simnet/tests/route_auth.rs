@@ -7,17 +7,16 @@ use bytemuck::Zeroable;
 use rand::thread_rng;
 use reqwest::StatusCode;
 use tape_core::bls::BlsSignature;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, GroupIndex, RoundNumber};
 use tape_crypto::ed25519::Keypair as EdKeypair;
 use tape_crypto::hash::Hash;
-use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE, TestNode, run_simnet_test,
-};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, TestNode, run_simnet_test};
 use tape_node::features::challenge::trace::RoundTrace;
 use tape_node::features::vote::member_groups;
 use tape_protocol::api::{AttestationPayload, CHALLENGE_ATTEST_PATH, SpoolAttestation, VOTE_PATH};
 
-const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
+const NODE_COUNT: usize = GROUP_SIZE;
 
 /// Rounds fire on a grid the node lays over the span the previous epoch
 /// realized, so nothing challenges until an epoch has turned.

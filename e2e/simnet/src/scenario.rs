@@ -15,6 +15,7 @@ use tape_api::program::tapedrive::node_pda;
 use tape_api::genesis::GenesisConfig;
 use tape_core::system::NodePreferences;
 use tape_api::utils::to_name;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber};
 use tape_core::types::network::NetworkAddress;
 use tape_crypto::address::Address;
@@ -53,7 +54,6 @@ impl<'a> SimnetScenario<'a> {
             .context("airdrop admin")?;
 
         let slot_bump = self.harness.config().slot_advance_per_tx;
-        let genesis = self.genesis()?;
 
         self.harness
             .chain()
@@ -70,7 +70,7 @@ impl<'a> SimnetScenario<'a> {
             .send_instructions_and_advance(
                 admin,
                 vec![
-                    build_create_system_ix(admin_pub.into(), admin_pub.into(), &genesis),
+                    build_create_system_ix(admin_pub.into(), admin_pub.into(), &GenesisConfig::simnet()),
                     build_create_peer_set_ix(admin_pub.into()),
                 ],
                 slot_bump,
@@ -82,7 +82,7 @@ impl<'a> SimnetScenario<'a> {
             .chain()
             .send_instructions_and_advance(
                 admin,
-                vec![build_create_archive_ix(admin_pub.into(), admin_pub.into(), &genesis)],
+                vec![build_create_archive_ix(admin_pub.into(), admin_pub.into(), &GenesisConfig::simnet())],
                 slot_bump,
             )
             .await
@@ -111,22 +111,11 @@ impl<'a> SimnetScenario<'a> {
         Ok(())
     }
 
-    /// The genesis config this simnet's chain is created with
-    fn genesis(&self) -> Result<GenesisConfig> {
-        self.harness
-            .config()
-            .genesis()
-            .map_err(|error| anyhow::anyhow!("simnet profile: {error}"))
-    }
-
     pub async fn start_network(&self) -> Result<Signature> {
         let slot_bump = self.harness.config().slot_advance_per_tx;
         let admin = self.harness.admin();
         let admin_pub = admin.pubkey();
-        let genesis = self.genesis()?;
-        // Genesis seats one node on each spool of the first group.
-        let genesis_nodes = usize::from(genesis.profile.n());
-        for (index, node) in self.harness.nodes().iter().take(genesis_nodes).enumerate() {
+        for (index, node) in self.harness.nodes().iter().take(GROUP_SIZE).enumerate() {
             let authority = Address::from(node.authority());
             let (node_address, _) = node_pda(authority);
             let ix = build_stage_genesis_node_ix(
@@ -146,7 +135,11 @@ impl<'a> SimnetScenario<'a> {
                 .with_context(|| format!("stage genesis node {index}"))?;
         }
 
-        let ix = build_start_network_ix(admin_pub.into(), admin_pub.into(), &genesis);
+        let ix = build_start_network_ix(
+            admin_pub.into(),
+            admin_pub.into(),
+            &GenesisConfig::simnet(),
+        );
 
         self.harness
             .chain()
@@ -193,7 +186,7 @@ impl<'a> SimnetScenario<'a> {
             network_tls,
             bls_pubkey,
             bls_pop,
-            NodePreferences::from(&self.genesis()?),
+            NodePreferences::from(&GenesisConfig::simnet()),
         );
 
         self.harness
@@ -234,7 +227,7 @@ impl<'a> SimnetScenario<'a> {
             gateway.tls_pubkey(),
             bls_pubkey,
             bls_pop,
-            NodePreferences::from(&self.genesis()?),
+            NodePreferences::from(&GenesisConfig::simnet()),
         );
 
         self.harness

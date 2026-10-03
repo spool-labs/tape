@@ -10,11 +10,6 @@ use crate::{ErasureCoder, EncodeError, DecodeError};
 /// Byte alignment the kernels work best on, and the floor on a slice.
 const SLICE_ALIGN: usize = 64;
 
-/// Slice length a k-data Reed-Solomon code uses for a payload, aligned for the kernel.
-pub fn slice_bytes(k: usize, data_len: usize) -> usize {
-    data_len.div_ceil(k).max(1).div_ceil(SLICE_ALIGN) * SLICE_ALIGN
-}
-
 /// Reed-Solomon coder (k = data, m = parity).
 /// Slice size follows the payload, so one call can encode a whole track.
 pub struct ReedSolomonCoder {
@@ -27,6 +22,11 @@ impl ReedSolomonCoder {
     pub fn new(k: usize, m: usize) -> Self {
         let rs = ReedSolomon::new(k, m).expect("RS init");
         Self { k, m, rs }
+    }
+
+    /// Slice length this coder uses for a payload, aligned for the kernel.
+    fn slice_bytes(&self, data_len: usize) -> usize {
+        data_len.div_ceil(self.k).max(1).div_ceil(SLICE_ALIGN) * SLICE_ALIGN
     }
 }
 
@@ -43,11 +43,11 @@ impl ErasureCoder for ReedSolomonCoder {
 
     #[inline]
     fn stripe_alignment(&self) -> usize {
-        self.k * SLICE_ALIGN
+        self.k * 64
     }
 
     fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
-        let slice_bytes = slice_bytes(self.k, data.len());
+        let slice_bytes = self.slice_bytes(data.len());
 
         let mut slices: Vec<Vec<u8>> = data
             .chunks(slice_bytes)

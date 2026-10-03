@@ -2,6 +2,7 @@ use tape_solana::*;
 use tape_api::program::prelude::*;
 use tape_api::state::Group;
 use tape_api::event::TrackInvalidated;
+use tape_core::erasure::GROUP_SIZE;
 use tape_crypto::bls12254::min_sig::*;
 
 use crate::tape::helpers::verified_tape_address;
@@ -66,12 +67,12 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(TapeError::UnexpectedState.into());
     }
 
-    let indices = system.signers(&args.bitmap)?;
-    let weight = indices.len() as u64;
-    if weight < system.thresholds()?.invalidate {
+    let weight = args.bitmap.count_ones() as u64;
+    if !is_supermajority(weight, GROUP_SIZE as u64) {
         return Err(TapeError::NoQuorum.into());
     }
 
+    let indices = args.bitmap.indices();
     if indices.is_empty() {
         return Err(TapeError::NoSigners.into());
     }
@@ -112,7 +113,6 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::encoding::RSParams;
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::{
@@ -127,45 +127,8 @@ mod tests {
     use tape_test::*;
 
 
-    const NARROW: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
-
-    // a seeded track and the group that signs for it
-    struct Case {
-        base: System,
-        kind: TrackKind,
-        state: TrackState,
-        size: StorageUnits,
-    }
-
-    impl Case {
-        fn permissionless() -> Self {
-            Self {
-                base: permissionless_system(),
-                kind: TrackKind::Coded,
-                state: TrackState::Certified,
-                size: StorageUnits::mb(250),
-            }
-        }
-
-        fn narrow() -> Self {
-            Self { base: trusted_system(NARROW), ..Self::permissionless() }
-        }
-    }
-
-    fn signers(count: usize) -> Vec<usize> {
-        (0..count).collect()
-    }
-
     // quorum invalidation of one seeded track, expecting its capacity back
     fn invalidate_returns_capacity(kind: TrackKind, state: TrackState, size: StorageUnits) {
-        invalidate_case(Case { kind, state, size, ..Case::permissionless() }, &signers(14), None);
-    }
-
-    // invalidation of one seeded track by the given signer bits
-    fn invalidate_case(case: Case, signed: &[usize], error: Option<ProgramError>) {
-        let Case { base, kind, state, size } = case;
-        let profile = base.code().unwrap();
-
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let bucket_hash = Hash::new_unique();
@@ -176,12 +139,14 @@ mod tests {
         let group_id = GroupIndex(0);
         let (group_address, _) = group_pda(curr, group_id);
 
-        let (sks, group) = make_group_of(curr, group_id, profile);
+        const SIGNERS: usize = 14;
+
+        let (sks, group) = make_group(curr, group_id);
 
         let system = System {
             current_epoch: curr,
             committee_size: 128,
-            ..base
+            ..System::zeroed()
         };
 
         let track_number = TrackNumber(0);
@@ -227,7 +192,8 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let bitmap = SpoolBitmap::from_indices(signed);
+        let signed_indices: Vec<usize> = (0..SIGNERS).collect();
+        let bitmap = SpoolBitmap::from_indices(&signed_indices);
 
         let invalidate_message = TrackInvalidateMessage::new(
             curr,
@@ -235,10 +201,8 @@ mod tests {
         );
         let message = invalidate_message.to_bytes();
 
-        // A bit past the profile's n has no key behind it, so only the live ones sign.
-        let partials: Vec<BlsSignature> = signed
+        let partials: Vec<BlsSignature> = signed_indices
             .iter()
-            .filter(|&&i| i < sks.len())
             .map(|&i| sks[i].sign(message).unwrap())
             .collect();
 
@@ -261,11 +225,6 @@ mod tests {
         ];
 
         let env = test_env();
-        if let Some(error) = error {
-            env.process_instruction(&instruction, &accounts, &[Check::err(error)]);
-            return;
-        }
-
         env.process_instruction(
             &instruction,
             &accounts,
@@ -306,25 +265,6 @@ mod tests {
         );
     }
 
-    // tapenet refuses thirteen signers, one short of its fourteen
-    #[test]
-    fn below_quorum() {
-        invalidate_case(Case::permissionless(), &signers(13), Some(TapeError::NoQuorum.into()));
-    }
-
-    // a 3-of-4 cluster invalidates on three signers and refuses two
-    #[test]
-    fn trusted_quorum() {
-        invalidate_case(Case::narrow(), &signers(3), None);
-        invalidate_case(Case::narrow(), &signers(2), Some(TapeError::NoQuorum.into()));
-    }
-
-    // a signer bit past the network's width adds no weight
-    #[test]
-    fn padding_signer() {
-        invalidate_case(Case::narrow(), &[0, 1, 4], Some(TapeError::BadMember.into()));
-    }
-
     // already-invalidated tracks reject re-invalidation
     #[test]
     fn already_invalidated() {
@@ -343,7 +283,7 @@ mod tests {
         let system = System {
             current_epoch: curr,
             committee_size: 128,
-            ..permissionless_system()
+            ..System::zeroed()
         };
 
         let track_number = TrackNumber(0);
@@ -436,7 +376,7 @@ mod tests {
         let system = System {
             current_epoch: curr,
             committee_size: 128,
-            ..permissionless_system()
+            ..System::zeroed()
         };
 
         let track_number = TrackNumber(0);

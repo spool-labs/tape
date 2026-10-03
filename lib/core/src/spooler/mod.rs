@@ -1,6 +1,6 @@
 //! Spool index/count types and shared error definitions.
 //!
-//! The on-chain shape (per-(epoch, group_idx) `Group.spools[MAX_GROUP_SIZE]`) is defined in
+//! The on-chain shape (per-(epoch, group_idx) `Group.spools[20]`) is defined in
 //! `solana/api/src/state/group.rs`. The off-chain spooler in the `tape-spooler`
 //! crate produces address-keyed assignments that ratify into those `Group`
 //! accounts via `vote_assignment`.
@@ -19,12 +19,15 @@ pub use group::*;
 //   passing spool, group, AND lost is redundant; any one of these plus spool is computable from
 //   the other.
 
-/// Errors from spool assignment.
+/// Errors used across spool allocation and migration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpoolerError {
-    LengthMismatch,
+    CountMismatch,
+    TotalMismatch,
+    BalanceMismatch,
+    InsufficientFree,
     InsufficientNodes,
-    DuplicateNode,
-    Overflow,
+    SpoolCapExceeded,
     Infeasible,
+    NotNext,
 }

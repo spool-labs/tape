@@ -6,7 +6,6 @@
 //! spawning. Events within a slot apply in their recorded order; slots apply
 //! in the order the log was built (which mirrors block processing order).
 
-use tape_core::encoding::ErasureCode;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_store_api::Store;
 use tape_store::TapeStore;
@@ -18,9 +17,8 @@ use crate::features::replay::engine::ReplayEngine;
 pub fn apply_snapshot_log<Db: Store>(
     store: &TapeStore<Db>,
     log: &SnapshotLog,
-    profile: ErasureCode,
 ) -> Result<(), NodeError> {
-    ReplayEngine::new(store, log.epoch, profile)
+    ReplayEngine::new(store, log.epoch)
         .apply_snapshot_log(log)
 }
 
@@ -30,14 +28,14 @@ mod tests {
 
     use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::track_pda;
-    use tape_core::encoding::TAPENET_PROFILE;
-    use tape_core::erasure::MAX_GROUP_SIZE;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::snapshot::replay::{
         ReplayRecord, ReplayTrack, ReplayTrackObject, ReplayableEvent, SnapshotEntry, SnapshotLog,
     };
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
-    use tape_core::track::data::{track_key, BlobData, BlobDataSlice, TrackMeta};
+    use tape_core::track::data::{track_key, BlobData, BlobDataSlice};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
@@ -47,34 +45,27 @@ mod tests {
     use tape_crypto::address::Address;
     use tape_crypto::tx::Txid;
     use tape_crypto::Hash;
-    use tape_snapshot::{assemble_snapshot_log, decode_chunk_payload, encode_snapshot};
+    use tape_snapshot::{assemble_snapshot_log, decode_chunk_payload, encode_snapshot, K_INNER};
     use tape_store::ops::{
         ObjectInfoOps, ObjectListOps, ObjectMetadataOps, TapeOps, TrackDataOps, TrackOps,
     };
     use tape_store::types::{ObjectInfo, TapeInfo};
     use tape_store::TapeStore;
 
-    use crate::core::error::NodeError;
+    use super::apply_snapshot_log;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
-    }
-
-    /// Replay a log on a tapenet node.
-    fn apply_snapshot_log(
-        store: &TapeStore<MemoryStore>,
-        log: &SnapshotLog,
-    ) -> Result<(), NodeError> {
-        super::apply_snapshot_log(store, log, TAPENET_PROFILE)
     }
 
     fn blob() -> BlobEncoding {
         BlobEncoding {
             size: StorageUnits::mb(1),
             commitment: Hash::new_unique(),
+            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(3),
-            leaves: [Hash::default(); MAX_GROUP_SIZE],
+            leaves: [Hash::default(); GROUP_SIZE],
         }
     }
 
@@ -150,7 +141,7 @@ mod tests {
         bytes: &[u8],
     ) -> ReplayableEvent {
         let data = BlobDataSlice::Inline(bytes);
-        let meta = TrackMeta::inline(bytes);
+        let meta = data.meta().unwrap();
         ReplayableEvent::Track(ReplayTrack {
             state: CompressedTrack {
                 tape,
@@ -190,8 +181,7 @@ mod tests {
     fn decode_encoded_log(snapshot_tape: Address, log: &SnapshotLog) -> SnapshotLog {
         const TOTAL_GROUPS: usize = 3;
 
-        let chunks =
-            encode_snapshot(snapshot_tape, log.epoch, log, TOTAL_GROUPS, TAPENET_PROFILE).unwrap();
+        let chunks = encode_snapshot(snapshot_tape, log.epoch, log, TOTAL_GROUPS).unwrap();
         let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> =
             BTreeMap::new();
         for chunk in &chunks {
@@ -199,10 +189,10 @@ mod tests {
                 .slices
                 .iter()
                 .enumerate()
-                .take(usize::from(TAPENET_PROFILE.k()))
+                .take(K_INNER)
                 .map(|(index, slice)| (index, slice.as_slice()))
                 .collect();
-            let (chunk_number, symbol) = decode_chunk_payload(&inner, TAPENET_PROFILE).unwrap();
+            let (chunk_number, symbol) = decode_chunk_payload(&inner).unwrap();
             symbols_by_segment
                 .entry(chunk_number)
                 .or_default()

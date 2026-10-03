@@ -4,15 +4,14 @@ use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::share::{unix_now, ReadRequest, ShareToken, ALL_TRACKS};
 use tape_core::track::types::TrackVisibility;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{BasisPoints, StorageUnits};
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_crypto::hash::hash;
-use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE, TestGateway, run_simnet_test,
-};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, TestGateway, run_simnet_test};
 use tape_protocol::api::{
     encode_read_expiry, encode_read_signature, encode_share_token, read_request_headers,
     READ_EXPIRY_HEADER, READ_SIGNATURE_HEADER, SHARE_TOKEN_HEADER,
@@ -34,7 +33,7 @@ fn hidden_gateway() {
 async fn hidden_gateway_inner() {
     tape_peer_tls::install_default_provider();
 
-    let node_count = TAPENET_GROUP_SIZE;
+    let node_count = GROUP_SIZE;
     let mut harness = SimnetBuilder::new()
         .node_count(node_count)
         .runtime_mode(NodeRuntimeMode::Full)

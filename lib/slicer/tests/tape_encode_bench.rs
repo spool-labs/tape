@@ -3,8 +3,7 @@
 
 use std::time::Instant;
 
-use tape_core::encoding::TAPENET_CLAY;
-use tape_slicer::{ClayCoder, ErasureCoder, OuterCoder, ReedSolomonCoder, Slicer};
+use tape_slicer::{ErasureCoder, OuterCoder, ReedSolomonCoder, Slicer};
 
 fn bench(label: &str, payload: usize, mut run: impl FnMut(&[u8])) {
     let data: Vec<u8> = (0..payload).map(|i| (i % 251) as u8).collect();
@@ -28,7 +27,7 @@ fn encode_paths() {
     println!("{:<16} {:>10} {:>10} {:>10}", "path", "payload", "ms", "MiB/s");
 
     for payload in [1024 * 1024usize, 10 * 1024 * 1024, 64 * 1024 * 1024] {
-        let mut slicer = Slicer::with_rotation(ClayCoder::from_params(TAPENET_CLAY));
+        let mut slicer = Slicer::clay_default();
         bench("clay striped", payload, |data| {
             std::hint::black_box(slicer.encode(data).expect("clay encode"));
         });
