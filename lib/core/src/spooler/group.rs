@@ -1,6 +1,6 @@
-/// Group account index. Each group contains GROUP_SIZE contiguous spools.
+/// Group account index. Groups stride by MAX_GROUP_SIZE spools, and a network uses the first n of each.
 
-use crate::erasure::GROUP_SIZE;
+use crate::erasure::MAX_GROUP_SIZE;
 use crate::types::SpoolIndex;
 use bytemuck::{Pod, Zeroable};
 
@@ -13,20 +13,20 @@ impl GroupIndex {
     /// Get the group that owns a given spool.
     #[inline]
     pub fn containing(spool: SpoolIndex) -> Self {
-        Self(spool.as_u64() / GROUP_SIZE as u64)
+        Self(spool.as_u64() / MAX_GROUP_SIZE as u64)
     }
 
     /// First spool index in this group.
     #[inline]
     pub fn base_spool(&self) -> SpoolIndex {
-        SpoolIndex::from(self.0 * GROUP_SIZE as u64)
+        SpoolIndex::from(self.0 * MAX_GROUP_SIZE as u64)
     }
 
     /// Global spool index for a position within this group.
     #[inline]
     pub fn spool_at(&self, position: usize) -> SpoolIndex {
-        assert!(position < GROUP_SIZE);
-        SpoolIndex::from(self.0 * GROUP_SIZE as u64 + position as u64)
+        assert!(position < MAX_GROUP_SIZE);
+        SpoolIndex::from(self.0 * MAX_GROUP_SIZE as u64 + position as u64)
     }
 
     /// Position within this group for a spool, if the spool belongs to this group.
@@ -35,11 +35,11 @@ impl GroupIndex {
         let spool = spool.as_usize();
 
         // Not in this group.
-        if spool / GROUP_SIZE != self.as_usize() {
+        if spool / MAX_GROUP_SIZE != self.as_usize() {
             return None;
         }
 
-        Some(spool % GROUP_SIZE)
+        Some(spool % MAX_GROUP_SIZE)
     }
 
     /// Check if a spool belongs to this group.

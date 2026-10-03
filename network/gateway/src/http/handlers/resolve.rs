@@ -5,7 +5,6 @@
 //! Shared by the S3 listener and the site route.
 
 use tape_store_api::Store;
-use tape_api::program::tapedrive::track_pda;
 use tape_core::types::ContentType;
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
@@ -42,10 +41,8 @@ pub fn resolve_object<Db: Store>(
         return Ok(None);
     };
 
-    let track_address = track_pda(entry.data_tape, entry.track_number).0;
-
     Ok(Some(ResolvedObject {
-        track_address,
+        track_address: entry.track,
         size: entry.size.to_bytes(),
         etag: entry.etag,
         block_time: entry.block_time,
@@ -76,10 +73,9 @@ pub fn resolve_object_with_pending<Db: Store>(
     let Some(entry) = stored else {
         return Ok(None);
     };
-    let track_address = track_pda(entry.data_tape, entry.track_number).0;
 
     Ok(Some(ResolvedObject {
-        track_address,
+        track_address: entry.track,
         size: entry.size.to_bytes(),
         etag: entry.etag,
         block_time: entry.block_time,
@@ -222,6 +218,7 @@ mod tests {
             slot: SlotNumber(1),
             data_tape: Address::default(),
             track_number: TrackNumber(track_number),
+            track: Address::default(),
             kind: TrackKind::Inline as u64,
             content_type: ContentType::TextHtml,
         }
@@ -260,6 +257,7 @@ mod tests {
             slot: Default::default(),
             data_tape: tape,
             track_number: TrackNumber(1),
+            track: Address::new_unique(),
             kind: 0,
             content_type: ContentType::TextHtml,
         };

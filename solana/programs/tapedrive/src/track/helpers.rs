@@ -45,7 +45,7 @@ pub fn append_track(
         value_hash: meta.value_hash,
     };
 
-    let track_address = track_pda(track.tape, track.track_number).0;
+    let track_address = track.address();
     let track_hash = track.get_hash();
 
     tape.write_track(&track)?;
@@ -68,7 +68,7 @@ pub fn delete_track(
     tape_address: Address,
     proof: CompressedTrackProof,
 ) -> ProgramResult {
-    let track_address = track_pda(proof.state.tape, proof.state.track_number).0;
+    let track_address = proof.state.address();
     let size = proof.state.size;
     let key = proof.state.key;
 

@@ -6,6 +6,7 @@
 //! spawning. Events within a slot apply in their recorded order; slots apply
 //! in the order the log was built (which mirrors block processing order).
 
+use tape_core::encoding::ErasureCode;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_store_api::Store;
 use tape_store::TapeStore;
@@ -17,8 +18,9 @@ use crate::features::replay::engine::ReplayEngine;
 pub fn apply_snapshot_log<Db: Store>(
     store: &TapeStore<Db>,
     log: &SnapshotLog,
+    profile: ErasureCode,
 ) -> Result<(), NodeError> {
-    ReplayEngine::new(store, log.epoch)
+    ReplayEngine::new(store, log.epoch, profile)
         .apply_snapshot_log(log)
 }
 
@@ -27,15 +29,15 @@ mod tests {
     use std::collections::BTreeMap;
 
     use tape_store_memory::MemoryStore;
-    use tape_api::program::tapedrive::track_pda;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_api::program::tapedrive::TrackAddress;
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::snapshot::replay::{
         ReplayRecord, ReplayTrack, ReplayTrackObject, ReplayableEvent, SnapshotEntry, SnapshotLog,
     };
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
-    use tape_core::track::data::{track_key, BlobData, BlobDataSlice};
+    use tape_core::track::data::{track_key, BlobData, BlobDataSlice, TrackMeta};
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
@@ -45,27 +47,34 @@ mod tests {
     use tape_crypto::address::Address;
     use tape_crypto::tx::Txid;
     use tape_crypto::Hash;
-    use tape_snapshot::{assemble_snapshot_log, decode_chunk_payload, encode_snapshot, K_INNER};
+    use tape_snapshot::{assemble_snapshot_log, decode_chunk_payload, encode_snapshot};
     use tape_store::ops::{
         ObjectInfoOps, ObjectListOps, ObjectMetadataOps, TapeOps, TrackDataOps, TrackOps,
     };
     use tape_store::types::{ObjectInfo, TapeInfo};
     use tape_store::TapeStore;
 
-    use super::apply_snapshot_log;
+    use crate::core::error::NodeError;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    /// Replay a log on a tapenet node.
+    fn apply_snapshot_log(
+        store: &TapeStore<MemoryStore>,
+        log: &SnapshotLog,
+    ) -> Result<(), NodeError> {
+        super::apply_snapshot_log(store, log, TAPENET_PROFILE)
     }
 
     fn blob() -> BlobEncoding {
         BlobEncoding {
             size: StorageUnits::mb(1),
             commitment: Hash::new_unique(),
-            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(3),
-            leaves: [Hash::default(); GROUP_SIZE],
+            leaves: [Hash::default(); MAX_GROUP_SIZE],
         }
     }
 
@@ -141,7 +150,7 @@ mod tests {
         bytes: &[u8],
     ) -> ReplayableEvent {
         let data = BlobDataSlice::Inline(bytes);
-        let meta = data.meta().unwrap();
+        let meta = TrackMeta::inline(bytes);
         ReplayableEvent::Track(ReplayTrack {
             state: CompressedTrack {
                 tape,
@@ -164,6 +173,13 @@ mod tests {
         })
     }
 
+    fn track_address(event: &ReplayableEvent) -> Address {
+        match event {
+            ReplayableEvent::Track(replay) => replay.state.address(),
+            _ => panic!("expected track event"),
+        }
+    }
+
     fn log_with_entries(
         epoch: EpochNumber,
         start: SlotNumber,
@@ -181,7 +197,8 @@ mod tests {
     fn decode_encoded_log(snapshot_tape: Address, log: &SnapshotLog) -> SnapshotLog {
         const TOTAL_GROUPS: usize = 3;
 
-        let chunks = encode_snapshot(snapshot_tape, log.epoch, log, TOTAL_GROUPS).unwrap();
+        let chunks =
+            encode_snapshot(snapshot_tape, log.epoch, log, TOTAL_GROUPS, TAPENET_PROFILE).unwrap();
         let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> =
             BTreeMap::new();
         for chunk in &chunks {
@@ -189,10 +206,10 @@ mod tests {
                 .slices
                 .iter()
                 .enumerate()
-                .take(K_INNER)
+                .take(usize::from(TAPENET_PROFILE.k()))
                 .map(|(index, slice)| (index, slice.as_slice()))
                 .collect();
-            let (chunk_number, symbol) = decode_chunk_payload(&inner).unwrap();
+            let (chunk_number, symbol) = decode_chunk_payload(&inner, TAPENET_PROFILE).unwrap();
             symbols_by_segment
                 .entry(chunk_number)
                 .or_default()
@@ -208,7 +225,8 @@ mod tests {
         let tape = Address::new_unique();
         let authority = Address::new_unique();
         let track_number = TrackNumber(3);
-        let (track, _) = track_pda(tape, track_number);
+        let written = track_event(tape, track_number, EpochNumber(6));
+        let track = track_address(&written);
 
         let log = log_with_entries(
             EpochNumber(6),
@@ -231,7 +249,7 @@ mod tests {
                         scheduled: TAPE(0),
                         share_nonce: Hash::default(),
                     }),
-                    record(track_event(tape, track_number, EpochNumber(6))),
+                    record(written),
                 ],
             }],
         );
@@ -266,8 +284,10 @@ mod tests {
     fn applies_events_across_multiple_slots_in_order() {
         let store = test_store();
         let tape = Address::new_unique();
-        let (track_a, _) = track_pda(tape, TrackNumber(0));
-        let (track_b, _) = track_pda(tape, TrackNumber(1));
+        let written_a = track_event(tape, TrackNumber(0), EpochNumber(7));
+        let written_b = track_event(tape, TrackNumber(1), EpochNumber(7));
+        let track_a = track_address(&written_a);
+        let track_b = track_address(&written_b);
 
         let log = log_with_entries(
             EpochNumber(7),
@@ -291,14 +311,14 @@ mod tests {
                             scheduled: TAPE(0),
                             share_nonce: Hash::default(),
                         }),
-                        record(track_event(tape, TrackNumber(0), EpochNumber(7))),
+                        record(written_a),
                     ],
                 },
                 SnapshotEntry {
                     slot: SlotNumber(101),
                     block_time: Some(1_700_000_050),
                     records: vec![
-                        record(track_event(tape, TrackNumber(1), EpochNumber(7))),
+                        record(written_b),
                         record(ReplayableEvent::CertifyTrack {
                             track: track_a,
                             epoch: EpochNumber(8),
@@ -327,7 +347,8 @@ mod tests {
     fn replay_is_idempotent() {
         let store = test_store();
         let tape = Address::new_unique();
-        let (track, _) = track_pda(tape, TrackNumber(5));
+        let written = track_event(tape, TrackNumber(5), EpochNumber(4));
+        let track = track_address(&written);
 
         let log = log_with_entries(
             EpochNumber(4),
@@ -350,7 +371,7 @@ mod tests {
                         scheduled: TAPE(0),
                         share_nonce: Hash::default(),
                     }),
-                    record(track_event(tape, TrackNumber(5), EpochNumber(4))),
+                    record(written),
                     record(ReplayableEvent::CertifyTrack {
                         track,
                         epoch: EpochNumber(5),
@@ -385,10 +406,12 @@ mod tests {
         let block_time = Some(1_700_000_120);
         let tape = Address::new_unique();
         let track_number = TrackNumber(7);
-        let track = track_pda(tape, track_number).0;
         let blob = blob();
         let name = b"photos/cat.jpg".to_vec();
         let content_type = ContentType::ImageJpeg;
+        let written =
+            named_track_event(tape, track_number, epoch, blob, name.clone(), content_type);
+        let track = track_address(&written);
 
         let log = log_with_entries(
             epoch,
@@ -411,14 +434,7 @@ mod tests {
                         scheduled: TAPE(0),
                         share_nonce: Hash::default(),
                     }),
-                    record(named_track_event(
-                        tape,
-                        track_number,
-                        epoch,
-                        blob,
-                        name.clone(),
-                        content_type,
-                    )),
+                    record(written),
                 ],
             }],
         );
@@ -461,12 +477,28 @@ mod tests {
         let inline_number = TrackNumber(7);
         let inline_name = b"loadgen/obj-42".to_vec();
         let inline_bytes = vec![0xAB; 51];
-        let inline_track = track_pda(tape, inline_number).0;
+        let inline_event = inline_track_event(
+            tape,
+            inline_number,
+            epoch,
+            inline_name.clone(),
+            ContentType::TextPlain,
+            &inline_bytes,
+        );
+        let inline_track = track_address(&inline_event);
 
         let sliced_number = TrackNumber(8);
         let sliced_name = b"loadgen/obj-41".to_vec();
         let sliced_blob = blob();
-        let sliced_track = track_pda(tape, sliced_number).0;
+        let sliced_event = named_track_event(
+            tape,
+            sliced_number,
+            epoch,
+            sliced_blob,
+            sliced_name.clone(),
+            ContentType::Unknown,
+        );
+        let sliced_track = track_address(&sliced_event);
 
         let log = log_with_entries(
             epoch,
@@ -489,22 +521,8 @@ mod tests {
                         scheduled: TAPE(0),
                         share_nonce: Hash::default(),
                     }),
-                    record(inline_track_event(
-                        tape,
-                        inline_number,
-                        epoch,
-                        inline_name.clone(),
-                        ContentType::TextPlain,
-                        &inline_bytes,
-                    )),
-                    record(named_track_event(
-                        tape,
-                        sliced_number,
-                        epoch,
-                        sliced_blob,
-                        sliced_name.clone(),
-                        ContentType::Unknown,
-                    )),
+                    record(inline_event),
+                    record(sliced_event),
                 ],
             }],
         );

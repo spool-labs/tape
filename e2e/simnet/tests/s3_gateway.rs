@@ -51,18 +51,18 @@ use solana_signer::Signer;
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::instruction::MAX_NAME_LEN;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::TrackKind;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_sdk::error::TapedriveError;
 use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TestGateway, run_simnet_test,
+    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, TestGateway,
+    run_simnet_test,
 };
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::object::{ListedObject, ListObjectsQuery};
 
-const NODE_COUNT: usize = GROUP_SIZE;
+const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
 const TARGET_GROUPS: u64 = 1;
 const GATEWAY_STAKE: u64 = 2_000;
 const STORAGE_NODE_STAKE: u64 = 1_000;
@@ -503,8 +503,8 @@ async fn read_write_inner() {
     assert_s3_list_objects_v1(&s3_base, &bucket_label, mp_key).await;
     eprintln!("s3_gateway: ListObjects V1 listed the bucket (Marker shape) including {mp_key}");
 
-    // (2d) Overwrite reclaim: a PutObject over an existing key writes a new track
-    // and rebinds the name; the gateway then deletes the orphaned prior track. The
+    // (2d) Overwrite: a PutObject over an existing key writes a new track
+    // and rebinds the name; the gateway then deletes the orphaned old track. The
     // object's original track number becomes unresolvable while GET serves v2.
     let overwrite_key = "uploads/overwrite.bin";
     let v1 = deterministic_bytes(20 * 1024);
@@ -530,10 +530,10 @@ async fn read_write_inner() {
     );
     eprintln!("s3_gateway: HEAD after the overwrite reported v2 before the drain landed it");
 
-    wait_track_reclaimed(&harness, &bucket, v1_track, Duration::from_secs(180)).await;
+    wait_track_deleted(&harness, &bucket, v1_track, Duration::from_secs(180)).await;
     wait_s3_get_size(&s3_base, &bucket_label, overwrite_key, v2.len(), Duration::from_secs(180)).await;
     assert_s3_get_object(&s3_base, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE).await;
-    eprintln!("s3_gateway: overwrite reclaimed prior {v1_track} and served v2 ({} bytes)", v2.len());
+    eprintln!("s3_gateway: overwrite deleted old track {v1_track} and served v2 ({} bytes)", v2.len());
     // (2e) DeleteObjects removes both objects in one request and reports a missing key as deleted too.
     assert_s3_delete_objects(
         &s3_base,
@@ -1389,9 +1389,9 @@ async fn sdk_object_track_number(
         .track_number
 }
 
-/// Wait until `track_number` on `bucket` is reclaimed (no longer resolvable),
-/// confirming an overwrite deleted the orphaned prior track on the storage nodes.
-async fn wait_track_reclaimed(
+/// Wait until `track_number` on `bucket` is deleted (no longer resolvable),
+/// confirming an overwrite deleted the orphaned old track on the storage nodes.
+async fn wait_track_deleted(
     harness: &SimnetHarness,
     bucket: &Address,
     track_number: TrackNumber,
@@ -1408,7 +1408,7 @@ async fn wait_track_reclaimed(
             return;
         }
         if start.elapsed() >= timeout {
-            panic!("track {track_number} on {bucket} was not reclaimed within {timeout:?}");
+            panic!("track {track_number} on {bucket} was not deleted within {timeout:?}");
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }

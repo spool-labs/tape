@@ -2,7 +2,8 @@
 
 use bytemuck::bytes_of;
 use tape_api::event::{TapeExtended, TapeReserved, TrackDeleted, TrackWritten};
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
+use tape_core::encoding::ErasureCode;
 use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayTrackObject, ReplayableEvent};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::data::BlobDataSlice;
@@ -37,11 +38,15 @@ pub struct CaptureOutput {
 
 
 /// Capture a block's instructions into replayable events.
+///
+/// A coded track's commitment is checked under `profile`, the network's
+/// erasure code.
 pub fn capture_block(
     initial_epoch: EpochNumber,
     slot: SlotNumber,
     instructions: &[ParsedInstruction],
     tx_ids: &[Txid],
+    profile: ErasureCode,
 ) -> Result<CaptureOutput, ParseError> {
     let mut current_epoch = initial_epoch;
     let mut events = Vec::new();
@@ -55,7 +60,8 @@ pub fn capture_block(
             ))
         })?;
 
-        let Some(captured) = capture_instruction(&mut current_epoch, instruction, tx_id)? else {
+        let Some(captured) = capture_instruction(&mut current_epoch, instruction, tx_id, profile)?
+        else {
             continue;
         };
         if let Some(raw_track) = captured.raw_track {
@@ -80,6 +86,7 @@ fn capture_instruction(
     current_epoch: &mut EpochNumber,
     instruction: &ParsedInstruction,
     tx_id: Txid,
+    profile: ErasureCode,
 ) -> Result<Option<Captured>, ParseError> {
     let actor = actor_for(instruction);
     let captured = match instruction {
@@ -257,6 +264,7 @@ fn capture_instruction(
             *visibility,
             object.clone(),
             value.as_slice(),
+            profile,
         )?,
         ParsedInstruction::DeleteTrack { event, .. } => {
             capture_delete(*current_epoch, tx_id, actor, event)
@@ -364,6 +372,7 @@ fn capture_instruction(
             TrackVisibility::Public,
             None,
             BlobDataSlice::Inline(bytes_of(entry)),
+            profile,
         )?,
         ParsedInstruction::RemoveFromBlacklist { event, .. } => {
             capture_delete(*current_epoch, tx_id, actor, event)
@@ -377,6 +386,7 @@ fn capture_instruction(
             TrackVisibility::Public,
             None,
             BlobDataSlice::Inline(bytes_of(span)),
+            profile,
         )?,
 
         // No corresponding ReplayableEvent variant yet — silently drop.
@@ -417,9 +427,10 @@ fn capture_track(
     visibility: TrackVisibility,
     object: Option<ReplayTrackObject>,
     data: BlobDataSlice<'_>,
+    profile: ErasureCode,
 ) -> Result<Captured, ParseError> {
     let meta = data
-        .meta()
+        .meta(profile)
         .ok_or_else(|| ParseError::Deserialization("invalid track payload".into()))?;
 
     let state = CompressedTrack {
@@ -434,7 +445,7 @@ fn capture_track(
         value_hash: meta.value_hash,
     };
 
-    if track_pda(event.tape, event.track_number).0 != event.track {
+    if state.address() != event.track {
         return Err(ParseError::EventMismatch("unexpected TrackWritten track address"));
     }
 
@@ -593,9 +604,9 @@ mod tests {
         EpochAdvanced, SnapshotFinalized, TapeExtended, TapeReserved, TrackCertified,
         TrackWritten,
     };
-    use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
+    use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress};
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
     use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{BlacklistEntry, NodePreferences};
@@ -624,7 +635,6 @@ mod tests {
         BlobEncoding {
             size: StorageUnits::from_bytes(64 * slices.len() as u64),
             commitment,
-            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(slices.len() as u64),
             leaves,
@@ -632,7 +642,7 @@ mod tests {
     }
 
     fn default_blob() -> BlobEncoding {
-        let payload = vec![vec![0xAA; 64]; GROUP_SIZE];
+        let payload = vec![vec![0xAA; 64]; MAX_GROUP_SIZE];
         blob_encoding(&payload)
     }
 
@@ -645,7 +655,7 @@ mod tests {
         epoch: EpochNumber,
         visibility: TrackVisibility,
     ) -> TrackWritten {
-        let meta = value.meta().unwrap();
+        let meta = value.meta(TAPENET_PROFILE).unwrap();
         let state = CompressedTrack {
             tape,
             key,
@@ -657,7 +667,7 @@ mod tests {
             group,
             value_hash: meta.value_hash,
         };
-        let track = track_pda(tape, track_number).0;
+        let track = state.address();
 
         TrackWritten {
             epoch,
@@ -697,7 +707,7 @@ mod tests {
         }
     }
 
-    fn raw_track_write_instruction(_track: Address, tape: Address, epoch: EpochNumber) -> ParsedInstruction {
+    fn raw_track_write_instruction(tape: Address, epoch: EpochNumber) -> ParsedInstruction {
         let value = BlobData::Inline(vec![0xAB; 4 * 1024]);
         let key = Hash::new_unique();
         let event = track_written_event(tape, key, &value, TrackNumber(8), GroupIndex(4), epoch, TrackVisibility::Public);
@@ -715,7 +725,6 @@ mod tests {
 
     fn blacklist_add_instruction(
         node: Address,
-        _track: Address,
         tape: Address,
         entry: BlacklistEntry,
         epoch: EpochNumber,
@@ -796,7 +805,7 @@ mod tests {
         instructions: Vec<ParsedInstruction>,
     ) -> CaptureOutput {
         let tx_ids = vec![Txid::default(); instructions.len()];
-        capture_block(epoch, slot, &instructions, &tx_ids).unwrap()
+        capture_block(epoch, slot, &instructions, &tx_ids, TAPENET_PROFILE).unwrap()
     }
 
     #[test]
@@ -895,16 +904,15 @@ mod tests {
     #[test]
     fn captures_raw_track_write() {
         let tape = Address::new_unique();
-        let track = track_pda(tape, TrackNumber(8)).0;
         let captured = capture(
             EpochNumber(9),
             SlotNumber(5),
-            vec![raw_track_write_instruction(track, tape, EpochNumber(9))],
+            vec![raw_track_write_instruction(tape, EpochNumber(9))],
         );
         assert_eq!(captured.events.len(), 1);
         assert_eq!(captured.raw_tracks.len(), 1);
 
-        match &captured.events[0].record.event {
+        let address = match &captured.events[0].record.event {
             ReplayableEvent::Track(track) => {
                 assert_eq!(track.state.tape, tape);
                 assert_eq!(track.state.track_number, TrackNumber(8));
@@ -912,11 +920,12 @@ mod tests {
                 assert_eq!(track.state.kind, TrackKind::Inline as u64);
                 assert_eq!(track.state.state, TrackState::Certified as u64);
                 assert!(track.blob.is_none());
+                track.state.address()
             }
             _ => panic!("expected ReplayableEvent::Track"),
-        }
+        };
 
-        assert_eq!(captured.raw_tracks[0].track, track);
+        assert_eq!(captured.raw_tracks[0].track, address);
         assert_eq!(u64::from(captured.raw_tracks[0].group), 4);
         assert_eq!(captured.raw_tracks[0].data, vec![0xAB; 4 * 1024]);
     }
@@ -925,17 +934,16 @@ mod tests {
     fn captures_blacklist_add_as_raw_track() {
         let node = Address::new_unique();
         let tape = Address::new_unique();
-        let track = track_pda(tape, TrackNumber(9)).0;
         let entry = BlacklistEntry::tape(Address::new_unique());
         let captured = capture(
             EpochNumber(9),
             SlotNumber(6),
-            vec![blacklist_add_instruction(node, track, tape, entry, EpochNumber(9))],
+            vec![blacklist_add_instruction(node, tape, entry, EpochNumber(9))],
         );
         assert_eq!(captured.events.len(), 1);
         assert_eq!(captured.raw_tracks.len(), 1);
 
-        match &captured.events[0].record.event {
+        let address = match &captured.events[0].record.event {
             ReplayableEvent::Track(track) => {
                 assert_eq!(track.state.tape, tape);
                 assert_eq!(track.state.track_number, TrackNumber(9));
@@ -949,11 +957,12 @@ mod tests {
                 );
                 assert_eq!(track.state.value_hash, entry.key());
                 assert!(track.blob.is_none());
+                track.state.address()
             }
             _ => panic!("expected ReplayableEvent::Track"),
-        }
+        };
 
-        assert_eq!(captured.raw_tracks[0].track, track);
+        assert_eq!(captured.raw_tracks[0].track, address);
         assert_eq!(u64::from(captured.raw_tracks[0].group), 6);
         assert_eq!(captured.raw_tracks[0].data, bytes_of(&entry).to_vec());
     }

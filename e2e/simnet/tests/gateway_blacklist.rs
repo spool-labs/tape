@@ -10,22 +10,23 @@ use reqwest::header::{HOST, IF_NONE_MATCH, RANGE};
 use reqwest::redirect::Policy;
 use reqwest::{Client, RequestBuilder, StatusCode};
 use rpc_litesvm::LiteSvmRpc;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_blacklist::batch::{render, render_first};
 use tape_blacklist::entry::Entry;
 use tape_blacklist::subscription::{HonoredAction, Subscription};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, StorageUnits};
 use tape_crypto::address::Address;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, TestGateway, run_simnet_test};
+use tape_e2e_simnet::{
+    NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE, TestGateway, run_simnet_test,
+};
 use tape_rack::format::{render as render_rack, render_first as render_rack_first};
 use tape_rack::record::Record;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
 use tape_store::ops::{TrackDataOps, TrackOps};
 
-const NODE_COUNT: usize = GROUP_SIZE;
+const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
 const TARGET_GROUPS: u64 = 1;
 const GATEWAY_STAKE: u64 = 2_000;
 const STORAGE_NODE_STAKE: u64 = 1_000;
@@ -415,7 +416,7 @@ async fn write_inline(writer: &Writer, tape: &TapeKey, bytes: &[u8]) -> Address 
         .await
         .expect("write track");
     assert!(track.is_inline(), "rack and blacklist tracks are inline");
-    track_pda(track.tape, track.track_number).0
+    track.address()
 }
 
 fn records(children: &[&TapeKey]) -> Vec<Record> {

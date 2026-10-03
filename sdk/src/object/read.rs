@@ -1,5 +1,5 @@
 use tape_rpc::Rpc;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_crypto::prelude::Address;
 use tape_protocol::Api;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -14,7 +14,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Read a named object from a bucket.
     pub async fn get_object(&self, bucket: &Address, name: &str) -> Result<Vec<u8>, TapedriveError> {
         let track = self.lookup_object(bucket, name).await?;
-        let address = track_pda(track.tape, track.track_number).0;
+        let address = track.address();
         let bytes = self.read_known(&address, track, Operation::ReadTrack).await?;
 
         // A stream's representing track is its manifest; detect and follow it.
@@ -44,7 +44,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         mut writer: Writer,
     ) -> Result<u64, TapedriveError> {
         let track = self.lookup_object(bucket, name).await?;
-        let address = track_pda(track.tape, track.track_number).0;
+        let address = track.address();
         let bytes = self.read_known(&address, track, Operation::ReadTrack).await?;
 
         if let Ok(manifest) = ChunkManifest::from_bytes(&bytes) {

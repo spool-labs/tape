@@ -1,6 +1,6 @@
 //! Stream receipt returned by stream write operations.
 
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -25,7 +25,7 @@ impl StreamReceipt {
     pub(crate) fn from_manifest_track(track: &CompressedTrack, etag: Hash) -> Self {
         Self {
             tape: track.tape,
-            manifest: track_pda(track.tape, track.track_number).0,
+            manifest: track.address(),
             manifest_track_number: track.track_number,
             etag,
         }

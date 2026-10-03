@@ -288,7 +288,7 @@ pub struct SpoolSynced {
     /// Spool group containing the spool
     pub group: GroupIndex,
 
-    /// Index within the group (0 .. GROUP_SIZE)
+    /// Index within the group (0 .. n)
     pub spool: SpoolIndex,
 
     /// Resulting current epoch phase after this sync.

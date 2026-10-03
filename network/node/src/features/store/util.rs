@@ -1,16 +1,18 @@
 use tape_store_api::Store;
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::encoding::ErasureCode;
 use tape_core::spooler::GroupIndex;
 use tape_store::ops::SpoolOps;
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
 
+/// Whether this node holds any of the group's n spools.
 pub fn is_responsible_for_group<Db: Store>(
     store: &TapeStore<Db>,
     group: GroupIndex,
+    profile: ErasureCode,
 ) -> Result<bool, NodeError> {
-    for slice in 0..GROUP_SIZE {
+    for slice in 0..usize::from(profile.n()) {
         let spool = group.spool_at(slice);
         if store
             .get_spool_state(spool)

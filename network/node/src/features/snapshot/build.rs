@@ -10,7 +10,7 @@ use std::sync::Arc;
 use bytemuck::bytes_of;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
+use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress, SYSTEM_ADDRESS};
 use tape_api::state::Tape;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::tape::{snapshot_tape_number, TapeFlags};
@@ -132,6 +132,7 @@ where
         epoch,
         &snapshot_log,
         total_groups,
+        ctx.params().profile,
         |chunk| -> Result<(), NodeError> {
             keep_chunk(ctx, epoch, &our_spools, &mut tape, &mut tracks, chunk)
         },
@@ -229,7 +230,7 @@ where
         .map_err(store_err("put_tape"))?;
 
     for track in &candidate.tracks {
-        let track_address = track_pda(track.track.tape, track.track.track_number).0;
+        let track_address = track.track.address();
         ctx.store
             .put_track(track_address, track.track)
             .map_err(store_err("put_track"))?;
@@ -337,6 +338,7 @@ mod tests {
             EPOCH,
             &log,
             GROUP_COUNT as usize,
+            ctx.params().profile,
         )
         .expect("full encode");
 

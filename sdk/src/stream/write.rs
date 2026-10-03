@@ -13,11 +13,11 @@ use tape_rpc_client::{parse_tape_error, sign_transaction};
 use tape_api::compute::CERTIFY_TRACK_CU;
 use tape_api::errors::TapeError;
 use tape_api::instruction::build_certify_track_ix;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_api::state::Tape;
 use tape_core::object::object_etag;
-use tape_core::prelude::{CompressedTrack, EpochNumber};
-use tape_core::track::data::{track_key, BlobDataSlice};
+use tape_core::prelude::{CompressedTrack, EpochNumber, ErasureCode};
+use tape_core::track::data::{track_key, BlobDataSlice, TrackMeta};
 use tape_core::track::mirror::ArchiveMirror;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::ContentType;
@@ -33,6 +33,7 @@ use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Outcome, Phase};
 use crate::tapedrive::Tapedrive;
+use crate::track::network_params;
 use crate::track::write::{
     certified_track, certify_submit_with_retry, certify_with_retry, coded_identity,
     collect_certification, confirm_certifies, encode_blob, ensure_track_matches, finish_coded_track,
@@ -46,7 +47,7 @@ use crate::transfer::certify::CollectedSignatures;
 
 use super::error::StreamError;
 use super::manifest::{
-    ChunkEntry, ChunkManifest, MAX_TRACK_SIZE, MAX_TRACKS_PER_TAPE, MANIFEST_VERSION,
+    max_track_size, ChunkEntry, ChunkManifest, MAX_TRACKS_PER_TAPE, MANIFEST_VERSION,
 };
 use super::receipt::StreamReceipt;
 
@@ -203,18 +204,33 @@ fn validate_stream_size(size: StorageUnits) -> Result<(), StreamError> {
     Ok(())
 }
 
+/// The network's profile, which sets how big each chunk track is.
+async fn stream_profile<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+) -> Result<ErasureCode, TapedriveError> {
+    Ok(network_params(client, Some(Operation::WriteStream)).await?.profile)
+}
+
+/// Bytes in every chunk track but the last: the largest track the profile allows.
+fn full_chunk_size(profile: ErasureCode) -> StorageUnits {
+    StorageUnits::from_bytes(max_track_size(profile) as u64)
+}
+
 /// Compute the number of chunks required for a stream.
-fn chunk_count_for_size(size: StorageUnits) -> Result<TrackNumber, StreamError> {
-    let chunk_count = size.to_bytes().div_ceil(MAX_TRACK_SIZE as u64);
+fn chunk_count_for_size(
+    size: StorageUnits,
+    profile: ErasureCode,
+) -> Result<TrackNumber, StreamError> {
+    let chunk_count = size.to_bytes().div_ceil(full_chunk_size(profile).to_bytes());
     Ok(TrackNumber(chunk_count))
 }
 
 /// Return the byte offset for a chunk index.
-fn chunk_offset(chunk_index: usize) -> Result<StorageUnits, StreamError> {
+fn chunk_offset(chunk_index: usize, profile: ErasureCode) -> Result<StorageUnits, StreamError> {
     let chunk_index = u64::try_from(chunk_index)
         .map_err(|_| StreamError::InvalidInput("stream has too many chunks".into()))?;
     let offset = chunk_index
-        .checked_mul(MAX_TRACK_SIZE as u64)
+        .checked_mul(full_chunk_size(profile).to_bytes())
         .ok_or_else(|| StreamError::InvalidInput("stream size overflow".into()))?;
     Ok(StorageUnits::from_bytes(offset))
 }
@@ -224,14 +240,15 @@ fn chunk_size(
     chunk_index: usize,
     chunk_count: TrackNumber,
     total_size: StorageUnits,
+    profile: ErasureCode,
 ) -> Result<StorageUnits, StreamError> {
     if chunk_index + 1 == chunk_count.as_usize() {
-        let offset = chunk_offset(chunk_index)?;
+        let offset = chunk_offset(chunk_index, profile)?;
         total_size
             .checked_sub(offset)
             .ok_or_else(|| StreamError::InvalidInput("stream size underflow".into()))
     } else {
-        Ok(StorageUnits::from_bytes(MAX_TRACK_SIZE as u64))
+        Ok(full_chunk_size(profile))
     }
 }
 
@@ -240,6 +257,7 @@ fn build_entries(
     start_track_number: TrackNumber,
     chunk_count: TrackNumber,
     total_size: StorageUnits,
+    profile: ErasureCode,
 ) -> Result<Vec<ChunkEntry>, StreamError> {
     let mut entries = Vec::with_capacity(chunk_count.as_usize());
 
@@ -250,8 +268,8 @@ fn build_entries(
 
         entries.push(ChunkEntry {
             track_number,
-            offset: chunk_offset(chunk_index)?,
-            size: chunk_size(chunk_index, chunk_count, total_size)?,
+            offset: chunk_offset(chunk_index, profile)?,
+            size: chunk_size(chunk_index, chunk_count, total_size, profile)?,
         });
     }
 
@@ -263,6 +281,7 @@ fn build_manifest(
     key: Hash,
     total_size: StorageUnits,
     entries: Vec<ChunkEntry>,
+    profile: ErasureCode,
 ) -> Result<ChunkManifest, StreamError> {
     let chunk_count = TrackNumber(
         u64::try_from(entries.len())
@@ -273,7 +292,7 @@ fn build_manifest(
         version: MANIFEST_VERSION,
         total_size,
         chunk_count,
-        chunk_size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
+        chunk_size: full_chunk_size(profile),
         key,
         chunks: entries,
     })
@@ -319,26 +338,35 @@ async fn store_bytes<Blockchain: Rpc, Cluster: Api>(
     data: &[u8],
 ) -> Result<StoredManifest, TapedriveError> {
     let size = StorageUnits::from_bytes(data.len() as u64);
+    let profile = stream_profile(client).await?;
 
     // A prior interrupted write of this stream leaves a matching prefix of tracks
     // starting at 0; finish it in place rather than appending a duplicate. Only a
     // tape whose first track is already this stream's first chunk resumes, so a
     // fresh tape and a shared bucket both fall through to the write pipeline.
-    let chunk_count = chunk_count_for_size(size).map_err(stream_error)?;
-    let first = stream_chunk(data, 0, chunk_count, size)?;
+    let chunk_count = chunk_count_for_size(size, profile).map_err(stream_error)?;
+    let first = stream_chunk(data, 0, chunk_count, size, profile)?;
     if is_stream_resume(client, tape_key, first).await? {
-        return resume_stream(client, tape_key, name, content_type, data, size, chunk_count).await;
+        return resume_stream(
+            client, tape_key, name, content_type, data, size, chunk_count, profile,
+        )
+        .await;
     }
 
-    let (tape, chunk_count) = prepare_write(client, tape_key, name, size).await?;
+    let (tape, chunk_count) = prepare_write(client, tape_key, name, size, profile).await?;
     let chunk_sources = stream::iter(
-        data.chunks(MAX_TRACK_SIZE)
+        data.chunks(full_chunk_size(profile).as_usize())
             .map(|chunk| Ok::<_, TapedriveError>(chunk.to_vec())),
     );
-    let pending_chunks =
-        pipeline_chunks(client, tape_key, &tape, size, chunk_count, chunk_sources).await?;
+    let pending_chunks = pipeline_chunks(
+        client, tape_key, &tape, size, chunk_count, profile, chunk_sources,
+    )
+    .await?;
 
-    store_manifest_for_chunks(client, tape_key, name, content_type, size, pending_chunks).await
+    store_manifest_for_chunks(
+        client, tape_key, name, content_type, size, profile, pending_chunks,
+    )
+    .await
 }
 
 async fn store_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
@@ -350,34 +378,40 @@ async fn store_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
     mut reader: Reader,
 ) -> Result<StoredManifest, TapedriveError> {
     validate_stream_size(size).map_err(stream_error)?;
-    let chunk_count = chunk_count_for_size(size).map_err(stream_error)?;
+    let profile = stream_profile(client).await?;
+    let chunk_count = chunk_count_for_size(size, profile).map_err(stream_error)?;
 
     // Read the first chunk to detect an interrupted prior write of this stream.
     // On resume this chunk is finished; on a fresh write it is prepended back
     // onto the pipeline so nothing is lost to the peek.
-    let first = read_chunk(&mut reader, 0, chunk_count, size).await?;
+    let first = read_chunk(&mut reader, 0, chunk_count, size, profile).await?;
     if is_stream_resume(client, tape_key, &first).await? {
         return resume_stream_reader(
-            client, tape_key, name, content_type, size, chunk_count, first, reader,
+            client, tape_key, name, content_type, size, chunk_count, profile, first, reader,
         )
         .await;
     }
 
-    let (tape, chunk_count) = prepare_write(client, tape_key, name, size).await?;
+    let (tape, chunk_count) = prepare_write(client, tape_key, name, size, profile).await?;
     let chunk_sources = stream::once(async move { Ok::<_, TapedriveError>(first) }).chain(
         stream::unfold((&mut reader, 1usize), move |(reader, chunk_index)| async move {
             if chunk_index >= chunk_count.as_usize() {
                 return None;
             }
-            let result = read_chunk(reader, chunk_index, chunk_count, size).await;
+            let result = read_chunk(reader, chunk_index, chunk_count, size, profile).await;
             Some((result, (reader, chunk_index + 1)))
         }),
     );
-    let pending_chunks =
-        pipeline_chunks(client, tape_key, &tape, size, chunk_count, chunk_sources).await?;
+    let pending_chunks = pipeline_chunks(
+        client, tape_key, &tape, size, chunk_count, profile, chunk_sources,
+    )
+    .await?;
 
     verify_stream_drained(&mut reader).await?;
-    store_manifest_for_chunks(client, tape_key, name, content_type, size, pending_chunks).await
+    store_manifest_for_chunks(
+        client, tape_key, name, content_type, size, profile, pending_chunks,
+    )
+    .await
 }
 
 /// Resume an interrupted reader stream: finish the already-read first chunk,
@@ -389,6 +423,7 @@ async fn resume_stream_reader<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead +
     content_type: ContentType,
     size: StorageUnits,
     chunk_count: TrackNumber,
+    profile: ErasureCode,
     first: Vec<u8>,
     mut reader: Reader,
 ) -> Result<StoredManifest, TapedriveError> {
@@ -398,11 +433,15 @@ async fn resume_stream_reader<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead +
     let result = async {
         resume_stream_chunk(client, operator, &first, TrackNumber(0)).await?;
         for chunk_index in 1..chunk_count.as_usize() {
-            let chunk = read_chunk(&mut reader, chunk_index, chunk_count, size).await?;
+            let chunk =
+                read_chunk(&mut reader, chunk_index, chunk_count, size, profile).await?;
             resume_stream_chunk(client, operator, &chunk, TrackNumber(chunk_index as u64)).await?;
         }
         verify_stream_drained(&mut reader).await?;
-        store_resumed_manifest(client, operator, name, content_type, size, chunk_count).await
+        store_resumed_manifest(
+            client, operator, name, content_type, size, chunk_count, profile,
+        )
+        .await
     }
     .await;
     timer.finish_result(&result);
@@ -417,6 +456,7 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
     tape_key: &impl TapeOperator,
     name: &[u8],
     size: StorageUnits,
+    profile: ErasureCode,
 ) -> Result<(Tape, TrackNumber), TapedriveError> {
     let timer = client
         .timer(Operation::WriteStream, Phase::Preflight)
@@ -424,13 +464,15 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
 
     let result = async {
         validate_stream_size(size).map_err(stream_error)?;
-        let chunk_count = chunk_count_for_size(size).map_err(stream_error)?;
+        let chunk_count = chunk_count_for_size(size, profile).map_err(stream_error)?;
         let tracks_needed = chunk_count.checked_next().ok_or_else(|| {
             stream_error(StreamError::InvalidInput("stream has too many chunks".into()))
         })?;
 
-        let entries = build_entries(TrackNumber(0), chunk_count, size).map_err(stream_error)?;
-        let manifest = build_manifest(hash(name), size, entries).map_err(stream_error)?;
+        let entries = build_entries(TrackNumber(0), chunk_count, size, profile)
+            .map_err(stream_error)?;
+        let manifest =
+            build_manifest(hash(name), size, entries, profile).map_err(stream_error)?;
         let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
         let total_size = size
             .checked_add(StorageUnits::from_bytes(manifest_bytes.len() as u64))
@@ -467,9 +509,12 @@ fn stream_chunk(
     chunk_index: usize,
     chunk_count: TrackNumber,
     size: StorageUnits,
+    profile: ErasureCode,
 ) -> Result<&[u8], TapedriveError> {
-    let start = chunk_offset(chunk_index).map_err(stream_error)?.as_usize();
-    let len = chunk_size(chunk_index, chunk_count, size)
+    let start = chunk_offset(chunk_index, profile)
+        .map_err(stream_error)?
+        .as_usize();
+    let len = chunk_size(chunk_index, chunk_count, size, profile)
         .map_err(stream_error)?
         .as_usize();
     data.get(start..start + len)
@@ -553,16 +598,20 @@ async fn resume_stream<Blockchain: Rpc, Cluster: Api>(
     data: &[u8],
     size: StorageUnits,
     chunk_count: TrackNumber,
+    profile: ErasureCode,
 ) -> Result<StoredManifest, TapedriveError> {
     let timer = client
         .timer(Operation::WriteStream, Phase::Total)
         .bytes(size.to_bytes());
     let result = async {
         for chunk_index in 0..chunk_count.as_usize() {
-            let chunk = stream_chunk(data, chunk_index, chunk_count, size)?;
+            let chunk = stream_chunk(data, chunk_index, chunk_count, size, profile)?;
             resume_stream_chunk(client, tape_key, chunk, TrackNumber(chunk_index as u64)).await?;
         }
-        store_resumed_manifest(client, tape_key, name, content_type, size, chunk_count).await
+        store_resumed_manifest(
+            client, tape_key, name, content_type, size, chunk_count, profile,
+        )
+        .await
     }
     .await;
     timer.finish_result(&result);
@@ -579,9 +628,11 @@ async fn store_resumed_manifest<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     size: StorageUnits,
     chunk_count: TrackNumber,
+    profile: ErasureCode,
 ) -> Result<StoredManifest, TapedriveError> {
-    let entries = build_entries(TrackNumber(0), chunk_count, size).map_err(stream_error)?;
-    let manifest = build_manifest(hash(name), size, entries).map_err(stream_error)?;
+    let entries =
+        build_entries(TrackNumber(0), chunk_count, size, profile).map_err(stream_error)?;
+    let manifest = build_manifest(hash(name), size, entries, profile).map_err(stream_error)?;
     let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
     ensure_stream_manifest(
         client,
@@ -643,7 +694,6 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
     manifest_bytes: &[u8],
     track_number: TrackNumber,
 ) -> Result<StoredManifest, TapedriveError> {
-    let tape = tape_key.address();
     let Some(existing) = resumed_track(client, tape_key, track_number).await? else {
         let manifest =
             store_manifest(client, tape_key, name, content_type, size, manifest_bytes).await?;
@@ -654,14 +704,12 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
     match manifest_write_mode(name, manifest_bytes) {
         ManifestWriteMode::Inline => {
             let slice = BlobDataSlice::Inline(manifest_bytes);
-            let meta = slice.meta().ok_or_else(|| {
-                TapedriveError::Encoding("inline manifest has no commitment".into())
-            })?;
+            let meta = TrackMeta::inline(manifest_bytes);
             ensure_track_matches(&existing, track_key(name, &slice), meta.value_hash)?;
             // Inline tracks certify at register, so a matching one is complete.
             Ok(StoredManifest {
                 written: WrittenTrack {
-                    address: track_pda(tape, track_number).0,
+                    address: existing.address(),
                     track: existing,
                 },
                 receipts: Vec::new(),
@@ -673,7 +721,7 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
                 coded_identity(client, name, manifest_bytes, Operation::WriteStream).await?;
             ensure_track_matches(&existing, key, value_hash)?;
             let written = WrittenTrack {
-                address: track_pda(tape, track_number).0,
+                address: existing.address(),
                 track: existing,
             };
             let receipts = if written.track.is_certified() {
@@ -719,6 +767,7 @@ async fn pipeline_chunks<Blockchain, Cluster, Chunks>(
     tape: &Tape,
     size: StorageUnits,
     chunk_count: TrackNumber,
+    profile: ErasureCode,
     chunk_sources: Chunks,
 ) -> Result<Vec<PendingChunk>, TapedriveError>
 where
@@ -834,8 +883,9 @@ where
                     let registered = RegisteredChunk {
                         entry: ChunkEntry {
                             track_number: written.track.track_number,
-                            offset: chunk_offset(chunk_index).map_err(stream_error)?,
-                            size: chunk_size(chunk_index, chunk_count, size)
+                            offset: chunk_offset(chunk_index, profile)
+                                .map_err(stream_error)?,
+                            size: chunk_size(chunk_index, chunk_count, size, profile)
                                 .map_err(stream_error)?,
                         },
                         written,
@@ -1424,9 +1474,10 @@ async fn read_chunk<Reader: AsyncRead + Unpin>(
     chunk_index: usize,
     chunk_count: TrackNumber,
     total_size: StorageUnits,
+    profile: ErasureCode,
 ) -> Result<Vec<u8>, TapedriveError> {
     let expected_chunk_size =
-        chunk_size(chunk_index, chunk_count, total_size).map_err(stream_error)?;
+        chunk_size(chunk_index, chunk_count, total_size, profile).map_err(stream_error)?;
     let mut chunk_data = vec![0u8; expected_chunk_size.as_usize()];
     read_chunk_exact(reader, &mut chunk_data).await?;
     Ok(chunk_data)
@@ -1542,13 +1593,14 @@ async fn store_manifest_for_chunks<Blockchain: Rpc, Cluster: Api>(
     name: &[u8],
     content_type: ContentType,
     size: StorageUnits,
+    profile: ErasureCode,
     pending_chunks: Vec<PendingChunk>,
 ) -> Result<StoredManifest, TapedriveError> {
     let entries = pending_chunks
         .into_iter()
         .map(|pending_chunk| pending_chunk.entry)
         .collect();
-    let manifest = build_manifest(hash(name), size, entries).map_err(stream_error)?;
+    let manifest = build_manifest(hash(name), size, entries, profile).map_err(stream_error)?;
     let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
 
     store_manifest(client, tape_key, name, content_type, size, &manifest_bytes).await
@@ -1602,8 +1654,9 @@ mod tests {
     use rpc_litesvm::LiteSvmRpc;
     use tape_api::state::Tape;
     use tape_core::bls::BlsSignature;
+    use tape_core::encoding::{RSParams, TAPENET_PROFILE};
+    use tape_core::thresholds::TrustModel;
     use tape_crypto::ed25519::Keypair;
-    use tape_core::erasure::GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
     use tape_core::types::bitmap::SpoolBitmap;
     use tape_core::track::archive::TrackArchive;
@@ -1620,6 +1673,11 @@ mod tests {
     use crate::track::write::content_etag_named;
 
     use super::*;
+
+    /// Bytes in a full chunk track on tapenet.
+    fn tapenet_chunk() -> u64 {
+        full_chunk_size(TAPENET_PROFILE).to_bytes()
+    }
 
     fn txid(byte: u8) -> Txid {
         Txid::from([byte; 64])
@@ -1723,7 +1781,7 @@ mod tests {
                 aggregated_signature: BlsSignature::zeroed(),
                 bitmap: SpoolBitmap::zeroed(),
                 signature_count: 0,
-                spool_count: GROUP_SIZE,
+                spool_count: usize::from(TAPENET_PROFILE.n()),
                 epoch: 1,
                 responses: Vec::new(),
                 failures: Vec::new(),
@@ -1750,6 +1808,8 @@ mod tests {
             PeerRes::GetTrackByNumber(Err(ApiError::Other("unexpected request".into())))
         });
         let mut state = ProtocolState::default();
+        state.system.profile = TAPENET_PROFILE.into();
+        state.system.trust_model = TrustModel::Permissionless.into();
         state.current.committee.push(Member::new(Address::new_unique(), TAPE(1)));
         state.touch();
         Tapedrive::from_parts(
@@ -1775,13 +1835,39 @@ mod tests {
 
     fn sample_manifest_bytes(chunk_count: u64) -> Vec<u8> {
         let key = Hash::from([0x11; 32]);
-        let total_size = StorageUnits::from_bytes(MAX_TRACK_SIZE as u64 * chunk_count);
-        let entries = build_entries(TrackNumber(0), TrackNumber(chunk_count), total_size)
-            .expect("build entries");
-        build_manifest(key, total_size, entries)
+        let total_size = StorageUnits::from_bytes(tapenet_chunk() * chunk_count);
+        let entries =
+            build_entries(TrackNumber(0), TrackNumber(chunk_count), total_size, TAPENET_PROFILE)
+                .expect("build entries");
+        build_manifest(key, total_size, entries, TAPENET_PROFILE)
             .expect("build manifest")
             .to_bytes()
             .expect("serialize manifest")
+    }
+
+    // a small profile splits the same stream into more, smaller chunk tracks
+    #[test]
+    fn small_profile_chunks() {
+        let size = StorageUnits::from_bytes(100_000_000);
+        let small = ErasureCode::ReedSolomon(RSParams::new(3, 1));
+        let chunk = full_chunk_size(small);
+
+        let tapenet = chunk_count_for_size(size, TAPENET_PROFILE).expect("tapenet count");
+        let count = chunk_count_for_size(size, small).expect("small count");
+        let entries = build_entries(TrackNumber(0), count, size, small).expect("build entries");
+        let manifest = build_manifest(Hash::default(), size, entries, small).expect("manifest");
+
+        assert_eq!(tapenet, TrackNumber(2));
+        assert_eq!(count, TrackNumber(4));
+        assert_eq!(manifest.chunk_size, chunk);
+        assert_eq!(manifest.chunks[1].offset, chunk);
+        assert_eq!(
+            manifest.chunks[3].size,
+            StorageUnits::from_bytes(100_000_000 - 3 * chunk.to_bytes())
+        );
+
+        let bytes = manifest.to_bytes().expect("serialize manifest");
+        assert_eq!(ChunkManifest::from_bytes(&bytes).expect("valid manifest"), manifest);
     }
 
     #[test]
@@ -1811,13 +1897,17 @@ mod tests {
         for chunk_count in [1, 256] {
             let tape_key = TapeKey::generate();
             let bytes = sample_manifest_bytes(chunk_count);
-            let computed = content_etag_named(name, bytes.clone()).await.expect("encode manifest");
+            let computed = content_etag_named(TAPENET_PROFILE, name, bytes.clone())
+                .await
+                .expect("encode manifest");
             let blob = computed.plan.as_ref().map(plan_blob);
             let data = match blob {
                 Some(blob) => BlobDataSlice::Coded(blob),
                 None => BlobDataSlice::Inline(&bytes),
             };
-            let metadata = data.meta().expect("valid manifest metadata");
+            let metadata = data
+                .meta(TAPENET_PROFILE)
+                .expect("valid manifest metadata");
             let track = CompressedTrack {
                 tape: tape_key.address(),
                 track_number: TrackNumber(chunk_count),
@@ -1836,7 +1926,7 @@ mod tests {
                 &tape_key,
                 name,
                 ContentType::Unknown,
-                StorageUnits::from_bytes(MAX_TRACK_SIZE as u64 * chunk_count),
+                StorageUnits::from_bytes(tapenet_chunk() * chunk_count),
                 &bytes,
                 track.track_number,
             ).await.expect("resume manifest");
@@ -1845,7 +1935,7 @@ mod tests {
                 .await
                 .expect("complete stream");
 
-            assert_eq!(receipt.manifest, track_pda(track.tape, track.track_number).0);
+            assert_eq!(receipt.manifest, track.address());
             assert_eq!(receipt.manifest_track_number, track.track_number);
             assert_eq!(receipt.etag, object_etag(&track, blob.as_ref()));
             assert_eq!(track.is_coded(), chunk_count == 256);
@@ -1861,9 +1951,11 @@ mod tests {
     #[test]
     fn manifest_size() {
         let key = Hash::from([0x11; 32]);
-        let total_size = StorageUnits::from_bytes(MAX_TRACK_SIZE as u64);
-        let entries = build_entries(TrackNumber(0), TrackNumber(1), total_size).expect("build entries");
-        let manifest = build_manifest(key, total_size, entries).expect("build manifest");
+        let total_size = full_chunk_size(TAPENET_PROFILE);
+        let entries = build_entries(TrackNumber(0), TrackNumber(1), total_size, TAPENET_PROFILE)
+            .expect("build entries");
+        let manifest =
+            build_manifest(key, total_size, entries, TAPENET_PROFILE).expect("build manifest");
         let manifest_bytes = manifest.to_bytes().expect("serialize manifest");
         let total_required = total_size + StorageUnits::from_bytes(manifest_bytes.len() as u64);
         let tape = make_tape(total_required.to_bytes() - 1, 0, 0);
@@ -1898,7 +1990,8 @@ mod tests {
         let error = build_entries(
             TrackNumber(u64::MAX),
             TrackNumber(2),
-            StorageUnits::from_bytes(MAX_TRACK_SIZE as u64 * 2),
+            StorageUnits::from_bytes(tapenet_chunk() * 2),
+            TAPENET_PROFILE,
         )
             .expect_err("entries should fail");
 

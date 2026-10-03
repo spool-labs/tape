@@ -4,10 +4,11 @@ use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::challenge::EvictionPolicy;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
-use tape_api::program::tapedrive::track_pda;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
+use tape_api::program::tapedrive::TrackAddress;
+use tape_e2e_simnet::{
+    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, run_simnet_test,
+};
 use tape_sdk::keys::tape_key::TapeKey;
 
 // This scenario needs eviction within its test budget. The runtime uses this
@@ -18,7 +19,7 @@ const EVICTION_POLICY: EvictionPolicy = EvictionPolicy {
     minimum_success_rate_bps: BasisPoints(5_000),
 };
 
-const COMMITTEE_NODES: usize = GROUP_SIZE;
+const COMMITTEE_NODES: usize = TAPENET_GROUP_SIZE;
 const NODE_COUNT: usize = COMMITTEE_NODES + 1;
 const SPARE_NODE: usize = COMMITTEE_NODES;
 const SILENT_NODE: usize = 0;
@@ -42,6 +43,7 @@ fn challenge_eviction() {
 async fn challenge_eviction_inner() {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
+        .eviction(true)
         .eviction_policy(EVICTION_POLICY)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
@@ -116,7 +118,7 @@ async fn challenge_eviction_inner() {
             .write_raw(&doomed_key, &[0x5A; 512])
             .await
             .expect("write the doomed track");
-        (doomed_key, track_pda(track.tape, track.track_number).0)
+        (doomed_key, track.address())
     };
 
     // Settle a few epochs in, so rounds have been running against a full group

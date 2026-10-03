@@ -1,8 +1,11 @@
 //! The check worker: runs due jobs through the gateway and the moderation API
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
+use tape_core::track::types::CompressedTrack;
+use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 use tape_sdk::stream::manifest::ChunkManifest;
 use tokio::time::{interval, MissedTickBehavior};
@@ -278,7 +281,11 @@ impl Worker {
         let mut chunks = Vec::new();
         if record.size.to_bytes() <= MANIFEST_READ_BYTES {
             if let GatewayRead::Content(read) = self.gateway.read_track(track, MANIFEST_READ_BYTES).await? {
-                chunks = manifest_chunks(&read, record.tape);
+                let numbers = manifest_chunk_numbers(&read);
+                if let Some((after, length)) = listing_span(&numbers) {
+                    let listed = self.gateway.list_tracks(record.tape, after, length).await?;
+                    chunks = chunk_addresses(&numbers, &listed);
+                }
             }
         }
         Ok(RemovalScope {
@@ -290,12 +297,12 @@ impl Worker {
     async fn list_tape(&self, tape: Address) -> Result<Vec<Address>, WorkerError> {
         let listed = self
             .gateway
-            .list_tracks(tape, self.config.tape_track_limit)
+            .list_tracks(tape, None, self.config.tape_track_limit)
             .await?;
         let mut tracks = Vec::new();
         for track in listed {
             if track.is_certified() {
-                tracks.push(track_pda(track.tape, track.track_number).0);
+                tracks.push(track.address());
             }
         }
         Ok(tracks)
@@ -350,17 +357,32 @@ fn to_request(prepared: PreparedInput) -> Result<(SentInput, ModerationInput), S
     }
 }
 
-/// Chunk tracks of a stream manifest; empty when the bytes are not a manifest
-fn manifest_chunks(read: &ContentRead, tape: Address) -> Vec<Address> {
+/// Track numbers of a stream manifest's chunks; empty when the bytes are not a manifest
+fn manifest_chunk_numbers(read: &ContentRead) -> BTreeSet<TrackNumber> {
     if !read.is_complete() {
-        return Vec::new();
+        return BTreeSet::new();
     }
     let Ok(manifest) = ChunkManifest::from_bytes(&read.bytes) else {
-        return Vec::new();
+        return BTreeSet::new();
     };
+    manifest.chunks.iter().map(|entry| entry.track_number).collect()
+}
+
+/// The cursor and length of the shortest listing that covers these track numbers
+fn listing_span(numbers: &BTreeSet<TrackNumber>) -> Option<(Option<TrackNumber>, u32)> {
+    let (first, last) = (numbers.first()?, numbers.last()?);
+    let after = first.0.checked_sub(1).map(TrackNumber);
+    let length = last.0.saturating_sub(first.0).saturating_add(1);
+    Some((after, u32::try_from(length).unwrap_or(u32::MAX)))
+}
+
+/// Addresses of the listed tracks at the given numbers, in track order
+fn chunk_addresses(numbers: &BTreeSet<TrackNumber>, listed: &[CompressedTrack]) -> Vec<Address> {
     let mut chunks = Vec::new();
-    for entry in &manifest.chunks {
-        chunks.push(track_pda(tape, entry.track_number).0);
+    for track in listed {
+        if numbers.contains(&track.track_number) {
+            chunks.push(track.address());
+        }
     }
     chunks
 }
@@ -833,13 +855,17 @@ mod tests {
             chunk_size: StorageUnits(10),
             key: Hash::default(),
             chunks: vec![
-                ChunkEntry { track_number: TrackNumber(0), offset: StorageUnits(0), size: StorageUnits(10) },
-                ChunkEntry { track_number: TrackNumber(1), offset: StorageUnits(10), size: StorageUnits(10) },
+                ChunkEntry { track_number: TrackNumber(3), offset: StorageUnits(0), size: StorageUnits(10) },
+                ChunkEntry { track_number: TrackNumber(4), offset: StorageUnits(10), size: StorageUnits(10) },
             ],
         };
         let manifest_bytes = manifest.to_bytes().expect("manifest bytes");
+        let chunks = vec![record(tape, 3, 10), record(tape, 4, 10)];
+        // The tape also holds tracks on both sides of the stream's chunks.
+        let listed = vec![record(tape, 1, 10), chunks[0], chunks[1], record(tape, 6, 10)];
         harness.object(manifest_track, Some("text/plain"), b"violent text");
-        harness.track_record(manifest_track, record(tape, 2, manifest_bytes.len() as u64), &manifest_bytes);
+        harness.track_record(manifest_track, record(tape, 5, manifest_bytes.len() as u64), &manifest_bytes);
+        harness.gateway.listings.lock().expect("lock").insert(tape.to_string(), listed);
         harness.flag(&[Category::Violence]);
         harness.report(Target::track(manifest_track), Timestamp(100)).await;
 
@@ -851,8 +877,8 @@ mod tests {
             removed,
             vec![
                 manifest_track.to_string(),
-                track_pda(tape, TrackNumber(0)).0.to_string(),
-                track_pda(tape, TrackNumber(1)).0.to_string(),
+                chunks[0].address().to_string(),
+                chunks[1].address().to_string(),
             ]
         );
         harness.stop().await;
@@ -1015,7 +1041,7 @@ mod tests {
         let harness = Harness::new(config(), TapeRuleConfig::default()).await;
         let tape = address(70);
         let listed = vec![record(tape, 0, 10), record(tape, 1, 10), record(tape, 2, 10)];
-        harness.gateway.listings.lock().expect("lock").insert(tape.to_string(), listed);
+        harness.gateway.listings.lock().expect("lock").insert(tape.to_string(), listed.clone());
         harness.report(Target::tape(tape), Timestamp(100)).await;
 
         let outcome = harness.run(Timestamp(100)).await;
@@ -1031,7 +1057,7 @@ mod tests {
             .collect();
         assert_eq!(
             queued,
-            vec![track_pda(tape, TrackNumber(0)).0.to_string(), track_pda(tape, TrackNumber(1)).0.to_string()]
+            vec![listed[0].address().to_string(), listed[1].address().to_string()]
         );
         assert_eq!(target_state(&harness.database(), Target::tape(tape)), "listed");
         harness.stop().await;
@@ -1048,7 +1074,7 @@ mod tests {
         let tape = address(80);
         let listed = vec![record(tape, 0, 10), record(tape, 1, 10)];
         for track in &listed {
-            let address = track_pda(tape, track.track_number).0;
+            let address = track.address();
             harness.object(address, Some("text/plain"), b"hateful words");
             harness.track_record(address, *track, b"hateful words");
         }
@@ -1066,5 +1092,15 @@ mod tests {
         let last = decisions(&harness.database()).pop().expect("unlist decision");
         assert_eq!(last, ("unlist".to_string(), "tape".to_string(), tape.to_string()));
         harness.stop().await;
+    }
+
+    // a listing starts just before the lowest chunk and is as long as the chunks span
+    #[test]
+    fn span() {
+        let numbers = |numbers: &[u64]| numbers.iter().copied().map(TrackNumber).collect::<BTreeSet<_>>();
+
+        assert_eq!(listing_span(&numbers(&[])), None);
+        assert_eq!(listing_span(&numbers(&[0, 1])), Some((None, 2)));
+        assert_eq!(listing_span(&numbers(&[3, 4, 7])), Some((Some(TrackNumber(2)), 5)));
     }
 }

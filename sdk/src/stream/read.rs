@@ -13,7 +13,7 @@ use tokio::join;
 use tracing::debug;
 
 use tape_rpc::Rpc;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
@@ -96,7 +96,7 @@ pub(crate) async fn read_manifest_into<Blockchain: Rpc, Cluster: Api, Writer: As
             .iter()
             .zip(tracks)
             .enumerate()
-            .map(|(offset, (entry, track))| read_segment(client, tape, first + offset, entry, track));
+            .map(|(offset, (entry, track))| read_segment(client, first + offset, entry, track));
         let reads = pin!(stream::iter(reads).buffered(STREAM_READ_AHEAD));
         let written = write_in_order(reads, writer, client.metrics.as_ref()).await?;
         total_written = total_written
@@ -152,7 +152,7 @@ async fn segment_tracks<Blockchain: Rpc, Cluster: Api>(
     for entry in entries {
         let track = match listed.get(&entry.track_number) {
             Some(track) => *track,
-            None => client.get_track(&track_pda(tape, entry.track_number).0).await?,
+            None => client.get_track_by_number(&tape, entry.track_number).await?,
         };
         tracks.push(track);
     }
@@ -161,12 +161,11 @@ async fn segment_tracks<Blockchain: Rpc, Cluster: Api>(
 
 async fn read_segment<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape: Address,
     index: usize,
     entry: &ChunkEntry,
     track: CompressedTrack,
 ) -> Result<Vec<u8>, TapedriveError> {
-    let address = track_pda(tape, entry.track_number).0;
+    let address = track.address();
     let data = client.read_known(&address, track, Operation::ReadStream).await?;
     if StorageUnits::from_bytes(data.len() as u64) != entry.size {
         return Err(stream_error(StreamError::Chunk(format!(

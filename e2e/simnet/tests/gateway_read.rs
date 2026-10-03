@@ -1,14 +1,14 @@
 use std::time::{Duration, Instant};
 
 use reqwest::StatusCode;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::encoding::EncodingProfile;
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::encoding::TAPENET_PROFILE;
 use tape_core::types::{BasisPoints, StorageUnits};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetScenario, TestGateway, run_simnet_test,
+    NodeRuntimeMode, SimnetBuilder, SimnetScenario, TAPENET_GROUP_SIZE, TestGateway,
+    run_simnet_test,
 };
 use tape_protocol::api::{NodeStats, slice_url};
 use tape_sdk::keys::tape_key::TapeKey;
@@ -16,7 +16,7 @@ use tape_sdk::stream::manifest::{ChunkManifest, MAX_TRACK_SIZE};
 use tape_sdk::tapedrive::Tapedrive;
 use tape_store::ops::TrackDataOps;
 
-const NODE_COUNT: usize = GROUP_SIZE;
+const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
 const TARGET_GROUPS: u64 = 5;
 const GATEWAY_STAKE: u64 = 2_000;
 const STORAGE_NODE_STAKE: u64 = 1_000;
@@ -34,7 +34,6 @@ async fn staked_gateway_inner() {
         .node_count(NODE_COUNT)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
-        .eviction(false)
         .build()
         .expect("build harness");
     let mut gateway =
@@ -128,12 +127,12 @@ async fn staked_gateway_inner() {
         .expect("write coded track before gating");
     eprintln!("gateway_read: coded track written");
     assert!(track.is_coded(), "test track must use coded slice reads");
-    let track_address = track_pda(track.tape, track.track_number).0;
+    let track_address = track.address();
     wait_current_owner_slices(
         &scenario,
         &track_address,
         track.group,
-        GROUP_SIZE,
+        TAPENET_GROUP_SIZE,
         slice_timeout,
     )
     .await
@@ -161,17 +160,17 @@ async fn staked_gateway_inner() {
         "stream fixture should span multiple chunk tracks"
     );
     for entry in &manifest.chunks {
-        let chunk_address = track_pda(stream_receipt.tape, entry.track_number).0;
         let chunk = writer
-            .get_track(&chunk_address)
+            .get_track_by_number(&stream_receipt.tape, entry.track_number)
             .await
             .expect("stream chunk track metadata");
+        let chunk_address = chunk.address();
         assert!(chunk.is_coded(), "stream chunk should use coded slice reads");
         wait_current_owner_slices(
             &scenario,
             &chunk_address,
             chunk.group,
-            GROUP_SIZE,
+            TAPENET_GROUP_SIZE,
             slice_timeout,
         )
         .await
@@ -398,7 +397,7 @@ async fn staked_gateway_inner() {
         "gateway read should cache at least one slice"
     );
     assert!(
-        stats_after.slices_stored >= u64::from(EncodingProfile::clay_default().k()),
+        stats_after.slices_stored >= u64::from(TAPENET_PROFILE.k()),
         "gateway should cache enough slices for offline decode"
     );
 
@@ -414,7 +413,7 @@ async fn staked_gateway_inner() {
         inline_track.is_inline(),
         "small payload must produce an inline track"
     );
-    let inline_addr = track_pda(inline_track.tape, inline_track.track_number).0;
+    let inline_addr = inline_track.address();
 
     wait_gateway_has_inline(&gateway, inline_addr, active_timeout)
         .await

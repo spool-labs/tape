@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, Method, Uri};
 use axum::response::IntoResponse;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_core::track::TRACK_TREE_HEIGHT;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_core::types::TrackNumber;
@@ -21,7 +21,9 @@ use tape_protocol::api::{
 };
 use tape_store::ops::{ObjectListOps, TapeOps, TrackOps};
 
-use super::{parse_address, track_data_with_pending, track_with_pending};
+use super::{
+    parse_address, track_address_by_number, track_data_with_pending, track_with_pending,
+};
 use crate::http::error::RouteError;
 use crate::http::handlers::share::authorize_signed_read;
 use crate::http::handlers::{binary_response, store_error};
@@ -55,8 +57,7 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // This gateway's own store serves the blob metadata, so an admitted caller needs no node token.
     authorize_signed_read(&state, &headers, &method, uri.path(), &track)?;
 
-    let data_addr = track_pda(track.tape, track.track_number).0;
-    let data = track_data_with_pending(&state, data_addr, track.tape)?.ok_or(RouteError::NotFound)?;
+    let data = track_data_with_pending(&state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
 
     binary_response(&TrackDataResponse { data })
 }
@@ -124,7 +125,8 @@ pub async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Path((tape_id, track_number)): Path<(String, u64)>,
 ) -> Result<impl IntoResponse, RouteError> {
     let tape = parse_address(&tape_id, "tape id")?;
-    let track_addr = track_pda(tape, TrackNumber(track_number)).0;
+    let track_addr = track_address_by_number(&state, tape, TrackNumber(track_number))?
+        .ok_or(RouteError::NotFound)?;
     let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
 
     binary_response(&TrackResponse {
@@ -244,6 +246,7 @@ pub async fn list_objects<Db: Store, Cluster: Api, Blockchain: Rpc>(
             slot: entry.slot,
             data_tape: entry.data_tape,
             track_number: entry.track_number,
+            track: entry.track,
             kind: entry.kind,
             content_type: entry.content_type,
         })
@@ -266,7 +269,7 @@ fn merge_pending_tape_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut by_number = BTreeMap::new();
 
     for disk_track in disk_tracks {
-        let track_addr = track_pda(disk_track.tape, disk_track.track_number).0;
+        let track_addr = disk_track.address();
         if let Some(track) = state
             .context
             .pending

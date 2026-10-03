@@ -67,7 +67,7 @@ mod tests {
     use std::sync::Arc;
 
     use tape_store_memory::MemoryStore;
-    use tape_api::program::tapedrive::track_pda;
+    use tape_api::program::tapedrive::TrackAddress;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::BlacklistEntry;
     use tape_core::track::data::BlobData;
@@ -92,7 +92,7 @@ mod tests {
             group: GroupIndex(0),
             value_hash: Hash::new_unique(),
         };
-        let address = track_pda(tape, track.track_number).0;
+        let address = track.address();
         store.put_track(address, track).expect("put track");
         store
             .put_track_data(address, BlobData::Inline(vec![1, 2, 3]))

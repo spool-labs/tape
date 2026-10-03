@@ -142,6 +142,8 @@ pub struct ObjectListEntry {
     pub data_tape: Address,
     /// Track number of the object-representing track on `data_tape`
     pub track_number: TrackNumber,
+    /// Address of the object-representing track
+    pub track: Address,
     /// Storage kind discriminator (`TrackKind::Inline` / `TrackKind::Coded`)
     pub kind: u64,
     /// Hot content type; precise custom strings are deferred to the data plane
@@ -469,8 +471,8 @@ pub enum PendingOp {
         size: u64,
         /// Last-modified time in unix seconds, set when the write was accepted
         block_time: i64,
-        /// The track a superseded write landed, reclaimed on overwrite; `None` reads the index
-        prior: Option<Address>,
+        /// The track a superseded write landed, deleted on overwrite; `None` reads the index
+        old_track: Option<Address>,
     },
     /// Delete the object's track
     Delete {
@@ -519,8 +521,8 @@ pub struct PendingWriteChunk {
 
 #[cfg(test)]
 mod tests {
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, PackedTrack};
     use tape_core::types::{StorageUnits, StripeCount};
@@ -542,6 +544,7 @@ mod tests {
             slot: SlotNumber(42),
             data_tape: Address::new([9u8; 32]),
             track_number: TrackNumber(3),
+            track: Address::new([8u8; 32]),
             kind: 1,
             content_type: ContentType::ImageJpeg,
         };
@@ -860,10 +863,9 @@ mod tests {
         let info = BlobEncoding {
             size: StorageUnits(512),
             commitment: Hash::from([3u8; 32]),
-            profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(2),
-            leaves: [Hash::default(); GROUP_SIZE],
+            leaves: [Hash::default(); MAX_GROUP_SIZE],
         };
 
         let bytes = wincode::serialize(&info).unwrap();
@@ -874,16 +876,15 @@ mod tests {
     // the blob commitment root matches its commitment
     #[test]
     fn commitment_root() {
-        let leaves = [Hash::default(); GROUP_SIZE];
+        let leaves = [Hash::default(); MAX_GROUP_SIZE];
         let info = BlobEncoding {
             size: StorageUnits(1024),
             commitment: root_from_leaf_hashes::<{ SLICE_TREE_HEIGHT }>(&leaves),
-            profile: EncodingProfile::clay_default(),
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(1),
             leaves,
         };
 
-        assert_eq!(info.commitment_root(), info.commitment);
+        assert_eq!(info.commitment_root(TAPENET_PROFILE), Some(info.commitment));
     }
 }

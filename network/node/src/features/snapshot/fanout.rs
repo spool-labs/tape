@@ -4,8 +4,6 @@ use std::sync::Arc;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::bft::has_honest_signer;
-use tape_core::erasure::GROUP_SIZE;
 use tape_protocol::api::VoteReq;
 use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::VoteOps;
@@ -60,7 +58,7 @@ where
             .iter_vote_sigs(vote, group)
             .map_err(|e| NodeError::Store(format!("iter_vote_sigs: {e}")))?;
 
-        if has_honest_signer(sigs.len() as u64, GROUP_SIZE as u64) {
+        if sigs.len() as u64 >= ctx.params().thresholds.snapshot {
             continue;
         }
 

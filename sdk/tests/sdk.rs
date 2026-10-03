@@ -7,12 +7,13 @@ use tape_peer_manager::{PeerManager, PeerNode};
 use peer_memory::MemoryApi;
 use tape_rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
-use tape_api::program::tapedrive::{self, tape_pda, track_pda};
+use tape_api::program::tapedrive::{self, tape_pda, TrackAddress};
 use tape_api::state::{Group, Tape};
 use tape_core::bls::BlsPubkey;
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::encoding::TAPENET_PROFILE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, NodePreferences, Spool};
+use tape_core::thresholds::TrustModel;
 use tape_core::track::data::{track_key, BlobData, BlobDataSlice};
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{
@@ -79,7 +80,7 @@ fn unexpected_peer_response(request: &PeerReq) -> PeerRes {
 
 impl Fixture {
     fn insert_track(&self, track: CompressedTrack, data: BlobData) -> Address {
-        let address = track_pda(track.tape, track.track_number).0;
+        let address = track.address();
         self.tracks.lock().unwrap().insert(address, track);
         self.data.lock().unwrap().insert(address, data);
         address
@@ -121,8 +122,13 @@ fn setup() -> Fixture {
                 None => PeerRes::GetTrack(Err(ApiError::NotFound)),
             },
             PeerReq::GetTrackByNumber(req) => {
-                let address = track_pda(req.tape, req.track_number).0;
-                match tracks.lock().unwrap().get(&address).copied() {
+                let found = tracks
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .copied()
+                    .find(|track| track.tape == req.tape && track.track_number == req.track_number);
+                match found {
                     Some(track) => PeerRes::GetTrackByNumber(Ok(GetTrackByNumberRes { track })),
                     None => PeerRes::GetTrackByNumber(Err(ApiError::NotFound)),
                 }
@@ -265,6 +271,8 @@ fn setup() -> Fixture {
     peer_manager.add_peer(make_peer(node, 3001));
 
     let mut state = ProtocolState::default();
+    state.system.profile = TAPENET_PROFILE.into();
+    state.system.trust_model = TrustModel::Permissionless.into();
     state.current.epoch.id = EpochNumber(1);
     state
         .current
@@ -276,7 +284,7 @@ fn setup() -> Fixture {
         size: StorageUnits::mb(1),
         ..Group::zeroed()
     };
-    for position in 0..GROUP_SIZE {
+    for position in 0..usize::from(TAPENET_PROFILE.n()) {
         group.spools[position] = Spool::new(node, BlsPubkey::zeroed());
     }
     state.current.groups.push(group);
@@ -397,6 +405,7 @@ fn object_item(name: &[u8], track_number: TrackNumber) -> ObjectListItem {
         slot: SlotNumber(track_number.0),
         data_tape: Address::new([0x44; 32]),
         track_number,
+        track: Address::new([0x55; 32]),
         kind: TrackKind::Inline as u64,
         content_type: ContentType::TextPlain,
     }
@@ -496,7 +505,7 @@ async fn matching_retry() {
         .expect("matching outbox retry resumes");
 
     assert_eq!(resumed.track.track_number, TrackNumber(0));
-    assert_eq!(track_pda(tape_key.address(), TrackNumber(0)).0, address);
+    assert_eq!(resumed.track.address(), address);
     assert_eq!(fixture.tracks.lock().unwrap().len(), 1);
 }
 
@@ -667,7 +676,7 @@ async fn certified_receipt() {
     let key = hash::hash(b"certified");
     let (track, _) = make_raw_track(tape_key.address(), key, 0, b"done");
     let written = WrittenTrack {
-        address: track_pda(track.tape, track.track_number).0,
+        address: track.address(),
         track,
     };
 

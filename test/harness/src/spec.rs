@@ -1,13 +1,19 @@
 use tape_api::program::tapedrive::DEFAULT_SUBSIDY_DECAY_BPS;
 
 use crate::TEST_EPOCH_DURATION;
+use tape_core::encoding::ErasureCode;
 use tape_core::system::{EpochPhase, EpochState};
+use tape_core::thresholds::TrustModel;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
 use bytemuck::Zeroable;
 
 #[derive(Clone, Debug)]
 pub struct HarnessSpec {
+    /// The network's erasure code, tapenet's unless a test picks another.
+    pub profile: ErasureCode,
+    /// What the network assumes about its nodes.
+    pub trust_model: TrustModel,
     pub epoch: EpochNumber,
     pub phase: EpochPhase,
     pub last_epoch: i64,
@@ -43,7 +49,7 @@ pub struct HarnessNodeSpec {
     pub latest_sync_epoch: EpochNumber,
     pub latest_advance_epoch: EpochNumber,
     pub commission_rate: BasisPoints,
-    pub storage_capacity: StorageUnits,
+    pub network_capacity: StorageUnits,
     pub storage_price: Coin<TAPE>,
     pub burn_fee_bps: BasisPoints,
     pub subsidy_decay_bps: BasisPoints,
@@ -57,7 +63,7 @@ impl HarnessNodeSpec {
             latest_sync_epoch: previous_epoch(epoch),
             latest_advance_epoch: previous_epoch(previous_epoch(epoch)),
             commission_rate: BasisPoints(0),
-            storage_capacity: StorageUnits::mb(1_000_000),
+            network_capacity: StorageUnits::mb(1_000_000),
             storage_price: TAPE(10),
             burn_fee_bps: BasisPoints(1_000),
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,

@@ -7,7 +7,7 @@ use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::erasure::{slice_root_from_sidecar, slice_sidecar, GROUP_SIZE, SLICE_TREE_HEIGHT};
+use tape_core::erasure::{slice_root_from_sidecar, slice_sidecar, SLICE_TREE_HEIGHT};
 use tape_core::track::data::BlobData;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
@@ -247,7 +247,10 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     // The registered leaf is already on hand, so settle the claim with a 32 byte
     // compare before hashing the slice to check the claim is honest.
-    let leaf_pos = spool_id.as_usize() % GROUP_SIZE;
+    let leaf_pos = track
+        .group
+        .position_of(spool_id)
+        .ok_or_else(|| RouteError::BadRequest("spool outside the track's group".into()))?;
     if payload.leaf_hash != blob.leaves[leaf_pos] {
         return Err(RouteError::BadRequest("leaf hash mismatch".into()));
     }
@@ -318,10 +321,9 @@ mod tests {
     use axum::response::IntoResponse;
     use bytemuck::Zeroable;
 
-    use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
+    use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress};
     use tape_core::cert::track::TrackWriteMessage;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{slice_root, GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::erasure::{slice_root, MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_snapshot::snapshot_chunk_key;
     use tape_core::spooler::GroupIndex;
@@ -365,19 +367,17 @@ mod tests {
         let owned_spool = group.spool_at(5);
         let slice_bytes = vec![0xAB; 96];
 
-        let leaves = [Hash::from([0x44; 32]); GROUP_SIZE];
+        let leaves = [Hash::from([0x44; 32]); MAX_GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         let blob = BlobEncoding {
             size: StorageUnits::from_bytes(1_537),
             commitment,
-            profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),
             stripe_count: StripeCount(4),
             leaves,
         };
 
         let (snapshot_tape, _) = snapshot_tape_pda(epoch);
-        let track_address = track_pda(snapshot_tape, track_number).0;
 
         ctx.store
             .put_tape(
@@ -405,6 +405,7 @@ mod tests {
             group,
             value_hash: blob.get_hash(),
         };
+        let track_address = track.address();
 
         ctx.store
             .put_track(track_address, track)
@@ -465,7 +466,6 @@ mod tests {
         let track_number = TrackNumber(3);
         let owned_spool = group.spool_at(4);
         let tape = Address::new_unique();
-        let track_address = track_pda(tape, track_number).0;
         let key = Hash::from([0x6C; 32]);
 
         ctx.store
@@ -483,12 +483,11 @@ mod tests {
             )
             .expect("seed tape");
 
-        let leaves = [Hash::from([0x44; 32]); GROUP_SIZE];
+        let leaves = [Hash::from([0x44; 32]); MAX_GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         let blob = BlobEncoding {
             size: StorageUnits::from_bytes(1_537),
             commitment,
-            profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),
             stripe_count: StripeCount(4),
             leaves,
@@ -505,6 +504,7 @@ mod tests {
             group,
             value_hash: blob.get_hash(),
         };
+        let track_address = track.address();
 
         ctx.store
             .put_track(track_address, track)
@@ -726,7 +726,6 @@ mod tests {
         let track_number = TrackNumber(3);
         let owned_spool = group.spool_at(5);
         let slice_bytes = vec![0xCD; 96];
-        let track_address = track_pda(tape, track_number).0;
 
         // The blob contents do not matter here: get_slice serves the raw bytes and
         // never decodes or verifies, so a zeroed placeholder is enough.
@@ -743,6 +742,7 @@ mod tests {
             group,
             value_hash: blob.get_hash(),
         };
+        let track_address = track.address();
 
         // Slice bytes and spool ownership land in the store at put time.
         ctx.store
@@ -807,12 +807,12 @@ mod tests {
         let group = GroupIndex(2);
         let track_number = TrackNumber(11);
         let owned_spool = group.spool_at(5);
-        let leaf_pos = owned_spool.as_usize() % GROUP_SIZE;
+        let leaf_pos = group.position_of(owned_spool).expect("spool in group");
 
         let slice_bytes = vec![0x5C; 128];
         let leaf = slice_root(&slice_bytes).expect("slice root");
 
-        let mut leaves = [Hash::from([0x11; 32]); GROUP_SIZE];
+        let mut leaves = [Hash::from([0x11; 32]); MAX_GROUP_SIZE];
         leaves[leaf_pos] = leaf;
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         let merkle_proof = create_proof_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves, leaf_pos)
@@ -821,14 +821,24 @@ mod tests {
         let blob = BlobEncoding {
             size: StorageUnits::from_bytes(slice_bytes.len() as u64),
             commitment,
-            profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),
             stripe_count: StripeCount(1),
             leaves,
         };
 
         let tape = Address::new_unique();
-        let track_address = track_pda(tape, track_number).0;
+        let track = CompressedTrack {
+            tape,
+            key: Hash::from([0x22; 32]),
+            track_number,
+            kind: TrackKind::Coded as u64,
+            state: TrackState::Registered as u64,
+            visibility: TrackVisibility::Public as u64,
+            size: blob.size,
+            group,
+            value_hash: blob.get_hash(),
+        };
+        let track_address = track.address();
 
         ctx.store
             .put_tape(
@@ -846,20 +856,7 @@ mod tests {
             .expect("seed tape");
 
         ctx.store
-            .put_track(
-                track_address,
-                CompressedTrack {
-                    tape,
-                    key: Hash::from([0x22; 32]),
-                    track_number,
-                    kind: TrackKind::Coded as u64,
-                    state: TrackState::Registered as u64,
-                    visibility: TrackVisibility::Public as u64,
-                    size: blob.size,
-                    group,
-                    value_hash: blob.get_hash(),
-                },
-            )
+            .put_track(track_address, track)
             .expect("seed track");
 
         ctx.store

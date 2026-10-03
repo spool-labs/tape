@@ -6,7 +6,6 @@ use std::future::Future;
 use futures::stream::{self, Stream, StreamExt};
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_api::program::tapedrive::track_pda;
 use tape_core::share::ShareToken;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::Hash;
@@ -19,7 +18,7 @@ use tokio_util::task::AbortOnDropHandle;
 use super::decode::decode_track_bytes;
 use super::response::{ByteRange, ObjectResponseMetadata, ranged_object_headers};
 use crate::http::error::RouteError;
-use crate::http::handlers::track::track_with_pending;
+use crate::http::handlers::track::{track_address_by_number, track_with_pending};
 use crate::http::state::AppState;
 
 /// One chunk a read will serve: its manifest index, the bytes the whole chunk
@@ -84,7 +83,8 @@ fn resolve_planned_chunks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut chunks = Vec::with_capacity(plan.len());
     for planned in plan {
         let entry = &manifest.chunks[planned.index];
-        let chunk_addr = track_pda(tape, entry.track_number).0;
+        let chunk_addr = track_address_by_number(state, tape, entry.track_number)?
+            .ok_or(RouteError::NotFound)?;
         let chunk = track_with_pending(state, chunk_addr)?.ok_or(RouteError::NotFound)?;
         if !chunk.is_certified() {
             return Err(RouteError::BadGateway(format!(

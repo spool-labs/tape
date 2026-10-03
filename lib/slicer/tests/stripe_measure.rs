@@ -4,10 +4,14 @@
 
 use std::time::Instant;
 
-use tape_core::encoding::ClayParams;
-use tape_slicer::{num_stripes, ErasureCoder, SliceIndex, SliceMetadata, Slicer};
+use tape_core::encoding::TAPENET_CLAY;
+use tape_slicer::{num_stripes, ClayCoder, ErasureCoder, SliceIndex, SliceMetadata, Slicer};
 
 const MIB: usize = 1024 * 1024;
+
+fn tapenet() -> Slicer<ClayCoder> {
+    Slicer::with_rotation(ClayCoder::from_params(TAPENET_CLAY))
+}
 
 fn mk(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i % 251) as u8).collect()
@@ -29,10 +33,10 @@ fn measure_stripe_size_throughput() {
     let blob = mk(32 * MIB);
     println!("stripe_size_bytes encode_mbps");
 
-    let align = ClayParams::default().stripe_alignment() as usize;
+    let align = TAPENET_CLAY.stripe_alignment() as usize;
     for units in [71usize, 143, 357, 715, 1_786, 3_572, 7_143, 11_429] {
         let cap = units * align;
-        let mut slicer = Slicer::clay_default();
+        let mut slicer = tapenet();
         slicer.set_stripe_cap(cap);
 
         slicer.encode(&blob).unwrap();
@@ -59,7 +63,7 @@ fn measure_encode_decode() {
         let blob = mk(len);
         let ideal = len as f64 * 20.0 / 7.0;
 
-        let mut slicer = Slicer::clay_default();
+        let mut slicer = tapenet();
         slicer.encode(&blob).unwrap();
         let reps = if len >= 16 * MIB { 2 } else { 5 };
         let start = Instant::now();
@@ -98,7 +102,7 @@ fn measure_repair() {
     println!("blob_len repair_ms helper_bytes");
     for &len in &[1_000_001usize, 4 * MIB + 8] {
         let blob = mk(len);
-        let mut slicer = Slicer::clay_default();
+        let mut slicer = tapenet();
         let slices = slicer.encode(&blob).unwrap();
 
         let helpers: Vec<(SliceIndex, &[u8])> = slices

@@ -6,23 +6,22 @@
 // peers, so every case waits for the pre-state to be peer-visible first, which
 // is the cross-process timing real resume runs under.
 //
-// Cases I and J cover the gateway overwrite path instead: an existing prior
-// track is overwritten and reclaimed rather than rejected, and a multi-track
-// stream is reclaimed whole. Both assert the tape returns to its live track
-// count once the old chunks and manifest are gone.
+// Cases I and J cover the gateway overwrite path instead: a new track is
+// written and the old one deleted, and a multi-track stream is deleted
+// whole. Both assert the tape returns to its live track count once the old
+// chunks and manifest are gone.
 
 use std::time::{Duration, Instant};
 
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use tape_rpc::Rpc;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
-use tape_e2e_simnet::{run_simnet_test, NodeRuntimeMode, SimnetBuilder};
+use tape_e2e_simnet::{run_simnet_test, NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE};
 use tape_protocol::Api;
 use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::tape_key::TapeKey;
@@ -30,7 +29,7 @@ use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_sdk::tapedrive::Tapedrive;
 
 const TARGET_GROUPS: u64 = 5;
-const NODE_COUNT: usize = GROUP_SIZE;
+const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
 const OBJECT_NAME: &str = "resume/obj";
 // Simnet epochs auto-advance on wall-clock, so a multi-case run crosses several
 // boundaries; reserve well past the whole run so no tape expires mid-test.
@@ -301,7 +300,7 @@ async fn resume_flow_inner() {
 
     // Case I: gateway single-track overwrite. A certified track re-put under the
     // same name with different content overwrites: a new track is written and the
-    // prior one reclaimed, so the tape ends with exactly one live track.
+    // old one deleted, so the tape ends with exactly one live track.
     {
         let key = TapeKey::generate();
         sdk.reserve(&key, capacity, EPOCHS).await.expect("I reserve");
@@ -316,7 +315,7 @@ async fn resume_flow_inner() {
                 OBJECT_NAME,
                 ContentType::Unknown,
                 &other,
-                Some(track_pda(key.address(), first.track.track_number).0),
+                Some(first.track.address()),
                 None,
             )
             .await
@@ -330,7 +329,7 @@ async fn resume_flow_inner() {
     }
 
     // Case J: gateway stream overwrite. A multi-track stream re-put under the same
-    // name writes a fresh stream, then reclaims the prior manifest whole: every
+    // name writes a fresh stream, then deletes the old object whole: every
     // old chunk and its manifest are deleted, returning the live count to the new
     // stream's three tracks with the new stream still readable.
     {
@@ -353,11 +352,11 @@ async fn resume_flow_inner() {
             .expect("J stream v2");
         wait_track_count(&sdk, &key.address(), 6, active_timeout).await;
 
-        sdk.reclaim_object_as(&key, first.manifest).await.expect("J reclaim old stream");
+        sdk.delete_object_as(&key, first.manifest).await.expect("J delete old stream");
         wait_track_count(&sdk, &key.address(), 3, active_timeout).await;
 
         let got = read_bytes_retry(&sdk, &second.manifest, active_timeout).await;
-        assert_eq!(got, stream_v2, "J: new stream intact after reclaim");
+        assert_eq!(got, stream_v2, "J: new stream intact after delete");
     }
 
     harness.stop_all().await.expect("stop runtimes");
@@ -436,7 +435,7 @@ async fn read_track<B: Rpc, C: Api>(
     track: &CompressedTrack,
     timeout: Duration,
 ) -> Vec<u8> {
-    let address = track_pda(track.tape, track.track_number).0;
+    let address = track.address();
     let start = Instant::now();
     loop {
         match sdk.read(&address).await {

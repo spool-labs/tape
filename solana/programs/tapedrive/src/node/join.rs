@@ -215,13 +215,14 @@ mod tests {
 
         let preferences = NodePreferences {
             storage_price: TAPE(10),
-            storage_capacity: StorageUnits::mb(1_000_000),
+            network_capacity: StorageUnits::mb(1_000_000),
             committee_size: system.committee_size,
             spool_groups: system.target_group_count,
             burn_fee_bps: BasisPoints(1_000),
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
+            node_capacity: StorageUnits::zero(),
         };
         let node = Node {
             authority: authority.into(),
@@ -578,13 +579,14 @@ mod tests {
 
         let preferences = NodePreferences {
             storage_price: TAPE(10),
-            storage_capacity: StorageUnits::mb(1_000_000),
+            network_capacity: StorageUnits::mb(1_000_000),
             committee_size: system.committee_size,
             spool_groups: system.target_group_count,
             burn_fee_bps: BasisPoints(1_000),
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
+            node_capacity: StorageUnits::zero(),
         };
         // Suspension expired below the target epoch: next > suspended_until.
         let node = Node {

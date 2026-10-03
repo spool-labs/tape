@@ -109,10 +109,11 @@ impl ArchiveMirror {
         let offset = self.offset_of(track_number)?;
 
         let current = self.tracks[offset];
-        if updated.track_number != current.track_number
-            || updated.tape != current.tape
-            || updated.key != current.key
-        {
+        let unchanged = CompressedTrack {
+            state: current.state,
+            ..*updated
+        };
+        if unchanged != current {
             return Err(MerkleError::InvalidIndex);
         }
 
@@ -240,7 +241,6 @@ mod tests {
     fn certified(track: &CompressedTrack) -> CompressedTrack {
         let mut updated = *track;
         updated.state = TrackState::Certified.into();
-        updated.value_hash = hashv(&[b"certified", &track.track_number.pack()]);
         updated
     }
 

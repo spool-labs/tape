@@ -1,16 +1,17 @@
 use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::NodeStatus;
 use tape_core::types::{BasisPoints, EpochNumber};
 use tape_crypto::Address;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
+use tape_e2e_simnet::{
+    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, run_simnet_test,
+};
 
 // The committee holds exactly the group floor. A lower stake spare stands by so
 // the committee can refill after an eviction, and so the evicted node can later
 // reclaim its seat by out-staking the spare.
-const COMMITTEE_NODES: usize = GROUP_SIZE;
+const COMMITTEE_NODES: usize = TAPENET_GROUP_SIZE;
 const NODE_COUNT: usize = COMMITTEE_NODES + 1;
 const SPARE_NODE: usize = COMMITTEE_NODES;
 const TARGET_GROUPS: u64 = 1;
@@ -27,6 +28,7 @@ fn eviction() {
 async fn eviction_inner() {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
+        .eviction(true)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
         .build()

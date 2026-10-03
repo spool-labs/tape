@@ -74,8 +74,9 @@ impl TapeTrackScan {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use tape_store_memory::MemoryStore;
-    use tape_api::program::tapedrive::track_pda;
     use tape_core::spooler::GroupIndex;
     use tape_core::types::StorageUnits;
     use tape_crypto::Hash;
@@ -97,7 +98,7 @@ mod tests {
             group: GroupIndex(0),
             value_hash: Hash::new_unique(),
         };
-        let address = track_pda(tape, track.track_number).0;
+        let address = Address::new_unique();
         store.put_track(address, track).expect("put track");
         if is_held {
             store
@@ -121,8 +122,9 @@ mod tests {
     fn batch_boundaries() {
         let store = TapeStore::new(MemoryStore::new());
         let tape = Address::new_unique();
+        let mut addresses = HashMap::new();
         for number in [3, 0, 4, 1, 2] {
-            put_track(&store, tape, number, true);
+            addresses.insert(number, put_track(&store, tape, number, true));
         }
         put_track(&store, Address::new_unique(), 0, true);
 
@@ -130,7 +132,7 @@ mod tests {
 
         let mut numbers = Vec::new();
         for track in &scanned {
-            assert_eq!(track.address, track_pda(tape, track.track.track_number).0);
+            assert_eq!(Some(&track.address), addresses.get(&track.track.track_number.0));
             assert_eq!(track.data, Some(BlobData::Inline(PAYLOAD.to_vec())));
             numbers.push(track.track.track_number.0);
         }

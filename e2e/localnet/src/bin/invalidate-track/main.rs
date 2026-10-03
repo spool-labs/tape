@@ -7,10 +7,9 @@ use rand::RngCore;
 use tape_rpc_solana::RpcConfig;
 use tape_api::compute::INVALIDATE_TRACK_CU;
 use tape_api::instruction::build_invalidate_track_ix;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::cert::track::TrackInvalidateMessage;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{SpoolBitmap, StorageUnits};
 use tape_crypto::address::Address;
@@ -84,7 +83,7 @@ async fn main() -> Result<()> {
         .context("write track")?;
     ensure!(track.is_certified(), "track should certify");
 
-    let track_address = track_pda(track.tape, track.track_number).0;
+    let track_address = track.address();
     println!("track {track_address} certified in group {}", track.group.0);
 
     let proof = wait_track_proof(&sdk, &track_address, |_| true).await?;
@@ -99,6 +98,9 @@ async fn main() -> Result<()> {
 
     let system = sdk.rpc().get_system().await.context("get system")?;
     let epoch = system.current_epoch;
+    let profile = system
+        .code()
+        .map_err(|_| anyhow::anyhow!("System holds no valid encoding profile"))?;
     let group = sdk
         .rpc()
         .get_group(epoch, proof.state.group)
@@ -134,7 +136,7 @@ async fn main() -> Result<()> {
         indices.push(spool_index);
     }
     ensure!(
-        indices.len() == GROUP_SIZE,
+        indices.len() == usize::from(profile.n()),
         "expected every group spool key locally, found {}",
         indices.len()
     );

@@ -8,9 +8,9 @@ use tape_crypto::hash::hash;
 use tape_crypto::merkle::root_from_leaf_hashes;
 use tape_crypto::merkle::{create_proof_from_leaf_hashes, hash_leaf, verify_proof_hash};
 
-use crate::encoding::EncodingProfile;
+use crate::encoding::ErasureCode;
 use crate::erasure::{
-    GROUP_SIZE, SAMPLE_WINDOW_BYTES, SLICE_TREE_HEIGHT, SUB_LEAF_BYTES, SUB_TREE_HEIGHT, slice_root,
+    MAX_GROUP_SIZE, SAMPLE_WINDOW_BYTES, SLICE_TREE_HEIGHT, SUB_LEAF_BYTES, SUB_TREE_HEIGHT, slice_root,
     slice_root_from_sidecar, sub_leaf_hashes, window_root,
 };
 use crate::types::{SpoolIndex, StorageUnits, StripeCount};
@@ -36,9 +36,6 @@ pub struct BlobEncoding {
     /// Root of the erasure-coded commitment tree.
     pub commitment: Hash,
 
-    /// Erasure-coding profile used for the blob.
-    pub profile: EncodingProfile,
-
     /// Stripe size in bytes.
     pub stripe_size: StorageUnits,
 
@@ -46,7 +43,8 @@ pub struct BlobEncoding {
     pub stripe_count: StripeCount,
 
     /// Per-slice commitment leaves, each the root of that slice's sub-leaf tree.
-    pub leaves: [Hash; GROUP_SIZE],
+    /// A network with n slices per track fills the first n and zeroes the rest.
+    pub leaves: [Hash; MAX_GROUP_SIZE],
 }
 
 /// One sampled sub-leaf with its path to that slice's registered root
@@ -81,9 +79,21 @@ impl BlobEncoding {
         value
     }
 
-    /// Recompute the commitment root from stored leaf hashes.
-    pub fn commitment_root(&self) -> Hash {
-        root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&self.leaves)
+    /// Recompute the commitment root over the profile's n leaves.
+    ///
+    /// None when n is outside the array or a leaf past it is set. The value
+    /// hash covers every leaf, so a set leaf the root ignores would let one
+    /// commitment carry many values.
+    pub fn commitment_root(&self, profile: ErasureCode) -> Option<Hash> {
+        let (live, padding) = self.leaves.split_at_checked(usize::from(profile.n()))?;
+        if live.is_empty() {
+            return None;
+        }
+        if padding.iter().any(|leaf| *leaf != Hash::default()) {
+            return None;
+        }
+
+        Some(root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(live))
     }
 
     /// Verify a whole slice against its stored slice root, rebuilding its sub-leaf tree.
@@ -215,17 +225,22 @@ impl<'de> SchemaRead<'de> for BlobEncoding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoding::EncodingProfile;
+    use crate::encoding::{RepParams, TAPENET_PROFILE};
     use crate::erasure::{slice_sidecar, sub_leaf_count};
+    use crate::track::data::BlobDataSlice;
+
+    /// A profile of n copies, which gives a group of any size
+    fn copies(n: usize) -> ErasureCode {
+        ErasureCode::Replication(RepParams::new(n as u8))
+    }
 
     fn sample_blob_encoding() -> BlobEncoding {
         BlobEncoding {
             size: StorageUnits::from_bytes(512),
             commitment: Hash::from([0x22; 32]),
-            profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(2),
-            leaves: [Hash::from([0x33; 32]); GROUP_SIZE],
+            leaves: [Hash::from([0x33; 32]); MAX_GROUP_SIZE],
         }
     }
 
@@ -254,7 +269,7 @@ mod tests {
     fn slice_windows() {
         let slice: Vec<u8> = (0..SAMPLE_WINDOW_BYTES * 3 + 700).map(|b| (b % 251) as u8).collect();
         let sidecar = slice_sidecar(&slice).expect("sidecar");
-        let mut leaves = [Hash::default(); GROUP_SIZE];
+        let mut leaves = [Hash::default(); MAX_GROUP_SIZE];
         leaves[4] = slice_root(&slice).expect("root");
         let blob = BlobEncoding { leaves, ..BlobEncoding::zeroed() };
         let tail = &slice[SAMPLE_WINDOW_BYTES * 2..];
@@ -270,14 +285,14 @@ mod tests {
 
     /// A blob whose leaves are the real sub-leaf roots of the returned slices.
     fn coded_blob() -> (BlobEncoding, Vec<Vec<u8>>) {
-        let slices: Vec<Vec<u8>> = (0..GROUP_SIZE)
+        let slices: Vec<Vec<u8>> = (0..MAX_GROUP_SIZE)
             .map(|i| {
                 let len = SUB_LEAF_BYTES * 3 + i + 1;
                 (0..len).map(|b| (b + i) as u8).collect()
             })
             .collect();
 
-        let leaves: [Hash; GROUP_SIZE] =
+        let leaves: [Hash; MAX_GROUP_SIZE] =
             core::array::from_fn(|i| slice_root(&slices[i]).expect("slice within capacity"));
 
         let blob = BlobEncoding {
@@ -286,6 +301,49 @@ mod tests {
             ..sample_blob_encoding()
         };
         (blob, slices)
+    }
+
+    // tapenet's profile gives the root over every leaf
+    #[test]
+    fn full_root() {
+        let (blob, _) = coded_blob();
+
+        assert_eq!(blob.commitment_root(TAPENET_PROFILE), Some(blob.commitment));
+    }
+
+    // a narrow root covers the live leaves only, so zeroed padding can't stand in for them
+    #[test]
+    fn narrow_root() {
+        let (full, _) = coded_blob();
+        let mut leaves = [Hash::default(); MAX_GROUP_SIZE];
+        leaves[..4].copy_from_slice(&full.leaves[..4]);
+        let blob = BlobEncoding { leaves, ..full };
+
+        let root = blob.commitment_root(copies(4)).expect("zero tail");
+
+        assert_eq!(root, root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves[..4]));
+        assert_ne!(Some(root), blob.commitment_root(TAPENET_PROFILE));
+    }
+
+    // a set leaf past the profile's n, or an n outside the array, has no root
+    #[test]
+    fn padding_rejected() {
+        let (blob, _) = coded_blob();
+
+        assert_eq!(blob.commitment_root(copies(4)), None);
+        assert_eq!(blob.commitment_root(copies(MAX_GROUP_SIZE - 1)), None);
+        assert_eq!(blob.commitment_root(copies(0)), None);
+        assert_eq!(blob.commitment_root(copies(MAX_GROUP_SIZE + 1)), None);
+    }
+
+    // a coded blob yields metadata only under the profile its commitment covers
+    #[test]
+    fn meta_profile() {
+        let (blob, _) = coded_blob();
+        let data = BlobDataSlice::Coded(blob);
+
+        assert!(data.meta(TAPENET_PROFILE).is_some());
+        assert!(data.meta(copies(MAX_GROUP_SIZE - 1)).is_none());
     }
 
     #[test]
@@ -300,7 +358,7 @@ mod tests {
         tampered[SUB_LEAF_BYTES + 5] ^= 0xFF;
         assert!(!blob.verify_slice(SpoolIndex(0), &tampered));
 
-        assert!(!blob.verify_slice(SpoolIndex(GROUP_SIZE as u64), &slices[0]));
+        assert!(!blob.verify_slice(SpoolIndex(MAX_GROUP_SIZE as u64), &slices[0]));
     }
 
     #[test]
@@ -362,6 +420,6 @@ mod tests {
         let past_end = sub_leaf_count(slices[0].len());
 
         assert!(blob.prove_sub_leaf(SpoolIndex(0), past_end, &slices[0]).is_none());
-        assert!(blob.prove_sub_leaf(SpoolIndex(GROUP_SIZE as u64), 0, &slices[0]).is_none());
+        assert!(blob.prove_sub_leaf(SpoolIndex(MAX_GROUP_SIZE as u64), 0, &slices[0]).is_none());
     }
 }

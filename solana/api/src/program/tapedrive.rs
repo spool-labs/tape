@@ -2,13 +2,13 @@ use const_crypto::ed25519;
 use solana_program::pubkey::Pubkey;
 use tape_core::{
     spooler::GroupIndex,
-    types::{coin::TAPE, BasisPoints, EpochNumber, SlotNumber, StorageUnits, TrackNumber},
+    track::types::CompressedTrack,
+    types::{coin::TAPE, BasisPoints, EpochNumber, SlotNumber, StorageUnits},
 };
 use tape_crypto::{Address, Hash};
 
 use super::token::MINT_ADDRESS;
 
-pub const MIN_COMMITTEE_SIZE:     usize = 20;
 pub const MIN_STORAGE_CAPACITY:   usize = 1 << 30; // 1GiB
 pub const MIN_STORAGE_PRICE:      usize = 1;       // per GiB in TAPE per epoch
 
@@ -262,9 +262,33 @@ pub fn tape_pda(authority: Address) -> (Address, u8) {
     Address::find_program_address(&[CASSETTE, authority.as_ref()], id())
 }
 
+// Certify and invalidate change `state`, and `group` comes from the slot hash, so both stay out of the seeds.
 #[inline(always)]
-pub fn track_pda(tape: Address, track_number: TrackNumber) -> (Address, u8) {
-    Address::find_program_address(&[TRACK, tape.as_ref(), &track_number.pack()], id())
+pub fn track_pda(track: &CompressedTrack) -> (Address, u8) {
+    Address::find_program_address(
+        &[
+            TRACK,
+            track.tape.as_ref(),
+            &track.track_number.pack(),
+            track.key.as_ref(),
+            &track.kind.to_le_bytes(),
+            &track.visibility.to_le_bytes(),
+            &track.size.pack(),
+            track.value_hash.as_ref(),
+        ],
+        id(),
+    )
+}
+
+pub trait TrackAddress {
+    fn address(&self) -> Address;
+}
+
+impl TrackAddress for CompressedTrack {
+    #[inline(always)]
+    fn address(&self) -> Address {
+        track_pda(self).0
+    }
 }
 
 #[inline(always)]
@@ -300,6 +324,7 @@ pub fn eviction_vote_pda(voting: EpochNumber, target: EpochNumber, node: Address
 #[cfg(test)]
 mod tests {
     use solana_program::pubkey::Pubkey;
+    use tape_core::types::TrackNumber;
 
     use super::*;
 
@@ -370,5 +395,50 @@ mod tests {
         assert_eq!(committee_check, Address::from(committee_recomputed));
         let (_, expected_bump) = committee_pda(epoch);
         assert_eq!(expected_bump, committee_bump);
+    }
+
+    fn track() -> CompressedTrack {
+        CompressedTrack {
+            tape: Address::new([1u8; 32]),
+            track_number: TrackNumber(3),
+            key: Hash([2u8; 32]),
+            kind: 1,
+            state: 0,
+            visibility: 0,
+            size: StorageUnits(1024),
+            group: GroupIndex(4),
+            value_hash: Hash([5u8; 32]),
+        }
+    }
+
+    #[test]
+    fn track_pda_ignores_state_and_group() {
+        let track = track();
+
+        let certified = CompressedTrack { state: 1, ..track };
+        let moved = CompressedTrack { group: GroupIndex(9), ..track };
+
+        assert_eq!(track_pda(&track), track_pda(&certified));
+        assert_eq!(track_pda(&track), track_pda(&moved));
+        assert_eq!(track.address(), track_pda(&track).0);
+    }
+
+    #[test]
+    fn track_pda_covers_fixed_fields() {
+        let track = track();
+
+        let changed = [
+            CompressedTrack { tape: Address::new([7u8; 32]), ..track },
+            CompressedTrack { track_number: TrackNumber(4), ..track },
+            CompressedTrack { key: Hash([7u8; 32]), ..track },
+            CompressedTrack { kind: 0, ..track },
+            CompressedTrack { visibility: 1, ..track },
+            CompressedTrack { size: StorageUnits(1025), ..track },
+            CompressedTrack { value_hash: Hash([7u8; 32]), ..track },
+        ];
+
+        for other in changed {
+            assert_ne!(track.address(), other.address());
+        }
     }
 }

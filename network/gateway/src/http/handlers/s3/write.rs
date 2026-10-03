@@ -10,7 +10,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_core::share::ShareToken;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{ContentType, StorageUnits};
@@ -23,7 +23,7 @@ use tape_protocol::Api;
 use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::helpers::load_ed25519_keypair;
 use tape_sdk::keys::operator::TapeDelegate;
-use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
+use tape_sdk::stream::manifest::max_track_size;
 use tape_sdk::bootstrap::Reputation;
 use tape_sdk::object::{ObjectBatchItem, ObjectBatchReceipt};
 use tape_sdk::track::write::UploadPlan;
@@ -123,7 +123,7 @@ impl S3WriteContext {
     /// `existing` is the object's current track address, if the caller resolved
     /// it (an S3 overwrite). A single-track write then resumes a matching
     /// incomplete track, skips a matching complete one, or overwrites and
-    /// reclaims a differing one, instead of always appending a duplicate.
+    /// deletes a differing one, instead of always appending a duplicate.
     /// `plan` is the PUT's encode of these bytes, when it is still held.
     pub async fn write_object<Db, Cluster, Blockchain>(
         &self,
@@ -143,25 +143,24 @@ impl S3WriteContext {
         let client = self.client(context)?;
         let operator = self.operator(tape)?;
 
-        if data.len() <= MAX_TRACK_SIZE {
+        if data.len() <= max_track_size(context.params().profile) {
             // The canonical ETag, the same one the object index will record, so
             // a client is never told one value now and served another once the
             // index catches up.
             let written = client
                 .write_or_resume_track_as(&operator, name, content_type, data, existing, plan)
                 .await?;
-            let track = track_pda(written.track.tape, written.track.track_number).0;
-            Ok((written.etag, track))
+            Ok((written.etag, written.track.address()))
         } else {
             // A stream is written fresh (its manifest embeds per-chunk track
-            // numbers, so it cannot resume in place), then the prior object this
-            // overwrite orphaned is reclaimed whole via its manifest.
+            // numbers, so it cannot resume in place), then the old object this
+            // overwrite orphaned is deleted whole via its manifest.
             let receipt = client
                 .write_named_bytes_as(&operator, name, content_type, data)
                 .await?;
-            if let Some(prior) = existing {
-                if let Err(error) = client.reclaim_object_as(&operator, prior).await {
-                    tracing::warn!(%error, %tape, %prior, "overwrite reclaim failed; prior object left for later sweep");
+            if let Some(old_track) = existing {
+                if let Err(error) = client.delete_object_as(&operator, old_track).await {
+                    tracing::warn!(%error, %tape, %old_track, "overwrite delete failed; old object left for later sweep");
                 }
             }
             Ok((receipt.etag, receipt.manifest))

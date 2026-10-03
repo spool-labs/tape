@@ -54,7 +54,7 @@ pub fn process_resize_peer_set(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pro
         return Err(TapeError::BadEpochState.into());
     }
 
-    if next_epoch.preferences.committee_size < MIN_COMMITTEE_SIZE as u64 {
+    if next_epoch.preferences.committee_size < u64::from(system.code()?.n()) {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -113,7 +113,7 @@ mod tests {
         let system = System {
             committee_size,
             current_epoch: curr,
-            ..System::zeroed()
+            ..permissionless_system()
         };
         let curr_epoch = Epoch {
             id: curr,

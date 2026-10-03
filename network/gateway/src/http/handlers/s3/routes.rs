@@ -364,7 +364,7 @@ fn indexed_entry(name: &[u8], entry: &ObjectListEntry) -> ObjectEntry {
 /// Render one queued row from what the write recorded. A queued delete has none.
 fn queued_entry(name: &[u8], write: &PendingWrite) -> Option<ObjectEntry> {
     match write.op {
-        PendingOp::Put { etag, size, block_time, content_type: _, prior: _ } => Some(ObjectEntry {
+        PendingOp::Put { etag, size, block_time, content_type: _, old_track: _ } => Some(ObjectEntry {
             key: String::from_utf8_lossy(name).into_owned(),
             last_modified: Some(block_time),
             etag: etag.to_string(),
@@ -1245,7 +1245,8 @@ where
     let size = data.len() as u64;
     // The name trailer shares the inline budget with the payload, so the
     // ETag has to follow the same inline-or-coded decision the write makes.
-    let computed = match content_etag_named(key.as_bytes(), data.clone()).await {
+    let profile = state.context.params().profile;
+    let computed = match content_etag_named(profile, key.as_bytes(), data.clone()).await {
         Ok(computed) => computed,
         Err(error) => {
             permit.refund(state);
@@ -2188,7 +2189,7 @@ mod tests {
                     etag: Hash([9u8; 32]),
                     size: size as u64,
                     block_time: 123,
-                    prior: None,
+                    old_track: None,
                 },
                 state: PendingState::Queued,
             },
@@ -2220,6 +2221,7 @@ mod tests {
                             slot: Default::default(),
                             data_tape: Address::default(),
                             track_number: Default::default(),
+                            track: Address::default(),
                             kind: 0,
                             content_type: ContentType::Unknown,
                         },

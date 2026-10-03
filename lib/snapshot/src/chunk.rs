@@ -1,6 +1,7 @@
 //! Snapshot chunk format and outer erasure sizing.
 //!
-//! The inner Clay coder operates on a [`SnapshotChunkPayload`]; the outer RS
+//! The inner coder, the network's own code, operates on a
+//! [`SnapshotChunkPayload`]; the outer RS
 //! coder operates on length-prefixed segments. Both the chunk key derivation
 //! and the segment/outer sizing live here so the format is owned in one place.
 
@@ -26,7 +27,7 @@ pub fn snapshot_chunk_key(epoch: EpochNumber, group: GroupIndex, chunk: ChunkNum
     ])
 }
 
-/// Wire payload fed into the inner Clay encoder for a single snapshot chunk.
+/// Wire payload fed into the inner encoder for a single snapshot chunk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotChunkPayload {
     pub chunk: ChunkNumber,

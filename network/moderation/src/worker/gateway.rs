@@ -74,11 +74,16 @@ impl GatewayClient {
         Ok(CompressedTrack::unpack(record.track))
     }
 
-    /// Up to `limit` of a tape's tracks in track order
-    pub async fn list_tracks(&self, tape: Address, limit: u32) -> Result<Vec<CompressedTrack>, WorkerError> {
+    /// Up to `limit` of a tape's tracks in track order, starting after track `after`
+    pub async fn list_tracks(
+        &self,
+        tape: Address,
+        after: Option<TrackNumber>,
+        limit: u32,
+    ) -> Result<Vec<CompressedTrack>, WorkerError> {
         let path = list_tracks_by_tape_url(&tape.to_string());
         let mut tracks = Vec::new();
-        let mut cursor = None;
+        let mut cursor = after;
         while tracks.len() < limit as usize {
             let remaining = limit.saturating_sub(u32::try_from(tracks.len()).unwrap_or(u32::MAX));
             let page = self.list_page(&path, cursor, remaining).await?;

@@ -4,6 +4,8 @@ use tape_rpc::Rpc;
 use tape_rpc_client::parse_tape_error;
 use tape_api::errors::TapeError;
 use tape_api::instruction::build_delete_track_ix;
+use tape_api::program::tapedrive::TrackAddress;
+use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_retry::{retry_if, RetryConfig, Retryable};
@@ -33,22 +35,49 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         retry_if(
             delete_retry_config(),
             None,
+            || self.delete_once(operator, track),
+            should_retry_delete,
+        )
+        .await
+    }
+
+    /// Delete the track at one number on the operator's tape
+    ///
+    /// The lookup is part of each attempt, so it retries with the proof and
+    /// the submit while peers catch up with the chain.
+    pub(crate) async fn delete_by_number_as(
+        &self,
+        operator: &impl TapeOperator,
+        track_number: TrackNumber,
+    ) -> Result<(), TapedriveError> {
+        let tape = operator.address();
+        retry_if(
+            delete_retry_config(),
+            None,
             || async {
-                let payer = self.payer()?;
-                let tape_signer = operator.keypair();
-                let proof = query::query_track_proof(self, &track).await?;
-                let ix =
-                    build_delete_track_ix(payer.pubkey().into(), operator.pubkey().into(), proof);
-
-                self.rpc()
-                    .send_instructions_with_signers(payer, vec![ix], &[tape_signer])
-                    .await?;
-
-                Ok(())
+                let track = query::query_track_by_number(self, &tape, track_number).await?;
+                self.delete_once(operator, track.address()).await
             },
             should_retry_delete,
         )
         .await
+    }
+
+    async fn delete_once(
+        &self,
+        operator: &impl TapeOperator,
+        track: Address,
+    ) -> Result<(), TapedriveError> {
+        let payer = self.payer()?;
+        let tape_signer = operator.keypair();
+        let proof = query::query_track_proof(self, &track).await?;
+        let ix = build_delete_track_ix(payer.pubkey().into(), operator.pubkey().into(), proof);
+
+        self.rpc()
+            .send_instructions_with_signers(payer, vec![ix], &[tape_signer])
+            .await?;
+
+        Ok(())
     }
 }
 

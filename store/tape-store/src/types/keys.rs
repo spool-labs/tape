@@ -366,6 +366,16 @@ impl TrackLookupKey {
             key: Hash([u8::MAX; 32]),
         }
     }
+
+    /// Create a start key that sorts before every entry for the given track
+    /// number under the tape.
+    pub fn at_track_number(tape: Address, track_number: TrackNumber) -> Self {
+        Self {
+            tape,
+            track_number,
+            key: Hash([0u8; 32]),
+        }
+    }
 }
 
 impl SchemaWrite for TrackLookupKey {

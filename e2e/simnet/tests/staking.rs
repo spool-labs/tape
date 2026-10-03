@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use tape_peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_api::program::tapedrive::{history_pda, track_pda};
+use tape_api::program::tapedrive::{history_pda, TrackAddress};
 use tape_core::staking::RateSpan;
 use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber};
@@ -199,7 +199,7 @@ async fn find_span(
         let (tracks, next_cursor) = sdk.list_tracks_by_tape(&history, cursor, 128).await?;
 
         for track in tracks {
-            let track_address = track_pda(history, track.track_number).0;
+            let track_address = track.address();
             let data = match sdk.read(&track_address).await {
                 Ok(data) => data,
                 Err(TapedriveError::NotFound) => continue,

@@ -10,6 +10,7 @@ use solana_transaction::versioned::VersionedTransaction;
 use tape_api::compute::{
     DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT, MAX_LOADED_ACCOUNTS_DATA_SIZE,
 };
+use tape_api::prelude::TAPENET_PROFILE;
 
 #[tokio::test]
 async fn fetched_block_is_parseable_by_tape_blocks() {
@@ -43,6 +44,6 @@ async fn fetched_block_is_parseable_by_tape_blocks() {
     rpc.warp_to_slot(slot + 1).expect("warp past tx slot");
     let block = rpc.get_block(slot + 1).await.expect("block exists");
 
-    let parsed = tape_blocks::parse(&block).expect("block should parse");
+    let parsed = tape_blocks::parse(&block, TAPENET_PROFILE).expect("block should parse");
     assert_eq!(parsed.tx_count, 1, "block parser should see one transaction");
 }
