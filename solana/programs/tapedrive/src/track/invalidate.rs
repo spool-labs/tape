@@ -103,6 +103,7 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     TrackInvalidated {
         track: track_address,
+        track_number: track.track_number,
         epoch: curr,
     }.log();
 
@@ -118,9 +119,9 @@ mod tests {
     use tape_core::track::types::{
         CompressedTrack,
         CompressedTrackProof,
+        TrackFlags,
         TrackKind,
         TrackState,
-        TrackVisibility,
     };
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
     use tape_crypto::Hash;
@@ -191,7 +192,7 @@ mod tests {
             track_number,
             kind: kind as u64,
             state: state as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size,
             group: group_id,
             value_hash: Hash::new_unique(),
@@ -353,7 +354,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Invalidated as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
             group: group_id,
             value_hash: Hash::new_unique(),
@@ -446,7 +447,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
             group: group_id,
             value_hash: Hash::new_unique(),

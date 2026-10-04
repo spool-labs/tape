@@ -14,10 +14,10 @@ use tape_core::encoding::TAPENET_PROFILE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, NodePreferences, Spool};
 use tape_core::thresholds::TrustModel;
-use tape_core::track::data::{track_key, BlobData, BlobDataSlice};
+use tape_core::track::data::BlobData;
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{
-    CompressedTrack, CompressedTrackProof, TrackKind, TrackState, TrackVisibility,
+    CompressedTrack, CompressedTrackProof, TrackFlags, TrackKind, TrackState,
 };
 use tape_core::types::coin::TAPE;
 use tape_core::types::network::NetworkAddress;
@@ -118,7 +118,7 @@ fn setup() -> Fixture {
         requests.lock().unwrap().push(request_kind(&req));
         match req {
             PeerReq::GetTrack(req) => match tracks.lock().unwrap().get(&req.track).copied() {
-                Some(track) => PeerRes::GetTrack(Ok(GetTrackRes { track })),
+                Some(track) => PeerRes::GetTrack(Ok(GetTrackRes { tracks: vec![track] })),
                 None => PeerRes::GetTrack(Err(ApiError::NotFound)),
             },
             PeerReq::GetTrackByNumber(req) => {
@@ -247,10 +247,15 @@ fn setup() -> Fixture {
                 Some(data) => PeerRes::GetTrackData(Ok(GetTrackDataRes { data })),
                 None => PeerRes::GetTrackData(Err(ApiError::NotFound)),
             },
-            PeerReq::GetTrackProof(req) => match proofs.lock().unwrap().get(&req.track).copied() {
-                Some(proof) => PeerRes::GetTrackProof(Ok(GetTrackProofRes { proof })),
-                None => PeerRes::GetTrackProof(Err(ApiError::NotFound)),
-            },
+            PeerReq::GetTrackProof(req) => {
+                let found = proofs.lock().unwrap().values().copied().find(|proof| {
+                    proof.state.tape == req.tape && proof.state.track_number == req.track_number
+                });
+                match found {
+                    Some(proof) => PeerRes::GetTrackProof(Ok(GetTrackProofRes { proof })),
+                    None => PeerRes::GetTrackProof(Err(ApiError::NotFound)),
+                }
+            }
             PeerReq::SyncSlices(_) => unexpected_peer_response(&req),
             PeerReq::Repair(_) => unexpected_peer_response(&req),
             PeerReq::Certify(_) => unexpected_peer_response(&req),
@@ -388,7 +393,7 @@ fn make_raw_track(
         track_number: TrackNumber(track_number),
         kind: TrackKind::Inline as u64,
         state: TrackState::Certified as u64,
-        visibility: TrackVisibility::Public as u64,
+        flags: TrackFlags::NONE,
         size: StorageUnits::from_bytes(bytes.len() as u64),
         group: GroupIndex(0),
         value_hash: hash::hash(&bytes),
@@ -483,67 +488,6 @@ async fn track_queries() {
 }
 
 #[tokio::test]
-async fn matching_retry() {
-    let fixture = setup();
-    let tape_key = TapeKey::generate();
-    let name = b"demo/chat/000000-user.json";
-    let raw = br#"{"role":"user","markdown":"hello"}"#;
-    let key = track_key(name, &BlobDataSlice::Inline(raw));
-    let (track, data) = make_raw_track(tape_key.address(), key, 0, raw);
-    let address = fixture.insert_track(track, data);
-
-    let resumed = fixture
-        .client
-        .write_or_resume_track_at_as(
-            &tape_key,
-            TrackNumber(0),
-            name,
-            ContentType::ApplicationJson,
-            raw,
-        )
-        .await
-        .expect("matching outbox retry resumes");
-
-    assert_eq!(resumed.track.track_number, TrackNumber(0));
-    assert_eq!(resumed.track.address(), address);
-    assert_eq!(fixture.tracks.lock().unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn write_conflict() {
-    let fixture = setup();
-    let tape_key = TapeKey::generate();
-    let name = b"demo/chat/000000-user.json";
-    let original = br#"{"role":"user","markdown":"hello"}"#;
-    let key = track_key(name, &BlobDataSlice::Inline(original));
-    let (track, data) = make_raw_track(tape_key.address(), key, 0, original);
-    fixture.insert_track(track, data);
-
-    let result = fixture
-        .client
-        .write_or_resume_track_at_as(
-            &tape_key,
-            TrackNumber(0),
-            name,
-            ContentType::ApplicationJson,
-            br#"{"role":"user","markdown":"different"}"#,
-        )
-        .await;
-    let error = match result {
-        Ok(_) => panic!("different content at a persisted slot must conflict"),
-        Err(error) => error,
-    };
-
-    assert!(matches!(
-        error,
-        tape_sdk::error::TapedriveError::WriteConflict {
-            track_number: TrackNumber(0)
-        }
-    ));
-    assert_eq!(fixture.tracks.lock().unwrap().len(), 1);
-}
-
-#[tokio::test]
 async fn object_list() {
     let fixture = setup();
     let bucket = Address::new_unique();
@@ -627,6 +571,7 @@ async fn stream_round_trips() {
         fixture.insert_track(track, data);
         entries.push(ChunkEntry {
             track_number: TrackNumber(number as u64),
+            track: track.address(),
             offset: StorageUnits::from_bytes(offset),
             size: StorageUnits::from_bytes(segment.len() as u64),
         });

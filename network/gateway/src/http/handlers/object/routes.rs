@@ -26,7 +26,9 @@ use crate::http::error::RouteError;
 use crate::http::handlers::resolve::{Readable, resolve_readable_with_pending};
 use crate::http::handlers::store_error;
 use crate::http::handlers::share::authorize_signed_read;
-use crate::http::handlers::track::{ensure_readable, parse_address, track_with_pending};
+use crate::http::handlers::track::{
+    ensure_readable, parse_address, requested_track, track_with_pending,
+};
 use crate::http::state::AppState;
 use crate::meter::{GatewayMeterDecision, MeterCaller, rate_limited_response};
 
@@ -55,7 +57,7 @@ pub async fn get_object<
 
     let token = authorize_signed_read(&state, &headers, &method, uri.path(), &track)?;
 
-    let metadata = object_response_metadata(&state, track_addr)?;
+    let metadata = object_response_metadata(&state, track_addr, track.track_number)?;
     with_share_token(
         token,
         read_object_response(
@@ -117,14 +119,15 @@ pub async fn get_bucket_object<
     };
 
     let track_addr = resolved.track_address;
-    let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
+    let track = requested_track(&state, track_addr, resolved.track_number)?
+        .ok_or(RouteError::NotFound)?;
     ensure_readable(&state, track_addr, track.tape)?;
     if !track.is_certified() {
         return Err(RouteError::NotFound);
     }
 
     let token = authorize_signed_read(&state, &headers, &method, uri.path(), &track)?;
-    let metadata = object_response_metadata(&state, track_addr)?;
+    let metadata = object_response_metadata(&state, track_addr, track.track_number)?;
     with_share_token(
         token,
         read_object_response(
@@ -271,7 +274,7 @@ pub async fn get_track_bytes<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
-    let metadata = object_response_metadata(&state, track_addr)?;
+    let metadata = object_response_metadata(&state, track_addr, track.track_number)?;
     if let Some(response) = with_share_token(
         token,
         ranged_track_bytes(&state, track_addr, &track, &metadata, range_header(&headers)),

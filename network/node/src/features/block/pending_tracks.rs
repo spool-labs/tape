@@ -85,12 +85,13 @@ pub struct PendingTracks {
 struct Inner {
 
     /// Per-track event log, in append order (which is slot-monotonic because
-    /// the ingestor only appends after chain validation).
-    events_by_track: HashMap<Address, Vec<Event>>,
+    /// the ingestor only appends after chain validation). Keyed by address and
+    /// track number, so tracks that share an address sit together.
+    events_by_track: BTreeMap<(Address, TrackNumber), Vec<Event>>,
 
     /// Reverse index used to bulk-drop events when a slot is rolled back or
     /// promoted.
-    addresses_by_slot: BTreeMap<SlotNumber, Vec<Address>>,
+    addresses_by_slot: BTreeMap<SlotNumber, Vec<(Address, TrackNumber)>>,
 
     /// Name lookup index over pending registrations, ordered by tape track
     /// number so replacement reads do not scan every pending track.
@@ -133,6 +134,7 @@ impl PendingTracks {
     ) {
         self.append(
             track,
+            state.track_number,
             Event {
                 slot,
                 kind: EventKind::Register {
@@ -181,9 +183,10 @@ impl PendingTracks {
         inner.tapes_by_slot.entry(slot).or_default().push(tape);
     }
 
-    pub fn apply_certify(&self, slot: SlotNumber, track: Address) {
+    pub fn apply_certify(&self, slot: SlotNumber, track: Address, track_number: TrackNumber) {
         self.append(
             track,
+            track_number,
             Event {
                 slot,
                 kind: EventKind::Certify,
@@ -203,7 +206,7 @@ impl PendingTracks {
                     track,
                     key,
                     object,
-                    visibility,
+                    flags,
                     value,
                     event,
                     ..
@@ -217,7 +220,7 @@ impl PendingTracks {
                         key: *key,
                         kind: meta.kind as u64,
                         state: meta.state as u64,
-                        visibility: *visibility as u64,
+                        flags: *flags,
                         size: meta.size,
                         group: event.group,
                         value_hash: meta.value_hash,
@@ -231,8 +234,8 @@ impl PendingTracks {
                         block.block_time,
                     );
                 }
-                ParsedInstruction::CertifyTrack { track, .. } => {
-                    self.apply_certify(block.slot, *track);
+                ParsedInstruction::CertifyTrack { track, event } => {
+                    self.apply_certify(block.slot, *track, event.track_number);
                 }
                 ParsedInstruction::ReserveTape { tape, event, .. } => {
                     self.apply_reserve(
@@ -305,8 +308,8 @@ impl PendingTracks {
             return;
         };
 
-        for addr in addresses {
-            let drained_empty = match inner.events_by_track.get_mut(&addr) {
+        for key in addresses {
+            let drained_empty = match inner.events_by_track.get_mut(&key) {
                 Some(events) => {
                     events.retain(|event| event.slot != slot);
                     events.is_empty()
@@ -314,7 +317,7 @@ impl PendingTracks {
                 None => false,
             };
             if drained_empty {
-                inner.events_by_track.remove(&addr);
+                inner.events_by_track.remove(&key);
             }
         }
     }
@@ -336,29 +339,58 @@ impl PendingTracks {
             .map(|event| event.info.clone())
     }
 
-    /// Fold pending events for `track` on top of `in_store` (the value
-    /// observed in the disk-backed store). Returns the resulting state, or
-    /// `None` if the track is unknown to both pending state and the store.
+    /// Fold pending events for the track at `track` and `track_number` on top
+    /// of `in_store` (the value observed in the disk-backed store). Returns the
+    /// resulting state, or `None` if the track is unknown to both pending state
+    /// and the store.
     pub fn apply_to_track(
         &self,
         track: Address,
+        track_number: TrackNumber,
         in_store: Option<CompressedTrack>,
     ) -> Option<CompressedTrack> {
         let inner = self.inner.read().expect("pending-tracks lock poisoned");
-        let Some(events) = inner.events_by_track.get(&track) else {
+        let Some(events) = inner.events_by_track.get(&(track, track_number)) else {
             return in_store;
         };
 
         Self::apply_events(events, in_store)
     }
 
+    /// Fold pending events over every track stored under one address, and add
+    /// the tracks under that address only pending state holds. Returns them in
+    /// track-number order.
+    pub fn apply_to_tracks(
+        &self,
+        track: Address,
+        in_store: Vec<CompressedTrack>,
+    ) -> Vec<CompressedTrack> {
+        let inner = self.inner.read().expect("pending-tracks lock poisoned");
+        let mut stored: BTreeMap<TrackNumber, CompressedTrack> = in_store
+            .into_iter()
+            .map(|info| (info.track_number, info))
+            .collect();
+
+        let pending = inner
+            .events_by_track
+            .range((track, TrackNumber(0))..=(track, TrackNumber(u64::MAX)));
+        for ((_, track_number), events) in pending {
+            match Self::apply_events(events, stored.get(track_number).copied()) {
+                Some(state) => stored.insert(*track_number, state),
+                None => stored.remove(track_number),
+            };
+        }
+
+        stored.into_values().collect()
+    }
+
     /// Return the pending-state view of the track's payload, if a `Register`
-    /// event for `track` is currently held. Disk state is not consulted —
+    /// event for the track is currently held. Disk state is not consulted —
     /// callers fall back to `store.get_track_data` themselves when this
     /// returns `None`.
-    pub fn track_data(&self, track: Address) -> Option<BlobData> {
+    pub fn track_data(&self, track: Address, track_number: TrackNumber) -> Option<BlobData> {
         let inner = self.inner.read().expect("pending-tracks lock poisoned");
-        let events = inner.events_by_track.get(&track)?;
+        let events = inner.events_by_track.get(&(track, track_number))?;
         for event in events.iter().rev() {
             if let EventKind::Register { data, .. } = &event.kind {
                 return Some(data.as_ref().clone());
@@ -375,7 +407,7 @@ impl PendingTracks {
         let mut tracks = inner
             .events_by_track
             .iter()
-            .filter_map(|(addr, events)| {
+            .filter_map(|((addr, _), events)| {
                 let track = Self::apply_events(events, None)?;
                 (track.tape == tape).then_some((*addr, track))
             })
@@ -407,8 +439,10 @@ impl PendingTracks {
         let inner = self.inner.read().expect("pending-tracks lock poisoned");
         let versions = inner.objects_by_tape.get(&tape)?.get(name)?;
 
-        for (_, track_address) in versions.iter().rev() {
-            let events = inner.events_by_track.get(track_address)?;
+        for (track_number, track_address) in versions.iter().rev() {
+            let events = inner
+                .events_by_track
+                .get(&(*track_address, TrackNumber(*track_number)))?;
             let Some(state) = Self::apply_events(events, None) else {
                 continue;
             };
@@ -453,9 +487,10 @@ impl PendingTracks {
             .is_empty()
     }
 
-    fn append(&self, track: Address, event: Event) {
+    fn append(&self, track: Address, track_number: TrackNumber, event: Event) {
         let mut inner = self.inner.write().expect("pending-tracks lock poisoned");
         let slot = event.slot;
+        let key = (track, track_number);
         if let EventKind::Register {
             state,
             object: Some(object),
@@ -475,10 +510,10 @@ impl PendingTracks {
                 state.track_number.0,
             ));
         }
-        inner.events_by_track.entry(track).or_default().push(event);
+        inner.events_by_track.entry(key).or_default().push(event);
         let slotted = inner.addresses_by_slot.entry(slot).or_default();
-        if !slotted.contains(&track) {
-            slotted.push(track);
+        if !slotted.contains(&key) {
+            slotted.push(key);
         }
     }
 
@@ -508,20 +543,22 @@ mod tests {
     use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
-    use tape_core::track::types::{TrackKind, TrackVisibility};
+    use tape_core::track::types::{TrackFlags, TrackKind};
     use tape_core::types::{StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
 
     use super::*;
 
+    const NUMBER: TrackNumber = TrackNumber(0);
+
     fn registered_blob(tape: Address) -> CompressedTrack {
         CompressedTrack {
             tape,
-            track_number: TrackNumber(0),
+            track_number: NUMBER,
             key: Hash::new_unique(),
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(1024),
             group: GroupIndex::from(0),
             value_hash: Hash::new_unique(),
@@ -552,7 +589,7 @@ mod tests {
             BlobData::Coded(sample_blob()),
         );
 
-        let pending_view = pending.apply_to_track(track, None);
+        let pending_view = pending.apply_to_track(track, NUMBER, None);
         assert_eq!(pending_view, Some(state));
     }
 
@@ -564,10 +601,10 @@ mod tests {
         let state = registered_blob(tape);
 
         pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(sample_blob()));
-        pending.apply_certify(SlotNumber(11), track);
+        pending.apply_certify(SlotNumber(11), track, NUMBER);
 
         let pending_view = pending
-            .apply_to_track(track, None)
+            .apply_to_track(track, NUMBER, None)
             .expect("track present");
         assert_eq!(pending_view.state, TrackState::Certified as u64);
     }
@@ -581,10 +618,10 @@ mod tests {
         in_store.state = TrackState::Registered as u64;
 
         // Register has already promoted, only the certify event is pending.
-        pending.apply_certify(SlotNumber(20), track);
+        pending.apply_certify(SlotNumber(20), track, NUMBER);
 
         let pending_view = pending
-            .apply_to_track(track, Some(in_store))
+            .apply_to_track(track, NUMBER, Some(in_store))
             .expect("track present");
         assert_eq!(pending_view.state, TrackState::Certified as u64);
         assert_eq!(pending_view.tape, in_store.tape);
@@ -595,9 +632,9 @@ mod tests {
         let pending = PendingTracks::new();
         let track = Address::new_unique();
 
-        pending.apply_certify(SlotNumber(20), track);
+        pending.apply_certify(SlotNumber(20), track, NUMBER);
 
-        assert!(pending.apply_to_track(track, None).is_none());
+        assert!(pending.apply_to_track(track, NUMBER, None).is_none());
     }
 
     #[test]
@@ -610,7 +647,7 @@ mod tests {
         pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(sample_blob()));
         pending.drop_slot(SlotNumber(10));
 
-        assert!(pending.apply_to_track(track, None).is_none());
+        assert!(pending.apply_to_track(track, NUMBER, None).is_none());
         assert!(pending.is_empty());
     }
 
@@ -622,13 +659,13 @@ mod tests {
         let state = registered_blob(tape);
 
         pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(sample_blob()));
-        pending.apply_certify(SlotNumber(11), track);
+        pending.apply_certify(SlotNumber(11), track, NUMBER);
         pending.drop_slot(SlotNumber(10));
 
         // Register dropped, but certify remains. With in_store=Some(disk),
         // the certify still upgrades the in-store state to Certified.
         let pending_view = pending
-            .apply_to_track(track, Some(state))
+            .apply_to_track(track, NUMBER, Some(state))
             .expect("certify still applied");
         assert_eq!(pending_view.state, TrackState::Certified as u64);
     }
@@ -643,7 +680,7 @@ mod tests {
         pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(sample_blob()));
         pending.drop_slot(SlotNumber(99));
 
-        assert_eq!(pending.apply_to_track(track, None), Some(state));
+        assert_eq!(pending.apply_to_track(track, NUMBER, None), Some(state));
     }
 
     #[test]
@@ -657,7 +694,7 @@ mod tests {
         pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(blob));
 
         assert_eq!(
-            pending.track_data(track),
+            pending.track_data(track, NUMBER),
             Some(BlobData::Coded(blob))
         );
     }
@@ -680,7 +717,7 @@ mod tests {
         );
 
         assert_eq!(
-            pending.track_data(track),
+            pending.track_data(track, NUMBER),
             Some(BlobData::Inline(bytes))
         );
     }
@@ -700,7 +737,7 @@ mod tests {
         );
         pending.drop_slot(SlotNumber(10));
 
-        assert!(pending.track_data(track).is_none());
+        assert!(pending.track_data(track, NUMBER).is_none());
     }
 
     #[test]
@@ -721,7 +758,7 @@ mod tests {
             other,
             BlobData::Coded(sample_blob()),
         );
-        pending.apply_certify(SlotNumber(12), track);
+        pending.apply_certify(SlotNumber(12), track, NUMBER);
 
         let tracks = pending.registered_tracks_by_tape(tape);
         assert_eq!(tracks.len(), 1);
@@ -755,7 +792,7 @@ mod tests {
         );
         assert!(pending.named_object(tape, b"index.html").is_none());
 
-        pending.apply_certify(SlotNumber(11), track);
+        pending.apply_certify(SlotNumber(11), track, NUMBER);
         let object = pending
             .named_object(tape, b"index.html")
             .expect("certified pending object");
@@ -787,7 +824,7 @@ mod tests {
             Some(named(b"app.js", 10, ContentType::TextJavascript)),
             None,
         );
-        pending.apply_certify(SlotNumber(11), first_track);
+        pending.apply_certify(SlotNumber(11), first_track, NUMBER);
         pending.apply_register_with_object(
             SlotNumber(12),
             second_track,
@@ -796,7 +833,7 @@ mod tests {
             Some(named(b"app.js", 20, ContentType::TextJavascript)),
             None,
         );
-        pending.apply_certify(SlotNumber(13), second_track);
+        pending.apply_certify(SlotNumber(13), second_track, TrackNumber(1));
 
         let newest = pending
             .named_object(tape, b"app.js")
@@ -864,5 +901,27 @@ mod tests {
 
         pending.drop_slot(SlotNumber(10));
         assert_eq!(pending.track_address_by_number(tape, TrackNumber(0)), None);
+    }
+
+    // tracks that share an address fold separately, over the store's tracks
+    #[test]
+    fn shared_address() {
+        let pending = PendingTracks::new();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+        let stored = registered_blob(tape);
+        let mut second = stored;
+        second.track_number = TrackNumber(4);
+
+        pending.apply_certify(SlotNumber(10), track, NUMBER);
+        pending.apply_register(SlotNumber(10), track, second, BlobData::Coded(sample_blob()));
+
+        let mut certified = stored;
+        certified.state = TrackState::Certified as u64;
+
+        assert_eq!(pending.apply_to_tracks(track, vec![stored]), vec![certified, second]);
+        assert_eq!(pending.apply_to_tracks(track, Vec::new()), vec![second]);
+        assert_eq!(pending.apply_to_track(track, TrackNumber(4), None), Some(second));
+        assert!(pending.apply_to_tracks(Address::new_unique(), Vec::new()).is_empty());
     }
 }

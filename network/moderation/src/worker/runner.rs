@@ -1,11 +1,9 @@
 //! The check worker: runs due jobs through the gateway and the moderation API
 
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tape_api::program::tapedrive::TrackAddress;
-use tape_core::track::types::CompressedTrack;
-use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 use tape_sdk::stream::manifest::ChunkManifest;
 use tokio::time::{interval, MissedTickBehavior};
@@ -281,11 +279,7 @@ impl Worker {
         let mut chunks = Vec::new();
         if record.size.to_bytes() <= MANIFEST_READ_BYTES {
             if let GatewayRead::Content(read) = self.gateway.read_track(track, MANIFEST_READ_BYTES).await? {
-                let numbers = manifest_chunk_numbers(&read);
-                if let Some((after, length)) = listing_span(&numbers) {
-                    let listed = self.gateway.list_tracks(record.tape, after, length).await?;
-                    chunks = chunk_addresses(&numbers, &listed);
-                }
+                chunks = manifest_chunks(&read);
             }
         }
         Ok(RemovalScope {
@@ -357,31 +351,19 @@ fn to_request(prepared: PreparedInput) -> Result<(SentInput, ModerationInput), S
     }
 }
 
-/// Track numbers of a stream manifest's chunks; empty when the bytes are not a manifest
-fn manifest_chunk_numbers(read: &ContentRead) -> BTreeSet<TrackNumber> {
+/// Addresses of a stream manifest's chunks, each once; empty when the bytes are not a manifest
+fn manifest_chunks(read: &ContentRead) -> Vec<Address> {
     if !read.is_complete() {
-        return BTreeSet::new();
+        return Vec::new();
     }
     let Ok(manifest) = ChunkManifest::from_bytes(&read.bytes) else {
-        return BTreeSet::new();
+        return Vec::new();
     };
-    manifest.chunks.iter().map(|entry| entry.track_number).collect()
-}
-
-/// The cursor and length of the shortest listing that covers these track numbers
-fn listing_span(numbers: &BTreeSet<TrackNumber>) -> Option<(Option<TrackNumber>, u32)> {
-    let (first, last) = (numbers.first()?, numbers.last()?);
-    let after = first.0.checked_sub(1).map(TrackNumber);
-    let length = last.0.saturating_sub(first.0).saturating_add(1);
-    Some((after, u32::try_from(length).unwrap_or(u32::MAX)))
-}
-
-/// Addresses of the listed tracks at the given numbers, in track order
-fn chunk_addresses(numbers: &BTreeSet<TrackNumber>, listed: &[CompressedTrack]) -> Vec<Address> {
+    let mut seen = HashSet::new();
     let mut chunks = Vec::new();
-    for track in listed {
-        if numbers.contains(&track.track_number) {
-            chunks.push(track.address());
+    for entry in &manifest.chunks {
+        if seen.insert(entry.track) {
+            chunks.push(entry.track);
         }
     }
     chunks
@@ -426,10 +408,11 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::{json, Value};
     use tape_core::prelude::{GroupIndex, StorageUnits, TrackNumber};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
+    use tape_crypto::hash::hash;
     use tape_crypto::Hash;
     use tape_protocol::api::{
-        ListTracksByTapeRequest, ListTracksByTapeResponse, TrackResponse, TAPE_TRACK_LIST_PATH,
+        ListTracksByTapeRequest, ListTracksByTapeResponse, TracksResponse, TAPE_TRACK_LIST_PATH,
         TRACK_PATH,
     };
     use tape_sdk::stream::manifest::{ChunkEntry, MANIFEST_VERSION};
@@ -635,10 +618,10 @@ mod tests {
         CompressedTrack {
             tape,
             track_number: TrackNumber(number),
-            key: Hash::default(),
+            key: hash(&number.to_le_bytes()),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits(size),
             group: GroupIndex(0),
             value_hash: Hash::default(),
@@ -718,7 +701,7 @@ mod tests {
         let track = gateway.records.lock().expect("lock").get(&id).copied();
         match track {
             Some(track) => {
-                let response = TrackResponse { track: track.pack() };
+                let response = TracksResponse { tracks: vec![track.pack()] };
                 wincode::serialize(&response).expect("encode record").into_response()
             }
             None => StatusCode::NOT_FOUND.into_response(),
@@ -848,24 +831,24 @@ mod tests {
         let harness = Harness::new(config(), TapeRuleConfig::default()).await;
         let tape = address(60);
         let manifest_track = address(2);
+        let chunks = vec![record(tape, 3, 10), record(tape, 4, 10)];
+        let entry = |chunk: &CompressedTrack, offset: u64| ChunkEntry {
+            track_number: chunk.track_number,
+            track: chunk.address(),
+            offset: StorageUnits(offset),
+            size: StorageUnits(10),
+        };
         let manifest = ChunkManifest {
             version: MANIFEST_VERSION,
             total_size: StorageUnits(20),
             chunk_count: TrackNumber(2),
             chunk_size: StorageUnits(10),
             key: Hash::default(),
-            chunks: vec![
-                ChunkEntry { track_number: TrackNumber(3), offset: StorageUnits(0), size: StorageUnits(10) },
-                ChunkEntry { track_number: TrackNumber(4), offset: StorageUnits(10), size: StorageUnits(10) },
-            ],
+            chunks: vec![entry(&chunks[0], 0), entry(&chunks[1], 10)],
         };
         let manifest_bytes = manifest.to_bytes().expect("manifest bytes");
-        let chunks = vec![record(tape, 3, 10), record(tape, 4, 10)];
-        // The tape also holds tracks on both sides of the stream's chunks.
-        let listed = vec![record(tape, 1, 10), chunks[0], chunks[1], record(tape, 6, 10)];
         harness.object(manifest_track, Some("text/plain"), b"violent text");
         harness.track_record(manifest_track, record(tape, 5, manifest_bytes.len() as u64), &manifest_bytes);
-        harness.gateway.listings.lock().expect("lock").insert(tape.to_string(), listed);
         harness.flag(&[Category::Violence]);
         harness.report(Target::track(manifest_track), Timestamp(100)).await;
 
@@ -1092,15 +1075,5 @@ mod tests {
         let last = decisions(&harness.database()).pop().expect("unlist decision");
         assert_eq!(last, ("unlist".to_string(), "tape".to_string(), tape.to_string()));
         harness.stop().await;
-    }
-
-    // a listing starts just before the lowest chunk and is as long as the chunks span
-    #[test]
-    fn span() {
-        let numbers = |numbers: &[u64]| numbers.iter().copied().map(TrackNumber).collect::<BTreeSet<_>>();
-
-        assert_eq!(listing_span(&numbers(&[])), None);
-        assert_eq!(listing_span(&numbers(&[0, 1])), Some((None, 2)));
-        assert_eq!(listing_span(&numbers(&[3, 4, 7])), Some((Some(TrackNumber(2)), 5)));
     }
 }

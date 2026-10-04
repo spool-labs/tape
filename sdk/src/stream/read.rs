@@ -166,6 +166,12 @@ async fn read_segment<Blockchain: Rpc, Cluster: Api>(
     track: CompressedTrack,
 ) -> Result<Vec<u8>, TapedriveError> {
     let address = track.address();
+    if address != entry.track {
+        return Err(stream_error(StreamError::Chunk(format!(
+            "segment {index} address mismatch: manifest lists {}, track {} is {address}",
+            entry.track, entry.track_number
+        ))));
+    }
     let data = client.read_known(&address, track, Operation::ReadStream).await?;
     if StorageUnits::from_bytes(data.len() as u64) != entry.size {
         return Err(stream_error(StreamError::Chunk(format!(

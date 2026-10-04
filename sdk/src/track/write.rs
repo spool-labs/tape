@@ -20,14 +20,15 @@ use solana_instruction::Instruction;
 use tape_blocks::{parse_event_data, TapedriveEvent};
 use tape_core::erasure::MAX_GROUP_SIZE;
 use tape_core::prelude::{
-    BlobEncoding, CompressedTrack, EpochNumber, ErasureCode, GroupIndex, StorageUnits,
-    StripeCount, TrackNumber, TrackState,
+    BlobEncoding, CompressedTrack, EpochNumber, ErasureCode, StorageUnits, StripeCount,
+    TrackNumber, TrackState,
 };
 use tape_core::track::data::{
     track_key, BlobData, BlobDataSlice, BlobInfo, TrackMeta, TrackObjectInfo,
 };
+use tape_core::spooler::GroupIndex;
 use tape_core::track::mirror::ArchiveMirror;
-use tape_core::track::types::{CompressedTrackProof, TrackVisibility};
+use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::ContentType;
 use tape_crypto::hash::hash;
 use tape_crypto::prelude::{Address, Hash};
@@ -148,7 +149,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             content_type,
             data,
             plan,
-            self.write_options.visibility,
+            self.write_options.flags,
         )
         .await
     }
@@ -178,64 +179,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             data,
             existing,
             plan,
-            OnConflict::Overwrite,
-            self.write_options.visibility,
+            self.write_options.flags,
         )
         .await
-    }
-
-    /// Write a named track at an expected append position, or resume the same
-    /// content there after an uncertain response.
-    ///
-    /// This is the reject-on-conflict counterpart to
-    /// [`Self::write_or_resume_track_as`]. It is intended for durable outboxes
-    /// that persist the next track number before submission. A retry returns
-    /// the matching track already at that position; different content or a
-    /// tape that has advanced elsewhere is a conflict and never allocates a
-    /// replacement track.
-    pub async fn write_or_resume_track_at_as(
-        &self,
-        operator: &impl TapeOperator,
-        expected: TrackNumber,
-        name: impl AsRef<[u8]>,
-        content_type: ContentType,
-        data: &[u8],
-    ) -> Result<ObjectWrite, TapedriveError> {
-        match self.get_track_by_number(&operator.address(), expected).await {
-            Ok(existing) => {
-                resume_or_write_track(
-                    self,
-                    operator,
-                    name.as_ref(),
-                    content_type,
-                    data,
-                    Some(existing.address()),
-                    None,
-                    OnConflict::Reject,
-                    self.write_options.visibility,
-                )
-                .await
-            }
-            Err(TapedriveError::NotFound) => {
-                let tape = self.get_tape(&operator.address()).await?;
-                ensure_expected_track_position(expected, tape.tracks.next_number())?;
-                let written = resume_or_write_track(
-                    self,
-                    operator,
-                    name.as_ref(),
-                    content_type,
-                    data,
-                    None,
-                    None,
-                    OnConflict::Reject,
-                    self.write_options.visibility,
-                )
-                .await?;
-                ensure_expected_track_position(expected, written.track.track_number)?;
-                Ok(written)
-            }
-            Err(other) => Err(other),
-        }
     }
 
     /// Delete an object's track and, for a stream, its chunk tracks.
@@ -244,8 +190,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         operator: &impl TapeOperator,
         track: Address,
     ) -> Result<(), TapedriveError> {
-        match self.get_track(&track).await {
-            Ok(_) => {}
+        let track_number = match self.get_track(&track).await {
+            Ok(info) => info.track_number,
             Err(TapedriveError::NotFound) => return Ok(()),
             Err(error) => return Err(error),
         };
@@ -254,13 +200,14 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         // before the track.
         if let Ok((manifest, _)) = read_manifest(self, &track).await {
             for entry in &manifest.chunks {
-                if let Err(error) = self.delete_by_number_as(operator, entry.track_number).await {
+                let chunk_number = Some(entry.track_number);
+                if let Err(error) = self.delete_as(operator, entry.track, chunk_number).await {
                     debug!(%error, chunk = %entry.track_number, "stream chunk delete failed");
                 }
             }
         }
 
-        if let Err(error) = self.delete_as(operator, track).await {
+        if let Err(error) = self.delete_as(operator, track, Some(track_number)).await {
             debug!(%error, %track, "object track delete failed");
         }
         Ok(())
@@ -307,7 +254,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             content_type,
             raw,
             Operation::WriteRaw,
-            self.write_options.visibility,
+            self.write_options.flags,
         ).await;
 
         timer.finish_result(&result);
@@ -364,7 +311,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             content_type,
             data,
             Operation::WriteBlob,
-            self.write_options.visibility,
+            self.write_options.flags,
         ).await;
 
         timer.finish_result(&result);
@@ -509,9 +456,9 @@ pub async fn write_track_only<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     data: &[u8],
     plan: Option<UploadPlan>,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<CompressedTrack, TapedriveError> {
-    write_track(client, tape_key, name, content_type, data, plan, visibility)
+    write_track(client, tape_key, name, content_type, data, plan, flags)
         .await
         .map(|written| written.track)
 }
@@ -532,12 +479,12 @@ pub async fn write_track<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     data: &[u8],
     plan: Option<UploadPlan>,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<ObjectWrite, TapedriveError> {
     if let Some(plan) = &plan {
         check_plan_matches(plan, data)?;
     }
-    write_encoded_track(client, tape_key, name, content_type, data, plan, visibility).await
+    write_encoded_track(client, tape_key, name, content_type, data, plan, flags).await
 }
 
 /// Write a single track with a plan already known to be the encode of `data`
@@ -548,7 +495,7 @@ async fn write_encoded_track<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     data: &[u8],
     plan: Option<UploadPlan>,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<ObjectWrite, TapedriveError> {
     let timer = client
         .timer(Operation::WriteTrack, Phase::Total)
@@ -562,7 +509,7 @@ async fn write_encoded_track<Blockchain: Rpc, Cluster: Api>(
                 content_type,
                 data,
                 Operation::WriteTrack,
-                visibility,
+                flags,
             )
             .await?;
             return Ok(ObjectWrite::inline(written.track));
@@ -586,7 +533,7 @@ async fn write_encoded_track<Blockchain: Rpc, Cluster: Api>(
             StorageUnits::from_bytes(data.len() as u64),
             plan,
             Operation::WriteTrack,
-            visibility,
+            flags,
         )
         .await?;
         let (written, plan) = resolve_sent_blob(client, sent).await?;
@@ -646,7 +593,7 @@ pub(crate) struct SentRaw {
     key: Hash,
     kind: u64,
     state: u64,
-    visibility: TrackVisibility,
+    flags: u64,
     size: StorageUnits,
     value_hash: Hash,
 }
@@ -658,7 +605,7 @@ pub(crate) struct SentBlob {
     blob: BlobEncoding,
     key: Hash,
     plan: UploadPlan,
-    visibility: TrackVisibility,
+    flags: u64,
 }
 
 /// A register transaction built against the tape and not yet sent.
@@ -674,7 +621,7 @@ enum RegisterPayload {
         key: Hash,
         kind: u64,
         state: u64,
-        visibility: TrackVisibility,
+        flags: u64,
         size: StorageUnits,
         value_hash: Hash,
     },
@@ -682,7 +629,7 @@ enum RegisterPayload {
         blob: Box<BlobEncoding>,
         key: Hash,
         plan: Box<UploadPlan>,
-        visibility: TrackVisibility,
+        flags: u64,
     },
 }
 
@@ -695,30 +642,22 @@ pub(crate) enum SentRegister {
 impl RegisterPayload {
     fn into_sent(self, signature: Txid) -> SentRegister {
         match self {
-            RegisterPayload::Raw { key, kind, state, visibility, size, value_hash } => {
+            RegisterPayload::Raw { key, kind, state, flags, size, value_hash } => {
                 SentRegister::Raw(SentRaw {
                     signature,
                     key,
                     kind,
                     state,
-                    visibility,
+                    flags,
                     size,
                     value_hash,
                 })
             }
-            RegisterPayload::Blob { blob, key, plan, visibility } => SentRegister::Blob(Box::new(
-                SentBlob { signature, blob: *blob, key, plan: *plan, visibility },
+            RegisterPayload::Blob { blob, key, plan, flags } => SentRegister::Blob(Box::new(
+                SentBlob { signature, blob: *blob, key, plan: *plan, flags },
             )),
         }
     }
-}
-
-/// How to handle a resume where the existing track holds different content.
-pub(crate) enum OnConflict {
-    /// The identity was reused for different data; refuse (one-call write).
-    Reject,
-    /// Last-write-wins: write the new content and delete the stale track.
-    Overwrite,
 }
 
 impl ObjectWrite {
@@ -812,7 +751,7 @@ pub(crate) async fn register_blob<Blockchain: Rpc, Cluster: Api>(
     logical_size: StorageUnits,
     plan: UploadPlan,
     operation: Operation,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
     let register_timer = client
         .timer(operation, Phase::Register)
@@ -825,7 +764,7 @@ pub(crate) async fn register_blob<Blockchain: Rpc, Cluster: Api>(
         content_type,
         logical_size,
         plan,
-        visibility,
+        flags,
     )
     .await;
     register_timer.finish_result(&result);
@@ -867,7 +806,7 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     raw: &[u8],
     operation: Operation,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<WrittenTrack, TapedriveError> {
     submit_raw_with_logical_size(
         client,
@@ -877,7 +816,7 @@ async fn submit_raw<Blockchain: Rpc, Cluster: Api>(
         StorageUnits::from_bytes(raw.len() as u64),
         raw,
         operation,
-        visibility,
+        flags,
     )
     .await
 }
@@ -890,7 +829,7 @@ pub(crate) async fn submit_raw_with_logical_size<Blockchain: Rpc, Cluster: Api>(
     logical_size: StorageUnits,
     raw: &[u8],
     operation: Operation,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<WrittenTrack, TapedriveError> {
     let timer = client
         .timer(operation, Phase::Register)
@@ -904,7 +843,7 @@ pub(crate) async fn submit_raw_with_logical_size<Blockchain: Rpc, Cluster: Api>(
         content_type,
         logical_size,
         raw,
-        visibility,
+        flags,
     )
     .await;
 
@@ -919,7 +858,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     logical_size: StorageUnits,
     raw: &[u8],
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<WrittenTrack, TapedriveError> {
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
@@ -935,7 +874,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
             object,
             data: BlobData::Inline(raw.to_vec()),
         },
-        visibility,
+        flags,
     )
     .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?;
 
@@ -960,7 +899,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
         key,
         kind: meta.kind as u64,
         state: meta.state as u64,
-        visibility: visibility as u64,
+        flags,
         size: meta.size,
         group: written.group,
         value_hash: meta.value_hash,
@@ -982,7 +921,7 @@ pub(crate) fn prepare_raw_register<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     logical_size: StorageUnits,
     raw: &[u8],
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<PreparedRegister, TapedriveError> {
     let payer = client.payer()?;
     let data = BlobDataSlice::Inline(raw);
@@ -997,7 +936,7 @@ pub(crate) fn prepare_raw_register<Blockchain: Rpc, Cluster: Api>(
             object,
             data: BlobData::Inline(raw.to_vec()),
         },
-        visibility,
+        flags,
     )
     .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?;
 
@@ -1007,7 +946,7 @@ pub(crate) fn prepare_raw_register<Blockchain: Rpc, Cluster: Api>(
             key,
             kind: meta.kind as u64,
             state: meta.state as u64,
-            visibility,
+            flags,
             size: meta.size,
             value_hash: meta.value_hash,
         },
@@ -1129,7 +1068,7 @@ pub(crate) async fn resolve_sent_raw<Blockchain: Rpc, Cluster: Api>(
         key: sent.key,
         kind: sent.kind,
         state: sent.state,
-        visibility: sent.visibility as u64,
+        flags: sent.flags,
         size: sent.size,
         group: written.group,
         value_hash: sent.value_hash,
@@ -1148,7 +1087,7 @@ pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     data: Vec<u8>,
     operation: Operation,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
     let logical_size = StorageUnits::from_bytes(data.len() as u64);
     submit_blob_with_logical_size(
@@ -1159,7 +1098,7 @@ pub(crate) async fn submit_blob<Blockchain: Rpc, Cluster: Api>(
         logical_size,
         data,
         operation,
-        visibility,
+        flags,
     )
     .await
 }
@@ -1172,7 +1111,7 @@ pub(crate) async fn submit_blob_with_logical_size<Blockchain: Rpc, Cluster: Api>
     logical_size: StorageUnits,
     data: Vec<u8>,
     operation: Operation,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
     let plan = encode_blob(client, data, operation).await?;
     register_blob(
@@ -1183,7 +1122,7 @@ pub(crate) async fn submit_blob_with_logical_size<Blockchain: Rpc, Cluster: Api>
         logical_size,
         plan,
         operation,
-        visibility,
+        flags,
     )
     .await
 }
@@ -1207,7 +1146,7 @@ fn build_blob_write(
     content_type: ContentType,
     logical_size: StorageUnits,
     plan: &UploadPlan,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<(Instruction, BlobEncoding, Hash), TapedriveError> {
     let blob = plan_blob(plan);
 
@@ -1221,7 +1160,7 @@ fn build_blob_write(
             object,
             data: BlobData::Coded(blob),
         },
-        visibility,
+        flags,
     )
     .map_err(|error| TapedriveError::InvalidArgument(error.to_string()))?;
 
@@ -1246,7 +1185,7 @@ pub(crate) async fn resolve_sent_blob<Blockchain: Rpc, Cluster: Api>(
         key: sent.key,
         kind: meta.kind as u64,
         state: meta.state as u64,
-        visibility: sent.visibility as u64,
+        flags: sent.flags,
         size: meta.size,
         group: written.group,
         value_hash: meta.value_hash,
@@ -1271,7 +1210,7 @@ pub(crate) fn prepare_blob_register<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     logical_size: StorageUnits,
     plan: UploadPlan,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<PreparedRegister, TapedriveError> {
     let payer = client.payer()?;
     let bytes = plan.storage_units.to_bytes();
@@ -1282,7 +1221,7 @@ pub(crate) fn prepare_blob_register<Blockchain: Rpc, Cluster: Api>(
         content_type,
         logical_size,
         &plan,
-        visibility,
+        flags,
     )?;
 
     Ok(PreparedRegister {
@@ -1291,7 +1230,7 @@ pub(crate) fn prepare_blob_register<Blockchain: Rpc, Cluster: Api>(
             blob: Box::new(blob),
             key,
             plan: Box::new(plan),
-            visibility,
+            flags,
         },
         bytes,
     })
@@ -1305,7 +1244,7 @@ pub(crate) async fn register_blob_processed<Blockchain: Rpc, Cluster: Api>(
     logical_size: StorageUnits,
     plan: UploadPlan,
     operation: Operation,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<SentBlob, TapedriveError> {
     let register = prepare_blob_register(
         client,
@@ -1314,7 +1253,7 @@ pub(crate) async fn register_blob_processed<Blockchain: Rpc, Cluster: Api>(
         content_type,
         logical_size,
         plan,
-        visibility,
+        flags,
     )?;
     let sent = send_registers(client, tape_key, vec![register], operation).await?;
 
@@ -1333,7 +1272,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     logical_size: StorageUnits,
     plan: UploadPlan,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
@@ -1345,7 +1284,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
         content_type,
         logical_size,
         &plan,
-        visibility,
+        flags,
     )?;
 
     let signature = client
@@ -1360,13 +1299,12 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
         )
         .await?;
 
-    resolve_sent_blob(client, SentBlob { signature, blob, key, plan, visibility }).await
+    resolve_sent_blob(client, SentBlob { signature, blob, key, plan, flags }).await
 }
 
 async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    track_address: Address,
-    group: GroupIndex,
+    written: &WrittenTrack,
     slices: Vec<SliceWithProof>,
     operation: Operation,
     progress: &mut UploadProgress,
@@ -1381,8 +1319,8 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     let state = state?;
 
     let uploader = DistributedUploader::new(
-        track_address,
-        group,
+        written.address,
+        &written.track,
         slices,
         &state,
         client.write_options.slice_concurrency,
@@ -1416,15 +1354,7 @@ async fn upload<Blockchain: Rpc, Cluster: Api>(
     operation: Operation,
     progress: &mut UploadProgress,
 ) -> Result<Vec<CertifyRes>, TapedriveError> {
-    let eager = upload_once(
-        client,
-        written.address,
-        written.track.group,
-        plan.slices.clone(),
-        operation,
-        progress,
-    )
-    .await;
+    let eager = upload_once(client, written, plan.slices.clone(), operation, progress).await;
     match eager {
         Ok(receipts) => return Ok(receipts),
         Err(err) if should_retry_upload(&err) => {
@@ -1435,37 +1365,23 @@ async fn upload<Blockchain: Rpc, Cluster: Api>(
 
     let visibility = client.timer(operation, Phase::Visibility);
 
-    let result = wait_for_visibility(
-        client,
-        written.address,
-        written.track.group,
-        operation,
-    )
-    .await;
+    let result = wait_for_visibility(client, written, operation).await;
 
     visibility.finish_result(&result);
     result?;
 
-    upload_once(
-        client,
-        written.address,
-        written.track.group,
-        plan.slices.clone(),
-        operation,
-        progress,
-    )
-    .await
+    upload_once(client, written, plan.slices.clone(), operation, progress).await
 }
 
 async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    track_address: Address,
-    group: GroupIndex,
+    written: &WrittenTrack,
     operation: Operation,
 ) -> Result<(), TapedriveError> {
     let state = bootstrap_network_state(client, Some(operation)).await?;
+    let track_address = written.address;
 
-    let group_peers = state.group_peers(group);
+    let group_peers = state.group_peers(written.track.group);
     let required = params_of(&state)?.thresholds.certify as usize;
 
     let mut seen = HashSet::new();
@@ -1484,7 +1400,9 @@ async fn wait_for_visibility<Blockchain: Rpc, Cluster: Api>(
         // Probe every peer concurrently: a round costs one round-trip
         // instead of one per peer.
         let probes = peers.iter().map(|node_id| async move {
-            let req = GetTrackDataReq { track: track_address };
+            let req = GetTrackDataReq {
+                track: track_address,
+            };
             match client.api.get_track_data(*node_id, &req).await {
                 Ok(_) => (*node_id, true),
                 Err(error) => {
@@ -1618,8 +1536,7 @@ pub(crate) async fn collect_certification<Blockchain: Rpc, Cluster: Api>(
         collector
             .collect_signatures(
                 client.api.as_ref(),
-                &written.address,
-                written.track.group,
+                &written.track,
                 &state,
                 banked,
             )
@@ -1650,7 +1567,8 @@ pub(crate) async fn submit_certification<Blockchain: Rpc, Cluster: Api>(
     operation: Operation,
 ) -> Result<(), TapedriveError> {
     let proof_timer = client.timer(operation, Phase::CertifyProof);
-    let proof = query::query_track_proof(client, &written.address).await;
+    let proof =
+        query::query_track_proof(client, &written.track.tape, written.track.track_number).await;
     proof_timer.finish_result(&proof);
     let proof = proof?;
 
@@ -1809,10 +1727,50 @@ pub(crate) async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
     }
 }
 
-/// One-call write that reserves a fresh tape or resumes an interrupted one.
+/// The address a track with this key and content gets on `tape`.
 ///
-/// A missing tape is reserved and written normally. An existing tape means a
-/// prior call was interrupted after reserving, so its single track is resumed.
+/// A writer knows it before the write lands. The number, state and group stay
+/// out of the address, so the leaf built here leaves them at zero.
+fn content_address(tape: Address, key: Hash, meta: &TrackMeta, flags: u64) -> Address {
+    CompressedTrack {
+        tape,
+        track_number: TrackNumber(0),
+        key,
+        kind: meta.kind as u64,
+        state: meta.state as u64,
+        flags,
+        size: meta.size,
+        group: GroupIndex(0),
+        value_hash: meta.value_hash,
+    }
+    .address()
+}
+
+/// The address of a coded track for `name` registered with this plan
+pub(crate) fn coded_address(
+    tape: Address,
+    name: &[u8],
+    plan: &UploadPlan,
+    flags: u64,
+) -> Result<Address, TapedriveError> {
+    let slice = BlobDataSlice::Coded(plan_blob(plan));
+    let meta = slice
+        .meta(plan.profile)
+        .ok_or_else(|| TapedriveError::Encoding("coded blob has no commitment".into()))?;
+    Ok(content_address(tape, track_key(name, &slice), &meta, flags))
+}
+
+/// The address of an inline track for `name` holding these bytes
+pub(crate) fn inline_address(tape: Address, name: &[u8], data: &[u8], flags: u64) -> Address {
+    let key = track_key(name, &BlobDataSlice::Inline(data));
+    content_address(tape, key, &TrackMeta::inline(data), flags)
+}
+
+/// One-call write that reserves a fresh tape, or writes to the one already there.
+///
+/// A missing tape is reserved and written normally. An existing tape gets the
+/// track appended, unless the client asks to resume: then the content is looked
+/// up by its address first, and a track found there is finished or returned.
 /// Backs the one-call write and write_named entry points.
 pub(crate) async fn write_or_resume<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
@@ -1821,7 +1779,7 @@ pub(crate) async fn write_or_resume<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     data: &[u8],
     epochs: u64,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<CompressedTrack, TapedriveError> {
     match client.get_tape(&tape_key.address()).await {
         Err(TapedriveError::Rpc(RpcError::AccountNotFound(_))) => {
@@ -1833,61 +1791,69 @@ pub(crate) async fn write_or_resume<Blockchain: Rpc, Cluster: Api>(
             reserve.finish_result(&reserved);
             reserved?;
 
-            write_track_only(client, tape_key, name, content_type, data, None, visibility).await
+            write_track_only(client, tape_key, name, content_type, data, None, flags).await
         }
-        // An existing tape means a prior interrupted call. The one-call write
-        // dedicates a fresh tape to one blob at track 0, and reusing its key for
-        // different data is a conflict, not an overwrite.
-        Ok(_) => {
-            let first = match client
-                .get_track_by_number(&tape_key.address(), TrackNumber(0))
-                .await
-            {
-                Ok(track) => Some(track.address()),
-                Err(TapedriveError::NotFound) => None,
-                Err(other) => return Err(other),
-            };
-            resume_or_write_track(
-                client,
-                tape_key,
-                name,
-                content_type,
-                data,
-                first,
-                None,
-                OnConflict::Reject,
-                visibility,
-            )
-            .await
-            .map(|written| written.track)
+        Ok(_) if !client.write_options.resume => {
+            write_track_only(client, tape_key, name, content_type, data, None, flags).await
         }
+        Ok(_) => resume_track(client, tape_key, name, content_type, data, flags).await,
         Err(other) => Err(other),
     }
 }
 
-fn ensure_expected_track_position(
-    expected: TrackNumber,
-    observed: TrackNumber,
-) -> Result<(), TapedriveError> {
-    if expected == observed {
-        Ok(())
-    } else {
-        Err(TapedriveError::TrackPositionConflict {
-            expected,
-            next: observed,
-        })
+/// The track at an address, or nothing when no peer holds one
+pub(crate) async fn found_track<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    address: &Address,
+) -> Result<Option<CompressedTrack>, TapedriveError> {
+    match client.get_track(address).await {
+        Ok(track) => Ok(Some(track)),
+        Err(TapedriveError::NotFound) => Ok(None),
+        Err(other) => Err(other),
     }
 }
 
-/// Resume, skip, overwrite, or write a single named track at a known position.
+/// Write a track unless the tape already holds this content, which is then
+/// finished or returned as it is.
+async fn resume_track<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &TapeKey,
+    name: &[u8],
+    content_type: ContentType,
+    data: &[u8],
+    flags: u64,
+) -> Result<CompressedTrack, TapedriveError> {
+    let tape = tape_key.address();
+
+    if inline_write_fits(name, data.len()) {
+        // Inline tracks certify at register, so one found is complete.
+        let address = inline_address(tape, name, data, flags);
+        return match found_track(client, &address).await? {
+            Some(existing) => Ok(existing),
+            None => write_track_only(client, tape_key, name, content_type, data, None, flags).await,
+        };
+    }
+
+    let plan = encode_blob(client, data.to_vec(), Operation::Write).await?;
+    let address = coded_address(tape, name, &plan, flags)?;
+    match found_track(client, &address).await? {
+        Some(existing) => {
+            finish_coded_track(client, tape_key, existing, &plan, Operation::Write).await
+        }
+        None => write_encoded_track(client, tape_key, name, content_type, data, Some(plan), flags)
+            .await
+            .map(|written| written.track),
+    }
+}
+
+/// Resume, skip, overwrite, or write a single named track.
 ///
 /// `existing` is where the caller located this object's current track, if any:
-/// track 0 for the one-call write, the resolved object for the gateway,
-/// find_track for an SDK append. A matching certified track is returned as is;
-/// a matching registered track is finished (upload the missing slices, then
-/// certify); a missing track is written fresh. A track whose content differs is
-/// rejected as a conflict, or overwritten and the stale track deleted, per
-/// `on_conflict`.
+/// the resolved object for the gateway, find_track for an SDK append. A
+/// matching certified track is returned as is; a matching registered track is
+/// finished (upload the missing slices, then certify); a missing track is
+/// written fresh. A track whose content differs is overwritten: the new
+/// content is written and the old track deleted.
 pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     operator: &impl TapeOperator,
@@ -1896,18 +1862,17 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
     data: &[u8],
     existing: Option<Address>,
     plan: Option<UploadPlan>,
-    on_conflict: OnConflict,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> Result<ObjectWrite, TapedriveError> {
     let Some(track_address) = existing else {
-        return write_track(client, operator, name, content_type, data, plan, visibility).await;
+        return write_track(client, operator, name, content_type, data, plan, flags).await;
     };
 
     let existing_track = match client.get_track(&track_address).await {
         Ok(track) => track,
         // The located track is gone or never landed: write fresh.
         Err(TapedriveError::NotFound) => {
-            return write_track(client, operator, name, content_type, data, plan, visibility).await;
+            return write_track(client, operator, name, content_type, data, plan, flags).await;
         }
         Err(other) => return Err(other),
     };
@@ -1946,63 +1911,17 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
         };
     }
 
-    // Different content at this position.
-    match on_conflict {
-        OnConflict::Reject => Err(TapedriveError::WriteConflict {
-            track_number: existing_track.track_number,
-        }),
-        OnConflict::Overwrite => {
-            // The identity encode is the write's encode too.
-            let written = write_encoded_track(
-                client,
-                operator,
-                name,
-                content_type,
-                data,
-                coded_plan,
-                visibility,
-            )
-            .await?;
-            // Delete the stale track; best-effort, never fails the write that
-            // already landed. A failure leaves it for a later overwrite or sweep.
-            if let Err(error) = client.delete_as(operator, track_address).await {
-                debug!(%error, %track_address, "overwrite delete failed; stale track left for a later delete");
-            }
-            Ok(written)
-        }
+    // Different content under this name. The identity encode is the write's
+    // encode too.
+    let written =
+        write_encoded_track(client, operator, name, content_type, data, coded_plan, flags).await?;
+    // Delete the old track; best-effort, never fails the write that already
+    // landed. A failure leaves it for a later overwrite or sweep.
+    let old_number = Some(existing_track.track_number);
+    if let Err(error) = client.delete_as(operator, track_address, old_number).await {
+        debug!(%error, %track_address, "overwrite delete failed; old track left for a later delete");
     }
-}
-
-/// Confirm an existing track is the one this write would produce. A key or
-/// value-hash mismatch means the tape holds a different track at this position;
-/// used by the stream resume path, where a chunk mismatch is always a conflict.
-pub(crate) fn ensure_track_matches(
-    track: &CompressedTrack,
-    expected_key: Hash,
-    expected_value_hash: Hash,
-) -> Result<(), TapedriveError> {
-    if track.key == expected_key && track.value_hash == expected_value_hash {
-        Ok(())
-    } else {
-        Err(TapedriveError::WriteConflict {
-            track_number: track.track_number,
-        })
-    }
-}
-
-/// Encode `data` as a coded blob and return its upload plan plus the identity
-/// (logical key, value hash) a registered coded track for `name` would carry.
-/// Shared by the single-track and stream resume paths, which all compare an
-/// existing track against a freshly encoded blob.
-pub(crate) async fn coded_identity<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    name: &[u8],
-    data: &[u8],
-    operation: Operation,
-) -> Result<(UploadPlan, Hash, Hash), TapedriveError> {
-    let plan = encode_blob(client, data.to_vec(), operation).await?;
-    let (key, value_hash) = coded_key(name, &plan)?;
-    Ok((plan, key, value_hash))
+    Ok(written)
 }
 
 /// The logical key and value hash of a coded track for `name` registered with this plan
@@ -2300,17 +2219,15 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        check_plan_matches, coded_key, content_etag, content_etag_named,
-        ensure_expected_track_position, hash, inline_write_fits, is_epoch_changed,
-        needs_fresh_signatures, plan_blob, prepare_plan, read_after_confirmation,
-        should_retry_certification, ErasureCode, Hash, RpcError, TapeError, TrackNumber,
-        MAX_INLINE_WRITE,
+        check_plan_matches, coded_key, content_etag, content_etag_named, hash, inline_write_fits,
+        is_epoch_changed, needs_fresh_signatures, plan_blob, prepare_plan, read_after_confirmation,
+        should_retry_certification, ErasureCode, Hash, RpcError, TapeError, MAX_INLINE_WRITE,
     };
     use tape_api::instruction::build_track_write_ix;
     use tape_core::encoding::{RSParams, TAPENET_PROFILE};
     use tape_core::track::data::{BlobData, BlobInfo};
     use tape_core::erasure::SUB_LEAF_BYTES;
-    use tape_core::track::types::TrackVisibility;
+    use tape_core::track::types::TrackFlags;
     use tape_crypto::prelude::Address;
 
     fn blob(len: usize) -> Vec<u8> {
@@ -2472,7 +2389,7 @@ mod tests {
                     object: None,
                     data: BlobData::Inline(blob(len)),
                 },
-                TrackVisibility::Public,
+                TrackFlags::NONE,
             )
         };
         assert!(write(MAX_INLINE_WRITE).is_ok());
@@ -2492,25 +2409,6 @@ mod tests {
         assert!(max_named_payload < MAX_INLINE_WRITE);
         assert!(inline_write_fits(name, max_named_payload));
         assert!(!inline_write_fits(name, max_named_payload + 1));
-    }
-
-    #[test]
-    fn advanced_tape() {
-        let error = ensure_expected_track_position(TrackNumber(3), TrackNumber(4))
-            .expect_err("advanced tape must conflict");
-        assert!(matches!(
-            error,
-            TapedriveError::TrackPositionConflict {
-                expected: TrackNumber(3),
-                next: TrackNumber(4),
-            }
-        ));
-    }
-
-    #[test]
-    fn append_slot() {
-        ensure_expected_track_position(TrackNumber(3), TrackNumber(3))
-            .expect("matching append slot");
     }
 
     // Certification should retry when proof visibility lags behind peer state.

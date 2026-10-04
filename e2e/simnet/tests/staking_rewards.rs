@@ -339,7 +339,7 @@ async fn assert_target_assigned(
         .and_then(|node| {
             node.context()
                 .store
-                .get_track(track)
+                .latest_track(track)
                 .expect("read track")
         })
         .expect("track metadata");
@@ -536,12 +536,15 @@ async fn wait_track(
             .filter(|node| node.is_running())
             .filter(|node| {
                 let store = &node.context().store;
-                let has_track = store.has_track(track).expect("read track");
-                let has_data = store.has_track_data(track).expect("read track data");
+                let Some(info) = store.latest_track(track).expect("read track") else {
+                    return false;
+                };
+                let number = info.track_number;
+                let has_data = store.has_track_data(track, number).expect("read track data");
                 let has_object_info = store
-                    .has_object_info(track)
+                    .has_object_info(track, number)
                     .expect("read object info");
-                has_track && has_data && has_object_info
+                has_data && has_object_info
             })
             .count();
 

@@ -39,11 +39,23 @@ pub enum TrackState {
     Invalidated,
 }
 
-#[repr(u64)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-pub enum TrackVisibility {
-    Public = 0,
-    Hidden,
+pub struct TrackFlags;
+
+impl TrackFlags {
+    pub const NONE: u64 = 0;
+    pub const HIDDEN: u64 = 1;
+
+    const KNOWN: u64 = Self::HIDDEN;
+
+    #[inline(always)]
+    pub fn is_known(flags: u64) -> bool {
+        flags & !Self::KNOWN == 0
+    }
+
+    #[inline(always)]
+    pub fn is_hidden(flags: u64) -> bool {
+        flags & Self::HIDDEN != 0
+    }
 }
 
 #[repr(C)]
@@ -55,7 +67,7 @@ pub struct CompressedTrack {
     pub key: Hash,
     pub kind: u64,
     pub state: u64,
-    pub visibility: u64,
+    pub flags: u64,
     pub size: StorageUnits,
     pub group: GroupIndex,
     pub value_hash: Hash,
@@ -70,11 +82,6 @@ impl CompressedTrack {
     #[inline(always)]
     pub fn state_enum(&self) -> Option<TrackState> {
         TrackState::try_from(self.state).ok()
-    }
-
-    #[inline(always)]
-    pub fn visibility_enum(&self) -> Option<TrackVisibility> {
-        TrackVisibility::try_from(self.visibility).ok()
     }
 
     #[inline(always)]
@@ -102,11 +109,9 @@ impl CompressedTrack {
         matches!(self.state_enum(), Some(TrackState::Invalidated))
     }
 
-    /// Anything this binary cannot read as Public is treated as hidden, so an
-    /// unrecognized visibility withholds bytes.
     #[inline(always)]
     pub fn is_hidden(&self) -> bool {
-        !matches!(self.visibility_enum(), Some(TrackVisibility::Public))
+        TrackFlags::is_hidden(self.flags)
     }
 
     #[inline(always)]
@@ -118,7 +123,7 @@ impl CompressedTrack {
             &self.key.to_bytes(),
             &self.kind.to_le_bytes(),
             &self.state.to_le_bytes(),
-            &self.visibility.to_le_bytes(),
+            &self.flags.to_le_bytes(),
             &self.size.pack(),
             &self.group.pack(),
             &self.value_hash.to_bytes(),
@@ -138,6 +143,14 @@ impl CompressedTrack {
         bytemuck::bytes_of_mut(&mut value).copy_from_slice(&data);
         value
     }
+}
+
+/// The track a read by address answers with, out of the tracks that share the
+/// address in track-number order: the certified one with the highest track
+/// number, or the highest-numbered one when none is certified.
+pub fn latest_track(tracks: &[CompressedTrack]) -> Option<CompressedTrack> {
+    let certified = tracks.iter().rev().find(|track| track.is_certified());
+    certified.or(tracks.last()).copied()
 }
 
 #[cfg(feature = "wincode")]
@@ -217,7 +230,7 @@ mod tests {
             key: Hash::new_unique(),
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(4096),
             group: GroupIndex(3),
             value_hash: Hash::new_unique(),
@@ -229,26 +242,55 @@ mod tests {
     fn zeroed_is_public() {
         let track = CompressedTrack::zeroed();
 
-        assert_eq!(track.visibility_enum(), Some(TrackVisibility::Public));
+        assert_eq!(track.flags, TrackFlags::NONE);
         assert!(!track.is_hidden());
     }
 
-    // visibility is committed by the leaf hash
+    // flags are committed by the leaf hash
     #[test]
-    fn visibility_in_hash() {
+    fn flags_in_hash() {
         let public = public_track();
         let mut hidden = public;
-        hidden.visibility = TrackVisibility::Hidden as u64;
+        hidden.flags = TrackFlags::HIDDEN;
 
         assert_ne!(public.get_hash(), hidden.get_hash());
         assert!(hidden.is_hidden());
+    }
+
+    // only the hidden flag hides a track
+    #[test]
+    fn unknown_flag_stays_public() {
+        let mut track = public_track();
+        track.flags = 1 << 40;
+
+        assert!(!TrackFlags::is_known(track.flags));
+        assert!(!track.is_hidden());
+    }
+
+    // a read by address prefers the newest certified track
+    #[test]
+    fn latest() {
+        let numbered = |number: u64, state: TrackState| CompressedTrack {
+            track_number: TrackNumber(number),
+            state: state as u64,
+            ..public_track()
+        };
+        let registered = numbered(1, TrackState::Registered);
+        let certified = numbered(2, TrackState::Certified);
+        let newer = numbered(5, TrackState::Certified);
+        let abandoned = numbered(9, TrackState::Registered);
+
+        assert_eq!(latest_track(&[]), None);
+        assert_eq!(latest_track(&[registered]), Some(registered));
+        assert_eq!(latest_track(&[registered, certified, newer, abandoned]), Some(newer));
+        assert_eq!(latest_track(&[registered, abandoned]), Some(abandoned));
     }
 
     // packing round-trips every field
     #[test]
     fn pack_roundtrip() {
         let mut track = public_track();
-        track.visibility = TrackVisibility::Hidden as u64;
+        track.flags = TrackFlags::HIDDEN;
 
         let restored = CompressedTrack::unpack(track.pack());
 

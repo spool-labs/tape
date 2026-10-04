@@ -171,7 +171,7 @@ where
                 get(track::catalog::get_track_data::<Db, Cluster, Blockchain>),
             )
             .route(
-                tape_protocol::api::TRACK_PROOF_PATH,
+                tape_protocol::api::TAPE_TRACK_PROOF_PATH,
                 get(track::catalog::get_track_proof::<Db, Cluster, Blockchain>),
             )
             .route(

@@ -15,7 +15,7 @@ use tape_core::staking::RateSpan;
 use tape_core::bls::BlsPubkey;
 use tape_core::system::{BlacklistEntry, NodePreferences};
 use tape_core::track::data::{track_key, BlobData};
-use tape_core::track::types::{CompressedTrackProof, TrackVisibility};
+use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -103,7 +103,7 @@ pub enum RawInstruction {
     TrackWrite {
         authority: Address,
         key: Hash,
-        visibility: TrackVisibility,
+        flags: u64,
         object: Option<ReplayTrackObject>,
         value: BlobData,
     },
@@ -270,7 +270,7 @@ pub enum ParsedInstruction {
         authority: Address,
         track: Address,
         key: Hash,
-        visibility: TrackVisibility,
+        flags: u64,
         object: Option<ReplayTrackObject>,
         value: BlobData,
         event: TrackWritten,
@@ -522,9 +522,7 @@ pub fn parse_raw_instruction(
             let authority = get_account(1)?;
             let (header, blob) = ix::parse_track_write(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
-            let visibility = header
-                .visibility()
-                .map_err(|e| ParseError::Deserialization(e.to_string()))?;
+            let flags = header.flags();
             let key = track_key(blob.name(), &blob.data);
             let object = blob.object.map(|object| ReplayTrackObject {
                 name: object.name.to_vec(),
@@ -538,7 +536,7 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::TrackWrite {
                 authority,
                 key,
-                visibility,
+                flags,
                 object,
                 value,
             }))

@@ -10,7 +10,7 @@
 use tape_store_memory::MemoryStore;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{SpoolState, SpoolStatus};
-use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
 use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -23,7 +23,7 @@ fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
         track_number: TrackNumber(track_number),
         kind: TrackKind::Inline as u64,
         state: TrackState::Certified as u64,
-        visibility: TrackVisibility::Public as u64,
+        flags: TrackFlags::NONE,
         size: StorageUnits::from_bytes(1024),
         group: GroupIndex(3),
         value_hash: Hash::new_unique(),
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Retrieve by address
     let track1 = Address::new([1; 32]);
-    let retrieved = store.get_track(track1)?;
+    let retrieved = store.get_track(track1, TrackNumber(0))?;
     println!("Retrieved track 1: {:?}", retrieved.is_some());
 
     // Store slices for track 1

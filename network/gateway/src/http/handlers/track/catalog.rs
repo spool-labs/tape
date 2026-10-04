@@ -17,12 +17,13 @@ use tape_protocol::Api;
 use tape_protocol::api::{
     FindTrackRequest, ListObjectsRequest, ListObjectsResponse, ListTracksByTapeRequest,
     ListTracksByTapeResponse, ObjectListItem, TrackDataResponse, TrackProofResponse,
-    TrackResponse,
+    TrackResponse, TracksResponse,
 };
 use tape_store::ops::{ObjectListOps, TapeOps, TrackOps};
 
 use super::{
-    parse_address, track_address_by_number, track_data_with_pending, track_with_pending,
+    parse_address, track_address_by_number, track_at_with_pending, track_data_with_pending,
+    track_with_pending, tracks_with_pending,
 };
 use crate::http::error::RouteError;
 use crate::http::handlers::share::authorize_signed_read;
@@ -32,15 +33,20 @@ use crate::http::state::AppState;
 const MAX_TRACK_SCAN_LIMIT: usize = u32::MAX as usize;
 const MAX_OBJECT_LIST_LIMIT: usize = 1_000;
 
+/// Every track under an address. Tracks written with the same content share
+/// one, and the caller picks among them.
 pub async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
-    let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
+    let tracks = tracks_with_pending(&state, track_addr)?;
+    if tracks.is_empty() {
+        return Err(RouteError::NotFound);
+    }
 
-    binary_response(&TrackResponse {
-        track: track.pack(),
+    binary_response(&TracksResponse {
+        tracks: tracks.iter().map(|info| info.pack()).collect(),
     })
 }
 
@@ -57,17 +63,22 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // This gateway's own store serves the blob metadata, so an admitted caller needs no node token.
     authorize_signed_read(&state, &headers, &method, uri.path(), &track)?;
 
-    let data = track_data_with_pending(&state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
+    let data = track_data_with_pending(&state, track_addr, &track)?.ok_or(RouteError::NotFound)?;
 
     binary_response(&TrackDataResponse { data })
 }
 
 pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    Path(track_id): Path<String>,
+    Path((tape_id, track_number)): Path<(String, u64)>,
 ) -> Result<impl IntoResponse, RouteError> {
-    let track_addr = parse_address(&track_id, "track id")?;
-    let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
+    // A proof is for one leaf, which its tape and track number identify.
+    let tape = parse_address(&tape_id, "tape id")?;
+    let track_number = TrackNumber(track_number);
+    let track_addr = track_address_by_number(&state, tape, track_number)?
+        .ok_or(RouteError::NotFound)?;
+    let track = track_at_with_pending(&state, track_addr, track_number)?
+        .ok_or(RouteError::NotFound)?;
 
     let tape = state
         .context
@@ -125,9 +136,11 @@ pub async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Path((tape_id, track_number)): Path<(String, u64)>,
 ) -> Result<impl IntoResponse, RouteError> {
     let tape = parse_address(&tape_id, "tape id")?;
-    let track_addr = track_address_by_number(&state, tape, TrackNumber(track_number))?
+    let track_number = TrackNumber(track_number);
+    let track_addr = track_address_by_number(&state, tape, track_number)?
         .ok_or(RouteError::NotFound)?;
-    let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
+    let track = track_at_with_pending(&state, track_addr, track_number)?
+        .ok_or(RouteError::NotFound)?;
 
     binary_response(&TrackResponse {
         track: track.pack(),
@@ -273,7 +286,7 @@ fn merge_pending_tape_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
         if let Some(track) = state
             .context
             .pending
-            .apply_to_track(track_addr, Some(disk_track))
+            .apply_to_track(track_addr, disk_track.track_number, Some(disk_track))
         {
             by_number.insert(track.track_number, track);
         }

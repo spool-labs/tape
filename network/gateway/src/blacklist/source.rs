@@ -42,7 +42,7 @@ impl<Db: Store> TapeSource for StoreSource<'_, Db> {
         else {
             return Ok(Track::Absent);
         };
-        let Some(track) = self.store.get_track(address).map_err(store_error)? else {
+        let Some(track) = self.store.get_track(address, track_number).map_err(store_error)? else {
             return Ok(Track::Absent);
         };
         if track.is_invalidated() {
@@ -51,7 +51,7 @@ impl<Db: Store> TapeSource for StoreSource<'_, Db> {
         if !track.is_inline() {
             return Ok(Track::Opaque);
         }
-        match self.store.get_track_data(address).map_err(store_error)? {
+        match self.store.get_track_data(address, track_number).map_err(store_error)? {
             Some(BlobData::Inline(bytes)) => Ok(Track::Written { address, bytes }),
             Some(BlobData::Coded(_)) => Ok(Track::Opaque),
             None => Ok(Track::Pending { address }),

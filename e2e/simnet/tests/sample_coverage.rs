@@ -7,7 +7,7 @@ use tape_core::erasure::group_for_spool;
 use tape_core::track::data::BlobData;
 use tape_core::types::{BasisPoints, EpochNumber};
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
-use tape_store::ops::{ObjectInfoOps, SampleOps, SliceOps, SpoolOps, TrackDataOps};
+use tape_store::ops::{ObjectInfoOps, SampleOps, SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use tape_store::types::ObjectInfo;
 
 const NODE_COUNT: usize = 20;
@@ -83,15 +83,20 @@ async fn sample_coverage_inner() {
         for (spool, _) in store.iter_all_spools().expect("iter spools") {
             let group = group_for_spool(spool);
             for (track, _) in store.iter_slice_sizes_by_spool(spool).expect("iter slices") {
+                let Some(info) = store.spool_track(spool, track).expect("track") else {
+                    continue;
+                };
+                let number = info.track_number;
                 let coded = matches!(
-                    store.get_track_data(track).expect("track data"),
+                    store.get_track_data(track, number).expect("track data"),
                     Some(BlobData::Coded(_))
                 );
                 let snapshot = matches!(
-                    store.get_object_info(track).expect("object info"),
+                    store.get_object_info(track, number).expect("object info"),
                     Some(ObjectInfo::System { .. })
                 );
-                if coded && !snapshot && store.track_sample(group, track).expect("sample").is_none() {
+                let sampled = store.track_sample(group, track, number).expect("sample").is_some();
+                if coded && !snapshot && !sampled {
                     uncovered.push((index, spool, track));
                 }
             }

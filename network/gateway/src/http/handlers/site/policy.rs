@@ -11,7 +11,7 @@ use tape_core::track::data::BlobData;
 use tape_crypto::address::Address;
 use tape_node::config::gateway::{is_valid_origin, is_valid_policy};
 use tape_protocol::Api;
-use tape_store::ops::TrackDataOps;
+use tape_store::ops::{TrackDataOps, TrackOps};
 use tracing::debug;
 
 use tape_store::TapeStore;
@@ -108,7 +108,11 @@ fn policy_bytes<Db: Store>(
             if blacklists.denies(resolved.track_address, tape) || is_oversize(tape, resolved.size) {
                 return None;
             }
-            let data = store.get_track_data(resolved.track_address);
+            let track_number = match resolved.track_number {
+                Some(track_number) => track_number,
+                None => store.latest_track(resolved.track_address).ok()??.track_number,
+            };
+            let data = store.get_track_data(resolved.track_address, track_number);
             let Ok(Some(BlobData::Inline(bytes))) = data else {
                 return None;
             };

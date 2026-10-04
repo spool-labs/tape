@@ -119,6 +119,7 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     TrackCertified {
         track: track_address,
+        track_number: track.track_number,
         epoch: curr,
         signer_count,
         signer_weight: weight,
@@ -136,8 +137,8 @@ mod tests {
     use tape_core::track::types::{
         CompressedTrack,
         CompressedTrackProof,
+        TrackFlags,
         TrackKind,
-        TrackVisibility,
     };
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
     use tape_crypto::Hash;
@@ -202,7 +203,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
             group: group_id,
             value_hash: Hash::new_unique(),
@@ -323,7 +324,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
             group: group_id,
             value_hash: Hash::new_unique(),

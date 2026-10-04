@@ -19,58 +19,57 @@ use crate::track::query;
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Delete a concrete track version and free its capacity on the tape.
     pub async fn delete(&self, tape_key: &TapeKey, track: Address) -> Result<(), TapedriveError> {
-        self.delete_as(tape_key, track).await
+        self.delete_as(tape_key, track, None).await
     }
 
-    /// Delete a concrete track version as an arbitrary TapeOperator
+    /// Delete a track as an arbitrary TapeOperator
+    ///
+    /// Tracks written with the same content share an address. A track number
+    /// picks one of them. Without it every track under the address goes, one
+    /// transaction each, since a delete proves one leaf.
     ///
     /// A delete that follows a recent mutation of the same tape sees stale
-    /// proofs until peers catch up with the chain, so the whole fetch-proof
-    /// and submit attempt retries until visibility recovers.
+    /// proofs until peers catch up with the chain, so each fetch-proof and
+    /// submit attempt retries until visibility recovers.
     pub async fn delete_as(
         &self,
         operator: &impl TapeOperator,
         track: Address,
+        track_number: Option<TrackNumber>,
     ) -> Result<(), TapedriveError> {
-        retry_if(
-            delete_retry_config(),
-            None,
-            || self.delete_once(operator, track),
-            should_retry_delete,
-        )
-        .await
-    }
+        let numbers = match track_number {
+            Some(track_number) => vec![track_number],
+            None => {
+                let tracks = query::query_tracks(self, &track).await?;
+                tracks.iter().map(|info| info.track_number).collect()
+            }
+        };
 
-    /// Delete the track at one number on the operator's tape
-    ///
-    /// The lookup is part of each attempt, so it retries with the proof and
-    /// the submit while peers catch up with the chain.
-    pub(crate) async fn delete_by_number_as(
-        &self,
-        operator: &impl TapeOperator,
-        track_number: TrackNumber,
-    ) -> Result<(), TapedriveError> {
-        let tape = operator.address();
-        retry_if(
-            delete_retry_config(),
-            None,
-            || async {
-                let track = query::query_track_by_number(self, &tape, track_number).await?;
-                self.delete_once(operator, track.address()).await
-            },
-            should_retry_delete,
-        )
-        .await
+        for track_number in numbers {
+            retry_if(
+                delete_retry_config(),
+                None,
+                || self.delete_once(operator, track, track_number),
+                should_retry_delete,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn delete_once(
         &self,
         operator: &impl TapeOperator,
         track: Address,
+        track_number: TrackNumber,
     ) -> Result<(), TapedriveError> {
         let payer = self.payer()?;
         let tape_signer = operator.keypair();
-        let proof = query::query_track_proof(self, &track).await?;
+        let proof = query::query_track_proof(self, &operator.address(), track_number).await?;
+        // The number says where to look, and the address says what must be there.
+        if proof.state.address() != track {
+            return Err(TapedriveError::NotFound);
+        }
         let ix = build_delete_track_ix(payer.pubkey().into(), operator.pubkey().into(), proof);
 
         self.rpc()

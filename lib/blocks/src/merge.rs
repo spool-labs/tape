@@ -201,7 +201,7 @@ pub fn merge(
             RawInstruction::TrackWrite {
                 authority,
                 key,
-                visibility,
+                flags,
                 object,
                 value,
             } => {
@@ -217,7 +217,7 @@ pub fn merge(
                     authority,
                     track: event.track,
                     key,
-                    visibility,
+                    flags,
                     object,
                     value,
                     event,
@@ -524,7 +524,7 @@ mod tests {
     use tape_core::staking::RateSpan;
     use tape_core::system::{EpochPhase, ExchangeRate, NodePreferences, VoteKind};
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::TrackVisibility;
+    use tape_core::track::types::TrackFlags;
     use tape_core::types::coin::TAPE;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::tls::NetworkTlsPubkey;
@@ -833,6 +833,7 @@ mod tests {
         let track = Address::new_unique();
         let event = TrackCertified {
             track,
+            track_number: TrackNumber(0),
             epoch: EpochNumber(10),
             signer_count: 0,
             signer_weight: 0,
@@ -886,6 +887,7 @@ mod tests {
 
         let certify_event = TrackCertified {
             track: track2,
+            track_number: TrackNumber(0),
             epoch: EpochNumber(2),
             signer_count: 0,
             signer_weight: 0,
@@ -894,7 +896,7 @@ mod tests {
         let instructions = vec![
             RawInstruction::AdvanceEpoch,
             RawInstruction::TrackWrite {
-                visibility: TrackVisibility::Public,
+                flags: TrackFlags::NONE,
                 authority: owner,
                 key: Hash::default(),
                 object: None,
@@ -954,7 +956,7 @@ mod tests {
     fn required_events_missing_cases() -> Vec<RawInstruction> {
         vec![
             RawInstruction::TrackWrite {
-                visibility: TrackVisibility::Public,
+                flags: TrackFlags::NONE,
                 authority: Address::new_unique(),
                 key: Hash::default(),
                 object: None,
@@ -1019,7 +1021,7 @@ mod tests {
         vec![
             (
                 RawInstruction::TrackWrite {
-                    visibility: TrackVisibility::Public,
+                    flags: TrackFlags::NONE,
                     authority: Address::new_unique(),
                     key: Hash::default(),
                     object: None,
@@ -1048,6 +1050,7 @@ mod tests {
                 TapedriveEvent::TrackDeleted(TrackDeleted {
                     track: delete_track,
                     tape: delete_tape,
+                    track_number: TrackNumber(0),
                     key: Hash::default(),
                     size: StorageUnits::mb(1_024),
                 }),
@@ -1058,6 +1061,7 @@ mod tests {
                 },
                 TapedriveEvent::TrackInvalidated(TrackInvalidated {
                     track: invalid_track,
+                    track_number: TrackNumber(0),
                     epoch: EpochNumber(3),
                 }),
             ),
@@ -1300,6 +1304,7 @@ mod tests {
             vec![RawInstruction::AdvanceEpoch],
             vec![TapedriveEvent::TrackCertified(TrackCertified {
                 track: Address::new_unique(),
+                track_number: TrackNumber(0),
                 epoch: EpochNumber(1),
                 signer_count: 0,
                 signer_weight: 0,

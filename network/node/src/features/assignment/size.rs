@@ -12,7 +12,7 @@ use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{EpochNumber, StorageUnits};
+use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
 use tape_crypto::Address;
 use tape_slicer::{num_stripes, stripe_chunk_len, SliceMetadata};
 use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
@@ -91,12 +91,12 @@ pub fn group_weights<Db: Store>(
             .sweep_tracks(cursor.as_deref(), TRACK_SCAN_BATCH)
             .map_err(store_error)?;
 
-        let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
-        for (track, _) in &tracks {
-            addresses.push(*track);
+        let mut keys: Vec<(Address, TrackNumber)> = Vec::with_capacity(tracks.len());
+        for (track, metadata) in &tracks {
+            keys.push((*track, metadata.track_number));
         }
         // The page's object info once, rather than one read per track.
-        let infos = store.get_object_infos(&addresses).map_err(store_error)?;
+        let infos = store.get_object_infos(&keys).map_err(store_error)?;
 
         for ((track, metadata), info) in tracks.iter().zip(infos) {
             let weight = active_track_footprint(
@@ -231,7 +231,10 @@ fn track_footprint<Db: Store>(
         return Err(invalid_track(track, "unknown track kind"));
     }
 
-    let blob = match store.get_track_data(track).map_err(store_error)? {
+    let data = store
+        .get_track_data(track, metadata.track_number)
+        .map_err(store_error)?;
+    let blob = match data {
         Some(BlobData::Coded(blob)) => blob,
         Some(BlobData::Inline(_)) => {
             return Err(invalid_track(track, "inline blob data on a coded track"));
@@ -308,7 +311,7 @@ mod tests {
     use tape_store_memory::MemoryStore;
     use tape_core::encoding::{RSParams, RepParams, TAPENET_CLAY, TAPENET_PROFILE};
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
@@ -355,7 +358,7 @@ mod tests {
             key: Hash::new_unique(),
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size,
             group,
             value_hash: Hash::new_unique(),
@@ -387,7 +390,7 @@ mod tests {
         store.put_tape(tape, tape_info(EpochNumber(20))).unwrap();
         store.put_track(track, raw_track(tape, GroupIndex(2), size)).unwrap();
         store
-            .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
+            .put_object_info(track, TrackNumber(0), valid_object(track, EpochNumber(8), SlotNumber(1)))
             .unwrap();
 
         let sizes = ready_sizes(&store, EpochNumber(10), EpochNumber(11), 4)
@@ -409,7 +412,7 @@ mod tests {
         store.put_tape(tape, tape_info(EpochNumber(11))).unwrap();
         store.put_track(track, raw_track(tape, GroupIndex(1), size)).unwrap();
         store
-            .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
+            .put_object_info(track, TrackNumber(0), valid_object(track, EpochNumber(8), SlotNumber(1)))
             .unwrap();
 
         // Expiring at the target epoch excludes the tape from sizing.
@@ -458,6 +461,7 @@ mod tests {
         store
             .put_object_info(
                 user_track,
+                TrackNumber(0),
                 valid_object(user_track, EpochNumber(8), SlotNumber(1)),
             )
             .unwrap();
@@ -491,11 +495,12 @@ mod tests {
         store
             .put_object_info(
                 inline_track,
+                TrackNumber(0),
                 valid_object(inline_track, EpochNumber(8), SlotNumber(1)),
             )
             .expect("inline object info stored");
         store
-            .put_object_info(coded, valid_object(coded, EpochNumber(8), SlotNumber(1)))
+            .put_object_info(coded, TrackNumber(0), valid_object(coded, EpochNumber(8), SlotNumber(1)))
             .expect("coded object info stored");
 
         let weights = group_weights(&store, EpochNumber(10), EpochNumber(11), 2, TAPENET_PROFILE)
@@ -578,10 +583,10 @@ mod tests {
             )
             .expect("track stored");
         store
-            .put_track_data(track, BlobData::Coded(blob))
+            .put_track_data(track, TrackNumber(0), BlobData::Coded(blob))
             .expect("blob stored");
         store
-            .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
+            .put_object_info(track, TrackNumber(0), valid_object(track, EpochNumber(8), SlotNumber(1)))
             .expect("object info stored");
 
         let error = group_weights(&store, EpochNumber(10), EpochNumber(11), 1, TAPENET_PROFILE)

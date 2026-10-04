@@ -11,7 +11,8 @@ use futures::future::join_all;
 use tape_core::erasure::spool_for_slice;
 use tape_core::spooler::GroupIndex;
 use tape_core::thresholds::NetworkParams;
-use tape_core::types::{EpochNumber, SpoolIndex};
+use tape_core::track::types::CompressedTrack;
+use tape_core::types::{EpochNumber, SpoolIndex, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use bytes::Bytes;
@@ -116,6 +117,8 @@ impl SliceWithProof {
 /// SpoolAssignment.
 pub struct DistributedUploader {
     track: Address,
+    tape: Address,
+    track_number: TrackNumber,
     group: GroupIndex,
     slices: Vec<SliceWithProof>,
     group_peers: Vec<(SpoolIndex, Address)>,
@@ -175,13 +178,17 @@ enum AttemptBudget {
 
 impl DistributedUploader {
     /// Create a new uploader with group-aware spool-based routing.
+    ///
+    /// `info` is the registered track the slices belong to: its tape and track
+    /// number say which track each node signs for, and its group picks the nodes.
     pub fn new(
         track: Address,
-        group: GroupIndex,
+        info: &CompressedTrack,
         slices: Vec<SliceWithProof>,
         state: &ProtocolState,
         concurrency: usize,
     ) -> Result<Self, UploadError> {
+        let group = info.group;
         let params = state
             .system
             .params()
@@ -198,6 +205,8 @@ impl DistributedUploader {
 
         Ok(Self {
             track,
+            tape: info.tape,
+            track_number: info.track_number,
             group,
             slices,
             group_peers,
@@ -296,6 +305,8 @@ impl DistributedUploader {
         let (result_sender, mut result_receiver) = mpsc::unbounded_channel();
         for (node, spools) in missing_groups {
             let track = self.track;
+            let tape = self.tape;
+            let track_number = self.track_number;
             let concurrency_limit = self.concurrency_limit.clone();
             let peer_client = peer_client.clone();
             let result_sender = result_sender.clone();
@@ -324,6 +335,8 @@ impl DistributedUploader {
                     peer_client.as_ref(),
                     node,
                     track,
+                    tape,
+                    track_number,
                     slices,
                     budget,
                     concurrency_limit,
@@ -489,6 +502,8 @@ async fn upload_node_slices<P: Api>(
     peer_client: &P,
     node: Address,
     track: Address,
+    tape: Address,
+    track_number: TrackNumber,
     slices: Vec<(SpoolIndex, SliceWithProof)>,
     budget: AttemptBudget,
     concurrency_limit: Arc<Semaphore>,
@@ -501,7 +516,8 @@ async fn upload_node_slices<P: Api>(
     let uploads = slices.into_iter().map(|(global_spool, slice)| async move {
         let payload_bytes = slice.data().len();
         let req = PutSliceReq {
-            track,
+            tape,
+            track_number,
             spool: global_spool,
             body: slice.body.clone(),
         };
@@ -812,7 +828,7 @@ mod tests {
         }));
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
+            &CompressedTrack::zeroed(),
             make_test_slices(WIDTH),
             &state,
             WIDTH,
@@ -843,7 +859,7 @@ mod tests {
 
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
+            &CompressedTrack::zeroed(),
             slices,
             &state,
             WIDTH,
@@ -918,7 +934,7 @@ mod tests {
     fn uploader_for(state: &ProtocolState, reputation: Arc<Reputation>) -> DistributedUploader {
         DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
+            &CompressedTrack::zeroed(),
             make_test_slices(WIDTH),
             state,
             WIDTH,
@@ -1110,7 +1126,7 @@ mod tests {
 
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
+            &CompressedTrack::zeroed(),
             slices,
             &state,
             WIDTH,

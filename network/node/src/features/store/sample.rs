@@ -2,7 +2,7 @@ use tape_store_api::Store;
 use tape_core::challenge::sample::EntryKind;
 use tape_core::encoding::ErasureCode;
 use tape_core::track::data::BlobData;
-use tape_core::types::{SlotNumber, StorageUnits};
+use tape_core::types::{SlotNumber, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_slicer::coded_slice_len;
@@ -16,6 +16,7 @@ pub fn put_sample<Db: Store>(
     store: &TapeStore<Db>,
     group: tape_core::types::GroupIndex,
     track: Address,
+    track_number: TrackNumber,
     data: &BlobData,
     value_hash: Hash,
     registered_slot: SlotNumber,
@@ -37,6 +38,7 @@ pub fn put_sample<Db: Store>(
         .put_track_sample(
             group,
             track,
+            track_number,
             TrackSample {
                 kind,
                 value_hash,

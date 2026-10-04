@@ -200,48 +200,24 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
         || { ctx.api.sync_slices(prev_owner, &req) },
     ).await?;
 
-    // What the batch needs read, read once each rather than twice per entry: the
-    // peer answered every slice in one call and the local halves follow suit.
-    let mut addresses: Vec<Address> = Vec::with_capacity(res.entries.len());
-    for entry in &res.entries {
-        addresses.push(Address::new(entry.track_address));
-    }
-    // A read that fails for the batch fails for every entry in it, so the page is
-    // given up on and the cursor still advances: the peer will be asked again.
-    let track_infos = match ctx.store.get_tracks(&addresses) {
-        Ok(infos) => infos,
-        Err(error) => {
-            warn!(spool = %spool, %error, "failed to read track metadata, skipping batch");
-            return Ok(SyncBatch {
-                next_cursor: res.next_cursor.clone(),
-                synced: 0,
-                fetched_bytes: 0,
-                persisted_bytes: 0,
-            });
-        }
-    };
-    let track_datas = match ctx.store.get_track_datas(&addresses) {
-        Ok(datas) => datas,
-        Err(error) => {
-            warn!(spool = %spool, %error, "failed to read track data, skipping batch");
-            return Ok(SyncBatch {
-                next_cursor: res.next_cursor.clone(),
-                synced: 0,
-                fetched_bytes: 0,
-                persisted_bytes: 0,
-            });
-        }
-    };
-
-    for ((entry, info), data) in res.entries.into_iter().zip(track_infos).zip(track_datas) {
+    for entry in res.entries {
         let track_addr = Address::new(entry.track_address);
         let slice_len = entry.slice_data.len() as u64;
 
         fetched_bytes += slice_len;
 
-        let Some(track_info) = info else {
-            warn!(spool = %spool, track = %track_addr, "missing track metadata for synced slice, skipping");
-            continue;
+        // A slice is stored once per address, so it belongs to the track under
+        // that address in this spool's group.
+        let track_info = match ctx.store.spool_track(spool, track_addr) {
+            Ok(Some(info)) => info,
+            Ok(None) => {
+                warn!(spool = %spool, track = %track_addr, "missing track metadata for synced slice, skipping");
+                continue;
+            }
+            Err(error) => {
+                warn!(spool = %spool, track = %track_addr, %error, "failed to read track metadata, skipping");
+                continue;
+            }
         };
 
         if !track_info.is_coded() {
@@ -249,14 +225,18 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
             continue;
         }
 
-        let track_data = match data {
-            Some(BlobData::Coded(data)) => data,
-            Some(_) => {
+        let track_data = match ctx.store.get_track_data(track_addr, track_info.track_number) {
+            Ok(Some(BlobData::Coded(data))) => data,
+            Ok(Some(_)) => {
                 warn!(spool = %spool, track = %track_addr, "track data is not a blob, skipping");
                 continue;
             }
-            None => {
+            Ok(None) => {
                 warn!(spool = %spool, track = %track_addr, "missing blob track data for synced slice, skipping");
+                continue;
+            }
+            Err(error) => {
+                warn!(spool = %spool, track = %track_addr, %error, "failed to read track data, skipping");
                 continue;
             }
         };
@@ -343,7 +323,7 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
                 continue;
             }
 
-            match ctx.store.has_track_data(*track_addr) {
+            match ctx.store.has_track_data(*track_addr, track.track_number) {
                 Ok(true) => continue,
                 Ok(false) => {}
                 Err(error) => {
@@ -352,9 +332,13 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
                 }
             }
 
-            match fetch_track_data_from_group(ctx.as_ref(), *track_addr, &peers, token).await {
+            let fetched =
+                fetch_track_data_from_group(ctx.as_ref(), *track_addr, &peers, token).await;
+            match fetched {
                 Ok(data) => {
-                    if let Err(error) = ctx.store.put_track_data(*track_addr, data) {
+                    if let Err(error) =
+                        ctx.store.put_track_data(*track_addr, track.track_number, data)
+                    {
                         warn!(spool = %spool, track = %track_addr, %error, "put_track_data failed");
                         continue;
                     }
@@ -424,7 +408,7 @@ mod tests {
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::erasure::{SLICE_TREE_HEIGHT, slice_root};
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -504,7 +488,7 @@ mod tests {
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size),
             group: GroupIndex::containing(SPOOL),
             value_hash: blob.get_hash(),
@@ -549,7 +533,7 @@ mod tests {
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
-        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
+        ctx.store.put_track_data(a, TrackNumber(0), BlobData::Coded(track_blob)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
@@ -586,7 +570,7 @@ mod tests {
             .unwrap();
 
         ctx.store.put_track(a, track_info).unwrap();
-        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
+        ctx.store.put_track_data(a, TrackNumber(0), BlobData::Coded(track_blob)).unwrap();
         ctx.store.put_slice(SPOOL, a, stale_data).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
@@ -637,7 +621,7 @@ mod tests {
         ctx.store
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
-        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
+        ctx.store.put_track_data(a, TrackNumber(0), BlobData::Coded(track_blob)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
@@ -672,7 +656,7 @@ mod tests {
             .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
-        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
+        ctx.store.put_track_data(a, TrackNumber(0), BlobData::Coded(track_blob)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
 
@@ -720,8 +704,8 @@ mod tests {
             .unwrap();
         ctx.store.put_track(a1, track_info1).unwrap();
         ctx.store.put_track(a2, track_info2).unwrap();
-        ctx.store.put_track_data(a1, BlobData::Coded(blob1)).unwrap();
-        ctx.store.put_track_data(a2, BlobData::Coded(blob2)).unwrap();
+        ctx.store.put_track_data(a1, TrackNumber(0), BlobData::Coded(blob1)).unwrap();
+        ctx.store.put_track_data(a2, TrackNumber(0), BlobData::Coded(blob2)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert!(matches!(result, SyncResult::Done { .. }));

@@ -39,7 +39,7 @@ use tape_store::types::{CredentialScope, ObjectListEntry, PendingOp, PendingWrit
 use crate::http::handlers::object::{
     CachePolicy, ObjectResponseMetadata, range_header, read_object_response,
 };
-use crate::http::handlers::track::track_with_pending;
+use crate::http::handlers::track::requested_track;
 use crate::http::state::AppState;
 use crate::http::handlers::object::response::object_response_ranged;
 use crate::http::handlers::s3::response::head_response_parts;
@@ -751,7 +751,7 @@ fn readable_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     resolved: &ResolvedObject,
 ) -> Result<CompressedTrack, S3Error> {
-    let track = track_with_pending(state, resolved.track_address)
+    let track = requested_track(state, resolved.track_address, resolved.track_number)
         .map_err(S3Error::from)?
         .ok_or(S3Error::NoSuchKey)?;
     // Checked here so HEAD and conditional reads, which never decode, answer gone too.
@@ -1469,8 +1469,6 @@ fn s3_write_error(error: TapedriveError) -> S3Error {
         | TapedriveError::Peer(_)
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
-        | TapedriveError::WriteConflict { .. }
-        | TapedriveError::TrackPositionConflict { .. }
         | TapedriveError::InsufficientCapacity { .. }
         | TapedriveError::Io(_)
         | TapedriveError::Stream(_)) => S3Error::Internal(other.to_string()),
@@ -1493,8 +1491,6 @@ fn is_operator_auth_failure(error: &TapedriveError) -> bool {
         | TapedriveError::Peer(_)
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
-        | TapedriveError::WriteConflict { .. }
-        | TapedriveError::TrackPositionConflict { .. }
         | TapedriveError::NotFound
         | TapedriveError::RateLimited { .. }
         | TapedriveError::InsufficientCapacity { .. }

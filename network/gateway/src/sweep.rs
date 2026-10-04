@@ -91,7 +91,7 @@ mod tests {
     use tape_api::program::tapedrive::TrackAddress;
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -111,7 +111,7 @@ mod tests {
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(1024),
             group: GroupIndex(1),
             value_hash: Hash::new_unique(),
@@ -161,9 +161,9 @@ mod tests {
 
         assert_eq!((stats.tapes_deleted, stats.tracks_deleted), (1, 1));
         assert!(store.get_tape(expired).expect("get tape").is_none());
-        assert!(store.get_track(expired_track).expect("get track").is_none());
+        assert!(store.latest_track(expired_track).expect("get track").is_none());
         assert!(store.get_tape(live).expect("get tape").is_some());
-        assert!(store.get_track(live_track).expect("get track").is_some());
+        assert!(store.latest_track(live_track).expect("get track").is_some());
     }
 
     // a swept epoch is not swept again, and the next epoch is

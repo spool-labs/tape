@@ -6,7 +6,7 @@ use tape_api::program::tapedrive::{blacklist_pda, TrackAddress};
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{BlacklistEntry, Member};
 use tape_core::track::data::TrackMeta;
-use tape_core::track::types::{CompressedTrack, TrackVisibility};
+use tape_core::track::types::{CompressedTrack, TrackFlags};
 use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits, TrackNumber};
 use tape_crypto::Address;
@@ -241,7 +241,7 @@ fn blacklist_track(blacklist: Address, track_number: TrackNumber, entry: Blackli
         key: entry.key(),
         kind: meta.kind as u64,
         state: meta.state as u64,
-        visibility: TrackVisibility::Public as u64,
+        flags: TrackFlags::NONE,
         size: meta.size,
         group: GroupIndex(0),
         value_hash: meta.value_hash,
@@ -384,12 +384,16 @@ async fn wait_track(
             .filter(|node| node.is_running())
             .filter(|node| {
                 let store = &node.context().store;
-                let has_track = store.has_track(track).expect("read track");
-                let has_data = !data || store.has_track_data(track).expect("read track data");
+                let Some(info) = store.latest_track(track).expect("read track") else {
+                    return false;
+                };
+                let number = info.track_number;
+                let has_data =
+                    !data || store.has_track_data(track, number).expect("read track data");
                 let has_object_info = store
-                    .has_object_info(track)
+                    .has_object_info(track, number)
                     .expect("read object info");
-                has_track && has_data && has_object_info
+                has_data && has_object_info
             })
             .count();
 

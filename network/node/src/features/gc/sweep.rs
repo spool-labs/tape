@@ -5,9 +5,8 @@ use tape_store_api::Store;
 use tape_core::encoding::ErasureCode;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
-use tape_core::types::{EpochNumber, SlotNumber};
+use tape_core::types::{EpochNumber, SlotNumber, TrackNumber};
 use tape_crypto::address::Address;
-use tape_core::track::types::CompressedTrack;
 use tape_store::{
     TapeStore,
     ops::{ChallengeOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
@@ -127,13 +126,13 @@ async fn sweep_uncertified_tracks<Db: Store>(
             .sweep_tracks(cursor.as_deref(), track_batch(config))
             .map_err(store_error)?;
 
-        let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
-        for (track, _) in &tracks {
-            addresses.push(*track);
+        let mut keys: Vec<(Address, TrackNumber)> = Vec::with_capacity(tracks.len());
+        for (track, info) in &tracks {
+            keys.push((*track, info.track_number));
         }
         // One call for the batch's certify status, since the decision is per row
         // but the read need not be.
-        let objects = store.get_object_infos(&addresses).map_err(store_error)?;
+        let objects = store.get_object_infos(&keys).map_err(store_error)?;
 
         for ((track, info), object) in tracks.iter().zip(objects) {
             if let Some(ObjectInfo::Valid {
@@ -215,16 +214,16 @@ async fn sweep_orphan_tracks<Db: Store>(
             .sweep_tracks(cursor.as_deref(), track_batch(config))
             .map_err(store_error)?;
 
-        let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
+        let mut keys: Vec<(Address, TrackNumber)> = Vec::with_capacity(tracks.len());
         let mut tapes: Vec<Address> = Vec::with_capacity(tracks.len());
         for (track, info) in &tracks {
-            addresses.push(*track);
+            keys.push((*track, info.track_number));
             tapes.push(info.tape);
         }
         // Both of the batch's reads once each. Tracks of one tape ask for it
         // repeatedly, which a batch answers as cheaply as it answers the rest.
         let parents = store.get_tapes(&tapes).map_err(store_error)?;
-        let objects = store.get_object_infos(&addresses).map_err(store_error)?;
+        let objects = store.get_object_infos(&keys).map_err(store_error)?;
 
         for (((track, info), parent), object) in
             tracks.iter().zip(parents).zip(objects)
@@ -240,7 +239,14 @@ async fn sweep_orphan_tracks<Db: Store>(
                     track_number = info.track_number.0,
                     "gc deleting orphan track with missing parent tape"
                 );
-                stats += delete_track_local(store, *track, epoch_start_slot, profile)?.into();
+                stats += delete_track_local(
+                    store,
+                    *track,
+                    info.track_number,
+                    epoch_start_slot,
+                    profile,
+                )?
+                .into();
                 continue;
             }
 
@@ -252,7 +258,7 @@ async fn sweep_orphan_tracks<Db: Store>(
 
             if reclaim {
                 stats.slices_deleted +=
-                    cleanup_track_slices(store, *track, info.group, epoch_start_slot, profile)?;
+                    cleanup_track_slices(store, *track, info, epoch_start_slot, profile)?;
             }
         }
 
@@ -283,14 +289,9 @@ async fn sweep_orphan_slices<Db: Store>(
             let (addresses, next) = store
                 .sweep_slice_keys_by_spool(spool_id, cursor.as_deref(), slice_batch(config))
                 .map_err(store_error)?;
-            // Both reads the decision needs, once each for the page. The object
-            // read is unconditional per batch rather than conditional per row,
-            // which trades a few small values for a round trip a row.
-            let in_store = store.get_tracks(&addresses).map_err(store_error)?;
-            let objects = store.get_object_infos(&addresses).map_err(store_error)?;
 
-            for ((track, held), object) in addresses.iter().zip(in_store).zip(objects) {
-                if should_delete_slice(pending, at_tip, spool_id, *track, held, object) {
+            for track in &addresses {
+                if should_delete_slice(store, pending, at_tip, spool_id, *track)? {
                     // An orphan slice has no track record, so it was never in
                     // the sample set and leaves nothing behind.
                     store.delete_slice(spool_id, *track).map_err(store_error)?;
@@ -325,7 +326,7 @@ async fn sweep_stale_recoveries<Db: Store>(
             .map_err(store_error)?;
 
         for track in queued {
-            if recovery_is_stale(store, pending, at_tip, spool_id, track)? {
+            if should_delete_slice(store, pending, at_tip, spool_id, track)? {
                 store
                     .remove_pending_recovery(spool_id, track)
                     .map_err(store_error)?;
@@ -340,49 +341,44 @@ async fn sweep_stale_recoveries<Db: Store>(
     Ok(())
 }
 
-/// Whether one slice has outlived the track it belongs to
+/// Whether one slice has outlived every track it belongs to
 ///
-/// Reads nothing. The page it belongs to read the track and its object info in
-/// one call apiece, so the decision is arithmetic on what came back.
-fn should_delete_slice(
-    pending: &PendingTracks,
-    at_tip: bool,
-    spool_id: SpoolIndex,
-    track: Address,
-    in_store: Option<CompressedTrack>,
-    object: Option<ObjectInfo>,
-) -> bool {
-    let Some(track_info) = pending.apply_to_track(track, in_store) else {
-        return at_tip;
-    };
-
-    if !track_info.group.contains(spool_id) {
-        return true;
-    }
-
-    if in_store.is_none() {
-        return false;
-    }
-
-    match object {
-        Some(object) if object.is_live() => false,
-        Some(_) => true,
-        None => at_tip,
-    }
-}
-
-fn recovery_is_stale<Db: Store>(
+/// A spool holds one copy of a slice per address, so the slice stays while any
+/// track under the address in this spool's group still needs it.
+fn should_delete_slice<Db: Store>(
     store: &TapeStore<Db>,
     pending: &PendingTracks,
     at_tip: bool,
     spool_id: SpoolIndex,
     track: Address,
 ) -> Result<bool, NodeError> {
-    let in_store = store.get_track(track).map_err(store_error)?;
-    let object = store.get_object_info(track).map_err(store_error)?;
-    Ok(should_delete_slice(
-        pending, at_tip, spool_id, track, in_store, object,
-    ))
+    let stored = store.tracks_by_address(track).map_err(store_error)?;
+    let known = pending.apply_to_tracks(track, stored.clone());
+    if known.is_empty() {
+        return Ok(at_tip);
+    }
+
+    for info in known.iter().filter(|info| info.group.contains(spool_id)) {
+        let is_stored = stored
+            .iter()
+            .any(|held| held.track_number == info.track_number);
+        if !is_stored {
+            return Ok(false);
+        }
+
+        let object = store
+            .get_object_info(track, info.track_number)
+            .map_err(store_error)?;
+        let is_needed = match object {
+            Some(object) => object.is_live(),
+            None => !at_tip,
+        };
+        if is_needed {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
 }
 
 fn track_batch(config: &GcConfig) -> usize {
@@ -426,7 +422,7 @@ mod tests {
     use tape_store_memory::MemoryStore;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
         EpochNumber, RoundNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
     };
@@ -469,6 +465,17 @@ mod tests {
         spools.iter().copied().collect()
     }
 
+    const NUMBER: TrackNumber = TrackNumber(0);
+
+    fn inline_sample() -> TrackSample {
+        TrackSample {
+            kind: EntryKind::Inline,
+            value_hash: Hash::default(),
+            registered_slot: SlotNumber(1),
+            deleted_slot: None,
+        }
+    }
+
     fn valid_object(track: Address, epoch: EpochNumber, slot: SlotNumber) -> ObjectInfo {
         ObjectInfo::Valid {
             track_address: track,
@@ -485,7 +492,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(1024),
             group,
             value_hash: Hash::new_unique(),
@@ -521,7 +528,7 @@ mod tests {
             .unwrap();
         store.put_track(track, info).unwrap();
         store
-            .put_object_info(track, valid_object(track, EpochNumber(1), slot))
+            .put_object_info(track, TrackNumber(0), valid_object(track, EpochNumber(1), slot))
             .unwrap();
         store.put_slice(spool_id, track, vec![1, 2, 3]).unwrap();
 
@@ -530,8 +537,8 @@ mod tests {
             .unwrap();
 
         assert!(store.get_tape(tape).unwrap().is_none());
-        assert!(store.get_track(track).unwrap().is_none());
-        assert!(store.get_object_info(track).unwrap().is_none());
+        assert!(store.get_track(track, TrackNumber(0)).unwrap().is_none());
+        assert!(store.get_object_info(track, TrackNumber(0)).unwrap().is_none());
         assert!(store.get_slice(spool_id, track).unwrap().is_none());
     }
 
@@ -584,7 +591,7 @@ mod tests {
             .unwrap();
         store.put_track(track, info).unwrap();
         store
-            .put_object_info(track, valid_object(track, EpochNumber(2), SlotNumber(20)))
+            .put_object_info(track, TrackNumber(0), valid_object(track, EpochNumber(2), SlotNumber(20)))
             .unwrap();
         store.put_slice(spool_id, track, vec![5, 6, 7]).unwrap();
 
@@ -592,8 +599,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store.get_track(track).unwrap().is_none());
-        assert!(store.get_object_info(track).unwrap().is_none());
+        assert!(store.get_track(track, TrackNumber(0)).unwrap().is_none());
+        assert!(store.get_object_info(track, TrackNumber(0)).unwrap().is_none());
         assert!(store.get_slice(spool_id, track).unwrap().is_none());
     }
 
@@ -627,6 +634,7 @@ mod tests {
         store
             .put_object_info(
                 track,
+                TrackNumber(0),
                 ObjectInfo::Invalid {
                     epoch: EpochNumber(3),
                     slot: SlotNumber(30),
@@ -639,9 +647,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store.get_track(track).unwrap().is_some());
+        assert!(store.get_track(track, TrackNumber(0)).unwrap().is_some());
         assert!(matches!(
-            store.get_object_info(track).unwrap(),
+            store.get_object_info(track, TrackNumber(0)).unwrap(),
             Some(ObjectInfo::Invalid { .. })
         ));
         assert!(store.get_slice(spool_id, track).unwrap().is_none());
@@ -677,6 +685,7 @@ mod tests {
         store
             .put_object_info(
                 track,
+                TrackNumber(0),
                 ObjectInfo::System {
                     kind: SystemObjectKind::Snapshot {
                         epoch: EpochNumber(3),
@@ -695,9 +704,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store.get_track(track).unwrap().is_some());
+        assert!(store.get_track(track, TrackNumber(0)).unwrap().is_some());
         assert!(matches!(
-            store.get_object_info(track).unwrap(),
+            store.get_object_info(track, TrackNumber(0)).unwrap(),
             Some(ObjectInfo::System {
                 kind: SystemObjectKind::Snapshot { .. },
                 ..
@@ -737,6 +746,7 @@ mod tests {
         store
             .put_object_info(
                 track,
+                TrackNumber(0),
                 ObjectInfo::Invalid {
                     epoch: EpochNumber(3),
                     slot: SlotNumber(30),
@@ -780,7 +790,7 @@ mod tests {
             .unwrap();
         store.put_track(track, info).unwrap();
         store
-            .put_object_info(track, valid_object(track, EpochNumber(1), SlotNumber(10)))
+            .put_object_info(track, TrackNumber(0), valid_object(track, EpochNumber(1), SlotNumber(10)))
             .unwrap();
         store.put_slice(spool_id, track, vec![1]).unwrap();
 
@@ -792,8 +802,8 @@ mod tests {
             .unwrap();
 
         assert!(store.get_tape(tape).unwrap().is_none());
-        assert!(store.get_track(track).unwrap().is_none());
-        assert!(store.get_object_info(track).unwrap().is_none());
+        assert!(store.get_track(track, TrackNumber(0)).unwrap().is_none());
+        assert!(store.get_object_info(track, TrackNumber(0)).unwrap().is_none());
         assert!(store.get_slice(spool_id, track).unwrap().is_none());
     }
 
@@ -826,6 +836,7 @@ mod tests {
         store
             .put_object_info(
                 track_stale,
+                TrackNumber(0),
                 ObjectInfo::Valid {
                     track_address: track_stale,
                     registered_epoch: EpochNumber(2),
@@ -844,6 +855,7 @@ mod tests {
         store
             .put_object_info(
                 track_recent,
+                TrackNumber(1),
                 ObjectInfo::Valid {
                     track_address: track_recent,
                     registered_epoch: EpochNumber(4),
@@ -868,16 +880,16 @@ mod tests {
         .unwrap();
 
         // Stale uncertified metadata is proof substrate and must remain.
-        assert!(store.get_track(track_stale).unwrap().is_some());
-        assert!(store.get_object_info(track_stale).unwrap().is_some());
+        assert!(store.get_track(track_stale, TrackNumber(0)).unwrap().is_some());
+        assert!(store.get_object_info(track_stale, TrackNumber(0)).unwrap().is_some());
         assert!(store.get_slice(owned_spool, track_stale).unwrap().is_some());
         assert!(store.get_slice(unowned_spool, track_stale).unwrap().is_none());
         assert!(!store.has_pending_repair(unowned_spool, track_stale).unwrap());
         assert!(!store.has_pending_recovery(unowned_spool, track_stale).unwrap());
 
         // Recent track should remain
-        assert!(store.get_track(track_recent).unwrap().is_some());
-        assert!(store.get_object_info(track_recent).unwrap().is_some());
+        assert!(store.get_track(track_recent, TrackNumber(1)).unwrap().is_some());
+        assert!(store.get_object_info(track_recent, TrackNumber(1)).unwrap().is_some());
         assert!(store.get_slice(unowned_spool, track_recent).unwrap().is_some());
     }
 
@@ -892,23 +904,9 @@ mod tests {
         store.put_slice(spool_id, track, vec![1, 2, 3]).unwrap();
 
         // Behind the durable tip: "absent locally" is ambiguous, so defer.
-        assert!(!should_delete_slice(
-            &pending,
-            false,
-            spool_id,
-            track,
-            store.get_track(track).unwrap(),
-            store.get_object_info(track).unwrap(),
-        ));
+        assert!(!should_delete_slice(&store, &pending, false, spool_id, track).unwrap());
         // Caught up: the track is genuinely absent on-chain, so reclaim.
-        assert!(should_delete_slice(
-            &pending,
-            true,
-            spool_id,
-            track,
-            store.get_track(track).unwrap(),
-            store.get_object_info(track).unwrap(),
-        ));
+        assert!(should_delete_slice(&store, &pending, true, spool_id, track).unwrap());
     }
 
     #[tokio::test]
@@ -929,14 +927,47 @@ mod tests {
         );
         store.put_slice(spool_id, track, vec![9, 9, 9]).unwrap();
 
-        assert!(!should_delete_slice(
-            &pending,
-            true,
-            spool_id,
-            track,
-            store.get_track(track).unwrap(),
-            store.get_object_info(track).unwrap(),
-        ));
+        assert!(!should_delete_slice(&store, &pending, true, spool_id, track).unwrap());
+    }
+
+    // a slice stays while any track under its address in the group still needs it
+    #[tokio::test]
+    async fn shared_slice() {
+        let store = test_store();
+        let pending = PendingTracks::new();
+        let tape = Address::new_unique();
+        let group = GroupIndex(1);
+        let spool_id = group.spool_at(0);
+        let track = Address::new_unique();
+
+        for number in [0, 3] {
+            store.put_track(track, track_info(tape, TrackNumber(number), group)).unwrap();
+        }
+        store
+            .put_object_info(
+                track,
+                TrackNumber(0),
+                ObjectInfo::Invalid { epoch: EpochNumber(3), slot: SlotNumber(30) },
+            )
+            .unwrap();
+        store
+            .put_object_info(track, TrackNumber(3), valid_object(track, EpochNumber(3), SlotNumber(31)))
+            .unwrap();
+        store.put_slice(spool_id, track, vec![9, 9, 9]).unwrap();
+
+        assert!(!should_delete_slice(&store, &pending, true, spool_id, track).unwrap());
+
+        // The other group's spools never held this address.
+        assert!(should_delete_slice(&store, &pending, true, GroupIndex(2).spool_at(0), track).unwrap());
+
+        store
+            .put_object_info(
+                track,
+                TrackNumber(3),
+                ObjectInfo::Invalid { epoch: EpochNumber(4), slot: SlotNumber(40) },
+            )
+            .unwrap();
+        assert!(should_delete_slice(&store, &pending, true, spool_id, track).unwrap());
     }
 
     // a deleted track keeps its slices while a round can still draw it, and only
@@ -948,31 +979,23 @@ mod tests {
         let track = Address::new_unique();
         let group = GroupIndex(0);
         let spool = group.spool_at(0);
+        let info = track_info(Address::new_unique(), NUMBER, group);
 
         store.put_slice(spool, track, vec![7u8; 32]).unwrap();
         store
-            .put_track_data(track, tape_core::track::data::BlobData::Inline(vec![1, 2, 3]))
+            .put_track_data(track, NUMBER, tape_core::track::data::BlobData::Inline(vec![1, 2, 3]))
             .unwrap();
         store
-            .put_track_sample(
-                group,
-                track,
-                TrackSample {
-                    kind: EntryKind::Inline,
-                    value_hash: Hash::default(),
-                    registered_slot: SlotNumber(1),
-                    deleted_slot: None,
-                },
-            )
+            .put_track_sample(group, track, NUMBER, inline_sample())
             .unwrap();
 
-        cleanup_track_slices(&store, track, group, SlotNumber(10), TAPENET_PROFILE).unwrap();
+        cleanup_track_slices(&store, track, &info, SlotNumber(10), TAPENET_PROFILE).unwrap();
         assert!(
             store.get_slice(spool, track).unwrap().is_some(),
             "the delete took bytes a live round still asks for"
         );
         assert!(
-            store.get_track_data(track).unwrap().is_some(),
+            store.get_track_data(track, NUMBER).unwrap().is_some(),
             "the delete took the encoding an observer verifies against"
         );
 
@@ -987,8 +1010,54 @@ mod tests {
         let swept = sweep_deleted_slices(&store, past, TAPENET_PROFILE).unwrap();
         assert_eq!((swept.tracks, swept.slices), (1, 1));
         assert!(store.get_slice(spool, track).unwrap().is_none());
-        assert!(store.get_track_data(track).unwrap().is_none());
-        assert!(store.track_sample(group, track).unwrap().is_none());
+        assert!(store.get_track_data(track, NUMBER).unwrap().is_none());
+        assert!(store.track_sample(group, track, NUMBER).unwrap().is_none());
+    }
+
+    // two tracks with one address in a group share its slices, which go only
+    // when the second one's row is swept
+    #[tokio::test]
+    async fn shared_slices_outlive_first_delete() {
+        let store = test_store();
+        let track = Address::new_unique();
+        let tape = Address::new_unique();
+        let group = GroupIndex(0);
+        let spool = group.spool_at(0);
+        let first = track_info(tape, TrackNumber(2), group);
+        let second = track_info(tape, TrackNumber(5), group);
+
+        store.put_slice(spool, track, vec![7u8; 32]).unwrap();
+        for info in [first, second] {
+            store.put_track(track, info).unwrap();
+            store
+                .put_track_data(track, info.track_number, tape_core::track::data::BlobData::Inline(vec![1]))
+                .unwrap();
+            store
+                .put_track_sample(group, track, info.track_number, inline_sample())
+                .unwrap();
+        }
+        store.add_pending_repair(spool, track).unwrap();
+
+        cleanup_track_slices(&store, track, &first, SlotNumber(10), TAPENET_PROFILE).unwrap();
+        store.delete_track(track, first.track_number).unwrap();
+        assert!(store.has_pending_repair(spool, track).unwrap());
+
+        let past = SlotNumber(11 + DELETED_SLICE_HORIZON_SLOTS);
+        let swept = sweep_deleted_slices(&store, past, TAPENET_PROFILE).unwrap();
+        assert_eq!((swept.tracks, swept.slices), (1, 0));
+        assert!(store.get_slice(spool, track).unwrap().is_some());
+        assert!(store.get_track_data(track, TrackNumber(2)).unwrap().is_none());
+        assert!(store.get_track_data(track, TrackNumber(5)).unwrap().is_some());
+
+        cleanup_track_slices(&store, track, &second, past, TAPENET_PROFILE).unwrap();
+        store.delete_track(track, second.track_number).unwrap();
+        assert!(!store.has_pending_repair(spool, track).unwrap());
+
+        let later = SlotNumber(past.as_u64() + 1 + DELETED_SLICE_HORIZON_SLOTS);
+        let swept = sweep_deleted_slices(&store, later, TAPENET_PROFILE).unwrap();
+        assert_eq!((swept.tracks, swept.slices), (1, 1));
+        assert!(store.get_slice(spool, track).unwrap().is_none());
+        assert!(store.get_track_data(track, TrackNumber(5)).unwrap().is_none());
     }
 
     // the sweep drops per-round outcomes older than the epoch that just closed,

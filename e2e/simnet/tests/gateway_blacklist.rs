@@ -319,11 +319,17 @@ async fn followed_blacklists_inner() {
 
     // A restart with a blacklist track's bytes gone fetches them from peers and
     // denies the same set.
-    gateway
-        .context()
-        .store
-        .delete_track_data(next_declaration)
-        .expect("drop a blacklist track's bytes");
+    {
+        // The store closes with this block, so the restart can take its lock.
+        let store = gateway.context().store.clone();
+        let declaration = store
+            .latest_track(next_declaration)
+            .expect("read gateway track")
+            .expect("gateway knows the blacklist track");
+        store
+            .delete_track_data(next_declaration, declaration.track_number)
+            .expect("drop a blacklist track's bytes");
+    }
     gateway.stop().await.expect("stop gateway");
     gateway.start().await.expect("restart gateway");
     wait_denied(|| client.get(object(early)), catch_up_timeout).await;
@@ -427,11 +433,16 @@ fn records(children: &[&TapeKey]) -> Vec<Record> {
 }
 
 fn has_data(gateway: &TestGateway, track: Address) -> bool {
-    gateway
-        .context()
-        .store
-        .has_track_data(track)
-        .expect("read gateway track data")
+    let store = gateway.context().store.clone();
+    store
+        .tracks_by_address(track)
+        .expect("read gateway tracks")
+        .iter()
+        .any(|info| {
+            store
+                .has_track_data(track, info.track_number)
+                .expect("read gateway track data")
+        })
 }
 
 /// Wait until the gateway knows a track and holds none of its data
@@ -439,7 +450,7 @@ async fn wait_purged(gateway: &TestGateway, track: Address, timeout: Duration) {
     let start = Instant::now();
     loop {
         let store = gateway.context().store.clone();
-        let is_known = store.get_track(track).expect("read gateway track").is_some();
+        let is_known = store.latest_track(track).expect("read gateway track").is_some();
         if is_known && !has_data(gateway, track) {
             return;
         }

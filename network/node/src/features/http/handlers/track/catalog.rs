@@ -21,13 +21,16 @@ use tape_protocol::Api;
 use tape_protocol::api::{
     BINARY_CONTENT, FindTrackRequest, ListTracksByTapeRequest, ListTracksByTapeResponse,
     ListObjectsRequest, ListObjectsResponse, ObjectListItem, TrackDataResponse,
-    TrackProofResponse, TrackResponse, ops::FindTrackVersion,
+    TrackProofResponse, TrackResponse, TracksResponse, ops::FindTrackVersion,
 };
 use tape_store::ops::{ObjectListOps, TapeOps, TrackDataOps, TrackOps};
 
 use crate::features::http::auth::{local_access_threshold, MaybeActivePeer, MaybeStakedPeer};
 use crate::features::blacklist::refuses_object;
 use crate::features::http::error::RouteError;
+use crate::features::http::handlers::track::{
+    parse_tape, parse_track, resolve_owned_track, resolve_tape_track, tracks_by_address,
+};
 use crate::features::http::share::check_share_token;
 use crate::features::http::peer_identity::PeerIdentity;
 use crate::features::http::state::AppState;
@@ -35,27 +38,22 @@ use crate::features::http::state::AppState;
 const MAX_TRACK_SCAN_LIMIT: usize = u32::MAX as usize;
 const MAX_OBJECT_LIST_LIMIT: usize = 1_000;
 
+/// Every track under an address. Tracks written with the same content share
+/// one, and the caller picks among them.
 pub async fn get_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path(track_id): Path<String>,
 ) -> Result<impl IntoResponse, RouteError> {
 
-    let track: Address = track_id
-        .parse()
-        .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
+    let track = parse_track(&track_id)?;
 
-    let in_store = state.context.store
-        .get_track(track)
-        .map_err(store_error)?;
+    let tracks = tracks_by_address(&state, track)?;
+    if tracks.is_empty() {
+        return Err(RouteError::NotFound);
+    }
 
-    let track = state
-        .context
-        .pending
-        .apply_to_track(track, in_store)
-        .ok_or(RouteError::NotFound)?;
-
-    let body = wincode::serialize(&TrackResponse {
-        track: track.pack(),
+    let body = wincode::serialize(&TracksResponse {
+        tracks: tracks.iter().map(|info| info.pack()).collect(),
     })
     .map_err(|error| RouteError::Internal(format!("serialize track response: {error}")))?;
 
@@ -71,20 +69,9 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, RouteError> {
 
-    let track_addr: Address = track_id
-        .parse()
-        .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
+    let track_addr = parse_track(&track_id)?;
 
-    let in_store = state
-        .context
-        .store
-        .get_track(track_addr)
-        .map_err(store_error)?;
-
-    let track = state
-        .context
-        .pending
-        .apply_to_track(track_addr, in_store)
+    let track = resolve_owned_track(&state, track_addr)?
         .ok_or(RouteError::NotFound)?;
 
     if track.is_inline() && local_access_threshold(&state).0 > 0 && staked_peer.is_none() {
@@ -116,12 +103,12 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     check_share_token(&state, &track, identity, active_peer, &headers)?;
 
-    let data = match state.context.pending.track_data(track_addr) {
+    let data = match state.context.pending.track_data(track_addr, track.track_number) {
         Some(data) => data,
         None => state
             .context
             .store
-            .get_track_data(track_addr)
+            .get_track_data(track_addr, track.track_number)
             .map_err(store_error)?
             .ok_or(RouteError::NotFound)?,
     };
@@ -138,23 +125,12 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
 pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     MaybeStakedPeer(staked_peer): MaybeStakedPeer,
-    Path(track_id): Path<String>,
+    Path((tape_id, track_number)): Path<(String, u64)>,
 ) -> Result<impl IntoResponse, RouteError> {
 
-    let track_addr: Address = track_id
-        .parse()
-        .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
-
-    let in_store = state
-        .context
-        .store
-        .get_track(track_addr)
-        .map_err(store_error)?;
-
-    let track = state
-        .context
-        .pending
-        .apply_to_track(track_addr, in_store)
+    // A proof is for one leaf, which its tape and track number identify.
+    let tape = parse_tape(&tape_id)?;
+    let (_, track) = resolve_tape_track(&state, tape, TrackNumber(track_number))?
         .ok_or(RouteError::NotFound)?;
 
     // The reservation is folded in too. A track resolved from the overlay whose
@@ -236,37 +212,8 @@ pub async fn get_track_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Path((tape_id, track_number)): Path<(String, u64)>,
 ) -> Result<impl IntoResponse, RouteError> {
 
-    let tape: Address = tape_id
-        .parse()
-        .map_err(|error| RouteError::BadRequest(format!("invalid tape id: {error}")))?;
-
-    let track_number = TrackNumber(track_number);
-    let stored = state
-        .context
-        .store
-        .track_address_by_number(tape, track_number)
-        .map_err(store_error)?;
-
-    // A registration that is confirmed but not finalized is only in the pending overlay.
-    let track_addr = match stored {
-        Some(address) => address,
-        None => state
-            .context
-            .pending
-            .track_address_by_number(tape, track_number)
-            .ok_or(RouteError::NotFound)?,
-    };
-
-    let in_store = state
-        .context
-        .store
-        .get_track(track_addr)
-        .map_err(store_error)?;
-
-    let track = state
-        .context
-        .pending
-        .apply_to_track(track_addr, in_store)
+    let tape = parse_tape(&tape_id)?;
+    let (_, track) = resolve_tape_track(&state, tape, TrackNumber(track_number))?
         .ok_or(RouteError::NotFound)?;
 
     let body = wincode::serialize(&TrackResponse {
@@ -471,7 +418,7 @@ fn merge_pending_tape_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
         if let Some(track) = state
             .context
             .pending
-            .apply_to_track(track_addr, Some(disk_track))
+            .apply_to_track(track_addr, disk_track.track_number, Some(disk_track))
         {
             by_number.insert(track.track_number, track);
         }
@@ -495,7 +442,7 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_peer_manager::PeerNode;
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{EpochNumber, StorageUnits, TapeNumber};
     use tape_store::ops::{TapeOps, TrackOps};
@@ -529,6 +476,7 @@ mod tests {
         });
     }
 
+    /// Put one track on a new tape and return the tape
     fn seed_track(ctx: &TestContext, system: bool) -> Address {
         let tape = Address::new_unique();
         let flags = if system { TapeFlags::SYSTEM } else { 0 };
@@ -553,19 +501,19 @@ mod tests {
             key: Hash::from([1u8; 32]),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(64),
             group: GroupIndex(0),
             value_hash: Hash::from([2u8; 32]),
         };
-        let track_addr = track.address();
-        ctx.store.put_track(track_addr, track).expect("put track");
-        track_addr
+        ctx.store.put_track(track.address(), track).expect("put track");
+        tape
     }
 
+    /// Ask for the proof of track 0 on a tape
     async fn call_get_track_proof(
         ctx: &TestContext,
-        track: Address,
+        tape: Address,
         staked_peer: Option<StakedPeer>,
     ) -> Result<impl IntoResponse, RouteError> {
         get_track_proof::<_, _, _>(
@@ -573,7 +521,7 @@ mod tests {
                 context: ctx.clone(),
             }),
             MaybeStakedPeer(staked_peer),
-            Path(track.to_string()),
+            Path((tape.to_string(), 0)),
         )
         .await
     }
@@ -582,9 +530,9 @@ mod tests {
     async fn anonymous_user_tape_proof_requires_stake_when_threshold_positive() {
         let ctx = test_context().await;
         set_access_threshold(&ctx);
-        let track = seed_track(&ctx, false);
+        let tape = seed_track(&ctx, false);
 
-        let result = call_get_track_proof(&ctx, track, None).await;
+        let result = call_get_track_proof(&ctx, tape, None).await;
 
         assert!(matches!(result, Err(RouteError::Forbidden(_))));
     }
@@ -593,9 +541,9 @@ mod tests {
     async fn anonymous_system_tape_proof_allowed_when_threshold_positive() {
         let ctx = test_context().await;
         set_access_threshold(&ctx);
-        let track = seed_track(&ctx, true);
+        let tape = seed_track(&ctx, true);
 
-        let result = call_get_track_proof(&ctx, track, None).await;
+        let result = call_get_track_proof(&ctx, tape, None).await;
 
         assert!(result.is_ok());
     }
@@ -604,14 +552,14 @@ mod tests {
     async fn staked_peer_can_fetch_user_tape_proof_when_threshold_positive() {
         let ctx = test_context().await;
         set_access_threshold(&ctx);
-        let track = seed_track(&ctx, false);
+        let tape = seed_track(&ctx, false);
         let staked_peer = StakedPeer {
             node: Address::new_unique(),
             tls_pubkey: Zeroable::zeroed(),
             stake: TAPE(1),
         };
 
-        let result = call_get_track_proof(&ctx, track, Some(staked_peer)).await;
+        let result = call_get_track_proof(&ctx, tape, Some(staked_peer)).await;
 
         assert!(result.is_ok());
     }
@@ -628,7 +576,7 @@ mod tests {
                 key: Hash::from([1u8; 32]),
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
+                flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(64),
                 group: GroupIndex(0),
                 value_hash: Hash::from([2u8; 32]),
@@ -673,7 +621,7 @@ mod tests {
             key: Hash::from([1u8; 32]),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(64),
             group: GroupIndex(0),
             value_hash: Hash::from([2u8; 32]),
@@ -692,7 +640,7 @@ mod tests {
         // Neither the track nor the tape is durable yet.
         assert!(
             matches!(
-                call_get_track_proof(&ctx, track_addr, None).await,
+                call_get_track_proof(&ctx, tape, None).await,
                 Err(RouteError::NotFound)
             ),
             "a track with no tape anywhere should not resolve"
@@ -712,14 +660,14 @@ mod tests {
             },
         );
         assert!(
-            call_get_track_proof(&ctx, track_addr, None).await.is_ok(),
+            call_get_track_proof(&ctx, tape, None).await.is_ok(),
             "the overlay resolved the track but not its reservation"
         );
 
         // Dropping the slot takes the reservation with it.
         ctx.pending.drop_slot(tape_core::types::SlotNumber(10));
         assert!(matches!(
-            call_get_track_proof(&ctx, track_addr, None).await,
+            call_get_track_proof(&ctx, tape, None).await,
             Err(RouteError::NotFound)
         ));
     }
@@ -744,9 +692,17 @@ mod tests {
     #[tokio::test]
     async fn by_number_stored_and_pending() {
         let ctx = test_context().await;
-        let stored_addr = seed_track(&ctx, false);
-        let stored = ctx.store.get_track(stored_addr).expect("get track").expect("stored track");
-        let tape = stored.tape;
+        let tape = seed_track(&ctx, false);
+        let stored_addr = ctx
+            .store
+            .track_address_by_number(tape, TrackNumber(0))
+            .expect("look up track")
+            .expect("stored address");
+        let stored = ctx
+            .store
+            .get_track(stored_addr, TrackNumber(0))
+            .expect("get track")
+            .expect("stored track");
 
         assert_eq!(track_by_number(&ctx, tape, 0).await.expect("stored"), stored);
         assert!(matches!(track_by_number(&ctx, tape, 1).await, Err(RouteError::NotFound)));

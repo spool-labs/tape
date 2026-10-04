@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use tape_core::types::{SpoolIndex, StorageUnits, TrackNumber};
+use tape_core::types::{SpoolIndex, StorageUnits};
 use tape_protocol::ApiError;
 use thiserror::Error;
 use tape_rpc::RpcError;
@@ -129,17 +129,6 @@ pub enum TapedriveError {
 
     #[error("commitment mismatch")]
     CommitmentMismatch,
-
-    #[error("write conflict at {track_number}: the tape already holds a different track here, resume the original write or use a fresh tape key")]
-    WriteConflict {
-        track_number: TrackNumber,
-    },
-
-    #[error("track position conflict: expected {expected}, but the tape's next track is {next}")]
-    TrackPositionConflict {
-        expected: TrackNumber,
-        next: TrackNumber,
-    },
 
     #[error("not found")]
     NotFound,

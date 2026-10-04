@@ -238,10 +238,12 @@ impl SimnetScenario<'_> {
                 break;
             }
 
-            let last = batch.last().map(|(track, _)| *track);
+            let last = batch
+                .last()
+                .map(|(track, metadata)| (*track, metadata.track_number));
             for (track, metadata) in batch {
                 let object_info = store
-                    .get_object_info(track)
+                    .get_object_info(track, metadata.track_number)
                     .with_context(|| format!("get_object_info node {index} track {track}"))?;
                 tracks.insert(
                     track,
@@ -650,7 +652,7 @@ mod tests {
     use super::*;
 
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::Hash;
 
@@ -674,7 +676,7 @@ mod tests {
                 track_number: TrackNumber(0),
                 kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
+                flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(64),
                 group: GroupIndex::from(0),
                 value_hash: Hash::new_unique(),

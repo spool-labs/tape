@@ -283,6 +283,7 @@ mod tests {
         let track = Address::new_unique();
         let event = TrackCertified {
             track,
+            track_number: TrackNumber(0),
             epoch: EpochNumber(10),
             signer_count: 5,
             signer_weight: 100,

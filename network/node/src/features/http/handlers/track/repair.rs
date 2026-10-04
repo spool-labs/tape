@@ -8,7 +8,6 @@ use axum::response::IntoResponse;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::track::data::BlobData;
-use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, RepairRequest};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
@@ -16,6 +15,7 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use crate::features::blacklist::refuses_object;
 use crate::features::http::auth::{MaybeActivePeer, StakedPeer};
 use crate::features::http::error::RouteError;
+use crate::features::http::handlers::track::parse_track;
 use crate::features::http::share::check_share_token;
 use crate::features::http::peer_identity::PeerIdentity;
 use crate::features::http::state::AppState;
@@ -34,11 +34,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let request: RepairRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("repair request: {error}")))?;
 
-    let track: Address = track_id
-        .parse()
-        .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
-
-    let track_key = track;
+    let track_key = parse_track(&track_id)?;
 
     state
         .context
@@ -50,7 +46,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let track = state
         .context
         .store
-        .get_track(track_key)
+        .spool_track(request.helper_spool, track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
     if !track.is_coded() {
@@ -75,7 +71,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let track_data = state
         .context
         .store
-        .get_track_data(track_key)
+        .get_track_data(track_key, track.track_number)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
     let BlobData::Coded(_) = track_data else {
@@ -122,12 +118,13 @@ mod tests {
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
     use tape_crypto::Hash;
+    use tape_crypto::address::Address;
     use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_protocol::api::{RepairRequest, StripeSubChunkRequest};
     use tape_slicer::{ErasureCoder, Slicer};
@@ -209,7 +206,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: blob.size,
             group,
             value_hash: blob.get_hash(),
@@ -221,12 +218,13 @@ mod tests {
             .expect("seed track");
 
         ctx.store
-            .put_track_data(track_address, BlobData::Coded(blob))
+            .put_track_data(track_address, track.track_number, BlobData::Coded(blob))
             .expect("seed track data");
 
         ctx.store
             .put_object_info(
                 track_address,
+                track.track_number,
                 ObjectInfo::System {
                     kind: SystemObjectKind::Snapshot {
                         epoch,

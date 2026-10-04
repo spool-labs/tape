@@ -215,7 +215,7 @@ mod tests {
     use tape_crypto::hash::hashv;
 
     use crate::spooler::GroupIndex;
-    use crate::track::types::{TrackKind, TrackState, TrackVisibility};
+    use crate::track::types::{TrackFlags, TrackKind, TrackState};
     use crate::types::StorageUnits;
 
     use super::*;
@@ -231,7 +231,7 @@ mod tests {
             key: hashv(&[b"key", &track_number.pack()]),
             kind: TrackKind::Coded.into(),
             state: TrackState::Registered.into(),
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits(1024),
             group: GroupIndex(3),
             value_hash: hashv(&[b"registered", &track_number.pack()]),

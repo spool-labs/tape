@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tape_store_api::{Column, Store};
 use tape_core::challenge::{EvictionPolicy, PeerRecord};
 use tape_core::erasure::group_for_spool;
-use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
+use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex, TrackNumber};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{
     NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, run_simnet_test,
@@ -148,7 +148,7 @@ async fn challenge_reprieve_inner() {
     let served = node_slice(&harness, VICTIM, spool, track).expect("victim holds its slice");
     let mut stored: HashMap<Address, Vec<u8>> = HashMap::new();
 
-    let mut inline: HashMap<Address, Vec<u8>> = HashMap::new();
+    let mut inline: HashMap<(Address, TrackNumber), Vec<u8>> = HashMap::new();
     let start = Instant::now();
     let fired = loop {
         for (held, bytes) in raw_spool(&harness, spool) {
@@ -161,12 +161,12 @@ async fn challenge_reprieve_inner() {
         // Inline tracks answer from the payload, not a slice, and the group's
         // set is full of them. Left alone they hand the victim honest answers
         // and the run of misses never builds.
-        for (track, payload) in inline_payloads(&harness, spool) {
-            if inline.contains_key(&track) {
+        for (track, number, payload) in inline_payloads(&harness, spool) {
+            if inline.contains_key(&(track, number)) {
                 continue;
             }
-            write_inline(&harness, track, &vec![0x5A; payload.len().max(1)]);
-            inline.insert(track, payload);
+            write_inline(&harness, track, number, &vec![0x5A; payload.len().max(1)]);
+            inline.insert((track, number), payload);
         }
 
         // The state the reprieve is defined on: the peer has stopped answering
@@ -202,8 +202,8 @@ async fn challenge_reprieve_inner() {
     for (held, bytes) in &stored {
         write_raw_slice(&harness, spool, *held, bytes);
     }
-    for (track, payload) in &inline {
-        write_inline(&harness, *track, payload);
+    for ((track, number), payload) in &inline {
+        write_inline(&harness, *track, *number, payload);
     }
     assert_eq!(
         node_slice(&harness, VICTIM, spool, track).expect("slice still present"),
@@ -328,7 +328,10 @@ fn rotted(slice: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn inline_payloads(harness: &SimnetHarness, spool: SpoolIndex) -> Vec<(Address, Vec<u8>)> {
+fn inline_payloads(
+    harness: &SimnetHarness,
+    spool: SpoolIndex,
+) -> Vec<(Address, TrackNumber, Vec<u8>)> {
     let node = harness.node(VICTIM).expect("victim node");
     let store = node.context().store.clone();
 
@@ -336,18 +339,18 @@ fn inline_payloads(harness: &SimnetHarness, spool: SpoolIndex) -> Vec<(Address, 
         .iter_track_samples_by_group(group_for_spool(spool))
         .expect("iter sample rows")
         .into_iter()
-        .filter_map(|(track, _)| match store.get_track_data(track) {
-            Ok(Some(BlobData::Inline(payload))) => Some((track, payload)),
+        .filter_map(|(track, number, _)| match store.get_track_data(track, number) {
+            Ok(Some(BlobData::Inline(payload))) => Some((track, number, payload)),
             _ => None,
         })
         .collect()
 }
 
-fn write_inline(harness: &SimnetHarness, track: Address, payload: &[u8]) {
+fn write_inline(harness: &SimnetHarness, track: Address, number: TrackNumber, payload: &[u8]) {
     let node = harness.node(VICTIM).expect("victim node");
     node.context()
         .store
-        .put_track_data(track, BlobData::Inline(payload.to_vec()))
+        .put_track_data(track, number, BlobData::Inline(payload.to_vec()))
         .expect("write inline");
 }
 

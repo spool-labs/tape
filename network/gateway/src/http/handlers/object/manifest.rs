@@ -18,7 +18,7 @@ use tokio_util::task::AbortOnDropHandle;
 use super::decode::decode_track_bytes;
 use super::response::{ByteRange, ObjectResponseMetadata, ranged_object_headers};
 use crate::http::error::RouteError;
-use crate::http::handlers::track::{track_address_by_number, track_with_pending};
+use crate::http::handlers::track::track_at_with_pending;
 use crate::http::state::AppState;
 
 /// One chunk a read will serve: its manifest index, the bytes the whole chunk
@@ -83,9 +83,15 @@ fn resolve_planned_chunks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut chunks = Vec::with_capacity(plan.len());
     for planned in plan {
         let entry = &manifest.chunks[planned.index];
-        let chunk_addr = track_address_by_number(state, tape, entry.track_number)?
+        let chunk_addr = entry.track;
+        let chunk = track_at_with_pending(state, chunk_addr, entry.track_number)?
             .ok_or(RouteError::NotFound)?;
-        let chunk = track_with_pending(state, chunk_addr)?.ok_or(RouteError::NotFound)?;
+        if chunk.tape != tape {
+            return Err(RouteError::BadGateway(format!(
+                "manifest chunk {} is on another tape",
+                planned.index
+            )));
+        }
         if !chunk.is_certified() {
             return Err(RouteError::BadGateway(format!(
                 "manifest chunk {} is not certified",
@@ -208,6 +214,7 @@ where
 mod tests {
     use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::Hash;
+    use tape_crypto::address::Address;
     use tape_sdk::stream::manifest::{ChunkEntry, ChunkManifest, MANIFEST_VERSION};
 
     use std::sync::Arc;
@@ -233,6 +240,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, (offset, size))| ChunkEntry {
                     track_number: TrackNumber(index as u64),
+                    track: Address::new_unique(),
                     offset: StorageUnits::from_bytes(offset),
                     size: StorageUnits::from_bytes(size),
                 })

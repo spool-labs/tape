@@ -1,5 +1,6 @@
 use tape_api::program::prelude::*;
 use tape_core::track::data::track_key;
+use tape_core::track::types::TrackFlags;
 
 use crate::error::TapeError;
 use crate::tape::helpers::{authorize_tape_operator, verified_tape_address};
@@ -7,7 +8,11 @@ use crate::track::helpers::append_track;
 
 pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let (header, blob) = parse_track_write(data)?;
-    let visibility = header.visibility()?;
+    let flags = header.flags();
+    if !TrackFlags::is_known(flags) {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
     let [
         fee_payer_info,
         authority_info,
@@ -56,7 +61,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         tape_address,
         key,
         meta,
-        visibility,
+        flags,
     )?;
 
     Ok(())
@@ -71,7 +76,7 @@ mod tests {
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::{BlobData, BlobInfo};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::types::ContentType;
     use tape_crypto::hash::{hash, hashv};
@@ -108,13 +113,27 @@ mod tests {
 
     #[test]
     fn register_track() {
-        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), None);
+        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), TrackFlags::NONE, None);
+    }
+
+    // a hidden write lands with the hidden flag on its leaf
+    #[test]
+    fn hidden_track() {
+        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), TrackFlags::HIDDEN, None);
+    }
+
+    // a flag the program does not define is refused
+    #[test]
+    fn unknown_flag() {
+        let refused = Some(ProgramError::InvalidInstructionData);
+
+        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), 1 << 40, refused);
     }
 
     // a 3-of-4 cluster registers a blob committed over its four live leaves
     #[test]
     fn narrow_commitment() {
-        write_case(trusted_system(NARROW), blob_of(4, NARROW), None);
+        write_case(trusted_system(NARROW), blob_of(4, NARROW), TrackFlags::NONE, None);
     }
 
     // a leaf set past the profile's n, or a root over the full array, is no commitment
@@ -122,11 +141,11 @@ mod tests {
     fn padded_commitment() {
         let refused = Some(TapeError::InvalidCommitment.into());
 
-        write_case(trusted_system(NARROW), blob_of(5, NARROW), refused.clone());
-        write_case(trusted_system(NARROW), blob_of(4, TAPENET_PROFILE), refused);
+        write_case(trusted_system(NARROW), blob_of(5, NARROW), TrackFlags::NONE, refused.clone());
+        write_case(trusted_system(NARROW), blob_of(4, TAPENET_PROFILE), TrackFlags::NONE, refused);
     }
 
-    fn write_case(base: System, blob: BlobEncoding, error: Option<ProgramError>) {
+    fn write_case(base: System, blob: BlobEncoding, flags: u64, error: Option<ProgramError>) {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let delegate = Pubkey::new_unique();
@@ -150,7 +169,7 @@ mod tests {
                 }),
                 data: BlobData::Coded(blob),
             },
-            TrackVisibility::Public,
+            flags,
         )
         .expect("valid blob write instruction");
 
@@ -202,7 +221,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags,
             size: storage_units,
             group,
             value_hash: blob.get_hash(),

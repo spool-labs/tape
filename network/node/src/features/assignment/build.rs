@@ -370,7 +370,7 @@ mod tests {
     use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::{blacklist_pda, TrackAddress};
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{TapeNumber, TrackNumber};
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
@@ -445,7 +445,7 @@ mod tests {
             track_number,
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
             group: GroupIndex(0),
             value_hash: entry_hash,
@@ -454,11 +454,12 @@ mod tests {
 
         store.put_track(track_address, state).unwrap();
         store
-            .put_track_data(track_address, BlobData::Inline(bytes_of(&entry).to_vec()))
+            .put_track_data(track_address, track_number, BlobData::Inline(bytes_of(&entry).to_vec()))
             .unwrap();
         store
             .put_object_info(
                 track_address,
+                track_number,
                 ObjectInfo::Valid {
                     track_address,
                     registered_epoch: epoch,
@@ -648,7 +649,7 @@ mod tests {
             track_number,
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
             group: GroupIndex(0),
             value_hash: entry.key(),
@@ -659,6 +660,7 @@ mod tests {
         store
             .put_object_info(
                 track_address,
+                track_number,
                 ObjectInfo::Valid {
                     track_address,
                     registered_epoch: EpochNumber(8),

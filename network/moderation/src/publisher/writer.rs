@@ -28,11 +28,12 @@ pub trait TrackWriter {
         bytes: &[u8],
     ) -> impl Future<Output = Result<WrittenTrack, ChainError>> + Send;
 
-    /// Delete a track on the tape, `ChainError::TrackNotFound` when no peer holds it
+    /// Delete one track on the tape, `ChainError::TrackNotFound` when no peer holds it
     fn delete_track(
         &self,
         tape: &ListTape,
         track: Address,
+        track_number: TrackNumber,
     ) -> impl Future<Output = Result<(), ChainError>> + Send;
 
     /// The track at a number, `None` while no peer holds one

@@ -9,7 +9,7 @@ use tape_blocks::ParsedInstruction;
 use tape_core::system::{EpochPhase, VoteKind};
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, TrackNumber};
 use tape_crypto::{Address, Hash};
 use tape_protocol::api::GetTrackDataReq;
 use tape_protocol::{Api, ProtocolState};
@@ -258,7 +258,8 @@ where
                 .next_track(&self.context.store)
                 .map_err(store_error("blacklist track scan"))?
             {
-                if !self.track_before_cutoff(scanned.address, voting_epoch)? {
+                let track_number = scanned.track.track_number;
+                if !self.track_before_cutoff(scanned.address, track_number, voting_epoch)? {
                     continue;
                 }
 
@@ -273,7 +274,7 @@ where
                     Some(data) => {
                         self.context
                             .store
-                            .put_track_data(scanned.address, data)
+                            .put_track_data(scanned.address, track_number, data)
                             .map_err(store_error("put blacklist track data"))?;
                     }
                     None => {
@@ -294,12 +295,13 @@ where
     fn track_before_cutoff(
         &self,
         track: Address,
+        track_number: TrackNumber,
         voting_epoch: EpochNumber,
     ) -> Result<bool, NodeError> {
         let Some(info) = self
             .context
             .store
-            .get_object_info(track)
+            .get_object_info(track, track_number)
             .map_err(store_error("blacklist object info lookup"))?
         else {
             return Ok(true);
@@ -333,7 +335,9 @@ where
             return Ok(None);
         }
 
-        let req = GetTrackDataReq { track: track_address };
+        let req = GetTrackDataReq {
+            track: track_address,
+        };
         for (_, node) in peers {
             if node == self.context.node_address() {
                 continue;

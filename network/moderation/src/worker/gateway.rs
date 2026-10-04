@@ -2,20 +2,20 @@
 
 use reqwest::header::{HeaderName, CONTENT_RANGE, CONTENT_TYPE, RANGE};
 use reqwest::{Client, RequestBuilder, Response, StatusCode};
-use tape_core::track::types::CompressedTrack;
+use tape_core::track::types::{latest_track, CompressedTrack};
 use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 use tape_protocol::api::{
     list_tracks_by_tape_url, track_url, ListTracksByTapeRequest, ListTracksByTapeResponse,
-    TrackResponse, BINARY_CONTENT,
+    TracksResponse, BINARY_CONTENT,
 };
 
 use crate::config::settings::GatewayConfig;
 use crate::worker::body::read_bounded;
 use crate::worker::error::WorkerError;
 
-/// Room for one wincode track record
-const TRACK_RESPONSE_MAX_BYTES: usize = 4 * 1_024;
+/// Room for the records of a few hundred tracks holding the same content
+const TRACK_RESPONSE_MAX_BYTES: usize = 64 * 1_024;
 
 /// Room per listed track, well over its packed size
 const LISTED_TRACK_MAX_BYTES: usize = 512;
@@ -66,12 +66,14 @@ impl GatewayClient {
         self.read_prefix(format!("/track/{track}"), limit).await
     }
 
+    /// The track a read by address answers with, among the tracks holding this content
     pub async fn track_record(&self, track: Address) -> Result<CompressedTrack, WorkerError> {
         let path = track_url(&track.to_string());
         let response = self.send(&path, self.client.get(self.url(&path))).await?;
         let bytes = self.success_body(&path, response, TRACK_RESPONSE_MAX_BYTES).await?;
-        let record: TrackResponse = wincode::deserialize(&bytes).map_err(|error| decode(&path, error.to_string()))?;
-        Ok(CompressedTrack::unpack(record.track))
+        let records: TracksResponse = wincode::deserialize(&bytes).map_err(|error| decode(&path, error.to_string()))?;
+        let tracks: Vec<CompressedTrack> = records.tracks.into_iter().map(CompressedTrack::unpack).collect();
+        latest_track(&tracks).ok_or_else(|| decode(&path, "no track in the answer".to_string()))
     }
 
     /// Up to `limit` of a tape's tracks in track order, starting after track `after`

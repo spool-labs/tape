@@ -159,7 +159,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             }
 
             // Load track_info. If missing, remove from pending_repairs and skip.
-            let track_info = match ctx.store.get_track(track) {
+            let track_info = match ctx.store.spool_track(spool, track) {
                 Ok(Some(info)) => info,
                 Ok(None) => {
                     let _ = ctx.store.remove_pending_repair(spool, track);
@@ -177,7 +177,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
                 continue;
             }
 
-            let track_data = match ctx.store.get_track_data(track) {
+            let track_data = match ctx.store.get_track_data(track, track_info.track_number) {
                 Ok(Some(BlobData::Coded(info))) => info,
                 Ok(Some(BlobData::Inline(_))) => {
                     warn!(spool = %spool, track = %track, "blob track has raw track_data, keeping queued");
@@ -194,7 +194,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             };
 
             // Only repair certified tracks.
-            match ctx.store.get_object_info(track) {
+            match ctx.store.get_object_info(track, track_info.track_number) {
                 Ok(Some(info)) if info.is_certified() => {}
                 Ok(Some(_)) => {
                     let _ = ctx.store.remove_pending_repair(spool, track);
@@ -606,7 +606,7 @@ mod tests {
     use tape_core::thresholds::TrustModel;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -652,7 +652,7 @@ mod tests {
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size),
             group: GroupIndex::containing(SPOOL),
             value_hash: blob.get_hash(),
@@ -750,8 +750,8 @@ mod tests {
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(track, track_info).unwrap();
-        ctx.store.put_track_data(track, BlobData::Coded(track_blob)).unwrap();
-        ctx.store.put_object_info(track, certified(track)).unwrap();
+        ctx.store.put_track_data(track, TrackNumber(0), BlobData::Coded(track_blob)).unwrap();
+        ctx.store.put_object_info(track, TrackNumber(0), certified(track)).unwrap();
         ctx.store.add_pending_repair(SPOOL, track).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
@@ -772,8 +772,8 @@ mod tests {
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
-        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
-        ctx.store.put_object_info(a, certified(a)).unwrap();
+        ctx.store.put_track_data(a, TrackNumber(0), BlobData::Coded(track_blob)).unwrap();
+        ctx.store.put_object_info(a, TrackNumber(0), certified(a)).unwrap();
         ctx.store.add_pending_repair(SPOOL, a).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
@@ -835,10 +835,11 @@ mod tests {
             .set_spool_state(SPOOL, repair_state(EpochNumber(3)))
             .unwrap();
         ctx.store.put_track(a, clay_track(1024, &slices)).unwrap();
-        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
+        ctx.store.put_track_data(a, TrackNumber(0), BlobData::Coded(track_blob)).unwrap();
         ctx.store
             .put_object_info(
                 a,
+                TrackNumber(0),
                 ObjectInfo::Valid {
                     track_address: a,
                     registered_epoch: EpochNumber(2),
@@ -893,8 +894,8 @@ mod tests {
 
         ctx.store.set_spool_state(SPOOL, state).unwrap();
         ctx.store.put_track(track, track_info).unwrap();
-        ctx.store.put_track_data(track, BlobData::Coded(track_blob)).unwrap();
-        ctx.store.put_object_info(track, certified(track)).unwrap();
+        ctx.store.put_track_data(track, TrackNumber(0), BlobData::Coded(track_blob)).unwrap();
+        ctx.store.put_object_info(track, TrackNumber(0), certified(track)).unwrap();
         ctx.store.add_pending_repair(SPOOL, track).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;

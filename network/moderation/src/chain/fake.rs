@@ -8,7 +8,7 @@ use tape_blacklist::list::List;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::BlacklistEntry;
 use tape_core::track::data::TrackMeta;
-use tape_core::track::types::{CompressedTrack, TrackVisibility};
+use tape_core::track::types::{CompressedTrack, TrackFlags};
 use tape_core::types::coin::{SOL, TAPE};
 use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
@@ -237,22 +237,25 @@ impl TrackWriter for FakeChain {
         }
     }
 
-    async fn delete_track(&self, tape: &ListTape, track: Address) -> Result<(), ChainError> {
+    async fn delete_track(
+        &self,
+        tape: &ListTape,
+        track: Address,
+        track_number: TrackNumber,
+    ) -> Result<(), ChainError> {
         let mut state = self.state();
         let fault = state.delete_faults.pop_front().unwrap_or(DeleteFault::Lands);
         if fault == DeleteFault::Refused {
             return Err(ChainError::Sdk("the delete was refused".to_string()));
         }
         let fake = state.tapes.get_mut(&tape.address).ok_or(ChainError::TrackNotFound(track))?;
-        let mut found = None;
-        for (number, bytes) in &fake.tracks {
-            if inline_track(tape.address, *number, bytes).address() == track {
-                found = Some(*number);
-            }
-        }
-        let Some(track_number) = found else {
+        let is_held = fake
+            .tracks
+            .get(&track_number)
+            .is_some_and(|bytes| inline_track(tape.address, track_number, bytes).address() == track);
+        if !is_held {
             return Err(ChainError::TrackNotFound(track));
-        };
+        }
         fake.tracks.remove(&track_number);
         state.landed.push(Landed::Delete {
             tape: tape.address,
@@ -287,7 +290,7 @@ fn inline_track(tape: Address, track_number: TrackNumber, bytes: &[u8]) -> Compr
         key: inline_key(bytes),
         kind: meta.kind as u64,
         state: meta.state as u64,
-        visibility: TrackVisibility::Public as u64,
+        flags: TrackFlags::NONE,
         size: meta.size,
         group: GroupIndex(0),
         value_hash: meta.value_hash,

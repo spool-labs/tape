@@ -288,7 +288,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                         content_type,
                         StorageUnits::from_bytes(bytes_written),
                         &data,
-                        self.write_options.visibility,
+                        self.write_options.flags,
                     )?);
                     run.push(RunItem { index, name, bytes_written });
                 }
@@ -306,7 +306,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                         content_type,
                         StorageUnits::from_bytes(bytes_written),
                         *plan,
-                        self.write_options.visibility,
+                        self.write_options.flags,
                     )?);
                     run.push(RunItem { index, name, bytes_written });
                 }

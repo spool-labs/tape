@@ -5,7 +5,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::share::{unix_now, ReadRequest, ShareToken, ALL_TRACKS};
-use tape_core::track::types::TrackVisibility;
+use tape_core::track::types::TrackFlags;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{BasisPoints, StorageUnits};
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
@@ -101,7 +101,7 @@ async fn hidden_gateway_inner() {
             .expect("reserve bucket tape");
 
         let writer = scenario.sdk(harness.admin()).with_write_options(WriteOptions {
-            visibility: TrackVisibility::Hidden,
+            flags: TrackFlags::HIDDEN,
             ..WriteOptions::default()
         });
         track_address = writer

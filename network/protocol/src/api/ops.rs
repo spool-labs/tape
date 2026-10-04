@@ -19,9 +19,12 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 use crate::api::ApiError;
 
 /// A slice push, its payload already in wire form so every attempt sends the same bytes
+///
+/// The answer signs one track, which its tape and track number identify.
 #[derive(Clone, Debug)]
 pub struct PutSliceReq {
-    pub track: Address,
+    pub tape: Address,
+    pub track_number: TrackNumber,
     pub spool: SpoolIndex,
     pub body: Bytes,
 }
@@ -33,6 +36,8 @@ pub struct PutSliceRes {
     pub receipt: CertifyRes,
 }
 
+/// A slice read by track address. Tracks with the same content share their
+/// slices, and the spool picks the group, so no track number is needed.
 #[derive(Clone, Debug)]
 pub struct GetSliceReq {
     pub track: Address,
@@ -64,9 +69,11 @@ pub struct GetTrackReq {
     pub track: Address,
 }
 
+/// Every track under the address, lowest track number first. Tracks written
+/// with the same content share an address, so there can be several.
 #[derive(Clone, Debug)]
 pub struct GetTrackRes {
-    pub track: CompressedTrack,
+    pub tracks: Vec<CompressedTrack>,
 }
 
 #[derive(Clone, Debug)]
@@ -138,9 +145,11 @@ pub struct GetTrackDataRes {
     pub data: BlobData,
 }
 
+/// A proof is for one track, which its tape and track number identify.
 #[derive(Clone, Debug)]
 pub struct GetTrackProofReq {
-    pub track: Address,
+    pub tape: Address,
+    pub track_number: TrackNumber,
 }
 
 #[derive(Clone, Debug)]
@@ -175,7 +184,8 @@ pub struct RepairRes {
 
 #[derive(Clone, Debug)]
 pub struct CertifyReq {
-    pub track: Address,
+    pub tape: Address,
+    pub track_number: TrackNumber,
 }
 
 #[derive(Clone, Debug)]
@@ -187,7 +197,8 @@ pub struct CertifyRes {
 
 #[derive(Clone, Debug)]
 pub struct InvalidateReq {
-    pub track: Address,
+    pub tape: Address,
+    pub track_number: TrackNumber,
     pub proof: InconsistencyProof,
 }
 

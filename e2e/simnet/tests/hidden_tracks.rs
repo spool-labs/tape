@@ -5,7 +5,7 @@ use tape_peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::share::{ShareToken, ALL_TRACKS};
-use tape_core::track::types::TrackVisibility;
+use tape_core::track::types::TrackFlags;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{BasisPoints, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
@@ -87,7 +87,7 @@ async fn hidden_tracks_inner() {
         .expect("reserve bucket tape");
 
     let writer = scenario.sdk(harness.admin()).with_write_options(WriteOptions {
-        visibility: TrackVisibility::Hidden,
+        flags: TrackFlags::HIDDEN,
         ..WriteOptions::default()
     });
 

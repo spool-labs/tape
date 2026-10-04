@@ -262,17 +262,16 @@ pub fn tape_pda(authority: Address) -> (Address, u8) {
     Address::find_program_address(&[CASSETTE, authority.as_ref()], id())
 }
 
-// Certify and invalidate change `state`, and `group` comes from the slot hash, so both stay out of the seeds.
+// The address says what a track is, so `track_number` stays out of the seeds with `state` and `group`.
 #[inline(always)]
 pub fn track_pda(track: &CompressedTrack) -> (Address, u8) {
     Address::find_program_address(
         &[
             TRACK,
             track.tape.as_ref(),
-            &track.track_number.pack(),
             track.key.as_ref(),
             &track.kind.to_le_bytes(),
-            &track.visibility.to_le_bytes(),
+            &track.flags.to_le_bytes(),
             &track.size.pack(),
             track.value_hash.as_ref(),
         ],
@@ -404,7 +403,7 @@ mod tests {
             key: Hash([2u8; 32]),
             kind: 1,
             state: 0,
-            visibility: 0,
+            flags: 0,
             size: StorageUnits(1024),
             group: GroupIndex(4),
             value_hash: Hash([5u8; 32]),
@@ -412,27 +411,28 @@ mod tests {
     }
 
     #[test]
-    fn track_pda_ignores_state_and_group() {
+    fn track_pda_ignores_position() {
         let track = track();
 
         let certified = CompressedTrack { state: 1, ..track };
         let moved = CompressedTrack { group: GroupIndex(9), ..track };
+        let rewritten = CompressedTrack { track_number: TrackNumber(4), ..track };
 
         assert_eq!(track_pda(&track), track_pda(&certified));
         assert_eq!(track_pda(&track), track_pda(&moved));
+        assert_eq!(track_pda(&track), track_pda(&rewritten));
         assert_eq!(track.address(), track_pda(&track).0);
     }
 
     #[test]
-    fn track_pda_covers_fixed_fields() {
+    fn track_pda_covers_content() {
         let track = track();
 
         let changed = [
             CompressedTrack { tape: Address::new([7u8; 32]), ..track },
-            CompressedTrack { track_number: TrackNumber(4), ..track },
             CompressedTrack { key: Hash([7u8; 32]), ..track },
             CompressedTrack { kind: 0, ..track },
-            CompressedTrack { visibility: 1, ..track },
+            CompressedTrack { flags: 1, ..track },
             CompressedTrack { size: StorageUnits(1025), ..track },
             CompressedTrack { value_hash: Hash([7u8; 32]), ..track },
         ];

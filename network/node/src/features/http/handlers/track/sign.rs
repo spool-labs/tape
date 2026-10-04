@@ -6,36 +6,25 @@ use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_crypto::address::Address;
+use tape_core::types::TrackNumber;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, BlsSignResponse};
-use tape_store::ops::{SliceOps, TrackOps};
+use tape_store::ops::SliceOps;
 
 use crate::features::blacklist::refuses_object;
 use crate::features::http::error::RouteError;
+use crate::features::http::handlers::track::{parse_tape, resolve_tape_track};
 use crate::features::http::state::{AppState, current_epoch};
 
 pub async fn certify<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    Path(track_id): Path<String>,
+    Path((tape_id, track_number)): Path<(String, u64)>,
 ) -> Result<impl IntoResponse, RouteError> {
 
     let epoch = current_epoch(&state)?;
-    let track: Address = track_id
-        .parse()
-        .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
-    let track_key = track;
+    let tape = parse_tape(&tape_id)?;
 
-    let in_store = state
-        .context
-        .store
-        .get_track(track_key)
-        .map_err(store_error)?;
-
-    let track = state
-        .context
-        .pending
-        .apply_to_track(track_key, in_store)
+    let (track_key, track) = resolve_tape_track(&state, tape, TrackNumber(track_number))?
         .ok_or(RouteError::NotFound)?;
 
     if !track.is_coded() {

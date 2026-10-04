@@ -332,15 +332,18 @@ where
         let tapes = self.records.list_tapes().await?;
         let mut deleted = 0;
         for track in self.records.deletable_tracks().await? {
-            let (Some(tape), Some(address)) = (tapes.find(track.tape), track.address) else {
+            let (Some(tape), Some(address), Some(track_number)) =
+                (tapes.find(track.tape), track.address, track.track_number)
+            else {
                 continue;
             };
+            let landed = WrittenTrack { track: address, track_number };
             // A second unsettled delete would leave the tape's track count unable to say which landed
             let is_blocked = tape.sent_deletes.0 > 0 && !track.is_delete_sent;
             if is_blocked || unsettled.contains(&tape.address) || cancel.is_cancelled() {
                 continue;
             }
-            if self.delete(tape, &track, address, now, cancel).await? {
+            if self.delete(tape, &track, landed, now, cancel).await? {
                 deleted += 1;
             }
         }
@@ -391,13 +394,15 @@ where
         &self,
         tape: &ListTape,
         track: &TrackRow,
-        address: Address,
+        landed: WrittenTrack,
         now: Timestamp,
         cancel: &CancellationToken,
     ) -> Result<bool, PublishError> {
+        let address = landed.track;
         self.records.mark_delete_sent(track.id, now).await?;
         // Safe to cancel: the recorded attempt is settled by the tape's track count on the next flush
-        let Some(deleted) = cancel.run_until_cancelled(self.chain.delete_track(tape, address)).await else {
+        let deleting = self.chain.delete_track(tape, address, landed.track_number);
+        let Some(deleted) = cancel.run_until_cancelled(deleting).await else {
             return Ok(false);
         };
         match deleted {

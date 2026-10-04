@@ -96,12 +96,13 @@ pub fn persist_snapshot_metadata<Db: Store>(
         store.put_track(track_address, track).map_err(store_err)?;
 
         store
-            .put_track_data(track_address, BlobData::Coded(snapshot_track.blob))
+            .put_track_data(track_address, track.track_number, BlobData::Coded(snapshot_track.blob))
             .map_err(store_err)?;
 
         store
             .put_object_info(
                 track_address,
+                track.track_number,
                 ObjectInfo::System {
                     kind: SystemObjectKind::Snapshot { epoch },
                     track_address,
@@ -129,7 +130,7 @@ mod tests {
     use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
@@ -169,7 +170,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: blob.size,
             group: GroupIndex::from(0),
             value_hash: blob.get_hash(),
@@ -199,13 +200,13 @@ mod tests {
                 share_nonce: Hash::default(),
             })
         );
-        assert_eq!(store.get_track(track_address).unwrap(), Some(track));
+        assert_eq!(store.get_track(track_address, track.track_number).unwrap(), Some(track));
         assert_eq!(
-            store.get_track_data(track_address).unwrap(),
+            store.get_track_data(track_address, track.track_number).unwrap(),
             Some(BlobData::Coded(blob))
         );
         assert_eq!(
-            store.get_object_info(track_address).unwrap(),
+            store.get_object_info(track_address, track.track_number).unwrap(),
             Some(ObjectInfo::System {
                 kind: SystemObjectKind::Snapshot { epoch },
                 track_address,

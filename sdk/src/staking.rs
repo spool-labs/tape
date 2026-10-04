@@ -203,7 +203,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                     continue;
                 }
 
-                let proof = query_track_proof(self, &track_address).await?;
+                let proof =
+                    query_track_proof(self, &track.tape, track.track_number).await?;
                 return Ok(PoolRate::new(*span, proof));
             }
 

@@ -1,31 +1,57 @@
 //! Canonical compressed-track catalog operations.
 
-use tape_core::track::types::{CompressedTrack, PackedTrack};
+use tape_core::track::types::{latest_track, CompressedTrack, PackedTrack};
 use tape_store_api::{Column, Store};
 use tape_crypto::address::Address;
-use tape_core::types::TrackNumber;
+use tape_core::types::{SpoolIndex, TrackNumber};
 
 use crate::columns::{TrackCol, TrackLookupCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::TrackLookupKey;
+use crate::types::{TrackKey, TrackLookupKey};
 use crate::TapeStore;
 
 /// Operations for the compressed-track catalog.
+///
+/// A track is stored under its address and its track number. Tracks written
+/// with the same content share an address and differ by number.
 pub trait TrackOps {
-    /// Get track by address.
-    fn get_track(&self, track_address: Address) -> Result<Option<CompressedTrack>>;
+    /// Get the track at one address and track number.
+    fn get_track(
+        &self,
+        track_address: Address,
+        track_number: TrackNumber,
+    ) -> Result<Option<CompressedTrack>>;
 
-    /// Get track metadata for several addresses, answered in the order asked.
-    fn get_tracks(&self, track_addresses: &[Address]) -> Result<Vec<Option<CompressedTrack>>>;
+    /// Get several tracks by address and track number, answered in the order asked.
+    fn get_tracks(&self, tracks: &[(Address, TrackNumber)]) -> Result<Vec<Option<CompressedTrack>>>;
+
+    /// Every track stored under one address, in track-number order.
+    fn tracks_by_address(&self, track_address: Address) -> Result<Vec<CompressedTrack>>;
+
+    /// The certified track with the highest track number under one address.
+    ///
+    /// When no track under the address is certified, the one with the highest
+    /// track number answers.
+    fn latest_track(&self, track_address: Address) -> Result<Option<CompressedTrack>>;
+
+    /// The track a slice in one spool belongs to.
+    ///
+    /// A spool holds one copy of a slice per address, so this is the latest
+    /// track under the address whose group holds the spool.
+    fn spool_track(
+        &self,
+        spool_id: SpoolIndex,
+        track_address: Address,
+    ) -> Result<Option<CompressedTrack>>;
 
     /// Store track metadata.
     fn put_track(&self, track_address: Address, track: CompressedTrack) -> Result<()>;
 
     /// Delete track metadata.
-    fn delete_track(&self, track_address: Address) -> Result<()>;
+    fn delete_track(&self, track_address: Address, track_number: TrackNumber) -> Result<()>;
 
     /// Check if track metadata exists without loading data.
-    fn has_track(&self, track_address: Address) -> Result<bool>;
+    fn has_track(&self, track_address: Address, track_number: TrackNumber) -> Result<bool>;
 
     /// Get the address of the track at one number on a tape.
     fn track_address_by_number(
@@ -37,10 +63,10 @@ pub trait TrackOps {
     /// Count all tracks without loading data.
     fn count_tracks(&self) -> Result<usize>;
 
-    /// Paginated track iteration ordered by track address.
+    /// Paginated track iteration ordered by track address, then track number.
     fn iter_tracks_from(
         &self,
-        after_track: Option<Address>,
+        after_track: Option<(Address, TrackNumber)>,
         limit: usize,
     ) -> Result<Vec<(Address, CompressedTrack)>>;
 
@@ -65,38 +91,73 @@ pub trait TrackOps {
 }
 
 impl<S: Store> TrackOps for TapeStore<S> {
-    fn get_tracks(&self, track_addresses: &[Address]) -> Result<Vec<Option<CompressedTrack>>> {
-        let packed = self.get_many::<TrackCol>(track_addresses)?;
+    fn get_tracks(&self, tracks: &[(Address, TrackNumber)]) -> Result<Vec<Option<CompressedTrack>>> {
+        let keys: Vec<TrackKey> = tracks
+            .iter()
+            .map(|(track_address, track_number)| TrackKey::new(*track_address, *track_number))
+            .collect();
+        let packed = self.get_many::<TrackCol>(&keys)?;
         Ok(packed
             .into_iter()
             .map(|track| track.map(CompressedTrack::unpack))
             .collect())
     }
 
-    fn get_track(&self, track_address: Address) -> Result<Option<CompressedTrack>> {
+    fn get_track(
+        &self,
+        track_address: Address,
+        track_number: TrackNumber,
+    ) -> Result<Option<CompressedTrack>> {
         Ok(self
-            .get::<TrackCol>(&track_address)?
+            .get::<TrackCol>(&TrackKey::new(track_address, track_number))?
             .map(CompressedTrack::unpack))
     }
 
+    fn tracks_by_address(&self, track_address: Address) -> Result<Vec<CompressedTrack>> {
+        let prefix = TrackKey::track_prefix(track_address);
+        let iter = self.inner().inner().iter_prefix(TrackCol::CF_NAME, &prefix)?;
+
+        let mut tracks = Vec::new();
+        for (_, value_bytes) in iter {
+            let info: PackedTrack = wincode::deserialize(&value_bytes)
+                .map_err(|e| TapeStoreError::Serialization(format!("track info: {}", e)))?;
+            tracks.push(CompressedTrack::unpack(info));
+        }
+        Ok(tracks)
+    }
+
+    fn latest_track(&self, track_address: Address) -> Result<Option<CompressedTrack>> {
+        Ok(latest_track(&self.tracks_by_address(track_address)?))
+    }
+
+    fn spool_track(
+        &self,
+        spool_id: SpoolIndex,
+        track_address: Address,
+    ) -> Result<Option<CompressedTrack>> {
+        let mut tracks = self.tracks_by_address(track_address)?;
+        tracks.retain(|track| track.group.contains(spool_id));
+        Ok(latest_track(&tracks))
+    }
+
     fn put_track(&self, track_address: Address, track: CompressedTrack) -> Result<()> {
-        self.put::<TrackCol>(&track_address, &track.pack())?;
+        self.put::<TrackCol>(&TrackKey::new(track_address, track.track_number), &track.pack())?;
         let lookup = TrackLookupKey::new(track.tape, track.track_number, track.key);
         self.put::<TrackLookupCol>(&lookup, &track_address)?;
         Ok(())
     }
 
-    fn delete_track(&self, track_address: Address) -> Result<()> {
-        if let Some(track) = self.get_track(track_address)? {
+    fn delete_track(&self, track_address: Address, track_number: TrackNumber) -> Result<()> {
+        if let Some(track) = self.get_track(track_address, track_number)? {
             let lookup = TrackLookupKey::new(track.tape, track.track_number, track.key);
             self.delete::<TrackLookupCol>(&lookup)?;
         }
-        self.delete::<TrackCol>(&track_address)?;
+        self.delete::<TrackCol>(&TrackKey::new(track_address, track_number))?;
         Ok(())
     }
 
-    fn has_track(&self, track_address: Address) -> Result<bool> {
-        Ok(self.contains::<TrackCol>(&track_address)?)
+    fn has_track(&self, track_address: Address, track_number: TrackNumber) -> Result<bool> {
+        Ok(self.contains::<TrackCol>(&TrackKey::new(track_address, track_number))?)
     }
 
     fn track_address_by_number(
@@ -134,22 +195,24 @@ impl<S: Store> TrackOps for TapeStore<S> {
 
         let mut tracks = Vec::with_capacity(rows.len());
         for (key_bytes, value_bytes) in rows {
-            let key: Address = wincode::deserialize(&key_bytes)
+            let key: TrackKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("track key: {}", e)))?;
             let info: PackedTrack = wincode::deserialize(&value_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("track info: {}", e)))?;
-            tracks.push((key, CompressedTrack::unpack(info)));
+            tracks.push((key.track, CompressedTrack::unpack(info)));
         }
         Ok((tracks, next))
     }
 
     fn iter_tracks_from(
         &self,
-        after_track: Option<Address>,
+        after_track: Option<(Address, TrackNumber)>,
         limit: usize,
     ) -> Result<Vec<(Address, CompressedTrack)>> {
-        let start_key = match after_track {
-            Some(track) => wincode::serialize(&track)
+        let after_key = after_track
+            .map(|(track_address, track_number)| TrackKey::new(track_address, track_number));
+        let start_key = match after_key {
+            Some(key) => wincode::serialize(&key)
                 .map_err(|e| TapeStoreError::Serialization(format!("track key: {}", e)))?,
             None => Vec::new(),
         };
@@ -161,15 +224,15 @@ impl<S: Store> TrackOps for TapeStore<S> {
 
         let mut results = Vec::new();
         for (key_bytes, value_bytes) in iter {
-            let key: Address = wincode::deserialize(&key_bytes)
+            let key: TrackKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("track key: {}", e)))?;
             // Skip the cursor key if resuming
-            if after_track.is_some() && Some(key) == after_track {
+            if Some(key) == after_key {
                 continue;
             }
             let info: PackedTrack = wincode::deserialize(&value_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("track info: {}", e)))?;
-            results.push((key, CompressedTrack::unpack(info)));
+            results.push((key.track, CompressedTrack::unpack(info)));
             if results.len() >= limit {
                 break;
             }
@@ -184,9 +247,9 @@ impl<S: Store> TrackOps for TapeStore<S> {
         limit: usize,
     ) -> Result<Vec<CompressedTrack>> {
         let mut results = Vec::new();
-        for track_address in tape_track_addresses(self, tape, after_track_number, limit)? {
+        for (track_address, track_number) in tape_tracks(self, tape, after_track_number, limit)? {
             let track = self
-                .get_track(track_address)?
+                .get_track(track_address, track_number)?
                 .ok_or_else(|| TapeStoreError::Serialization("missing track for lookup index".into()))?;
             results.push(track);
         }
@@ -195,17 +258,17 @@ impl<S: Store> TrackOps for TapeStore<S> {
     }
 }
 
-/// Addresses of a tape's tracks in track-number order, after an optional track number
-pub fn tape_track_addresses<S: Store>(
+/// Address and number of a tape's tracks in track-number order, after an optional track number
+pub fn tape_tracks<S: Store>(
     tape_store: &TapeStore<S>,
     tape: Address,
     after_track_number: Option<TrackNumber>,
     limit: usize,
-) -> Result<Vec<Address>> {
+) -> Result<Vec<(Address, TrackNumber)>> {
     let start = after_track_number
         .map(|track_number| TrackLookupKey::after_track_number(tape, track_number));
     let entries = lookup_entries(tape_store, tape, start, limit)?;
-    Ok(entries.into_iter().map(|(_, address)| address).collect())
+    Ok(entries.into_iter().map(|(number, address)| (address, number)).collect())
 }
 
 /// Numbers of a tape's tracks in order, after an optional track number
@@ -266,7 +329,7 @@ fn lookup_key_bytes(key: &TrackLookupKey) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::track::types::TrackVisibility;
+    use tape_core::track::types::{TrackFlags, TrackState};
     use tape_core::types::StorageUnits;
     use tape_core::spooler::GroupIndex;
     use tape_crypto::Hash;
@@ -283,7 +346,7 @@ mod tests {
             track_number: TrackNumber(0),
             kind: 0,
             state: 1,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits(1024 * 1024),
             group: GroupIndex(3),
             value_hash: Hash::new_unique(),
@@ -296,11 +359,11 @@ mod tests {
         let track = Address::new_unique();
         let info = make_track_info();
 
-        assert!(store.get_track(track).unwrap().is_none());
+        assert!(store.get_track(track, info.track_number).unwrap().is_none());
 
         store.put_track(track, info).unwrap();
 
-        let retrieved = store.get_track(track).unwrap().unwrap();
+        let retrieved = store.get_track(track, info.track_number).unwrap().unwrap();
         assert_eq!(retrieved, info);
     }
 
@@ -311,24 +374,102 @@ mod tests {
         let info = make_track_info();
 
         store.put_track(track, info).unwrap();
-        assert!(store.get_track(track).unwrap().is_some());
+        assert!(store.get_track(track, info.track_number).unwrap().is_some());
 
-        store.delete_track(track).unwrap();
-        assert!(store.get_track(track).unwrap().is_none());
+        store.delete_track(track, info.track_number).unwrap();
+        assert!(store.get_track(track, info.track_number).unwrap().is_none());
     }
 
     #[test]
     fn test_has_track() {
         let store = test_store();
         let track = Address::new_unique();
+        let info = make_track_info();
 
-        assert!(!store.has_track(track).unwrap());
+        assert!(!store.has_track(track, info.track_number).unwrap());
 
-        store.put_track(track, make_track_info()).unwrap();
-        assert!(store.has_track(track).unwrap());
+        store.put_track(track, info).unwrap();
+        assert!(store.has_track(track, info.track_number).unwrap());
 
-        store.delete_track(track).unwrap();
-        assert!(!store.has_track(track).unwrap());
+        store.delete_track(track, info.track_number).unwrap();
+        assert!(!store.has_track(track, info.track_number).unwrap());
+    }
+
+    fn numbered(tape: Address, number: u64, state: TrackState) -> CompressedTrack {
+        CompressedTrack {
+            tape,
+            track_number: TrackNumber(number),
+            state: state as u64,
+            ..make_track_info()
+        }
+    }
+
+    // tracks written with the same content share an address and stay separate rows
+    #[test]
+    fn shared_address() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+        let first = numbered(tape, 2, TrackState::Certified);
+        let second = numbered(tape, 5, TrackState::Certified);
+
+        store.put_track(track, first).unwrap();
+        store.put_track(track, second).unwrap();
+        store.put_track(Address::new_unique(), numbered(tape, 3, TrackState::Certified)).unwrap();
+
+        assert_eq!(store.get_track(track, TrackNumber(2)).unwrap(), Some(first));
+        assert_eq!(store.get_track(track, TrackNumber(5)).unwrap(), Some(second));
+        assert_eq!(store.get_track(track, TrackNumber(3)).unwrap(), None);
+        assert_eq!(store.tracks_by_address(track).unwrap(), vec![first, second]);
+        assert_eq!(store.count_tracks().unwrap(), 3);
+
+        store.delete_track(track, TrackNumber(2)).unwrap();
+
+        assert_eq!(store.tracks_by_address(track).unwrap(), vec![second]);
+        assert_eq!(store.track_address_by_number(tape, TrackNumber(2)).unwrap(), None);
+        assert_eq!(store.track_address_by_number(tape, TrackNumber(5)).unwrap(), Some(track));
+    }
+
+    // a read by address answers with the highest-numbered certified track
+    #[test]
+    fn latest_certified() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+
+        assert_eq!(store.latest_track(track).unwrap(), None);
+
+        let registered = numbered(tape, 1, TrackState::Registered);
+        store.put_track(track, registered).unwrap();
+        assert_eq!(store.latest_track(track).unwrap(), Some(registered));
+
+        let certified = numbered(tape, 4, TrackState::Certified);
+        let newer = numbered(tape, 300, TrackState::Certified);
+        let abandoned = numbered(tape, 700, TrackState::Registered);
+        for info in [certified, newer, abandoned] {
+            store.put_track(track, info).unwrap();
+        }
+
+        assert_eq!(store.latest_track(track).unwrap(), Some(newer));
+
+        store.delete_track(track, TrackNumber(300)).unwrap();
+        assert_eq!(store.latest_track(track).unwrap(), Some(certified));
+    }
+
+    // a slice belongs to the track under its address whose group holds the spool
+    #[test]
+    fn slice_owner() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+        let near = CompressedTrack { group: GroupIndex(0), ..numbered(tape, 1, TrackState::Certified) };
+        let far = CompressedTrack { group: GroupIndex(4), ..numbered(tape, 6, TrackState::Certified) };
+        store.put_track(track, near).unwrap();
+        store.put_track(track, far).unwrap();
+
+        assert_eq!(store.spool_track(GroupIndex(0).spool_at(2), track).unwrap(), Some(near));
+        assert_eq!(store.spool_track(GroupIndex(4).spool_at(0), track).unwrap(), Some(far));
+        assert_eq!(store.spool_track(GroupIndex(2).spool_at(0), track).unwrap(), None);
     }
 
     #[test]
@@ -368,7 +509,9 @@ mod tests {
 
         // Get remaining after cursor
         let cursor = first[1].0;
-        let rest = store.iter_tracks_from(Some(cursor), 100).unwrap();
+        let rest = store
+            .iter_tracks_from(Some((cursor, first[1].1.track_number)), 100)
+            .unwrap();
         assert_eq!(rest.len(), 3);
 
         // Verify no overlap
@@ -444,7 +587,7 @@ mod tests {
             None
         );
 
-        store.delete_track(addr0).unwrap();
+        store.delete_track(addr0, TrackNumber(0)).unwrap();
         assert_eq!(store.track_address_by_number(tape, TrackNumber(0)).unwrap(), None);
     }
 }

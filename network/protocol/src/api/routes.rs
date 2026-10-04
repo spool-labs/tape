@@ -23,17 +23,21 @@ pub const CHALLENGE_ATTEST_PATH: &str = "/v1/challenge/attest";
 
 pub const SYNC_SLICES_PATH: &str = "/v1/sync/slices";
 
+// A tape and a track number say where one track sits, so the routes that act
+// on one track live here. A track address says what a track is, and tracks
+// with the same content share it.
 pub const TAPE_TRACK_PATH: &str = "/v1/tapes/{tape_id}/tracks/{track_number}";
+pub const TAPE_TRACK_INCONSISTENCY_PATH: &str = "/v1/tapes/{tape_id}/tracks/{track_number}/inconsistency";
+pub const TAPE_TRACK_PROOF_PATH: &str = "/v1/tapes/{tape_id}/tracks/{track_number}/proof";
+pub const TAPE_TRACK_SIGN_PATH: &str = "/v1/tapes/{tape_id}/tracks/{track_number}/sign";
+pub const TAPE_TRACK_SLICE_PATH: &str = "/v1/tapes/{tape_id}/tracks/{track_number}/slices/{spool_id}";
 pub const TAPE_TRACK_FIND_PATH: &str = "/v1/tapes/{tape_id}/tracks/find";
 pub const TAPE_TRACK_LIST_PATH: &str = "/v1/tapes/{tape_id}/tracks/list";
 pub const TAPE_OBJECT_LIST_PATH: &str = "/v1/tapes/{tape_id}/objects/list";
 
 pub const TRACK_PATH: &str = "/v1/tracks/{track_id}";
 pub const TRACK_DATA_PATH: &str = "/v1/tracks/{track_id}/data";
-pub const TRACK_INCONSISTENCY_PATH: &str = "/v1/tracks/{track_id}/inconsistency";
-pub const TRACK_PROOF_PATH: &str = "/v1/tracks/{track_id}/proof";
 pub const TRACK_REPAIR_PATH: &str = "/v1/tracks/{track_id}/repair";
-pub const TRACK_SIGN_PATH: &str = "/v1/tracks/{track_id}/sign";
 pub const TRACK_SLICE_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}";
 pub const TRACK_SLICE_WINDOW_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}/window/{offset}/{len}";
 pub const TRACK_SLICE_STATUS_PATH: &str = "/v1/tracks/{track_id}/slices/{spool_id}/status";
@@ -43,6 +47,10 @@ pub const TRACK_STATUS_PATH: &str = "/v1/tracks/{track_id}/status";
 
 pub fn slice_url(track_id: &str, spool_id: SpoolIndex) -> String {
     format!("/v1/tracks/{track_id}/slices/{}", spool_id.0)
+}
+
+pub fn put_slice_url(tape_id: &str, track_number: TrackNumber, spool_id: SpoolIndex) -> String {
+    format!("/v1/tapes/{tape_id}/tracks/{}/slices/{}", track_number.0, spool_id.0)
 }
 
 pub fn slice_window_url(track_id: &str, spool_id: SpoolIndex, offset: StorageUnits, len: StorageUnits) -> String {
@@ -66,8 +74,8 @@ pub fn track_data_url(track_id: &str) -> String {
     format!("/v1/tracks/{track_id}/data")
 }
 
-pub fn track_proof_url(track_id: &str) -> String {
-    format!("/v1/tracks/{track_id}/proof")
+pub fn track_proof_url(tape_id: &str, track_number: TrackNumber) -> String {
+    format!("/v1/tapes/{tape_id}/tracks/{}/proof", track_number.0)
 }
 
 pub fn tape_track_url(tape_id: &str, track_number: TrackNumber) -> String {
@@ -86,16 +94,16 @@ pub fn list_objects_url(tape_id: &str) -> String {
     format!("/v1/tapes/{tape_id}/objects/list")
 }
 
-pub fn sign_url(track_id: &str) -> String {
-    format!("/v1/tracks/{track_id}/sign")
+pub fn sign_url(tape_id: &str, track_number: TrackNumber) -> String {
+    format!("/v1/tapes/{tape_id}/tracks/{}/sign", track_number.0)
 }
 
 pub fn repair_url(track_id: &str) -> String {
     format!("/v1/tracks/{track_id}/repair")
 }
 
-pub fn inconsistency_url(track_id: &str) -> String {
-    format!("/v1/tracks/{track_id}/inconsistency")
+pub fn inconsistency_url(tape_id: &str, track_number: TrackNumber) -> String {
+    format!("/v1/tapes/{tape_id}/tracks/{}/inconsistency", track_number.0)
 }
 
 #[cfg(test)]
@@ -105,16 +113,17 @@ mod tests {
     #[test]
     fn url_builders() {
         assert_eq!(slice_url("abc", SpoolIndex(5)), "/v1/tracks/abc/slices/5");
+        assert_eq!(put_slice_url("def", TrackNumber(7), SpoolIndex(5)), "/v1/tapes/def/tracks/7/slices/5");
         assert_eq!(track_url("abc"), "/v1/tracks/abc");
         assert_eq!(track_data_url("abc"), "/v1/tracks/abc/data");
-        assert_eq!(track_proof_url("abc"), "/v1/tracks/abc/proof");
+        assert_eq!(track_proof_url("def", TrackNumber(7)), "/v1/tapes/def/tracks/7/proof");
         assert_eq!(tape_track_url("def", TrackNumber(7)), "/v1/tapes/def/tracks/7");
         assert_eq!(find_track_url("def"), "/v1/tapes/def/tracks/find");
         assert_eq!(list_tracks_by_tape_url("def"), "/v1/tapes/def/tracks/list");
         assert_eq!(list_objects_url("def"), "/v1/tapes/def/objects/list");
         assert_eq!(status_url("abc"), "/v1/tracks/abc/status");
-        assert_eq!(sign_url("abc"), "/v1/tracks/abc/sign");
+        assert_eq!(sign_url("def", TrackNumber(7)), "/v1/tapes/def/tracks/7/sign");
         assert_eq!(repair_url("abc"), "/v1/tracks/abc/repair");
-        assert_eq!(inconsistency_url("abc"), "/v1/tracks/abc/inconsistency");
+        assert_eq!(inconsistency_url("def", TrackNumber(7)), "/v1/tapes/def/tracks/7/inconsistency");
     }
 }

@@ -1,7 +1,7 @@
 //! Client-level knobs for the write paths.
 
 use tape_core::erasure::MAX_GROUP_SIZE;
-use tape_core::track::types::TrackVisibility;
+use tape_core::track::types::TrackFlags;
 
 /// Write pacing knobs; defaults are the tuned fast path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,8 +12,12 @@ pub struct WriteOptions {
     pub slice_concurrency: usize,
     /// Stream chunks uploading concurrently; also bounds peak memory.
     pub store_depth: usize,
-    /// Every track this client writes is registered with this visibility.
-    pub visibility: TrackVisibility,
+    /// Every track this client writes is registered with these flags.
+    pub flags: u64,
+    /// Stream writes and the one-call write look for their content on the tape
+    /// first, by its address, and finish or reuse the tracks found. Off by
+    /// default: a write appends.
+    pub resume: bool,
 }
 
 impl Default for WriteOptions {
@@ -21,7 +25,8 @@ impl Default for WriteOptions {
         Self {
             slice_concurrency: MAX_GROUP_SIZE,
             store_depth: 4,
-            visibility: TrackVisibility::Public,
+            flags: TrackFlags::NONE,
+            resume: false,
         }
     }
 }
@@ -35,6 +40,7 @@ mod tests {
         let options = WriteOptions::default();
         assert_eq!(options.slice_concurrency, MAX_GROUP_SIZE);
         assert_eq!(options.store_depth, 4);
-        assert_eq!(options.visibility, TrackVisibility::Public);
+        assert_eq!(options.flags, TrackFlags::NONE);
+        assert!(!options.resume);
     }
 }

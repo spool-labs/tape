@@ -1,52 +1,75 @@
 //! ObjectInfo operations for tracked object metadata
 
 use tape_store_api::Store;
+use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 
 use crate::columns::ObjectInfoCol;
 use crate::error::Result;
-use crate::types::ObjectInfo;
+use crate::types::{ObjectInfo, TrackKey};
 use crate::TapeStore;
 
 /// Operations for object info
 pub trait ObjectInfoOps {
-    /// Get object info by address
-    fn get_object_info(&self, address: Address) -> Result<Option<ObjectInfo>>;
+    /// Get object info by track address and track number
+    fn get_object_info(
+        &self,
+        address: Address,
+        track_number: TrackNumber,
+    ) -> Result<Option<ObjectInfo>>;
 
-    /// Get object info for several addresses, answered in the order asked
-    fn get_object_infos(&self, addresses: &[Address]) -> Result<Vec<Option<ObjectInfo>>>;
+    /// Get object info for several tracks, answered in the order asked
+    fn get_object_infos(&self, tracks: &[(Address, TrackNumber)]) -> Result<Vec<Option<ObjectInfo>>>;
 
     /// Store object info
-    fn put_object_info(&self, address: Address, info: ObjectInfo) -> Result<()>;
+    fn put_object_info(
+        &self,
+        address: Address,
+        track_number: TrackNumber,
+        info: ObjectInfo,
+    ) -> Result<()>;
 
     /// Delete object info
-    fn delete_object_info(&self, address: Address) -> Result<()>;
+    fn delete_object_info(&self, address: Address, track_number: TrackNumber) -> Result<()>;
 
     /// Check if object info exists
-    fn has_object_info(&self, address: Address) -> Result<bool>;
+    fn has_object_info(&self, address: Address, track_number: TrackNumber) -> Result<bool>;
 }
 
 impl<S: Store> ObjectInfoOps for TapeStore<S> {
-    fn get_object_info(&self, address: Address) -> Result<Option<ObjectInfo>> {
-        Ok(self.get::<ObjectInfoCol>(&address)?)
+    fn get_object_info(
+        &self,
+        address: Address,
+        track_number: TrackNumber,
+    ) -> Result<Option<ObjectInfo>> {
+        Ok(self.get::<ObjectInfoCol>(&TrackKey::new(address, track_number))?)
     }
 
-    fn get_object_infos(&self, addresses: &[Address]) -> Result<Vec<Option<ObjectInfo>>> {
-        Ok(self.get_many::<ObjectInfoCol>(addresses)?)
+    fn get_object_infos(&self, tracks: &[(Address, TrackNumber)]) -> Result<Vec<Option<ObjectInfo>>> {
+        let keys: Vec<TrackKey> = tracks
+            .iter()
+            .map(|(address, track_number)| TrackKey::new(*address, *track_number))
+            .collect();
+        Ok(self.get_many::<ObjectInfoCol>(&keys)?)
     }
 
-    fn put_object_info(&self, address: Address, info: ObjectInfo) -> Result<()> {
-        self.put::<ObjectInfoCol>(&address, &info)?;
+    fn put_object_info(
+        &self,
+        address: Address,
+        track_number: TrackNumber,
+        info: ObjectInfo,
+    ) -> Result<()> {
+        self.put::<ObjectInfoCol>(&TrackKey::new(address, track_number), &info)?;
         Ok(())
     }
 
-    fn delete_object_info(&self, address: Address) -> Result<()> {
-        self.delete::<ObjectInfoCol>(&address)?;
+    fn delete_object_info(&self, address: Address, track_number: TrackNumber) -> Result<()> {
+        self.delete::<ObjectInfoCol>(&TrackKey::new(address, track_number))?;
         Ok(())
     }
 
-    fn has_object_info(&self, address: Address) -> Result<bool> {
-        Ok(self.contains::<ObjectInfoCol>(&address)?)
+    fn has_object_info(&self, address: Address, track_number: TrackNumber) -> Result<bool> {
+        Ok(self.contains::<ObjectInfoCol>(&TrackKey::new(address, track_number))?)
     }
 }
 
@@ -56,6 +79,8 @@ mod tests {
     use crate::types::SystemObjectKind;
     use tape_core::types::{EpochNumber, SlotNumber};
     use tape_store_memory::MemoryStore;
+
+    const NUMBER: TrackNumber = TrackNumber(3);
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -67,10 +92,11 @@ mod tests {
         let addr = Address::new_unique();
 
         store
-            .put_object_info(addr, ObjectInfo::Blacklisted)
+            .put_object_info(addr, NUMBER, ObjectInfo::Blacklisted)
             .unwrap();
-        let retrieved = store.get_object_info(addr).unwrap().unwrap();
+        let retrieved = store.get_object_info(addr, NUMBER).unwrap().unwrap();
         assert_eq!(retrieved, ObjectInfo::Blacklisted);
+        assert_eq!(store.get_object_info(addr, TrackNumber(4)).unwrap(), None);
     }
 
     #[test]
@@ -85,8 +111,8 @@ mod tests {
             slot: SlotNumber(50),
         };
 
-        store.put_object_info(addr, info.clone()).unwrap();
-        let retrieved = store.get_object_info(addr).unwrap().unwrap();
+        store.put_object_info(addr, NUMBER, info.clone()).unwrap();
+        let retrieved = store.get_object_info(addr, NUMBER).unwrap().unwrap();
         assert_eq!(retrieved, info);
     }
 
@@ -105,8 +131,8 @@ mod tests {
             slot: SlotNumber(70),
         };
 
-        store.put_object_info(addr, info.clone()).unwrap();
-        let retrieved = store.get_object_info(addr).unwrap().unwrap();
+        store.put_object_info(addr, NUMBER, info.clone()).unwrap();
+        let retrieved = store.get_object_info(addr, NUMBER).unwrap().unwrap();
         assert_eq!(retrieved, info);
         assert!(retrieved.is_certified());
         assert!(retrieved.is_live());
@@ -122,8 +148,8 @@ mod tests {
             slot: SlotNumber(100),
         };
 
-        store.put_object_info(addr, info.clone()).unwrap();
-        let retrieved = store.get_object_info(addr).unwrap().unwrap();
+        store.put_object_info(addr, NUMBER, info.clone()).unwrap();
+        let retrieved = store.get_object_info(addr, NUMBER).unwrap().unwrap();
         assert_eq!(retrieved, info);
     }
 
@@ -132,15 +158,15 @@ mod tests {
         let store = test_store();
         let addr = Address::new_unique();
 
-        assert!(!store.has_object_info(addr).unwrap());
+        assert!(!store.has_object_info(addr, NUMBER).unwrap());
 
         store
-            .put_object_info(addr, ObjectInfo::Blacklisted)
+            .put_object_info(addr, NUMBER, ObjectInfo::Blacklisted)
             .unwrap();
-        assert!(store.has_object_info(addr).unwrap());
+        assert!(store.has_object_info(addr, NUMBER).unwrap());
 
-        store.delete_object_info(addr).unwrap();
-        assert!(!store.has_object_info(addr).unwrap());
-        assert!(store.get_object_info(addr).unwrap().is_none());
+        store.delete_object_info(addr, NUMBER).unwrap();
+        assert!(!store.has_object_info(addr, NUMBER).unwrap());
+        assert!(store.get_object_info(addr, NUMBER).unwrap().is_none());
     }
 }

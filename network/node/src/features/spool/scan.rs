@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::spooler::GroupIndex;
-use tape_core::types::SpoolIndex;
+use tape_core::types::{SpoolIndex, TrackNumber};
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
@@ -64,12 +64,12 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         };
 
-        let mut considered: Vec<Address> = Vec::with_capacity(tracks.len());
+        let mut considered: Vec<(Address, TrackNumber)> = Vec::with_capacity(tracks.len());
         for (track_addr, track_info) in &tracks {
             // Tracks outside this spool's group belong to another node, and a raw
             // track has no slice semantics to repair.
             if track_info.group == group && track_info.is_coded() {
-                considered.push(*track_addr);
+                considered.push((*track_addr, track_info.track_number));
             }
         }
 
@@ -84,7 +84,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         };
 
-        for (track_addr, info) in considered.iter().zip(infos) {
+        for ((track_addr, _), info) in considered.iter().zip(infos) {
             // Only consider certified tracks for repair
             match info {
                 Some(info) if info.is_certified() => {}
@@ -136,7 +136,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -168,7 +168,7 @@ mod tests {
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(1024),
             group,
             value_hash: Hash::new_unique(),
@@ -189,7 +189,7 @@ mod tests {
         let group = GroupIndex::containing(SPOOL);
 
         ctx.store.put_track(a, track(group)).unwrap();
-        ctx.store.put_object_info(a, certified(a)).unwrap();
+        ctx.store.put_object_info(a, TrackNumber(0), certified(a)).unwrap();
         ctx.store.put_slice(SPOOL, a, vec![0xAB; 64]).unwrap();
 
         let result = run(ctx, &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
@@ -225,7 +225,7 @@ mod tests {
 
         // Certified track exists but no slice data.
         ctx.store.put_track(a, track(group)).unwrap();
-        ctx.store.put_object_info(a, certified(a)).unwrap();
+        ctx.store.put_object_info(a, TrackNumber(0), certified(a)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 1 });
@@ -252,7 +252,7 @@ mod tests {
         let group = GroupIndex::containing(SPOOL);
 
         ctx.store.put_track(a, track(group)).unwrap();
-        ctx.store.put_object_info(a, certified(a)).unwrap();
+        ctx.store.put_object_info(a, TrackNumber(0), certified(a)).unwrap();
 
         // Run scan twice, same result, no duplicates.
         let r1 = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
@@ -270,7 +270,7 @@ mod tests {
 
         // Track exists, no slice, but NOT certified.
         ctx.store.put_track(a, track(group)).unwrap();
-        ctx.store.put_object_info(a, ObjectInfo::Valid {
+        ctx.store.put_object_info(a, TrackNumber(0), ObjectInfo::Valid {
             track_address: a,
             registered_epoch: EpochNumber(1),
             certified_epoch: None,
@@ -290,7 +290,7 @@ mod tests {
 
         // Track exists, no slice, IS certified -> should be a gap.
         ctx.store.put_track(a, track(group)).unwrap();
-        ctx.store.put_object_info(a, certified(a)).unwrap();
+        ctx.store.put_object_info(a, TrackNumber(0), certified(a)).unwrap();
 
         let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
         assert_eq!(result, ScanResult::Done { gaps: 1 });
@@ -304,7 +304,7 @@ mod tests {
         let group = GroupIndex::containing(SPOOL);
 
         ctx.store.put_track(a, track(group)).unwrap();
-        ctx.store.put_object_info(a, snapshot(a)).unwrap();
+        ctx.store.put_object_info(a, TrackNumber(0), snapshot(a)).unwrap();
 
         let result = run(
             ctx.clone(),

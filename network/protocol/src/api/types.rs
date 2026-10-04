@@ -446,6 +446,12 @@ pub struct TrackResponse {
     pub track: PackedTrack,
 }
 
+/// Every track under one address, lowest track number first
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct TracksResponse {
+    pub tracks: Vec<PackedTrack>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct FindTrackRequest {
     pub key: Hash,

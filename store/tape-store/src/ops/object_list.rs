@@ -148,7 +148,7 @@ impl<S: Store> ObjectListOps for TapeStore<S> {
                     // GET. Skipped entries do not count against max_keys, so pages
                     // stay full of servable objects.
                     let certified = self
-                        .get_object_info(entry.track)?
+                        .get_object_info(entry.track, entry.track_number)?
                         .is_some_and(|info| info.is_certified());
                     if !certified {
                         continue;
@@ -233,6 +233,7 @@ mod tests {
         let track = e.track;
         s.put_object_info(
             track,
+            e.track_number,
             ObjectInfo::Valid {
                 track_address: track,
                 registered_epoch: EpochNumber(1),

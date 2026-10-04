@@ -8,7 +8,7 @@ use tape_api::program::tapedrive::blacklist_pda;
 use tape_core::system::BlacklistEntry;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{EpochNumber, StorageUnits};
+use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
 use tape_crypto::Address;
 use tape_store::ops::{ObjectInfoOps, TapeOps, TapeTrackScan};
 use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
@@ -154,7 +154,12 @@ fn collect_blacklist_entries<Db: Store>(
     {
         let is_in_window = match cutoff_epoch {
             Some(cutoff_epoch) => {
-                blacklist_track_is_before_cutoff(store, scanned.address, cutoff_epoch)?
+                blacklist_track_is_before_cutoff(
+                    store,
+                    scanned.address,
+                    scanned.track.track_number,
+                    cutoff_epoch,
+                )?
             }
             None => true,
         };
@@ -215,10 +220,11 @@ pub fn decode_blacklist_entry(
 fn blacklist_track_is_before_cutoff<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
+    track_number: TrackNumber,
     cutoff_epoch: EpochNumber,
 ) -> Result<bool, NodeError> {
     let Some(info) = store
-        .get_object_info(track)
+        .get_object_info(track, track_number)
         .map_err(|error| NodeError::Store(format!("blacklist object info lookup: {error}")))?
     else {
         return Err(NodeError::Store(format!(
@@ -267,7 +273,7 @@ mod tests {
     use bytemuck::bytes_of;
     use tape_api::program::tapedrive::TrackAddress;
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
     use tape_core::types::{TapeNumber, TrackNumber};
     use tape_store::ops::{TrackDataOps, TrackOps};
     use tape_store_memory::MemoryStore;
@@ -294,7 +300,7 @@ mod tests {
             key: entry.key(),
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
             group: GroupIndex(0),
             value_hash: entry.key(),
@@ -318,7 +324,7 @@ mod tests {
             .expect("seed blacklist track");
 
         store
-            .put_track_data(track_address, BlobData::Inline(bytes_of(&entry).to_vec()))
+            .put_track_data(track_address, track_number, BlobData::Inline(bytes_of(&entry).to_vec()))
             .expect("seed blacklist track data");
 
         track_address
@@ -346,7 +352,7 @@ mod tests {
         assert!(refuses(&store, &cache, node, EPOCH, target).expect("first call"));
 
         store
-            .delete_track_data(entry_track)
+            .delete_track_data(entry_track, TrackNumber(0))
             .expect("drop the entry data");
 
         assert!(refuses(&store, &cache, node, EPOCH, target).expect("second call"));
@@ -385,9 +391,9 @@ mod tests {
 
         assert!(refuses(&store, &cache, node, EPOCH, target).expect("first epoch"));
 
-        store.delete_track(entry_track).expect("drop the entry");
+        store.delete_track(entry_track, TrackNumber(0)).expect("drop the entry");
         store
-            .delete_track_data(entry_track)
+            .delete_track_data(entry_track, TrackNumber(0))
             .expect("drop the entry data");
 
         assert!(

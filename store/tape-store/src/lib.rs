@@ -228,7 +228,7 @@ mod tests {
     use tape_store_memory::MemoryStore;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::types::{EpochNumber, SlotNumber, GroupIndex, SpoolIndex, TapeNumber, TrackNumber};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -244,14 +244,14 @@ mod tests {
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(1024 * 1024),
             group: GroupIndex(3),
             value_hash: Hash::new_unique(),
         };
 
         store.put_track(address, info).unwrap();
-        let retrieved = store.get_track(address).unwrap();
+        let retrieved = store.get_track(address, info.track_number).unwrap();
         assert_eq!(retrieved, Some(info));
     }
 
@@ -287,8 +287,8 @@ mod tests {
             slot: SlotNumber(50),
         };
 
-        store.put_object_info(address, info.clone()).unwrap();
-        let retrieved = store.get_object_info(address).unwrap();
+        store.put_object_info(address, TrackNumber(0), info.clone()).unwrap();
+        let retrieved = store.get_object_info(address, TrackNumber(0)).unwrap();
         assert_eq!(retrieved, Some(info));
     }
 
@@ -385,7 +385,7 @@ mod tests {
                 track_number: TrackNumber(0),
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
+                flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(1024),
                 group: GroupIndex(3),
                 value_hash: Hash::new_unique(),
@@ -425,7 +425,7 @@ mod tests {
                 track_number: TrackNumber(0),
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
+                flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(512),
                 group: GroupIndex(0),
                 value_hash: Hash::new_unique(),
@@ -457,7 +457,7 @@ mod tests {
             track_number: TrackNumber(number),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(1024),
             group: GroupIndex(3),
             value_hash: Hash::new_unique(),

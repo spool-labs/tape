@@ -63,13 +63,7 @@ fn manifest_len(head: &[u8]) -> Option<u64> {
         chunks: Vec::new(),
     };
     let header = empty.to_bytes().ok()?.len();
-    let entry = wincode::serialize(&ChunkEntry {
-        track_number: Default::default(),
-        offset: StorageUnits::zero(),
-        size: StorageUnits::zero(),
-    })
-    .ok()?
-    .len();
+    let entry = wincode::serialize(&ChunkEntry::default()).ok()?.len();
     let count_bytes: [u8; 8] = head.get(header - 8..header)?.try_into().ok()?;
     let count = u64::from_le_bytes(count_bytes);
     count.checked_mul(entry as u64)?.checked_add(header as u64)
@@ -179,6 +173,7 @@ mod tests {
         let chunks = (0..segments)
             .map(|index| ChunkEntry {
                 track_number: TrackNumber(index),
+                track: Address::new_unique(),
                 offset: StorageUnits::from_bytes(index * 10),
                 size: StorageUnits::from_bytes(10),
             })

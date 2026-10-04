@@ -10,7 +10,7 @@ pub enum Change {
     /// A track was written, or the consumer received its bytes
     Written { tape: Address, track_number: TrackNumber },
     /// A track was deleted or invalidated
-    Removed { track: Address },
+    Removed { track: Address, track_number: TrackNumber },
     /// A tape was reserved or extended
     Tape { tape: Address },
     /// The epoch advanced, so tapes may have expired
@@ -25,10 +25,13 @@ pub fn change(record: &ReplayRecord) -> Option<Change> {
             track_number: written.state.track_number,
         });
     }
-    if let ReplayableEvent::DeleteTrack { track, .. } | ReplayableEvent::InvalidateTrack { track, .. } =
-        &record.event
+    if let ReplayableEvent::DeleteTrack { track, track_number, .. }
+    | ReplayableEvent::InvalidateTrack { track, track_number, .. } = &record.event
     {
-        return Some(Change::Removed { track: *track });
+        return Some(Change::Removed {
+            track: *track,
+            track_number: *track_number,
+        });
     }
     if let ReplayableEvent::ReserveTape { tape, .. } | ReplayableEvent::ExtendTape { tape, .. } = &record.event {
         return Some(Change::Tape { tape: *tape });
@@ -43,7 +46,7 @@ pub fn change(record: &ReplayRecord) -> Option<Change> {
 mod tests {
     use tape_core::snapshot::replay::ReplayTrack;
     use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
     use tape_crypto::Hash;
     use tape_crypto::tx::Txid;
@@ -66,7 +69,7 @@ mod tests {
                 key: Hash::new_unique(),
                 kind: TrackKind::Inline as u64,
                 state: TrackState::Registered as u64,
-                visibility: TrackVisibility::Public as u64,
+                flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(1),
                 group: GroupIndex::from(0),
                 value_hash: Hash::new_unique(),
@@ -83,13 +86,14 @@ mod tests {
         let (tape, track) = (Address::new_unique(), Address::new_unique());
 
         let write = change(&record(written(tape, 3)));
-        let delete = change(&record(ReplayableEvent::DeleteTrack { track, epoch: EpochNumber(2) }));
-        let invalidate = change(&record(ReplayableEvent::InvalidateTrack { track, epoch: EpochNumber(2) }));
-        let certify = change(&record(ReplayableEvent::CertifyTrack { track, epoch: EpochNumber(2) }));
+        let (track_number, epoch) = (TrackNumber(4), EpochNumber(2));
+        let delete = change(&record(ReplayableEvent::DeleteTrack { track, track_number, epoch }));
+        let invalidate = change(&record(ReplayableEvent::InvalidateTrack { track, track_number, epoch }));
+        let certify = change(&record(ReplayableEvent::CertifyTrack { track, track_number, epoch }));
 
         assert_eq!(write, Some(Change::Written { tape, track_number: TrackNumber(3) }));
-        assert_eq!(delete, Some(Change::Removed { track }));
-        assert_eq!(invalidate, Some(Change::Removed { track }));
+        assert_eq!(delete, Some(Change::Removed { track, track_number }));
+        assert_eq!(invalidate, Some(Change::Removed { track, track_number }));
         assert_eq!(certify, None);
     }
 }

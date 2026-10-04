@@ -6,6 +6,7 @@
 //! - UnitKey: empty (0 bytes)
 //! - SpoolIndexKey: spool_id BE (2 bytes)
 //! - SliceKey: (spool_id BE, track_address) (34 bytes)
+//! - TrackKey: (track, track_number BE) (40 bytes)
 //! - TrackLookupKey: (tape, track_number BE, key) (72 bytes)
 //! - SnapshotArtifactKey: (epoch BE, group BE, chunk BE) (24 bytes)
 //! - VoteSigKey: (voting_epoch BE, kind BE, target_epoch BE, hash, group BE, signer) (96 bytes)
@@ -278,25 +279,34 @@ impl SliceKey {
     }
 }
 
-/// Key for the challenge sample set, by group then track.
+/// Key for the challenge sample set, by group, then track, then track number.
 ///
-/// Format: [group BE 8 bytes][track 32 bytes]
+/// Format: [group BE 8 bytes][track 32 bytes][track_number BE 8 bytes]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TrackSampleKey {
     pub group: GroupIndex,
     pub track: Address,
+    pub track_number: TrackNumber,
 }
 
 impl TrackSampleKey {
-    pub const SIZE: usize = 40;
+    pub const SIZE: usize = 48;
 
-    pub fn new(group: GroupIndex, track: Address) -> Self {
-        Self { group, track }
+    pub fn new(group: GroupIndex, track: Address, track_number: TrackNumber) -> Self {
+        Self { group, track, track_number }
     }
 
     /// Prefix covering every track assigned to one group.
     pub fn group_prefix(group: GroupIndex) -> [u8; 8] {
         group.as_u64().to_be_bytes()
+    }
+
+    /// Prefix covering every leaf in one group that shares a track address.
+    pub fn track_prefix(group: GroupIndex, track: Address) -> [u8; 40] {
+        let mut prefix = [0u8; 40];
+        prefix[..8].copy_from_slice(&Self::group_prefix(group));
+        prefix[8..].copy_from_slice(track.as_ref());
+        prefix
     }
 }
 
@@ -310,6 +320,7 @@ impl SchemaWrite for TrackSampleKey {
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
         writer.write_exact(&src.group.as_u64().to_be_bytes())?;
         writer.write_exact(src.track.as_ref())?;
+        writer.write_exact(&src.track_number.0.to_be_bytes())?;
         Ok(())
     }
 }
@@ -320,9 +331,63 @@ impl<'de> SchemaRead<'de> for TrackSampleKey {
     fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<TrackSampleKey>) -> ReadResult<()> {
         let group: [u8; 8] = unsafe { reader.get_t()? };
         let track: [u8; 32] = unsafe { reader.get_t()? };
+        let track_number: [u8; 8] = unsafe { reader.get_t()? };
         dst.write(TrackSampleKey {
             group: GroupIndex(u64::from_be_bytes(group)),
             track: Address::from(track),
+            track_number: TrackNumber(u64::from_be_bytes(track_number)),
+        });
+        Ok(())
+    }
+}
+
+/// Key for one leaf, by track address then track number (40 bytes).
+///
+/// Format: [track 32 bytes][track_number BE 8 bytes]
+///
+/// Leaves that share an address sit together in track-number order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TrackKey {
+    pub track: Address,
+    pub track_number: TrackNumber,
+}
+
+impl TrackKey {
+    pub const SIZE: usize = 40;
+
+    pub fn new(track: Address, track_number: TrackNumber) -> Self {
+        Self { track, track_number }
+    }
+
+    /// Create prefix bytes for iterating every leaf with one track address.
+    pub fn track_prefix(track: Address) -> [u8; 32] {
+        track.to_bytes()
+    }
+}
+
+impl SchemaWrite for TrackKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(src.track.as_ref())?;
+        writer.write_exact(&src.track_number.0.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for TrackKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<TrackKey>) -> ReadResult<()> {
+        let track: [u8; 32] = unsafe { reader.get_t()? };
+        let track_number: [u8; 8] = unsafe { reader.get_t()? };
+        dst.write(TrackKey {
+            track: Address::from(track),
+            track_number: TrackNumber(u64::from_be_bytes(track_number)),
         });
         Ok(())
     }

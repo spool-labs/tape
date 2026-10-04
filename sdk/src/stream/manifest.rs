@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tape_core::encoding::ErasureCode;
 use tape_core::track::TRACK_TREE_HEIGHT;
 use tape_core::types::{StorageUnits, TrackNumber};
+use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_protocol::api::SLICE_BYTES_LIMIT;
 use tape_slicer::{stripe_chunk_len, SliceMetadata, STRIPE_CAP};
@@ -69,10 +70,12 @@ pub struct ChunkManifest {
 }
 
 /// One chunk within a manifest.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct ChunkEntry {
     /// Track number on the tape that holds this chunk.
     pub track_number: TrackNumber,
+    /// Address of the chunk's track, which a read fetches and checks.
+    pub track: Address,
     /// Byte offset of this chunk in the original stream.
     pub offset: StorageUnits,
     /// Actual byte count stored in this chunk.
@@ -153,6 +156,7 @@ mod tests {
         let chunks: Vec<ChunkEntry> = (0..chunk_count)
             .map(|chunk_index| ChunkEntry {
                 track_number: TrackNumber(chunk_index as u64),
+                track: Address::new_unique(),
                 offset: StorageUnits::from_bytes(chunk_index as u64 * MAX_TRACK_SIZE as u64),
                 size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
             })
@@ -192,7 +196,7 @@ mod tests {
     fn max() {
         let manifest = sample_manifest(65_535);
         let bytes = manifest.to_bytes().expect("serialize manifest");
-        assert!(bytes.len() < 2 * 1024 * 1024, "manifest should fit in a single blob track");
+        assert!(bytes.len() < 4 * 1024 * 1024, "manifest should fit in a single blob track");
         let recovered = ChunkManifest::from_bytes(&bytes).expect("deserialize manifest");
         assert_eq!(recovered.chunk_count, TrackNumber(65_535));
     }
@@ -210,21 +214,25 @@ mod tests {
             chunks: vec![
                 ChunkEntry {
                     track_number: TrackNumber(0),
+                    track: Address::new_unique(),
                     offset: StorageUnits::zero(),
                     size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
                 },
                 ChunkEntry {
                     track_number: TrackNumber(1),
+                    track: Address::new_unique(),
                     offset: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
                     size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
                 },
                 ChunkEntry {
                     track_number: TrackNumber(2),
+                    track: Address::new_unique(),
                     offset: StorageUnits::from_bytes(2 * MAX_TRACK_SIZE as u64),
                     size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
                 },
                 ChunkEntry {
                     track_number: TrackNumber(3),
+                    track: Address::new_unique(),
                     offset: StorageUnits::from_bytes(3 * MAX_TRACK_SIZE as u64),
                     size: StorageUnits::from_bytes(1000),
                 },

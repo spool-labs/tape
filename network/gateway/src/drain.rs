@@ -94,8 +94,6 @@ fn classify(error: &TapedriveError) -> Failure {
         TapedriveError::Download(_) => Failure::Transient,
         TapedriveError::NotFound => Failure::Transient,
         TapedriveError::InsufficientCapacity { .. } => Failure::Permanent,
-        TapedriveError::WriteConflict { .. } => Failure::Permanent,
-        TapedriveError::TrackPositionConflict { .. } => Failure::Permanent,
         TapedriveError::CommitmentMismatch => Failure::Permanent,
         TapedriveError::MissingPayer => Failure::Permanent,
         TapedriveError::Encoding(_) => Failure::Permanent,

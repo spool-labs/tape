@@ -61,6 +61,7 @@ use tape_e2e_simnet::{
 };
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::object::{ListedObject, ListObjectsQuery};
+use tape_sdk::write_options::WriteOptions;
 
 const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
 const TARGET_GROUPS: u64 = 1;
@@ -1497,7 +1498,11 @@ async fn assert_resumed_manifest(harness: &SimnetHarness, name: &str, is_coded: 
     assert_eq!(stored.track.is_coded(), is_coded);
     assert_eq!(stored.track.is_certified(), !is_coded);
 
-    let receipt = sdk.write_named_bytes(&tape_key, name, ContentType::TextPlain, data)
+    let resuming = scenario.sdk(harness.admin()).with_write_options(WriteOptions {
+        resume: true,
+        ..WriteOptions::default()
+    });
+    let receipt = resuming.write_named_bytes(&tape_key, name, ContentType::TextPlain, data)
         .await
         .expect("resume stored stream");
     let listed = wait_sdk_object_listed(
@@ -1512,7 +1517,7 @@ async fn assert_resumed_manifest(harness: &SimnetHarness, name: &str, is_coded: 
     }
 
     // Repeating the reader write exercises resume of an already certified manifest.
-    let repeated = sdk.write_named_stream(
+    let repeated = resuming.write_named_stream(
         &tape_key, name, ContentType::TextPlain, size, data.as_slice(),
     ).await.expect("resume certified stream");
     assert_eq!(repeated.etag, receipt.etag);

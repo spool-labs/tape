@@ -10,8 +10,7 @@ use tape_store_api::Store;
 use tape_core::cert::track::TrackInvalidateMessage;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{BitmapRead, EpochNumber};
-use tape_crypto::address::Address;
+use tape_core::types::{BitmapRead, EpochNumber, TrackNumber};
 use tape_protocol::Api;
 use tape_protocol::api::{
     BINARY_CONTENT, BlsInconsistencyResponse, InconsistencyProof, InconsistencyRequest,
@@ -20,12 +19,13 @@ use tape_store::ops::{TrackDataOps, TrackOps};
 
 use crate::features::http::auth::ActivePeer;
 use crate::features::http::error::RouteError;
+use crate::features::http::handlers::track::parse_tape;
 use crate::features::http::state::{AppState, current_epoch};
 
 pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     _active_peer: ActivePeer,
-    Path(track_id): Path<String>,
+    Path((tape_id, track_number)): Path<(String, u64)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
 
@@ -33,16 +33,19 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(|error| RouteError::BadRequest(format!("inconsistency request: {error}")))?;
 
     let epoch = current_epoch(&state)?;
-    let track: Address = track_id
-        .parse()
-        .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
-
-    let track_key = track;
+    let tape = parse_tape(&tape_id)?;
+    let track_number = TrackNumber(track_number);
+    let track_key = state
+        .context
+        .store
+        .track_address_by_number(tape, track_number)
+        .map_err(store_error)?
+        .ok_or(RouteError::NotFound)?;
 
     let track_info = state
         .context
         .store
-        .get_track(track_key)
+        .get_track(track_key, track_number)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
     if !track_info.is_coded() {
@@ -52,7 +55,7 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let track_data = state
         .context
         .store
-        .get_track_data(track_key)
+        .get_track_data(track_key, track_number)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
     let BlobData::Coded(blob) = track_data else {
@@ -165,11 +168,12 @@ mod tests {
     use tape_core::spooler::GroupIndex;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
     use tape_crypto::Hash;
+    use tape_crypto::address::Address;
     use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_protocol::api::{InconsistencyProof, InconsistencyRequest};
     use tape_store::ops::{ObjectInfoOps, TapeOps};
@@ -229,7 +233,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: blob.size,
             group,
             value_hash: blob.get_hash(),
@@ -241,12 +245,13 @@ mod tests {
             .expect("seed track");
 
         ctx.store
-            .put_track_data(track_address, BlobData::Coded(blob))
+            .put_track_data(track_address, track.track_number, BlobData::Coded(blob))
             .expect("seed track data");
 
         ctx.store
             .put_object_info(
                 track_address,
+                track.track_number,
                 ObjectInfo::System {
                     kind: SystemObjectKind::Snapshot {
                         epoch,
@@ -278,7 +283,7 @@ mod tests {
                 context: ctx.clone(),
             }),
             active_peer,
-            Path(track_address.to_string()),
+            Path((track.tape.to_string(), track.track_number.0)),
             Bytes::from(body),
         )
         .await

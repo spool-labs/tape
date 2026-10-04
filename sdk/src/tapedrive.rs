@@ -251,7 +251,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 content_type,
                 data,
                 epochs,
-                self.write_options.visibility,
+                self.write_options.flags,
             )
             .await;
         total.finish_result(&result);

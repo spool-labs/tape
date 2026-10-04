@@ -227,7 +227,7 @@ async fn fetch_and_decode_track<A: Api>(
     }
 
     let slices =
-        fetch_verified_slices(api.as_ref(), &peers, group, track_address, &blob, profile, &cancel)
+        fetch_verified_slices(api.as_ref(), &peers, &track, track_address, &blob, profile, &cancel)
             .await?;
 
     let refs: Vec<(usize, &[u8])> = slices.iter().map(|(i, d)| (*i, d.as_slice())).collect();
@@ -253,12 +253,13 @@ async fn fetch_and_decode_track<A: Api>(
 async fn fetch_verified_slices<A: Api>(
     api: &A,
     peers: &[(SpoolIndex, Address)],
-    group: GroupIndex,
+    info: &CompressedTrack,
     track: Address,
     blob: &BlobEncoding,
     profile: ErasureCode,
     cancel: &CancellationToken,
 ) -> Result<Vec<(usize, Vec<u8>)>, SnapshotReaderError> {
+    let group = info.group;
     let needed = usize::from(profile.k());
     let mut out: Vec<(usize, Vec<u8>)> = Vec::with_capacity(needed);
     for (spool, peer) in peers {
@@ -268,7 +269,11 @@ async fn fetch_verified_slices<A: Api>(
         let Some(leaf_idx) = group.position_of(*spool) else {
             continue;
         };
-        match api.get_slice(*peer, &GetSliceReq { track, spool: *spool }).await {
+        let request = GetSliceReq {
+            track,
+            spool: *spool,
+        };
+        match api.get_slice(*peer, &request).await {
             Ok(res) => {
                 if !blob.verify_slice(SpoolIndex::from(leaf_idx as u64), &res.data) {
                     warn!(node = %peer, spool = %spool, "snapshot reader: slice failed leaf verification");
@@ -298,7 +303,8 @@ async fn fetch_blob<A: Api>(
 ) -> Result<BlobEncoding, SnapshotReaderError> {
     let mut last_error: Option<SnapshotReaderError> = None;
     for (_, peer) in peers {
-        match api.get_track_data(*peer, &GetTrackDataReq { track }).await {
+        let request = GetTrackDataReq { track };
+        match api.get_track_data(*peer, &request).await {
             Ok(res) => match res.data {
                 BlobData::Coded(blob) => return Ok(blob),
                 _ => return Err(SnapshotReaderError::NonBlobTrackData(track)),

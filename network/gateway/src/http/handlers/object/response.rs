@@ -3,7 +3,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::types::ContentType;
+use tape_core::types::{ContentType, TrackNumber};
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
@@ -38,11 +38,12 @@ pub struct ObjectResponseMetadata {
 pub fn object_response_metadata<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     track_addr: Address,
+    track_number: TrackNumber,
 ) -> Result<ObjectResponseMetadata, RouteError> {
     let metadata = state
         .context
         .store
-        .get_object_metadata(track_addr)
+        .get_object_metadata(track_addr, track_number)
         .map_err(store_error)?;
 
     let content_type = metadata

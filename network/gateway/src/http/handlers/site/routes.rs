@@ -35,7 +35,7 @@ use crate::http::handlers::object::response::object_response_ranged;
 use crate::http::handlers::resolve::{Readable, resolve_readable_with_pending};
 use crate::http::handlers::share::authorize_signed_read;
 use crate::http::handlers::store_error;
-use crate::http::handlers::track::{ensure_readable, parse_address, track_with_pending};
+use crate::http::handlers::track::{ensure_readable, parse_address, requested_track};
 use crate::http::state::AppState;
 use crate::meter::{MeterCaller, rate_limited_response};
 
@@ -257,7 +257,8 @@ async fn serve_site<
     // A denied track answers gone before a revalidation could vouch for it.
     let track = match &readable {
         Readable::Track(resolved) => {
-            let track = track_with_pending(&state, resolved.track_address)?.ok_or(RouteError::NotFound)?;
+            let track = requested_track(&state, resolved.track_address, resolved.track_number)?
+                .ok_or(RouteError::NotFound)?;
             ensure_readable(&state, resolved.track_address, track.tape)?;
             Some(track)
         }

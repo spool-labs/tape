@@ -109,7 +109,7 @@ mod tests {
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::spooler::GroupIndex;
     use tape_core::track::data::BlobData;
-    use tape_core::types::SlotNumber;
+    use tape_core::types::{SlotNumber, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_node::features::replay::types::{RawTrack, ReplayBatch};
@@ -136,11 +136,13 @@ mod tests {
             raw_tracks: vec![
                 RawTrack {
                     track: first,
+                    track_number: TrackNumber(0),
                     group: GroupIndex::from(0),
                     data: vec![1, 2, 3],
                 },
                 RawTrack {
                     track: second,
+                    track_number: TrackNumber(1),
                     group: GroupIndex::from(19),
                     data: vec![4, 5, 6],
                 },
@@ -151,11 +153,11 @@ mod tests {
 
         assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(42)));
         assert_eq!(
-            store.get_track_data(first).expect("first track data"),
+            store.get_track_data(first, TrackNumber(0)).expect("first track data"),
             Some(BlobData::Inline(vec![1, 2, 3]))
         );
         assert_eq!(
-            store.get_track_data(second).expect("second track data"),
+            store.get_track_data(second, TrackNumber(1)).expect("second track data"),
             Some(BlobData::Inline(vec![4, 5, 6]))
         );
     }

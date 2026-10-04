@@ -2,7 +2,7 @@
 
 use tape_store_api::Store;
 use tape_core::tape::{tape_index, tape_namespace, TapeFlags, TapeNamespace};
-use tape_core::types::{EpochNumber, TapeNumber};
+use tape_core::types::{EpochNumber, TapeNumber, TrackNumber};
 use tape_crypto::Address;
 use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
 use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
@@ -30,16 +30,16 @@ pub fn validate_bootstrap_store<Db: Store>(
             .sweep_tracks(cursor.as_deref(), TRACK_SCAN_BATCH)
             .map_err(store_error)?;
 
-        let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
+        let mut keys: Vec<(Address, TrackNumber)> = Vec::with_capacity(tracks.len());
         let mut parents: Vec<Address> = Vec::with_capacity(tracks.len());
         for (track, metadata) in &tracks {
-            addresses.push(*track);
+            keys.push((*track, metadata.track_number));
             parents.push(metadata.tape);
         }
         // The page's two reads once each. A validate walks every track there is,
         // so a round trip a row is the whole cost of the pass.
         let tapes = store.get_tapes(&parents).map_err(store_error)?;
-        let objects = store.get_object_infos(&addresses).map_err(store_error)?;
+        let objects = store.get_object_infos(&keys).map_err(store_error)?;
 
         for (((track, metadata), held_tape), held_object) in
             tracks.iter().zip(tapes).zip(objects)
@@ -180,7 +180,7 @@ mod tests {
     use tape_api::program::tapedrive::TrackAddress;
     use tape_core::spooler::GroupIndex;
     use tape_core::tape::{snapshot_tape_number, user_tape_number};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::{Address, Hash};
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
@@ -198,7 +198,7 @@ mod tests {
             key: Hash::default(),
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits(1),
             group: GroupIndex::from(0),
             value_hash: Hash::default(),
@@ -229,6 +229,7 @@ mod tests {
         store
             .put_object_info(
                 track,
+                TrackNumber(0),
                 ObjectInfo::Valid {
                     track_address: track,
                     registered_epoch: EpochNumber(1),
@@ -253,6 +254,7 @@ mod tests {
         store
             .put_object_info(
                 track,
+                TrackNumber(0),
                 ObjectInfo::Valid {
                     track_address: track,
                     registered_epoch: EpochNumber(1),
@@ -290,6 +292,7 @@ mod tests {
         store
             .put_object_info(
                 track,
+                TrackNumber(0),
                 ObjectInfo::Valid {
                     track_address: track,
                     registered_epoch: EpochNumber(3),
