@@ -1,13 +1,47 @@
+use crate::track::types::TrackFlags;
 use crate::types::{EpochNumber, NodeId, TapeNumber};
 
 pub struct TapeFlags;
 
 impl TapeFlags {
+    pub const NONE: u64 = 0;
     pub const SYSTEM: u64 = 1;
+    pub const HIDDEN: u64 = 1 << 1;
+    pub const IMMUTABLE: u64 = 1 << 2;
+
+    const RESERVABLE: u64 = Self::HIDDEN | Self::IMMUTABLE;
 
     #[inline(always)]
     pub fn is_system(flags: u64) -> bool {
         flags & Self::SYSTEM != 0
+    }
+
+    #[inline(always)]
+    pub fn is_hidden(flags: u64) -> bool {
+        flags & Self::HIDDEN != 0
+    }
+
+    #[inline(always)]
+    pub fn is_immutable(flags: u64) -> bool {
+        flags & Self::IMMUTABLE != 0
+    }
+
+    #[inline(always)]
+    pub fn is_reservable(flags: u64) -> bool {
+        flags & !Self::RESERVABLE == 0
+    }
+
+    /// Every track written to a tape with these flags gets these track flags
+    #[inline(always)]
+    pub fn track_flags(flags: u64) -> u64 {
+        let mut track_flags = TrackFlags::NONE;
+        if Self::is_hidden(flags) {
+            track_flags |= TrackFlags::HIDDEN;
+        }
+        if Self::is_immutable(flags) {
+            track_flags |= TrackFlags::IMMUTABLE;
+        }
+        track_flags
     }
 }
 
@@ -108,6 +142,28 @@ mod tests {
         assert_eq!(tape_index(snapshot), 42);
         assert_ne!(snapshot, history);
         assert_ne!(history, blacklist);
+    }
+
+    // a user can reserve a hidden or immutable tape; system and unknown bits are refused
+    #[test]
+    fn reservable_flags() {
+        assert!(TapeFlags::is_reservable(TapeFlags::NONE));
+        assert!(TapeFlags::is_reservable(TapeFlags::HIDDEN | TapeFlags::IMMUTABLE));
+        assert!(!TapeFlags::is_reservable(TapeFlags::SYSTEM));
+        assert!(!TapeFlags::is_reservable(1 << 40));
+    }
+
+    // a tape hands its tracks its hidden and immutable flags only
+    #[test]
+    fn tape_track_flags() {
+        assert_eq!(TapeFlags::track_flags(TapeFlags::NONE), TrackFlags::NONE);
+        assert_eq!(TapeFlags::track_flags(TapeFlags::SYSTEM), TrackFlags::NONE);
+        assert_eq!(TapeFlags::track_flags(TapeFlags::HIDDEN), TrackFlags::HIDDEN);
+        assert_eq!(TapeFlags::track_flags(TapeFlags::IMMUTABLE), TrackFlags::IMMUTABLE);
+        assert_eq!(
+            TapeFlags::track_flags(TapeFlags::SYSTEM | TapeFlags::HIDDEN | TapeFlags::IMMUTABLE),
+            TrackFlags::HIDDEN | TrackFlags::IMMUTABLE,
+        );
     }
 
     #[test]

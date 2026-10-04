@@ -551,7 +551,7 @@ async fn resume_stream_chunk<Blockchain: Rpc, Cluster: Api>(
     chunk_data: Vec<u8>,
 ) -> Result<CompressedTrack, TapedriveError> {
     let logical_size = StorageUnits::from_bytes(chunk_data.len() as u64);
-    let flags = client.write_options.flags;
+    let flags = contents.track_flags(client.write_options.flags);
     let plan = encode_blob(client, chunk_data, Operation::WriteStream).await?;
     let content = coded_content_address(tape_key.address(), UNNAMED_TRACK, &plan, flags)?;
 
@@ -588,7 +588,7 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
     manifest_bytes: &[u8],
 ) -> Result<StoredManifest, TapedriveError> {
     let tape = tape_key.address();
-    let flags = client.write_options.flags;
+    let flags = contents.track_flags(client.write_options.flags);
 
     match manifest_write_mode(name, manifest_bytes) {
         ManifestWriteMode::Inline => {
@@ -1777,58 +1777,88 @@ mod tests {
     // Resuming a certified manifest returns the same ETag as the object index for both storage modes.
     #[tokio::test]
     async fn resumed_etags() {
-        let name = b"backup.tar";
         for chunk_count in [1, 256] {
-            let tape_key = TapeKey::generate();
-            let bytes = sample_manifest_bytes(chunk_count);
-            let computed = content_etag_named(TAPENET_PROFILE, name, bytes.clone())
-                .await
-                .expect("encode manifest");
-            let blob = computed.plan.as_ref().map(plan_blob);
-            let data = match blob {
-                Some(blob) => BlobDataSlice::Coded(blob),
-                None => BlobDataSlice::Inline(&bytes),
-            };
-            let metadata = data
-                .meta(TAPENET_PROFILE)
-                .expect("valid manifest metadata");
-            let track = CompressedTrack {
-                tape: tape_key.address(),
-                track_number: TrackNumber(chunk_count),
-                key: track_key(name, &data),
-                kind: metadata.kind as u64,
-                state: TrackState::Certified as u64,
-                flags: TrackFlags::NONE,
-                size: metadata.size,
-                group: GroupIndex(0),
-                value_hash: metadata.value_hash,
-            };
-            let client = manifest_client(track);
-            let contents = TapeContents::from_tracks(vec![track]);
+            resumed_etag(chunk_count, TrackFlags::NONE).await;
+        }
+    }
 
-            let manifest = ensure_stream_manifest(
-                &client,
-                &tape_key,
-                &contents,
-                name,
-                ContentType::Unknown,
-                StorageUnits::from_bytes(tapenet_chunk() * chunk_count),
-                &bytes,
-            ).await.expect("resume manifest");
-            assert!(manifest.receipts.is_empty());
-            let receipt = complete_stream(&client, &tape_key, &manifest)
-                .await
-                .expect("complete stream");
+    // a tape that adds its own flags to every track still finds the manifest a plain write left
+    #[tokio::test]
+    async fn resumed_on_flagged_tape() {
+        for chunk_count in [1, 256] {
+            resumed_etag(chunk_count, TrackFlags::HIDDEN | TrackFlags::IMMUTABLE).await;
+        }
+    }
 
-            assert_eq!(receipt.manifest, track.address());
-            assert_eq!(receipt.manifest_track_number, track.track_number);
-            assert_eq!(receipt.etag, object_etag(&track, blob.as_ref()));
-            assert_eq!(track.is_coded(), chunk_count == 256);
-            if track.is_coded() {
-                assert_ne!(receipt.etag, track.value_hash);
-            } else {
-                assert_eq!(receipt.etag, track.value_hash);
-            }
+    // an immutable object's delete is refused before any of its tracks is asked for
+    #[tokio::test]
+    async fn immutable_object_delete() {
+        let tape_key = TapeKey::generate();
+        let track = CompressedTrack {
+            tape: tape_key.address(),
+            state: TrackState::Certified as u64,
+            flags: TrackFlags::IMMUTABLE,
+            ..CompressedTrack::zeroed()
+        };
+        let client = manifest_client(track);
+
+        let deleted = client.delete_object_as(&tape_key, track.address()).await;
+
+        assert!(matches!(deleted, Err(TapedriveError::Immutable)));
+    }
+
+    /// Resume a manifest the tape holds with `tape_flags` on its leaf, written by a client that set none
+    async fn resumed_etag(chunk_count: u64, tape_flags: u64) {
+        let name = b"backup.tar";
+        let tape_key = TapeKey::generate();
+        let bytes = sample_manifest_bytes(chunk_count);
+        let computed = content_etag_named(TAPENET_PROFILE, name, bytes.clone())
+            .await
+            .expect("encode manifest");
+        let blob = computed.plan.as_ref().map(plan_blob);
+        let data = match blob {
+            Some(blob) => BlobDataSlice::Coded(blob),
+            None => BlobDataSlice::Inline(&bytes),
+        };
+        let metadata = data
+            .meta(TAPENET_PROFILE)
+            .expect("valid manifest metadata");
+        let track = CompressedTrack {
+            tape: tape_key.address(),
+            track_number: TrackNumber(chunk_count),
+            key: track_key(name, &data),
+            kind: metadata.kind as u64,
+            state: TrackState::Certified as u64,
+            flags: tape_flags,
+            size: metadata.size,
+            group: GroupIndex(0),
+            value_hash: metadata.value_hash,
+        };
+        let client = manifest_client(track);
+        let contents = TapeContents::from_tracks(vec![track], tape_flags);
+
+        let manifest = ensure_stream_manifest(
+            &client,
+            &tape_key,
+            &contents,
+            name,
+            ContentType::Unknown,
+            StorageUnits::from_bytes(tapenet_chunk() * chunk_count),
+            &bytes,
+        ).await.expect("resume manifest");
+        assert!(manifest.receipts.is_empty());
+        let receipt = complete_stream(&client, &tape_key, &manifest)
+            .await
+            .expect("complete stream");
+
+        assert_eq!(receipt.manifest, track.address());
+        assert_eq!(receipt.manifest_track_number, track.track_number);
+        assert_eq!(receipt.etag, object_etag(&track, blob.as_ref()));
+        assert_eq!(track.is_coded(), chunk_count == 256);
+        if track.is_coded() {
+            assert_ne!(receipt.etag, track.value_hash);
+        } else {
+            assert_eq!(receipt.etag, track.value_hash);
         }
     }
 

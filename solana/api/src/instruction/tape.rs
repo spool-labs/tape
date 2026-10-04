@@ -12,6 +12,7 @@ pub struct ReserveTape {
     pub storage_units: StorageUnits,
     pub activation_epoch: EpochNumber,
     pub expiry_epoch: EpochNumber,
+    pub flags: u64,
 }
 
 #[repr(C)]
@@ -46,6 +47,7 @@ pub fn build_reserve_tape_ix(
     storage_units: StorageUnits,
     activation_epoch: EpochNumber,
     expiry_epoch: EpochNumber,
+    flags: u64,
 ) -> Instruction {
 
     let authority_ata = ata(&authority);
@@ -78,6 +80,7 @@ pub fn build_reserve_tape_ix(
             storage_units,
             activation_epoch,
             expiry_epoch,
+            flags,
         }.to_bytes(),
     }
 }

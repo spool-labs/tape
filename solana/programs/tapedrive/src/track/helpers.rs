@@ -1,6 +1,7 @@
 use tape_api::program::prelude::*;
 use tape_api::event::{TrackDeleted, TrackWritten};
 use tape_core::spooler::GroupIndex;
+use tape_core::tape::TapeFlags;
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::hash::hashv;
@@ -33,6 +34,9 @@ pub fn append_track(
         system.live_group_count,
     )?;
 
+    // A hidden or immutable tape makes every track written to it the same.
+    let flags = flags | TapeFlags::track_flags(tape.flags);
+
     let track = CompressedTrack {
         tape: tape_address,
         track_number,
@@ -56,6 +60,7 @@ pub fn append_track(
         tape: tape_address,
         group,
         track_number,
+        flags,
         track_hash,
     }
     .log();

@@ -45,8 +45,9 @@ pub struct TrackFlags;
 impl TrackFlags {
     pub const NONE: u64 = 0;
     pub const HIDDEN: u64 = 1;
+    pub const IMMUTABLE: u64 = 1 << 1;
 
-    const KNOWN: u64 = Self::HIDDEN;
+    const KNOWN: u64 = Self::HIDDEN | Self::IMMUTABLE;
 
     #[inline(always)]
     pub fn is_known(flags: u64) -> bool {
@@ -56,6 +57,11 @@ impl TrackFlags {
     #[inline(always)]
     pub fn is_hidden(flags: u64) -> bool {
         flags & Self::HIDDEN != 0
+    }
+
+    #[inline(always)]
+    pub fn is_immutable(flags: u64) -> bool {
+        flags & Self::IMMUTABLE != 0
     }
 }
 
@@ -113,6 +119,11 @@ impl CompressedTrack {
     #[inline(always)]
     pub fn is_hidden(&self) -> bool {
         TrackFlags::is_hidden(self.flags)
+    }
+
+    #[inline(always)]
+    pub fn is_immutable(&self) -> bool {
+        TrackFlags::is_immutable(self.flags)
     }
 
     #[inline(always)]
@@ -276,6 +287,19 @@ mod tests {
 
         assert!(!TrackFlags::is_known(track.flags));
         assert!(!track.is_hidden());
+        assert!(!track.is_immutable());
+    }
+
+    // the two flags are known bits and each one sets only itself
+    #[test]
+    fn immutable_flag() {
+        let mut track = public_track();
+        track.flags = TrackFlags::IMMUTABLE;
+
+        assert!(TrackFlags::is_known(TrackFlags::HIDDEN | TrackFlags::IMMUTABLE));
+        assert!(track.is_immutable());
+        assert!(!track.is_hidden());
+        assert!(!public_track().is_immutable());
     }
 
     // where a track sits and how far it got leave its content address alone
@@ -302,6 +326,7 @@ mod tests {
             CompressedTrack { key: Hash::new_unique(), ..track },
             CompressedTrack { kind: TrackKind::Inline as u64, ..track },
             CompressedTrack { flags: TrackFlags::HIDDEN, ..track },
+            CompressedTrack { flags: TrackFlags::IMMUTABLE, ..track },
             CompressedTrack { size: StorageUnits::from_bytes(4097), ..track },
             CompressedTrack { value_hash: Hash::new_unique(), ..track },
         ];

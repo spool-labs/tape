@@ -310,6 +310,7 @@ mod tests {
             tape,
             group: GroupIndex(5),
             track_number: TrackNumber(7),
+            flags: 0b11,
             track_hash: Hash::default(),
         };
 
@@ -323,6 +324,7 @@ mod tests {
                 assert_eq!(e.epoch, EpochNumber(3));
                 assert_eq!(e.track_number, TrackNumber(7));
                 assert_eq!(e.group, GroupIndex(5));
+                assert_eq!(e.flags, 0b11);
             }
             _ => panic!("Expected TrackWritten event"),
         }

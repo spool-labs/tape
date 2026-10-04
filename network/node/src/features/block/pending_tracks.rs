@@ -203,7 +203,6 @@ impl PendingTracks {
                     track,
                     key,
                     object,
-                    flags,
                     value,
                     event,
                     ..
@@ -217,7 +216,7 @@ impl PendingTracks {
                         key: *key,
                         kind: meta.kind as u64,
                         state: meta.state as u64,
-                        flags: *flags,
+                        flags: event.flags,
                         size: meta.size,
                         group: event.group,
                         value_hash: meta.value_hash,

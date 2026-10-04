@@ -159,8 +159,13 @@ impl S3WriteContext {
                 .write_named_bytes_as(&operator, name, content_type, data)
                 .await?;
             if let Some(old_track) = existing {
-                if let Err(error) = client.delete_object_as(&operator, old_track).await {
-                    tracing::warn!(%error, %tape, %old_track, "overwrite delete failed; old object left for later sweep");
+                match client.delete_object_as(&operator, old_track).await {
+                    Ok(()) => {}
+                    // An immutable old object stays, and the name now resolves to the new one.
+                    Err(TapedriveError::Immutable) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, %tape, %old_track, "overwrite delete failed; old object left for later sweep");
+                    }
                 }
             }
             Ok((receipt.etag, receipt.manifest))

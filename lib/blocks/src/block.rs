@@ -368,7 +368,6 @@ mod tests {
         let tx1 = ParsedTransaction {
             tx_id: None,
             raw_instructions: vec![RawInstruction::TrackWrite {
-                flags: TrackFlags::NONE,
                 authority: Address::new_unique(),
                 key: Hash::default(),
                 object: None,
@@ -389,13 +388,13 @@ mod tests {
             tape: Address::new_unique(),
             group: GroupIndex(0),
             track_number: 0u64.into(),
+            flags: TrackFlags::NONE,
             track_hash: Hash::default(),
         };
 
         let tx2 = ParsedTransaction {
             tx_id: None,
             raw_instructions: vec![RawInstruction::TrackWrite {
-                flags: TrackFlags::NONE,
                 authority: Address::new_unique(),
                 key: Hash::default(),
                 object: None,
@@ -615,6 +614,7 @@ mod tests {
                             tape,
                             group: GroupIndex(1),
                             track_number: 7u64.into(),
+                            flags: TrackFlags::NONE,
                             track_hash: Hash::new_unique(),
                         },
                     ),
@@ -629,6 +629,7 @@ mod tests {
                             tape,
                             group: GroupIndex(2),
                             track_number: 8u64.into(),
+                            flags: TrackFlags::NONE,
                             track_hash: Hash::new_unique(),
                         },
                     ),
@@ -767,6 +768,7 @@ mod tests {
                             tape,
                             group: GroupIndex(1),
                             track_number: 21u64.into(),
+                            flags: TrackFlags::NONE,
                             track_hash: Hash::new_unique(),
                         },
                     ),

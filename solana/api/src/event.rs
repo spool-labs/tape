@@ -131,6 +131,9 @@ pub struct TrackWritten {
     /// The spool group that is responsible for this track
     pub group: GroupIndex,
 
+    /// The track's flags: the ones the write asked for plus the tape's
+    pub flags: u64,
+
     /// The compressed track hash that was added to the tape's merkle tree
     pub track_hash: Hash,
 }

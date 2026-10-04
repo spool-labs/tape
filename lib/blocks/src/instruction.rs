@@ -103,7 +103,6 @@ pub enum RawInstruction {
     TrackWrite {
         authority: Address,
         key: Hash,
-        flags: u64,
         object: Option<ReplayTrackObject>,
         value: BlobData,
     },
@@ -270,7 +269,6 @@ pub enum ParsedInstruction {
         authority: Address,
         track: Address,
         key: Hash,
-        flags: u64,
         object: Option<ReplayTrackObject>,
         value: BlobData,
         event: TrackWritten,
@@ -520,9 +518,9 @@ pub fn parse_raw_instruction(
 
         TapeInstruction::TrackWrite => {
             let authority = get_account(1)?;
-            let (header, blob) = ix::parse_track_write(&ix_data[1..])
+            // The leaf's flags come from the TrackWritten event, which adds the tape's.
+            let (_header, blob) = ix::parse_track_write(&ix_data[1..])
                 .map_err(|e| ParseError::Deserialization(e.to_string()))?;
-            let flags = header.flags();
             let key = track_key(blob.name(), &blob.data);
             let object = blob.object.map(|object| ReplayTrackObject {
                 name: object.name.to_vec(),
@@ -536,7 +534,6 @@ pub fn parse_raw_instruction(
             Ok(Some(RawInstruction::TrackWrite {
                 authority,
                 key,
-                flags,
                 object,
                 value,
             }))

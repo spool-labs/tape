@@ -93,6 +93,7 @@ fn classify(error: &TapedriveError) -> Failure {
         TapedriveError::Upload(_) => Failure::Transient,
         TapedriveError::Download(_) => Failure::Transient,
         TapedriveError::NotFound => Failure::Transient,
+        TapedriveError::Immutable => Failure::Permanent,
         TapedriveError::InsufficientCapacity { .. } => Failure::Permanent,
         TapedriveError::CommitmentMismatch => Failure::Permanent,
         TapedriveError::MissingPayer => Failure::Permanent,
@@ -555,10 +556,27 @@ where
 
         match self.write_chain(tape, key, write).await {
             Ok(track) => self.landed(tape, key, write, track),
+            Err(TapedriveError::Immutable) => return self.drop_refused(tape, key, write),
             Err(error) => self.record_failure(tape, key, write, &error),
         }
         // The index has not seen the write yet, so the entry stays.
         false
+    }
+
+    /// Drop a queued delete of an immutable track. The chain never takes it,
+    /// and the entry would hide the object for as long as it stayed.
+    fn drop_refused(&self, tape: Address, key: &[u8], write: &PendingWrite) -> bool {
+        warn!(
+            %tape,
+            key = %String::from_utf8_lossy(key),
+            "s3 drain: delete dropped, the track is immutable"
+        );
+        if let Err(error) = self.staging.remove(tape, key, write.seq) {
+            warn!(%error, %tape, "s3 drain: dropping a refused delete failed");
+            return false;
+        }
+        self.retries.clear(tape, key);
+        true
     }
 
     /// Record that an entry's write reached the chain as `track`
@@ -846,6 +864,7 @@ mod tests {
             Failure::Permanent
         );
         assert_eq!(classify(&TapedriveError::MissingPayer), Failure::Permanent);
+        assert_eq!(classify(&TapedriveError::Immutable), Failure::Permanent);
         assert_eq!(
             classify(&TapedriveError::Rpc(RpcError::SlotSkipped)),
             Failure::Permanent

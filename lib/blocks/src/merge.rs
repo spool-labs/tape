@@ -201,7 +201,6 @@ pub fn merge(
             RawInstruction::TrackWrite {
                 authority,
                 key,
-                flags,
                 object,
                 value,
             } => {
@@ -217,7 +216,6 @@ pub fn merge(
                     authority,
                     track: event.track,
                     key,
-                    flags,
                     object,
                     value,
                     event,
@@ -881,6 +879,7 @@ mod tests {
             tape: Address::new_unique(),
             group: GroupIndex(0),
             track_number: TrackNumber(0),
+            flags: TrackFlags::NONE,
             track_hash: Hash::default(),
         };
 
@@ -894,7 +893,6 @@ mod tests {
         let instructions = vec![
             RawInstruction::AdvanceEpoch,
             RawInstruction::TrackWrite {
-                flags: TrackFlags::NONE,
                 authority: owner,
                 key: Hash::default(),
                 object: None,
@@ -954,7 +952,6 @@ mod tests {
     fn required_events_missing_cases() -> Vec<RawInstruction> {
         vec![
             RawInstruction::TrackWrite {
-                flags: TrackFlags::NONE,
                 authority: Address::new_unique(),
                 key: Hash::default(),
                 object: None,
@@ -1019,7 +1016,6 @@ mod tests {
         vec![
             (
                 RawInstruction::TrackWrite {
-                    flags: TrackFlags::NONE,
                     authority: Address::new_unique(),
                     key: Hash::default(),
                     object: None,
@@ -1037,6 +1033,7 @@ mod tests {
                     tape: register_tape,
                     group: GroupIndex(0),
                     track_number: TrackNumber(0),
+                    flags: TrackFlags::NONE,
                     track_hash: Hash::default(),
                 }),
             ),

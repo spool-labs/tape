@@ -25,6 +25,7 @@ use tape_rpc::{Rpc, RpcError};
 use tape_store_api::Store;
 use tape_api::instruction::MAX_NAME_LEN;
 use tape_api::program::tapedrive::tape_pda;
+use tape_core::tape::TapeFlags;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::Hash;
@@ -1454,6 +1455,7 @@ fn s3_write_error(error: TapedriveError) -> S3Error {
     match error {
         TapedriveError::InvalidArgument(message) => S3Error::InvalidRequest(message),
         TapedriveError::NotFound => S3Error::NoSuchKey,
+        TapedriveError::Immutable => immutable_object(),
         // A peer rate limit surfaces from the write pipeline wrapped in the
         // upload error, and from reads as the dedicated variant.
         TapedriveError::RateLimited { retry_after }
@@ -1492,6 +1494,7 @@ fn is_operator_auth_failure(error: &TapedriveError) -> bool {
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
         | TapedriveError::NotFound
+        | TapedriveError::Immutable
         | TapedriveError::RateLimited { .. }
         | TapedriveError::InsufficientCapacity { .. }
         | TapedriveError::InvalidArgument(_)
@@ -1594,6 +1597,12 @@ where
         return Ok(());
     }
 
+    // The chain refuses this delete, and a queued one would hide the object for nothing.
+    if is_immutable(state, tape, key)? {
+        permit.refund(state);
+        return Err(immutable_object());
+    }
+
     // Hidden from readers the moment this is queued.
     match state.staging.enqueue_delete(tape, key.as_bytes()).await {
         Ok(()) => {
@@ -1626,6 +1635,40 @@ where
         return Ok(false);
     }
     Ok(resolve_object(state, tape, key)?.is_some())
+}
+
+/// Whether a key's track can't be deleted: every track on an immutable tape,
+/// and any track written with the flag
+fn is_immutable<Db, Cluster, Blockchain>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    tape: Address,
+    key: &str,
+) -> Result<bool, S3Error>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let in_store = state
+        .context
+        .store
+        .get_tape(tape)
+        .map_err(|error| S3Error::Internal(format!("get tape: {error}")))?;
+    let info = state.context.pending.apply_to_tape(tape, in_store);
+    if info.is_some_and(|info| TapeFlags::is_immutable(info.flags)) {
+        return Ok(true);
+    }
+
+    let Some(resolved) = resolve_object(state, tape, key)? else {
+        return Ok(false);
+    };
+    let track = track_with_pending(state, resolved.track_address).map_err(S3Error::from)?;
+    Ok(track.is_some_and(|track| track.is_immutable()))
+}
+
+/// S3 Object Lock answers a delete of a locked object with 403
+fn immutable_object() -> S3Error {
+    S3Error::AccessDenied("the object is immutable and can't be deleted".to_string())
 }
 
 /// S3 caps a DeleteObjects request at 1000 keys
@@ -2144,6 +2187,11 @@ mod tests {
         assert!(matches!(
             s3_write_error(TapedriveError::NotFound),
             S3Error::NoSuchKey
+        ));
+        // A delete of an immutable object is denied, as S3 Object Lock answers.
+        assert!(matches!(
+            s3_write_error(TapedriveError::Immutable),
+            S3Error::AccessDenied(_)
         ));
         // An on-chain operator-authorization rejection (the tape has not
         // delegated writes to this gateway) surfaces as a transaction error whose

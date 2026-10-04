@@ -73,6 +73,7 @@ mod tests {
     use solana_account::Account;
     use tape_core::encoding::RSParams;
     use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::tape::TapeFlags;
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::{BlobData, BlobInfo};
@@ -122,6 +123,26 @@ mod tests {
         write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), TrackFlags::HIDDEN, None);
     }
 
+    // an immutable write lands with the immutable flag on its leaf
+    #[test]
+    fn immutable_track() {
+        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), TrackFlags::IMMUTABLE, None);
+    }
+
+    // a plain write to a hidden, immutable tape lands with both flags on its leaf
+    #[test]
+    fn tape_flags() {
+        let tape_flags = TapeFlags::HIDDEN | TapeFlags::IMMUTABLE;
+
+        tape_write_case(
+            permissionless_system(),
+            blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE),
+            tape_flags,
+            TrackFlags::NONE,
+            None,
+        );
+    }
+
     // a flag the program does not define is refused
     #[test]
     fn unknown_flag() {
@@ -146,6 +167,16 @@ mod tests {
     }
 
     fn write_case(base: System, blob: BlobEncoding, flags: u64, error: Option<ProgramError>) {
+        tape_write_case(base, blob, TapeFlags::NONE, flags, error);
+    }
+
+    fn tape_write_case(
+        base: System,
+        blob: BlobEncoding,
+        tape_flags: u64,
+        flags: u64,
+        error: Option<ProgramError>,
+    ) {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
         let delegate = Pubkey::new_unique();
@@ -180,6 +211,7 @@ mod tests {
         };
         let tape = Tape {
             id: TapeNumber(1),
+            flags: tape_flags,
             authority: authority.into(),
             delegate: delegate.into(),
             capacity: StorageUnits::mb(1000),
@@ -221,7 +253,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
-            flags,
+            flags: flags | TapeFlags::track_flags(tape_flags),
             size: storage_units,
             group,
             value_hash: blob.get_hash(),

@@ -7,7 +7,7 @@ use tape_core::encoding::ErasureCode;
 use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayTrackObject, ReplayableEvent};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::data::BlobDataSlice;
-use tape_core::track::types::{CompressedTrack, TrackFlags};
+use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
@@ -250,7 +250,6 @@ fn capture_instruction(
         },
         ParsedInstruction::TrackWrite {
             key,
-            flags,
             object,
             value,
             event,
@@ -261,7 +260,6 @@ fn capture_instruction(
             actor,
             event,
             *key,
-            *flags,
             object.clone(),
             value.as_slice(),
             profile,
@@ -369,7 +367,6 @@ fn capture_instruction(
             actor,
             event,
             entry.key(),
-            TrackFlags::NONE,
             None,
             BlobDataSlice::Inline(bytes_of(entry)),
             profile,
@@ -383,7 +380,6 @@ fn capture_instruction(
             actor,
             track_event,
             span.key(),
-            TrackFlags::NONE,
             None,
             BlobDataSlice::Inline(bytes_of(span)),
             profile,
@@ -424,7 +420,6 @@ fn capture_track(
     actor: Option<Address>,
     event: &TrackWritten,
     key: Hash,
-    flags: u64,
     object: Option<ReplayTrackObject>,
     data: BlobDataSlice<'_>,
     profile: ErasureCode,
@@ -439,7 +434,7 @@ fn capture_track(
         track_number: event.track_number,
         kind: meta.kind as u64,
         state: meta.state as u64,
-        flags,
+        flags: event.flags,
         size: meta.size,
         group: event.group,
         value_hash: meta.value_hash,
@@ -675,6 +670,7 @@ mod tests {
             tape,
             track_number,
             group,
+            flags,
             track_hash: state.get_hash(),
         }
     }
@@ -685,7 +681,6 @@ mod tests {
         let event = track_written_event(tape, key, &value, TrackNumber(7), GroupIndex(3), epoch, TrackFlags::NONE);
 
         ParsedInstruction::TrackWrite {
-            flags: TrackFlags::NONE,
             authority: Address::new_unique(),
             track: event.track,
             key,
@@ -713,7 +708,6 @@ mod tests {
         let event = track_written_event(tape, key, &value, TrackNumber(8), GroupIndex(4), epoch, TrackFlags::NONE);
 
         ParsedInstruction::TrackWrite {
-            flags: TrackFlags::NONE,
             authority: Address::new_unique(),
             track: event.track,
             key,
@@ -928,6 +922,34 @@ mod tests {
         assert_eq!(captured.raw_tracks[0].track, address);
         assert_eq!(u64::from(captured.raw_tracks[0].group), 4);
         assert_eq!(captured.raw_tracks[0].data, vec![0xAB; 4 * 1024]);
+    }
+
+    // a track on a hidden, immutable tape is captured with the flags the chain logged
+    #[test]
+    fn captures_event_flags() {
+        let tape = Address::new_unique();
+        let flags = TrackFlags::HIDDEN | TrackFlags::IMMUTABLE;
+        let value = BlobData::Coded(default_blob());
+        let key = Hash::new_unique();
+        let event = track_written_event(tape, key, &value, TrackNumber(7), GroupIndex(3), EpochNumber(9), flags);
+        let instruction = ParsedInstruction::TrackWrite {
+            authority: Address::new_unique(),
+            track: event.track,
+            key,
+            object: None,
+            value,
+            event,
+        };
+
+        let captured = capture(EpochNumber(9), SlotNumber(5), vec![instruction]);
+
+        match &captured.events[0].record.event {
+            ReplayableEvent::Track(track) => {
+                assert_eq!(track.state.flags, flags);
+                assert_eq!(track.state.address(), event.track);
+            }
+            _ => panic!("expected ReplayableEvent::Track"),
+        }
     }
 
     #[test]

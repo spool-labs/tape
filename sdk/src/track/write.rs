@@ -27,6 +27,7 @@ use tape_core::track::data::{
     track_key, BlobData, BlobDataSlice, BlobInfo, TrackMeta, TrackObjectInfo,
 };
 use tape_core::spooler::GroupIndex;
+use tape_core::tape::TapeFlags;
 use tape_core::track::archive::{TrackArchive, TRACK_TREE_HEIGHT};
 use tape_core::track::mirror::ArchiveMirror;
 use tape_core::track::types::CompressedTrackProof;
@@ -187,12 +188,15 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 
     /// Delete an object's track and, for a stream, its chunk tracks.
+    ///
+    /// An immutable object is refused before any of its tracks is touched.
     pub async fn delete_object_as(
         &self,
         operator: &impl TapeOperator,
         track: Address,
     ) -> Result<(), TapedriveError> {
         match self.get_track(&track).await {
+            Ok(found) if found.is_immutable() => return Err(TapedriveError::Immutable),
             Ok(_) => {}
             Err(TapedriveError::NotFound) => return Ok(()),
             Err(error) => return Err(error),
@@ -594,7 +598,6 @@ pub(crate) struct SentRaw {
     key: Hash,
     kind: u64,
     state: u64,
-    flags: u64,
     size: StorageUnits,
     value_hash: Hash,
 }
@@ -606,7 +609,6 @@ pub(crate) struct SentBlob {
     blob: BlobEncoding,
     key: Hash,
     plan: UploadPlan,
-    flags: u64,
 }
 
 /// A register transaction built against the tape and not yet sent.
@@ -616,13 +618,13 @@ pub(crate) struct PreparedRegister {
     bytes: u64,
 }
 
-/// What a register's track row is made of once its event comes back.
+/// What a register's track row is made of once its event comes back. The
+/// event carries the flags, since the tape adds its own to the write's.
 enum RegisterPayload {
     Raw {
         key: Hash,
         kind: u64,
         state: u64,
-        flags: u64,
         size: StorageUnits,
         value_hash: Hash,
     },
@@ -630,7 +632,6 @@ enum RegisterPayload {
         blob: Box<BlobEncoding>,
         key: Hash,
         plan: Box<UploadPlan>,
-        flags: u64,
     },
 }
 
@@ -643,19 +644,18 @@ pub(crate) enum SentRegister {
 impl RegisterPayload {
     fn into_sent(self, signature: Txid) -> SentRegister {
         match self {
-            RegisterPayload::Raw { key, kind, state, flags, size, value_hash } => {
+            RegisterPayload::Raw { key, kind, state, size, value_hash } => {
                 SentRegister::Raw(SentRaw {
                     signature,
                     key,
                     kind,
                     state,
-                    flags,
                     size,
                     value_hash,
                 })
             }
-            RegisterPayload::Blob { blob, key, plan, flags } => SentRegister::Blob(Box::new(
-                SentBlob { signature, blob: *blob, key, plan: *plan, flags },
+            RegisterPayload::Blob { blob, key, plan } => SentRegister::Blob(Box::new(
+                SentBlob { signature, blob: *blob, key, plan: *plan },
             )),
         }
     }
@@ -900,7 +900,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
         key,
         kind: meta.kind as u64,
         state: meta.state as u64,
-        flags,
+        flags: written.flags,
         size: meta.size,
         group: written.group,
         value_hash: meta.value_hash,
@@ -947,7 +947,6 @@ pub(crate) fn prepare_raw_register<Blockchain: Rpc, Cluster: Api>(
             key,
             kind: meta.kind as u64,
             state: meta.state as u64,
-            flags,
             size: meta.size,
             value_hash: meta.value_hash,
         },
@@ -1069,7 +1068,7 @@ pub(crate) async fn resolve_sent_raw<Blockchain: Rpc, Cluster: Api>(
         key: sent.key,
         kind: sent.kind,
         state: sent.state,
-        flags: sent.flags,
+        flags: written.flags,
         size: sent.size,
         group: written.group,
         value_hash: sent.value_hash,
@@ -1186,7 +1185,7 @@ pub(crate) async fn resolve_sent_blob<Blockchain: Rpc, Cluster: Api>(
         key: sent.key,
         kind: meta.kind as u64,
         state: meta.state as u64,
-        flags: sent.flags,
+        flags: written.flags,
         size: meta.size,
         group: written.group,
         value_hash: meta.value_hash,
@@ -1231,7 +1230,6 @@ pub(crate) fn prepare_blob_register<Blockchain: Rpc, Cluster: Api>(
             blob: Box::new(blob),
             key,
             plan: Box::new(plan),
-            flags,
         },
         bytes,
     })
@@ -1300,7 +1298,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
         )
         .await?;
 
-    resolve_sent_blob(client, SentBlob { signature, blob, key, plan, flags }).await
+    resolve_sent_blob(client, SentBlob { signature, blob, key, plan }).await
 }
 
 async fn upload_once<Blockchain: Rpc, Cluster: Api>(
@@ -1769,6 +1767,8 @@ const RESUME_LIST_PAGE: u32 = 1024;
 /// What a tape holds, by content address, for a resumed write to match against
 pub(crate) struct TapeContents {
     tracks: HashMap<Hash, CompressedTrack>,
+    /// The tape adds these flags to every track written to it
+    flags: u64,
 }
 
 impl TapeContents {
@@ -1784,18 +1784,20 @@ impl TapeContents {
     ) -> Result<Self, TapedriveError> {
         let mut backoff = Backoff::new(completion_poll_config());
         loop {
-            let archive = client.get_tape(&tape).await?.tracks;
+            let account = client.get_tape(&tape).await?;
+            let flags = TapeFlags::track_flags(account.flags);
+            let archive = account.tracks;
             if archive.next_number() == TrackNumber(0) {
-                return Ok(Self { tracks: HashMap::new() });
+                return Ok(Self::from_tracks(Vec::new(), flags));
             }
 
             let listed = list_tape(client, tape).await?;
             if listed_root(&listed, &archive) == Some(archive.tree.root()) {
-                return Ok(Self::from_tracks(listed));
+                return Ok(Self::from_tracks(listed, flags));
             }
             match backoff.next_delay() {
                 Some(delay) => sleep(delay).await,
-                None => return Ok(Self::from_tracks(listed)),
+                None => return Ok(Self::from_tracks(listed, flags)),
             }
         }
     }
@@ -1803,7 +1805,7 @@ impl TapeContents {
     /// Of the tracks with one content, the certified one with the highest
     /// number stays, or the highest-numbered when none is certified, so an
     /// unfinished write gets finished.
-    pub(crate) fn from_tracks(listed: Vec<CompressedTrack>) -> Self {
+    pub(crate) fn from_tracks(listed: Vec<CompressedTrack>, flags: u64) -> Self {
         let mut tracks: HashMap<Hash, CompressedTrack> = HashMap::new();
         for track in listed {
             let held = tracks.entry(track.content_address()).or_insert(track);
@@ -1811,7 +1813,13 @@ impl TapeContents {
                 *held = track;
             }
         }
-        Self { tracks }
+        Self { tracks, flags }
+    }
+
+    /// A write lands with the tape's flags added, and a content-address
+    /// lookup has to match that
+    pub(crate) fn track_flags(&self, flags: u64) -> u64 {
+        flags | self.flags
     }
 
     pub(crate) fn find(&self, content: &Hash) -> Option<CompressedTrack> {
@@ -1896,6 +1904,7 @@ async fn resume_track<Blockchain: Rpc, Cluster: Api>(
 ) -> Result<CompressedTrack, TapedriveError> {
     let tape = tape_key.address();
     let contents = TapeContents::load(client, tape).await?;
+    let flags = contents.track_flags(flags);
 
     if inline_write_fits(name, data.len()) {
         // Inline tracks certify at register, so one found is complete.
@@ -1988,7 +1997,11 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
     let written =
         write_encoded_track(client, operator, name, content_type, data, coded_plan, flags).await?;
     // Delete the old track; best-effort, never fails the write that already
-    // landed. A failure leaves it for a later overwrite or sweep.
+    // landed. A failure leaves it for a later overwrite or sweep. An immutable
+    // old track stays, and the name now resolves to the new one.
+    if existing_track.is_immutable() {
+        return Ok(written);
+    }
     if let Err(error) = client.delete_as(operator, track_address).await {
         debug!(%error, %track_address, "overwrite delete failed; old track left for a later delete");
     }

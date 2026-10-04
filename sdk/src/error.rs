@@ -133,6 +133,9 @@ pub enum TapedriveError {
     #[error("not found")]
     NotFound,
 
+    #[error("track is immutable and can't be deleted")]
+    Immutable,
+
     #[error("insufficient capacity: need {need}, available {available}")]
     InsufficientCapacity {
         need: StorageUnits,
