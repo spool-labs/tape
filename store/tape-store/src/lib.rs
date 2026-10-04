@@ -251,7 +251,7 @@ mod tests {
         };
 
         store.put_track(address, info).unwrap();
-        let retrieved = store.get_track(address, info.track_number).unwrap();
+        let retrieved = store.get_track(address).unwrap();
         assert_eq!(retrieved, Some(info));
     }
 
@@ -287,8 +287,8 @@ mod tests {
             slot: SlotNumber(50),
         };
 
-        store.put_object_info(address, TrackNumber(0), info.clone()).unwrap();
-        let retrieved = store.get_object_info(address, TrackNumber(0)).unwrap();
+        store.put_object_info(address, info.clone()).unwrap();
+        let retrieved = store.get_object_info(address).unwrap();
         assert_eq!(retrieved, Some(info));
     }
 

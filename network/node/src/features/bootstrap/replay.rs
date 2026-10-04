@@ -269,13 +269,13 @@ mod tests {
             })
         );
 
-        let track_info = store.get_track(track, track_number).unwrap().unwrap();
+        let track_info = store.get_track(track).unwrap().unwrap();
         assert_eq!(track_info.tape, tape);
         assert_eq!(track_info.track_number, track_number);
         assert_eq!(track_info.group, GroupIndex::from(4));
 
         assert!(matches!(
-            store.get_object_info(track, track_number).unwrap(),
+            store.get_object_info(track).unwrap(),
             Some(ObjectInfo::Valid { .. })
         ));
     }
@@ -321,7 +321,6 @@ mod tests {
                         record(written_b),
                         record(ReplayableEvent::CertifyTrack {
                             track: track_a,
-                            track_number: TrackNumber(0),
                             epoch: EpochNumber(8),
                         }),
                     ],
@@ -332,15 +331,15 @@ mod tests {
         apply_snapshot_log(&store, &log).unwrap();
 
         // Both tracks present; tape counter advanced past the highest.
-        assert!(store.get_track(track_a, TrackNumber(0)).unwrap().is_some());
-        assert!(store.get_track(track_b, TrackNumber(1)).unwrap().is_some());
+        assert!(store.get_track(track_a).unwrap().is_some());
+        assert!(store.get_track(track_b).unwrap().is_some());
         assert_eq!(
             store.get_tape(tape).unwrap().unwrap().next_track_number,
             TrackNumber(2)
         );
 
         // CertifyTrack was applied at slot 101 — track_a state flipped.
-        let info_a = store.get_track(track_a, TrackNumber(0)).unwrap().unwrap();
+        let info_a = store.get_track(track_a).unwrap().unwrap();
         assert_eq!(info_a.state, TrackState::Certified as u64);
     }
 
@@ -375,7 +374,6 @@ mod tests {
                     record(written),
                     record(ReplayableEvent::CertifyTrack {
                         track,
-                        track_number: TrackNumber(5),
                         epoch: EpochNumber(5),
                     }),
                 ],
@@ -385,8 +383,8 @@ mod tests {
         apply_snapshot_log(&store, &log).unwrap();
         let snapshot_a = (
             store.get_tape(tape).unwrap(),
-            store.get_track(track, TrackNumber(5)).unwrap(),
-            store.get_object_info(track, TrackNumber(5)).unwrap(),
+            store.get_track(track).unwrap(),
+            store.get_object_info(track).unwrap(),
         );
 
         // Apply the same log again. Non-destructive events must converge on
@@ -394,8 +392,8 @@ mod tests {
         apply_snapshot_log(&store, &log).unwrap();
         let snapshot_b = (
             store.get_tape(tape).unwrap(),
-            store.get_track(track, TrackNumber(5)).unwrap(),
-            store.get_object_info(track, TrackNumber(5)).unwrap(),
+            store.get_track(track).unwrap(),
+            store.get_object_info(track).unwrap(),
         );
 
         assert_eq!(snapshot_a, snapshot_b);
@@ -449,8 +447,8 @@ mod tests {
         apply_snapshot_log(&snapshot_store, &decoded).unwrap();
 
         assert_eq!(
-            snapshot_store.get_object_metadata(track, track_number).unwrap(),
-            live_store.get_object_metadata(track, track_number).unwrap()
+            snapshot_store.get_object_metadata(track).unwrap(),
+            live_store.get_object_metadata(track).unwrap()
         );
 
         let live_entry = live_store.get_object_entry(tape, &name).unwrap().unwrap();
@@ -533,17 +531,17 @@ mod tests {
         let store = test_store();
         apply_snapshot_log(&store, &decoded).unwrap();
 
-        let inline_info = store.get_track(inline_track, inline_number).unwrap().unwrap();
+        let inline_info = store.get_track(inline_track).unwrap().unwrap();
         assert_eq!(inline_info.kind, TrackKind::Inline as u64);
         assert!(store.get_object_entry(tape, &inline_name).unwrap().is_some());
 
         // content is deliberately absent, only the record rides the snapshot
-        assert_eq!(store.get_track_data(inline_track, inline_number).unwrap(), None);
+        assert_eq!(store.get_track_data(inline_track).unwrap(), None);
 
         // the sliced neighbor keeps its record and blob metadata, as a control
-        assert!(store.get_track(sliced_track, sliced_number).unwrap().is_some());
+        assert!(store.get_track(sliced_track).unwrap().is_some());
         assert!(matches!(
-            store.get_track_data(sliced_track, sliced_number).unwrap(),
+            store.get_track_data(sliced_track).unwrap(),
             Some(BlobData::Coded(_))
         ));
     }

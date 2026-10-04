@@ -103,7 +103,6 @@ pub fn process_invalidate_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 
     TrackInvalidated {
         track: track_address,
-        track_number: track.track_number,
         epoch: curr,
     }.log();
 

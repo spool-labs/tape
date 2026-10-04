@@ -119,7 +119,6 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     TrackCertified {
         track: track_address,
-        track_number: track.track_number,
         epoch: curr,
         signer_count,
         signer_weight: weight,

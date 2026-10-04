@@ -161,9 +161,9 @@ mod tests {
 
         assert_eq!((stats.tapes_deleted, stats.tracks_deleted), (1, 1));
         assert!(store.get_tape(expired).expect("get tape").is_none());
-        assert!(store.latest_track(expired_track).expect("get track").is_none());
+        assert!(store.get_track(expired_track).expect("get track").is_none());
         assert!(store.get_tape(live).expect("get tape").is_some());
-        assert!(store.latest_track(live_track).expect("get track").is_some());
+        assert!(store.get_track(live_track).expect("get track").is_some());
     }
 
     // a swept epoch is not swept again, and the next epoch is

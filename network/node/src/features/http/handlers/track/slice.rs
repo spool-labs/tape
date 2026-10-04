@@ -9,7 +9,7 @@ use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::erasure::{slice_root_from_sidecar, slice_sidecar, SLICE_TREE_HEIGHT};
 use tape_core::track::data::BlobData;
-use tape_core::types::{SpoolIndex, TrackNumber};
+use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_crypto::merkle::verify_proof_hash;
 use tape_protocol::Api;
@@ -23,9 +23,7 @@ use crate::features::http::auth::{
     local_access_threshold, ActivePeer, MaybeActivePeer, MaybeStakedPeer, StakedPeer,
 };
 use crate::features::http::error::RouteError;
-use crate::features::http::handlers::track::{
-    parse_tape, parse_track, resolve_spool_track, resolve_tape_track,
-};
+use crate::features::http::handlers::track::{parse_track, resolve_track};
 use crate::features::http::share::check_share_token;
 use crate::features::http::peer_identity::PeerIdentity;
 use crate::features::http::state::{AppState, current_epoch};
@@ -137,7 +135,7 @@ fn check_slice_read<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // Resolve through pending so a freshly written slice serves at confirmed
     // latency instead of waiting for finalization; the blacklist check below only
     // needs the tape, which pending state carries.
-    let track = resolve_spool_track(state, track_key, spool_id)?
+    let track = resolve_track(state, track_key)?
         .ok_or(RouteError::NotFound)?;
 
     if refuses_object(
@@ -159,25 +157,22 @@ fn check_slice_read<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
-    Path((tape_id, track_number, spool_id)): Path<(String, u64, SpoolIndex)>,
+    Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
     trace!(
-        tape_id = %tape_id,
-        track_number,
+        track_id = %track_id,
         spool_id = %spool_id,
         payload_bytes = body.len(),
         "http put_slice start"
     );
 
-    // The receipt signs one track, which its tape and track number identify.
-    let tape = parse_tape(&tape_id)?;
-    let track_number = TrackNumber(track_number);
+    let track_key = parse_track(&track_id)?;
     let epoch = current_epoch(&state)?;
     let payload = SliceBody::parse(&body)
         .map_err(|error| RouteError::BadRequest(format!("slice payload: {error}")))?;
 
-    let (track_key, track) = resolve_tape_track(&state, tape, track_number)?
+    let track = resolve_track(&state, track_key)?
         .ok_or(RouteError::NotFound)?;
 
     if refuses_object(
@@ -197,12 +192,12 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("raw tracks do not accept slices".into()));
     }
 
-    let track_data = match state.context.pending.track_data(track_key, track_number) {
+    let track_data = match state.context.pending.track_data(track_key) {
         Some(data) => data,
         None => state
             .context
             .store
-            .get_track_data(track_key, track_number)
+            .get_track_data(track_key)
             .map_err(store_error)?
             .ok_or(RouteError::NotFound)?,
     };
@@ -282,7 +277,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let bytes = wincode::serialize(&receipt)
         .map_err(|error| RouteError::Internal(format!("serialize slice receipt: {error}")))?;
 
-    debug!(track = %track_key, spool_id = %spool_id, "http put_slice success");
+    debug!(track_id = %track_id, spool_id = %spool_id, "http put_slice success");
 
     Ok((
         StatusCode::OK,
@@ -394,13 +389,12 @@ mod tests {
             .expect("seed track");
 
         ctx.store
-            .put_track_data(track_address, track_number, BlobData::Coded(blob))
+            .put_track_data(track_address, BlobData::Coded(blob))
             .expect("seed track data");
 
         ctx.store
             .put_object_info(
                 track_address,
-                track_number,
                 ObjectInfo::System {
                     kind: SystemObjectKind::Snapshot {
                         epoch,
@@ -493,7 +487,7 @@ mod tests {
             .put_track(track_address, track)
             .expect("seed track");
         ctx.store
-            .put_track_data(track_address, track_number, BlobData::Coded(blob))
+            .put_track_data(track_address, BlobData::Coded(blob))
             .expect("seed track data");
         ctx.store
             .put_slice(owned_spool, track_address, HIDDEN_SLICE.to_vec())
@@ -752,7 +746,7 @@ mod tests {
         let ctx = test_context().await;
         let (track_address, owned_spool, slice_bytes) = seed_pending_slice(&ctx);
 
-        assert!(ctx.store.latest_track(track_address).unwrap().is_none());
+        assert!(ctx.store.get_track(track_address).unwrap().is_none());
 
         let result = get_slice(
             State(AppState {
@@ -843,7 +837,7 @@ mod tests {
             .expect("seed track");
 
         ctx.store
-            .put_track_data(track_address, track_number, BlobData::Coded(blob))
+            .put_track_data(track_address, BlobData::Coded(blob))
             .expect("seed track data");
 
         ctx.store
@@ -861,12 +855,12 @@ mod tests {
     async fn stored_slice_answers_with_a_certify_receipt() {
         let ctx = test_context().await;
         let (track_address, owned_spool, payload) = seed_writable_track(&ctx);
-        let track = ctx.store.latest_track(track_address).expect("track").expect("track present");
+        let track = ctx.store.get_track(track_address).expect("track").expect("track present");
 
         let body = wincode::serialize(&payload).expect("serialize payload");
         let response = put_slice(
             State(AppState { context: ctx.clone() }),
-            Path((track.tape.to_string(), track.track_number.0, owned_spool)),
+            Path((track_address.to_string(), owned_spool)),
             body.into(),
         )
         .await
@@ -896,12 +890,12 @@ mod tests {
     async fn a_receipt_does_not_verify_against_another_epoch() {
         let ctx = test_context().await;
         let (track_address, owned_spool, payload) = seed_writable_track(&ctx);
-        let track = ctx.store.latest_track(track_address).expect("track").expect("track present");
+        let track = ctx.store.get_track(track_address).expect("track").expect("track present");
 
         let body = wincode::serialize(&payload).expect("serialize payload");
         let response = put_slice(
             State(AppState { context: ctx.clone() }),
-            Path((track.tape.to_string(), track.track_number.0, owned_spool)),
+            Path((track_address.to_string(), owned_spool)),
             body.into(),
         )
         .await

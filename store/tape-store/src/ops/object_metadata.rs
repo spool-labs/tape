@@ -1,56 +1,37 @@
 //! Object metadata operations for named object reverse lookup.
 
 use tape_store_api::Store;
-use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 
 use crate::columns::ObjectMetadataCol;
 use crate::error::Result;
-use crate::types::{ObjectMetadata, TrackKey};
+use crate::types::ObjectMetadata;
 use crate::TapeStore;
 
 /// Operations for durable named-object metadata.
 pub trait ObjectMetadataOps {
-    /// Get object metadata by track address and track number.
-    fn get_object_metadata(
-        &self,
-        address: Address,
-        track_number: TrackNumber,
-    ) -> Result<Option<ObjectMetadata>>;
+    /// Get object metadata by track address.
+    fn get_object_metadata(&self, address: Address) -> Result<Option<ObjectMetadata>>;
 
-    /// Store object metadata by track address and track number.
-    fn put_object_metadata(
-        &self,
-        address: Address,
-        track_number: TrackNumber,
-        metadata: ObjectMetadata,
-    ) -> Result<()>;
+    /// Store object metadata by track address.
+    fn put_object_metadata(&self, address: Address, metadata: ObjectMetadata) -> Result<()>;
 
-    /// Delete object metadata by track address and track number.
-    fn delete_object_metadata(&self, address: Address, track_number: TrackNumber) -> Result<()>;
+    /// Delete object metadata by track address.
+    fn delete_object_metadata(&self, address: Address) -> Result<()>;
 }
 
 impl<S: Store> ObjectMetadataOps for TapeStore<S> {
-    fn get_object_metadata(
-        &self,
-        address: Address,
-        track_number: TrackNumber,
-    ) -> Result<Option<ObjectMetadata>> {
-        Ok(self.get::<ObjectMetadataCol>(&TrackKey::new(address, track_number))?)
+    fn get_object_metadata(&self, address: Address) -> Result<Option<ObjectMetadata>> {
+        Ok(self.get::<ObjectMetadataCol>(&address)?)
     }
 
-    fn put_object_metadata(
-        &self,
-        address: Address,
-        track_number: TrackNumber,
-        metadata: ObjectMetadata,
-    ) -> Result<()> {
-        self.put::<ObjectMetadataCol>(&TrackKey::new(address, track_number), &metadata)?;
+    fn put_object_metadata(&self, address: Address, metadata: ObjectMetadata) -> Result<()> {
+        self.put::<ObjectMetadataCol>(&address, &metadata)?;
         Ok(())
     }
 
-    fn delete_object_metadata(&self, address: Address, track_number: TrackNumber) -> Result<()> {
-        self.delete::<ObjectMetadataCol>(&TrackKey::new(address, track_number))?;
+    fn delete_object_metadata(&self, address: Address) -> Result<()> {
+        self.delete::<ObjectMetadataCol>(&address)?;
         Ok(())
     }
 }
@@ -66,7 +47,7 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
-    // metadata round-trips by track address and track number
+    // metadata round-trips by track address
     #[test]
     fn metadata_roundtrip() {
         let store = test_store();
@@ -77,13 +58,12 @@ mod tests {
         };
 
         store
-            .put_object_metadata(track, TrackNumber(2), metadata.clone())
+            .put_object_metadata(track, metadata.clone())
             .expect("put metadata");
 
         assert_eq!(
-            store.get_object_metadata(track, TrackNumber(2)).expect("get metadata"),
+            store.get_object_metadata(track).expect("get metadata"),
             Some(metadata)
         );
-        assert_eq!(store.get_object_metadata(track, TrackNumber(3)).expect("get metadata"), None);
     }
 }

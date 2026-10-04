@@ -28,14 +28,18 @@ fn declared_shapes_take() {
     );
 }
 
-// every column sits in a tree while the engine has no open shard at track_data's key width
+// the column the plan flips is on the open shard, and its neighbours are not
 #[test]
-fn all_trees() {
+fn track_data_is_open() {
     let dir = TempDir::new().expect("dir");
     let store = ReelStore::open(dir.path(), bench_config(SEGMENT_BYTES), TAPE_COLUMNS).expect("open");
 
     for (name, _, got) in store.shapes() {
-        assert_eq!(got, MapShape::Tree, "column {name}");
+        let wanted = match name {
+            "track_data" => MapShape::Open,
+            _ => MapShape::Tree,
+        };
+        assert_eq!(got, wanted, "column {name}");
     }
 }
 

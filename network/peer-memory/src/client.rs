@@ -65,7 +65,7 @@ macro_rules! dispatch {
 #[async_trait]
 impl Api for MemoryApi {
     async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
-        dispatch!(self, node, PutSliceReq { tape: req.tape, track_number: req.track_number, spool: req.spool, body: req.body.clone() }, PutSlice)
+        dispatch!(self, node, PutSliceReq { track: req.track, spool: req.spool, body: req.body.clone() }, PutSlice)
     }
 
     async fn get_slice(&self, node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
@@ -112,7 +112,7 @@ impl Api for MemoryApi {
     }
 
     async fn get_track_proof(&self, node: Address, req: &GetTrackProofReq) -> Result<GetTrackProofRes, ApiError> {
-        dispatch!(self, node, GetTrackProofReq { tape: req.tape, track_number: req.track_number }, GetTrackProof)
+        dispatch!(self, node, GetTrackProofReq { track: req.track }, GetTrackProof)
     }
 
     async fn sync_slices(&self, node: Address, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError> {
@@ -124,7 +124,7 @@ impl Api for MemoryApi {
     }
 
     async fn certify(&self, node: Address, req: &CertifyReq) -> Result<CertifyRes, ApiError> {
-        dispatch!(self, node, CertifyReq { tape: req.tape, track_number: req.track_number }, Certify)
+        dispatch!(self, node, CertifyReq { track: req.track }, Certify)
     }
 
     async fn vote(&self, node: Address, req: &VoteReq) -> Result<VoteRes, ApiError> {
@@ -142,7 +142,7 @@ impl Api for MemoryApi {
     }
 
     async fn invalidate(&self, node: Address, req: &InvalidateReq) -> Result<InvalidateRes, ApiError> {
-        dispatch!(self, node, InvalidateReq { tape: req.tape, track_number: req.track_number, proof: req.proof.clone() }, Invalidate)
+        dispatch!(self, node, InvalidateReq { track: req.track, proof: req.proof.clone() }, Invalidate)
     }
 
     async fn proof_of_access(

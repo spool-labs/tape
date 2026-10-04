@@ -85,8 +85,7 @@ CREATE TABLE IF NOT EXISTS tapes (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS tapes_one_rack ON tapes (role) WHERE role = 'rack';
 
--- Every track the producer planned or found on its tapes; bytes are the text written.
--- Tracks holding the same bytes share an address, so only the tape and number are unique.
+-- Every track the producer planned or found on its tapes; bytes are the text written
 CREATE TABLE IF NOT EXISTS tracks (
     id INTEGER PRIMARY KEY,
     tape TEXT NOT NULL REFERENCES tapes (address),
@@ -95,7 +94,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     key BLOB NOT NULL,
     state TEXT NOT NULL,
     track_number INTEGER,
-    address TEXT,
+    address TEXT UNIQUE,
     delete_sent_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,

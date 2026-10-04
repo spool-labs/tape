@@ -412,7 +412,7 @@ mod tests {
     use tape_crypto::hash::hash;
     use tape_crypto::Hash;
     use tape_protocol::api::{
-        ListTracksByTapeRequest, ListTracksByTapeResponse, TracksResponse, TAPE_TRACK_LIST_PATH,
+        ListTracksByTapeRequest, ListTracksByTapeResponse, TrackResponse, TAPE_TRACK_LIST_PATH,
         TRACK_PATH,
     };
     use tape_sdk::stream::manifest::{ChunkEntry, MANIFEST_VERSION};
@@ -701,7 +701,7 @@ mod tests {
         let track = gateway.records.lock().expect("lock").get(&id).copied();
         match track {
             Some(track) => {
-                let response = TracksResponse { tracks: vec![track.pack()] };
+                let response = TrackResponse { track: track.pack() };
                 wincode::serialize(&response).expect("encode record").into_response()
             }
             None => StatusCode::NOT_FOUND.into_response(),
@@ -833,7 +833,6 @@ mod tests {
         let manifest_track = address(2);
         let chunks = vec![record(tape, 3, 10), record(tape, 4, 10)];
         let entry = |chunk: &CompressedTrack, offset: u64| ChunkEntry {
-            track_number: chunk.track_number,
             track: chunk.address(),
             offset: StorageUnits(offset),
             size: StorageUnits(10),

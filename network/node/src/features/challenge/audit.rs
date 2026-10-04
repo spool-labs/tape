@@ -16,9 +16,7 @@ use tape_core::erasure::{
 };
 use tape_core::track::blob::SubLeafProof;
 use tape_core::track::data::BlobData;
-use tape_core::types::{
-    EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex, TrackNumber,
-};
+use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 use tape_protocol::api::{AttestReq, ProofOfAccessReq, SpoolAttestation};
@@ -106,7 +104,7 @@ pub fn has_sample_set<Db: Store, Cluster: Api, Blockchain: Rpc>(
 }
 
 /// The sample set for one round, shared by every answer drawn against it.
-pub type SampleSet = (Vec<(Address, TrackNumber, TrackSample)>, Vec<SampleEntry>);
+pub type SampleSet = (Vec<(Address, TrackSample)>, Vec<SampleEntry>);
 
 /// One round's sample set, built once and reused, or nothing while this node's
 /// store has yet to reach the round's cut.
@@ -172,54 +170,24 @@ fn build_set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
     group: GroupIndex,
     cutoff: SlotNumber,
 ) -> SampleSet {
-    // Already in track order: the rows are keyed group, then track, then track
-    // number, so the scan arrives in the canonical order the draw is defined
-    // over. Tracks that share an address each have a row and each count.
-    let rows: Vec<(Address, TrackNumber, TrackSample)> = context
+    // Already in track order: the rows are keyed group-then-track, so the scan
+    // arrives in the canonical order the draw is defined over.
+    let rows: Vec<(Address, TrackSample)> = context
         .store
         .iter_track_samples_by_group(group)
         .map_err(|error| debug!(%error, "challenge: sample set unavailable"))
         .unwrap_or_default()
         .into_iter()
-        .filter(|(_, _, sample)| sample.in_set_at(cutoff))
+        .filter(|(_, sample)| sample.in_set_at(cutoff))
         .collect();
     let entries = rows
         .iter()
-        .map(|(track, _, sample)| SampleEntry {
+        .map(|(track, sample)| SampleEntry {
             track: *track,
             kind: sample.kind,
         })
         .collect();
     (rows, entries)
-}
-
-/// The rows of a set that stand under one track address
-fn rows_for(
-    rows: &[(Address, TrackNumber, TrackSample)],
-    track: Address,
-) -> &[(Address, TrackNumber, TrackSample)] {
-    let start = rows.partition_point(|(address, _, _)| *address < track);
-    let end = rows.partition_point(|(address, _, _)| *address <= track);
-    &rows[start..end]
-}
-
-/// What a drawn track registered: its blob encoding or its inline payload.
-///
-/// Tracks that share the address registered the same payload, so whichever of
-/// their rows still holds it answers.
-fn sampled_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &NodeContext<Db, Cluster, Blockchain>,
-    round: &Round,
-    track: Address,
-) -> Option<BlobData> {
-    let held = set_entries(context, round)?;
-    rows_for(&held.0, track).iter().find_map(|(_, track_number, _)| {
-        context
-            .store
-            .get_track_data(track, *track_number)
-            .ok()
-            .flatten()
-    })
 }
 
 /// Derives the sample a spool owes from replayed state at the round's cutoff.
@@ -239,9 +207,10 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     // The row's own value hash travels with the draw: an inline answer is
     // checked against it, and the track record it came from may be gone.
-    let value_hash = rows_for(rows, sample.track)
-        .first()
-        .map(|(_, _, row)| row.value_hash)?;
+    let value_hash = rows
+        .binary_search_by_key(&sample.track, |(track, _)| *track)
+        .ok()
+        .map(|index| rows[index].1.value_hash)?;
     Some((sample, value_hash))
 }
 
@@ -279,7 +248,9 @@ pub fn build_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
         // payload is what there is to show. A node that has not caught up on
         // the bytes cannot answer, exactly as it cannot for a slice it lacks.
         SampleLeaf::Inline => {
-            let BlobData::Inline(payload) = sampled_data(context, round, sample.track)? else {
+            let BlobData::Inline(payload) =
+                context.store.get_track_data(sample.track).ok().flatten()?
+            else {
                 debug!(track = %sample.track, "challenge: inline payload not held");
                 return None;
             };
@@ -323,7 +294,7 @@ pub fn accept_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // for an inline track, and from the registered encoding for a coded one. A
     // deleted track keeps its row while its record is gone, so reading the hash
     // back off the record would refuse an honest answer mid-round.
-    let coded = sampled_data(context, &round_of(answer), expected.track);
+    let coded = context.store.get_track_data(expected.track).ok().flatten();
     let registered = match (expected.leaf, &coded) {
         (SampleLeaf::Coded { .. }, Some(BlobData::Coded(encoding))) => Registered::Coded(encoding),
         (SampleLeaf::Inline, _) => Registered::Inline(value_hash),
@@ -355,7 +326,7 @@ pub fn answer_signer<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<BlsPubkey, RefusalReason> {
     let (expected, value_hash) = expected_sample(context, &round_of(answer), answer.spool)
         .ok_or(RefusalReason::NoLocalQuestion)?;
-    let coded = sampled_data(context, &round_of(answer), expected.track);
+    let coded = context.store.get_track_data(expected.track).ok().flatten();
     let registered = match (expected.leaf, &coded) {
         (SampleLeaf::Coded { .. }, Some(BlobData::Coded(encoding))) => Registered::Coded(encoding),
         (SampleLeaf::Inline, _) => Registered::Inline(value_hash),
@@ -630,7 +601,7 @@ mod tests {
             deleted_slot: None,
         };
         ctx.store
-            .put_track_sample(group, Address::new_unique(), TrackNumber(0), row)
+            .put_track_sample(group, Address::new_unique(), row)
             .expect("sample row");
 
         let round = Round {

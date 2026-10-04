@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Retrieve by address
     let track1 = Address::new([1; 32]);
-    let retrieved = store.get_track(track1, TrackNumber(0))?;
+    let retrieved = store.get_track(track1)?;
     println!("Retrieved track 1: {:?}", retrieved.is_some());
 
     // Store slices for track 1

@@ -233,7 +233,6 @@ mod tests {
                 Some(1_700_000_050),
                 &record(ReplayableEvent::CertifyTrack {
                     track: Address::new([1u8; 32]),
-                    track_number: TrackNumber(0),
                     epoch: EpochNumber(1),
                 }),
             )

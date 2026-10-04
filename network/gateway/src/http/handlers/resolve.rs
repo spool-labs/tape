@@ -5,7 +5,7 @@
 //! Shared by the S3 listener and the site route.
 
 use tape_store_api::Store;
-use tape_core::types::{ContentType, TrackNumber};
+use tape_core::types::ContentType;
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_node::features::block::pending_tracks::{PendingNamedObject, PendingTracks};
@@ -21,8 +21,6 @@ use crate::staging::StagingStore;
 pub struct ResolvedObject {
     /// Address of the object-representing track the decode/read path consumes
     pub track_address: Address,
-    /// Number of that track on its tape, when the source that resolved it knows one
-    pub track_number: Option<TrackNumber>,
     /// Object size in bytes
     pub size: u64,
     /// ETag, currently the object commitment hash
@@ -45,7 +43,6 @@ pub fn resolve_object<Db: Store>(
 
     Ok(Some(ResolvedObject {
         track_address: entry.track,
-        track_number: Some(entry.track_number),
         size: entry.size.to_bytes(),
         etag: entry.etag,
         block_time: entry.block_time,
@@ -66,7 +63,6 @@ pub fn resolve_object_with_pending<Db: Store>(
     if let Some(entry) = pending.filter(|pending| pending_is_newer(stored.as_ref(), pending)) {
         return Ok(Some(ResolvedObject {
             track_address: entry.track_address,
-            track_number: Some(entry.track_number),
             size: entry.size,
             etag: entry.etag,
             block_time: entry.block_time,
@@ -80,7 +76,6 @@ pub fn resolve_object_with_pending<Db: Store>(
 
     Ok(Some(ResolvedObject {
         track_address: entry.track,
-        track_number: Some(entry.track_number),
         size: entry.size.to_bytes(),
         etag: entry.etag,
         block_time: entry.block_time,
@@ -194,7 +189,6 @@ fn resolve_readable_or<Db: Store>(
     match entry.state {
         PendingState::Landed { track } => Ok(Some(Readable::Track(ResolvedObject {
             track_address: track,
-            track_number: None,
             size,
             etag,
             block_time: Some(block_time),

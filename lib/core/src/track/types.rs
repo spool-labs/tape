@@ -22,7 +22,8 @@ use crate::spooler::GroupIndex;
 use crate::types::{StorageUnits, TrackNumber};
 use super::archive::TRACK_TREE_HEIGHT;
 
-pub const TRACK_LEAF_V1: &[u8; 8] = b"TRACK_V1";
+pub const TRACK_LEAF: &[u8; 8] = b"TRACK\0\0\0";
+pub const TRACK_CONTENT: &[u8; 8] = b"CONTENT\0";
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
@@ -117,15 +118,23 @@ impl CompressedTrack {
     #[inline(always)]
     pub fn get_hash(&self) -> Hash {
         hashv(&[
-            TRACK_LEAF_V1,
-            &self.tape.to_bytes(),
+            TRACK_LEAF,
+            &self.content_address().to_bytes(),
             &self.track_number.pack(),
+            &self.state.to_le_bytes(),
+            &self.group.pack(),
+        ])
+    }
+
+    #[inline(always)]
+    pub fn content_address(&self) -> Hash {
+        hashv(&[
+            TRACK_CONTENT,
+            &self.tape.to_bytes(),
             &self.key.to_bytes(),
             &self.kind.to_le_bytes(),
-            &self.state.to_le_bytes(),
             &self.flags.to_le_bytes(),
             &self.size.pack(),
-            &self.group.pack(),
             &self.value_hash.to_bytes(),
         ])
     }
@@ -143,14 +152,6 @@ impl CompressedTrack {
         bytemuck::bytes_of_mut(&mut value).copy_from_slice(&data);
         value
     }
-}
-
-/// The track a read by address answers with, out of the tracks that share the
-/// address in track-number order: the certified one with the highest track
-/// number, or the highest-numbered one when none is certified.
-pub fn latest_track(tracks: &[CompressedTrack]) -> Option<CompressedTrack> {
-    let certified = tracks.iter().rev().find(|track| track.is_certified());
-    certified.or(tracks.last()).copied()
 }
 
 #[cfg(feature = "wincode")]
@@ -257,6 +258,16 @@ mod tests {
         assert!(hidden.is_hidden());
     }
 
+    // a certify signs the leaf hash, so two tracks with the same content differ in it
+    #[test]
+    fn number_in_hash() {
+        let track = public_track();
+        let rewritten = CompressedTrack { track_number: TrackNumber(4), ..track };
+
+        assert_eq!(track.content_address(), rewritten.content_address());
+        assert_ne!(track.get_hash(), rewritten.get_hash());
+    }
+
     // only the hidden flag hides a track
     #[test]
     fn unknown_flag_stays_public() {
@@ -267,23 +278,37 @@ mod tests {
         assert!(!track.is_hidden());
     }
 
-    // a read by address prefers the newest certified track
+    // where a track sits and how far it got leave its content address alone
     #[test]
-    fn latest() {
-        let numbered = |number: u64, state: TrackState| CompressedTrack {
-            track_number: TrackNumber(number),
-            state: state as u64,
-            ..public_track()
-        };
-        let registered = numbered(1, TrackState::Registered);
-        let certified = numbered(2, TrackState::Certified);
-        let newer = numbered(5, TrackState::Certified);
-        let abandoned = numbered(9, TrackState::Registered);
+    fn content_address_ignores_position() {
+        let track = public_track();
 
-        assert_eq!(latest_track(&[]), None);
-        assert_eq!(latest_track(&[registered]), Some(registered));
-        assert_eq!(latest_track(&[registered, certified, newer, abandoned]), Some(newer));
-        assert_eq!(latest_track(&[registered, abandoned]), Some(abandoned));
+        let certified = CompressedTrack { state: TrackState::Certified as u64, ..track };
+        let moved = CompressedTrack { group: GroupIndex(9), ..track };
+        let rewritten = CompressedTrack { track_number: TrackNumber(4), ..track };
+
+        assert_eq!(track.content_address(), certified.content_address());
+        assert_eq!(track.content_address(), moved.content_address());
+        assert_eq!(track.content_address(), rewritten.content_address());
+    }
+
+    // every field that says what a track holds moves its content address
+    #[test]
+    fn content_address_covers_content() {
+        let track = public_track();
+
+        let changed = [
+            CompressedTrack { tape: Address::new_unique(), ..track },
+            CompressedTrack { key: Hash::new_unique(), ..track },
+            CompressedTrack { kind: TrackKind::Inline as u64, ..track },
+            CompressedTrack { flags: TrackFlags::HIDDEN, ..track },
+            CompressedTrack { size: StorageUnits::from_bytes(4097), ..track },
+            CompressedTrack { value_hash: Hash::new_unique(), ..track },
+        ];
+
+        for other in changed {
+            assert_ne!(track.content_address(), other.content_address());
+        }
     }
 
     // packing round-trips every field

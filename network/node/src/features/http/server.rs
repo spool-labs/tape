@@ -11,7 +11,7 @@ use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use axum::{BoxError, Router};
 
 use axum_server::Handle;
@@ -153,7 +153,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     )),
             )
             .route(
-                api_routes::TAPE_TRACK_PROOF_PATH,
+                api_routes::TRACK_PROOF_PATH,
                 get(handlers::track::catalog::get_track_proof::<Db, Cluster, Blockchain>)
                     .layer(from_fn_with_state(
                         state.clone(),
@@ -170,7 +170,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             )
             // Open direct-write support.
             .route(
-                api_routes::TAPE_TRACK_SIGN_PATH,
+                api_routes::TRACK_SIGN_PATH,
                 get(handlers::track::sign::certify::<Db, Cluster, Blockchain>).layer(
                     from_fn_with_state(
                         state.clone(),
@@ -178,19 +178,11 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     ),
                 ),
             )
-            // Staked-peer gated slice GET.
+            // Staked-peer gated slice GET + self-authorizing PUT.
             .route(
                 api_routes::TRACK_SLICE_PATH,
                 get(handlers::track::slice::get_slice::<Db, Cluster, Blockchain>)
-                    .layer(from_fn_with_state(
-                        state.clone(),
-                        admission::slice_admission::<Db, Cluster, Blockchain>,
-                    )),
-            )
-            // Self-authorizing slice PUT, for the one track at a tape and number.
-            .route(
-                api_routes::TAPE_TRACK_SLICE_PATH,
-                put(handlers::track::slice::put_slice::<Db, Cluster, Blockchain>)
+                    .put(handlers::track::slice::put_slice::<Db, Cluster, Blockchain>)
                     .layer(slice_body_limit)
                     .layer(from_fn_with_state(
                         state.clone(),
@@ -289,7 +281,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     )),
             )
             .route(
-                api_routes::TAPE_TRACK_INCONSISTENCY_PATH,
+                api_routes::TRACK_INCONSISTENCY_PATH,
                 post(handlers::track::inconsistency::invalidate::<Db, Cluster, Blockchain>)
                     .layer(peer_body_limit)
                     .layer(from_fn_with_state(

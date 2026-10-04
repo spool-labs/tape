@@ -113,14 +113,9 @@ impl TrackWriter for SdkChain {
         })
     }
 
-    async fn delete_track(
-        &self,
-        tape: &ListTape,
-        track: Address,
-        track_number: TrackNumber,
-    ) -> Result<(), ChainError> {
+    async fn delete_track(&self, tape: &ListTape, track: Address) -> Result<(), ChainError> {
         let key = load_key(&tape.key_path, tape.address).await?;
-        match self.client.delete_as(&key, track, Some(track_number)).await {
+        match self.client.delete(&key, track).await {
             Ok(()) => Ok(()),
             Err(TapedriveError::NotFound) => Err(ChainError::TrackNotFound(track)),
             Err(error) => Err(sdk_error(error)),

@@ -208,13 +208,11 @@ impl Api for GatewayApi {
     }
 
     async fn get_track(&self, _node: Address, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {
-        let bytes = self
-            .get_bytes(track_url(&req.track.to_string()))
-            .await?;
-        let wire: TracksResponse =
+        let bytes = self.get_bytes(track_url(&req.track.to_string())).await?;
+        let wire: TrackResponse =
             wincode::deserialize(&bytes).map_err(|e| ApiError::Serialization(e.to_string()))?;
         Ok(GetTrackRes {
-            tracks: wire.tracks.into_iter().map(CompressedTrack::unpack).collect(),
+            track: CompressedTrack::unpack(wire.track),
         })
     }
 
@@ -319,7 +317,7 @@ impl Api for GatewayApi {
         req: &GetTrackProofReq,
     ) -> Result<GetTrackProofRes, ApiError> {
         let bytes = self
-            .get_bytes(track_proof_url(&req.tape.to_string(), req.track_number))
+            .get_bytes(track_proof_url(&req.track.to_string()))
             .await?;
         let wire: TrackProofResponse =
             wincode::deserialize(&bytes).map_err(|e| ApiError::Serialization(e.to_string()))?;

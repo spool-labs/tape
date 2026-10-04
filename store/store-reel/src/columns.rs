@@ -16,11 +16,29 @@ use tape_store::columns::ALL_COLUMN_FAMILIES;
 /// Bytes a slice key occupies: the spool big endian, then the track address
 const SLICE_KEY_LEN: u16 = 34;
 
-/// Bytes a track key occupies: the track address, then the track number big endian
-const TRACK_KEY_LEN: u16 = 40;
+/// Bytes a track address occupies
+const ADDRESS_LEN: u16 = 32;
 
 /// Bytes a snapshot artifact key occupies
 const SNAPSHOT_KEY_LEN: u16 = 24;
+
+/// A column whose keys are all one width, held in an open-addressed shard
+///
+/// Point reads first: the shard has no order, so a walk gathers and sorts. Only
+/// for a column nothing walks.
+const fn open(id: u8, name: &'static str, width: u16, shard_bytes: u8, codec: Codec) -> ColumnSpec {
+    ColumnSpec {
+        id: ColumnId(id),
+        name,
+        key_width: KeyWidth::Fixed(width),
+        shard_bytes,
+        inline_max: 0,
+        row_carry: 0,
+        purge_mark: None,
+        codec,
+        map_shape: MapShape::Open,
+    }
+}
 
 /// A column with nothing declared about its keys beyond that they are keys
 const fn plain(id: u8, name: &'static str) -> ColumnSpec {
@@ -39,11 +57,6 @@ const fn plain(id: u8, name: &'static str) -> ColumnSpec {
 
 /// A column whose keys are all one width, sharded by their leading bytes
 const fn shaped(id: u8, name: &'static str, width: u16, shard_bytes: u8) -> ColumnSpec {
-    coded(id, name, width, shard_bytes, Codec::Lz4)
-}
-
-/// A shaped column with its codec declared as asked
-const fn coded(id: u8, name: &'static str, width: u16, shard_bytes: u8, codec: Codec) -> ColumnSpec {
     ColumnSpec {
         id: ColumnId(id),
         name,
@@ -52,7 +65,7 @@ const fn coded(id: u8, name: &'static str, width: u16, shard_bytes: u8, codec: C
         inline_max: 0,
         row_carry: 0,
         purge_mark: None,
-        codec,
+        codec: Codec::Lz4,
         map_shape: MapShape::Tree,
     }
 }
@@ -67,10 +80,9 @@ const fn tape_columns(track_data_codec: Codec) -> [ColumnSpec; ALL_COLUMN_FAMILI
     [
     plain(1, "meta"),
     plain(2, "tape"),
-    shaped(3, "track", TRACK_KEY_LEN, 1),
+    shaped(3, "track", ADDRESS_LEN, 1),
     plain(4, "track_lookup"),
-    // The reel has no open shard at this width, so the keys sit in a tree.
-    coded(5, "track_data", TRACK_KEY_LEN, 1, track_data_codec),
+    open(5, "track_data", ADDRESS_LEN, 1, track_data_codec),
     plain(6, "object_info"),
     plain(7, "object_metadata"),
     plain(8, "object_list"),

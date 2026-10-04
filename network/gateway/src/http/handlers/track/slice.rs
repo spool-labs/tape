@@ -16,7 +16,7 @@ use tape_protocol::api::{with_share_token, BINARY_CONTENT, GetSliceReq};
 use tape_sdk::bootstrap::counts_against_peer;
 use tracing::debug;
 
-use super::{parse_address, spool_track_with_pending, track_data_with_pending, track_with_pending};
+use super::{parse_address, track_data_with_pending, track_with_pending};
 use crate::cache::{CacheRead, CacheSource};
 use crate::http::error::RouteError;
 use crate::http::handlers::share::authorize_signed_read;
@@ -30,8 +30,7 @@ pub async fn get_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, RouteError> {
     let track_addr = parse_address(&track_id, "track id")?;
-    let track = spool_track_with_pending(&state, track_addr, spool_id)?
-        .ok_or(RouteError::NotFound)?;
+    let track = track_with_pending(&state, track_addr)?.ok_or(RouteError::NotFound)?;
 
     // Authorize ahead of the slice cache, whose entries are shared across callers.
     let token = authorize_signed_read(&state, &headers, &method, uri.path(), &track)?;
@@ -94,7 +93,7 @@ async fn fetch_slice_from_owner<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("track is not coded".into()));
     }
 
-    let data = track_data_with_pending(state, track_addr, &track)?.ok_or(RouteError::NotFound)?;
+    let data = track_data_with_pending(state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
     let BlobData::Coded(blob) = data else {
         return Err(RouteError::BadRequest(
             "track data is not blob metadata".into(),

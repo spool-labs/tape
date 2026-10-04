@@ -18,7 +18,7 @@ use tokio_util::task::AbortOnDropHandle;
 use super::decode::decode_track_bytes;
 use super::response::{ByteRange, ObjectResponseMetadata, ranged_object_headers};
 use crate::http::error::RouteError;
-use crate::http::handlers::track::track_at_with_pending;
+use crate::http::handlers::track::track_with_pending;
 use crate::http::state::AppState;
 
 /// One chunk a read will serve: its manifest index, the bytes the whole chunk
@@ -84,8 +84,7 @@ fn resolve_planned_chunks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     for planned in plan {
         let entry = &manifest.chunks[planned.index];
         let chunk_addr = entry.track;
-        let chunk = track_at_with_pending(state, chunk_addr, entry.track_number)?
-            .ok_or(RouteError::NotFound)?;
+        let chunk = track_with_pending(state, chunk_addr)?.ok_or(RouteError::NotFound)?;
         if chunk.tape != tape {
             return Err(RouteError::BadGateway(format!(
                 "manifest chunk {} is on another tape",
@@ -237,9 +236,7 @@ mod tests {
             key: Hash::default(),
             chunks: [(0, 100), (100, 100), (200, 100), (300, 100), (400, 50)]
                 .into_iter()
-                .enumerate()
-                .map(|(index, (offset, size))| ChunkEntry {
-                    track_number: TrackNumber(index as u64),
+                .map(|(offset, size)| ChunkEntry {
                     track: Address::new_unique(),
                     offset: StorageUnits::from_bytes(offset),
                     size: StorageUnits::from_bytes(size),

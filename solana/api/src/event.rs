@@ -68,9 +68,6 @@ pub struct TrackCertified {
     /// Track account address
     pub track: Address,
 
-    /// Track index within the tape
-    pub track_number: TrackNumber,
-
     /// Certification epoch
     pub epoch: EpochNumber,
 
@@ -93,9 +90,6 @@ pub struct TrackDeleted {
     /// Parent tape address
     pub tape: Address,
 
-    /// Track index within the tape
-    pub track_number: TrackNumber,
-
     /// Track key for reference
     pub key: Hash,
 
@@ -111,9 +105,6 @@ tape_solana::event!(EventType, TrackDeleted);
 pub struct TrackInvalidated {
     /// Track account address
     pub track: Address,
-
-    /// Track index within the tape
-    pub track_number: TrackNumber,
 
     /// Invalidation epoch
     pub epoch: EpochNumber,

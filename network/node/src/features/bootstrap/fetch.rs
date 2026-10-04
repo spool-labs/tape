@@ -96,13 +96,12 @@ pub fn persist_snapshot_metadata<Db: Store>(
         store.put_track(track_address, track).map_err(store_err)?;
 
         store
-            .put_track_data(track_address, track.track_number, BlobData::Coded(snapshot_track.blob))
+            .put_track_data(track_address, BlobData::Coded(snapshot_track.blob))
             .map_err(store_err)?;
 
         store
             .put_object_info(
                 track_address,
-                track.track_number,
                 ObjectInfo::System {
                     kind: SystemObjectKind::Snapshot { epoch },
                     track_address,
@@ -200,13 +199,13 @@ mod tests {
                 share_nonce: Hash::default(),
             })
         );
-        assert_eq!(store.get_track(track_address, track.track_number).unwrap(), Some(track));
+        assert_eq!(store.get_track(track_address).unwrap(), Some(track));
         assert_eq!(
-            store.get_track_data(track_address, track.track_number).unwrap(),
+            store.get_track_data(track_address).unwrap(),
             Some(BlobData::Coded(blob))
         );
         assert_eq!(
-            store.get_object_info(track_address, track.track_number).unwrap(),
+            store.get_object_info(track_address).unwrap(),
             Some(ObjectInfo::System {
                 kind: SystemObjectKind::Snapshot { epoch },
                 track_address,

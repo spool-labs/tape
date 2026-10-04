@@ -237,25 +237,22 @@ impl TrackWriter for FakeChain {
         }
     }
 
-    async fn delete_track(
-        &self,
-        tape: &ListTape,
-        track: Address,
-        track_number: TrackNumber,
-    ) -> Result<(), ChainError> {
+    async fn delete_track(&self, tape: &ListTape, track: Address) -> Result<(), ChainError> {
         let mut state = self.state();
         let fault = state.delete_faults.pop_front().unwrap_or(DeleteFault::Lands);
         if fault == DeleteFault::Refused {
             return Err(ChainError::Sdk("the delete was refused".to_string()));
         }
         let fake = state.tapes.get_mut(&tape.address).ok_or(ChainError::TrackNotFound(track))?;
-        let is_held = fake
-            .tracks
-            .get(&track_number)
-            .is_some_and(|bytes| inline_track(tape.address, track_number, bytes).address() == track);
-        if !is_held {
-            return Err(ChainError::TrackNotFound(track));
+        let mut found = None;
+        for (number, bytes) in &fake.tracks {
+            if inline_track(tape.address, *number, bytes).address() == track {
+                found = Some(*number);
+            }
         }
+        let Some(track_number) = found else {
+            return Err(ChainError::TrackNotFound(track));
+        };
         fake.tracks.remove(&track_number);
         state.landed.push(Landed::Delete {
             tape: tape.address,

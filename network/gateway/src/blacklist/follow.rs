@@ -179,36 +179,19 @@ where
     ///
     /// Answers the change to report, or `None` when cancelled first.
     async fn fetch_track(&self, reference: TrackRef, cancel: &CancellationToken) -> Result<Option<Change>, NodeError> {
-        let stored = self
-            .context
-            .store
-            .get_track(reference.address, reference.track_number)
-            .map_err(store_error)?;
-        let Some(track) = stored else {
-            return Ok(Some(Change::Removed {
-                track: reference.address,
-                track_number: reference.track_number,
-            }));
+        let Some(track) = self.context.store.get_track(reference.address).map_err(store_error)? else {
+            return Ok(Some(Change::Removed { track: reference.address }));
         };
         let mut backoff = Backoff::new(RetryConfig::infinite());
         loop {
             let peers = self.context.state().group_peers(track.group);
-            let fetched = fetch_inline_from_peers(
-                self.context.api.as_ref(),
-                &peers,
-                reference.address,
-                track.value_hash,
-            )
-            .await;
+            let fetched =
+                fetch_inline_from_peers(self.context.api.as_ref(), &peers, reference.address, track.value_hash).await;
             match fetched {
                 Ok(payload) => {
                     self.context
                         .store
-                        .put_track_data(
-                            reference.address,
-                            reference.track_number,
-                            BlobData::Inline(payload.bytes),
-                        )
+                        .put_track_data(reference.address, BlobData::Inline(payload.bytes))
                         .map_err(store_error)?;
                     return Ok(Some(Change::Written {
                         tape: reference.tape,
@@ -235,19 +218,11 @@ where
             return Ok(());
         }
         for raw in &batch.raw_tracks {
-            let stored = self
-                .context
-                .store
-                .get_track(raw.track, raw.track_number)
-                .map_err(store_error)?;
-            let Some(track) = stored else {
+            let Some(track) = self.context.store.get_track(raw.track).map_err(store_error)? else {
                 continue;
             };
             if self.blacklists.denies(raw.track, track.tape) {
-                self.context
-                    .store
-                    .delete_track_data(raw.track, raw.track_number)
-                    .map_err(store_error)?;
+                self.context.store.delete_track_data(raw.track).map_err(store_error)?;
             }
         }
         Ok(())

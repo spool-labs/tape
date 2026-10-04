@@ -2,7 +2,7 @@
 
 use tape_store_api::Store;
 use tape_core::tape::{tape_index, tape_namespace, TapeFlags, TapeNamespace};
-use tape_core::types::{EpochNumber, TapeNumber, TrackNumber};
+use tape_core::types::{EpochNumber, TapeNumber};
 use tape_crypto::Address;
 use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
 use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
@@ -30,16 +30,16 @@ pub fn validate_bootstrap_store<Db: Store>(
             .sweep_tracks(cursor.as_deref(), TRACK_SCAN_BATCH)
             .map_err(store_error)?;
 
-        let mut keys: Vec<(Address, TrackNumber)> = Vec::with_capacity(tracks.len());
+        let mut addresses: Vec<Address> = Vec::with_capacity(tracks.len());
         let mut parents: Vec<Address> = Vec::with_capacity(tracks.len());
         for (track, metadata) in &tracks {
-            keys.push((*track, metadata.track_number));
+            addresses.push(*track);
             parents.push(metadata.tape);
         }
         // The page's two reads once each. A validate walks every track there is,
         // so a round trip a row is the whole cost of the pass.
         let tapes = store.get_tapes(&parents).map_err(store_error)?;
-        let objects = store.get_object_infos(&keys).map_err(store_error)?;
+        let objects = store.get_object_infos(&addresses).map_err(store_error)?;
 
         for (((track, metadata), held_tape), held_object) in
             tracks.iter().zip(tapes).zip(objects)
@@ -229,7 +229,6 @@ mod tests {
         store
             .put_object_info(
                 track,
-                TrackNumber(0),
                 ObjectInfo::Valid {
                     track_address: track,
                     registered_epoch: EpochNumber(1),
@@ -254,7 +253,6 @@ mod tests {
         store
             .put_object_info(
                 track,
-                TrackNumber(0),
                 ObjectInfo::Valid {
                     track_address: track,
                     registered_epoch: EpochNumber(1),
@@ -292,7 +290,6 @@ mod tests {
         store
             .put_object_info(
                 track,
-                TrackNumber(0),
                 ObjectInfo::Valid {
                     track_address: track,
                     registered_epoch: EpochNumber(3),

@@ -833,7 +833,6 @@ mod tests {
         let track = Address::new_unique();
         let event = TrackCertified {
             track,
-            track_number: TrackNumber(0),
             epoch: EpochNumber(10),
             signer_count: 0,
             signer_weight: 0,
@@ -887,7 +886,6 @@ mod tests {
 
         let certify_event = TrackCertified {
             track: track2,
-            track_number: TrackNumber(0),
             epoch: EpochNumber(2),
             signer_count: 0,
             signer_weight: 0,
@@ -1050,7 +1048,6 @@ mod tests {
                 TapedriveEvent::TrackDeleted(TrackDeleted {
                     track: delete_track,
                     tape: delete_tape,
-                    track_number: TrackNumber(0),
                     key: Hash::default(),
                     size: StorageUnits::mb(1_024),
                 }),
@@ -1061,7 +1058,6 @@ mod tests {
                 },
                 TapedriveEvent::TrackInvalidated(TrackInvalidated {
                     track: invalid_track,
-                    track_number: TrackNumber(0),
                     epoch: EpochNumber(3),
                 }),
             ),
@@ -1304,7 +1300,6 @@ mod tests {
             vec![RawInstruction::AdvanceEpoch],
             vec![TapedriveEvent::TrackCertified(TrackCertified {
                 track: Address::new_unique(),
-                track_number: TrackNumber(0),
                 epoch: EpochNumber(1),
                 signer_count: 0,
                 signer_weight: 0,

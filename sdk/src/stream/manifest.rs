@@ -72,9 +72,7 @@ pub struct ChunkManifest {
 /// One chunk within a manifest.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct ChunkEntry {
-    /// Track number on the tape that holds this chunk.
-    pub track_number: TrackNumber,
-    /// Address of the chunk's track, which a read fetches and checks.
+    /// Address of the chunk's track.
     pub track: Address,
     /// Byte offset of this chunk in the original stream.
     pub offset: StorageUnits,
@@ -155,7 +153,6 @@ mod tests {
     fn sample_manifest(chunk_count: usize) -> ChunkManifest {
         let chunks: Vec<ChunkEntry> = (0..chunk_count)
             .map(|chunk_index| ChunkEntry {
-                track_number: TrackNumber(chunk_index as u64),
                 track: Address::new_unique(),
                 offset: StorageUnits::from_bytes(chunk_index as u64 * MAX_TRACK_SIZE as u64),
                 size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
@@ -213,25 +210,21 @@ mod tests {
             key: Hash::from([0xCD; 32]),
             chunks: vec![
                 ChunkEntry {
-                    track_number: TrackNumber(0),
                     track: Address::new_unique(),
                     offset: StorageUnits::zero(),
                     size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
                 },
                 ChunkEntry {
-                    track_number: TrackNumber(1),
                     track: Address::new_unique(),
                     offset: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
                     size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
                 },
                 ChunkEntry {
-                    track_number: TrackNumber(2),
                     track: Address::new_unique(),
                     offset: StorageUnits::from_bytes(2 * MAX_TRACK_SIZE as u64),
                     size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
                 },
                 ChunkEntry {
-                    track_number: TrackNumber(3),
                     track: Address::new_unique(),
                     offset: StorageUnits::from_bytes(3 * MAX_TRACK_SIZE as u64),
                     size: StorageUnits::from_bytes(1000),

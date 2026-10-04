@@ -46,7 +46,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let track = state
         .context
         .store
-        .spool_track(request.helper_spool, track_key)
+        .get_track(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
     if !track.is_coded() {
@@ -71,7 +71,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let track_data = state
         .context
         .store
-        .get_track_data(track_key, track.track_number)
+        .get_track_data(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
     let BlobData::Coded(_) = track_data else {
@@ -218,13 +218,12 @@ mod tests {
             .expect("seed track");
 
         ctx.store
-            .put_track_data(track_address, track.track_number, BlobData::Coded(blob))
+            .put_track_data(track_address, BlobData::Coded(blob))
             .expect("seed track data");
 
         ctx.store
             .put_object_info(
                 track_address,
-                track.track_number,
                 ObjectInfo::System {
                     kind: SystemObjectKind::Snapshot {
                         epoch,

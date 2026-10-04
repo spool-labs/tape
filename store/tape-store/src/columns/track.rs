@@ -1,18 +1,18 @@
 //! Track column family for canonical compressed-track metadata.
 
 use tape_store_api::Column;
+use tape_crypto::address::Address;
 use tape_core::track::types::PackedTrack;
 
-use crate::types::TrackKey;
 
-/// Track catalog indexed by track address and track number.
+/// Track catalog indexed by track address.
 ///
-/// Key: TrackKey (track_address, track_number BE, 40 bytes)
+/// Key: Address (track_address, 32 bytes)
 /// Value: PackedTrack (`CompressedTrack` bytes)
 pub struct TrackCol;
 
 impl Column for TrackCol {
     const CF_NAME: &'static str = "track";
-    type Key = TrackKey;
+    type Key = Address;
     type Value = PackedTrack;
 }

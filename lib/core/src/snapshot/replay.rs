@@ -17,7 +17,6 @@ use crate::track::types::CompressedTrack;
 use crate::types::coin::{Coin, TAPE};
 use crate::types::{
     ContentType, EpochNumber, NodeId, SlotNumber, SpoolIndex, StorageUnits, TapeNumber,
-    TrackNumber,
 };
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
@@ -45,21 +44,18 @@ pub enum ReplayableEvent {
     /// Track was certified.
     CertifyTrack {
         track: Address,
-        track_number: TrackNumber,
         epoch: EpochNumber,
     },
 
     /// Track was deleted.
     DeleteTrack {
         track: Address,
-        track_number: TrackNumber,
         epoch: EpochNumber,
     },
 
     /// Track was invalidated.
     InvalidateTrack {
         track: Address,
-        track_number: TrackNumber,
         epoch: EpochNumber,
     },
 
@@ -442,17 +438,14 @@ mod tests {
             ReplayableEvent::Track(raw_replay_track()),
             ReplayableEvent::CertifyTrack {
                 track: Address::from([2u8; 32]),
-                track_number: TrackNumber(2),
                 epoch: EpochNumber(10),
             },
             ReplayableEvent::DeleteTrack {
                 track: Address::from([3u8; 32]),
-                track_number: TrackNumber(3),
                 epoch: EpochNumber(10),
             },
             ReplayableEvent::InvalidateTrack {
                 track: Address::from([4u8; 32]),
-                track_number: TrackNumber(4),
                 epoch: EpochNumber(10),
             },
             ReplayableEvent::AdvanceEpoch {
@@ -535,7 +528,6 @@ mod tests {
                         })),
                         record(ReplayableEvent::CertifyTrack {
                             track: Address::from([1u8; 32]),
-                            track_number: TrackNumber(1),
                             epoch: EpochNumber(42),
                         }),
                     ],
@@ -600,7 +592,6 @@ mod tests {
             ReplayableEvent::Track(blob_replay_track()),
             ReplayableEvent::CertifyTrack {
                 track: Address::from([2u8; 32]),
-                track_number: TrackNumber(2),
                 epoch: EpochNumber(10),
             },
             ReplayableEvent::JoinCommittee {
@@ -658,7 +649,6 @@ mod tests {
                         record(ReplayableEvent::Track(blob_replay_track())),
                         record(ReplayableEvent::CertifyTrack {
                             track: Address::from([1u8; 32]),
-                            track_number: TrackNumber(1),
                             epoch: EpochNumber(42),
                         }),
                         record(ReplayableEvent::SyncSpool {

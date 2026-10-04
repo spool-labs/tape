@@ -4,7 +4,7 @@ use reqwest::StatusCode;
 use tape_api::program::tapedrive::TrackAddress;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::encoding::TAPENET_PROFILE;
-use tape_core::types::{BasisPoints, StorageUnits, TrackNumber};
+use tape_core::types::{BasisPoints, StorageUnits};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{
     NodeRuntimeMode, SimnetBuilder, SimnetScenario, TAPENET_GROUP_SIZE, TestGateway,
@@ -160,11 +160,11 @@ async fn staked_gateway_inner() {
         "stream fixture should span multiple chunk tracks"
     );
     for entry in &manifest.chunks {
+        let chunk_address = entry.track;
         let chunk = writer
-            .get_track_by_number(&stream_receipt.tape, entry.track_number)
+            .get_track(&chunk_address)
             .await
             .expect("stream chunk track metadata");
-        let chunk_address = chunk.address();
         assert!(chunk.is_coded(), "stream chunk should use coded slice reads");
         wait_current_owner_slices(
             &scenario,
@@ -414,9 +414,8 @@ async fn staked_gateway_inner() {
         "small payload must produce an inline track"
     );
     let inline_addr = inline_track.address();
-    let inline_number = inline_track.track_number;
 
-    wait_gateway_has_inline(&gateway, inline_addr, inline_number, active_timeout)
+    wait_gateway_has_inline(&gateway, inline_addr, active_timeout)
         .await
         .expect("gateway mirror should tail the inline payload");
     assert_gateway_decoded_route(&gateway.base_url(), "object", &inline_addr, &inline_data)
@@ -427,13 +426,13 @@ async fn staked_gateway_inner() {
     gateway
         .context()
         .store
-        .delete_track_data(inline_addr, inline_number)
+        .delete_track_data(inline_addr)
         .expect("drop gateway inline payload");
     assert!(
         !gateway
             .context()
             .store
-            .has_track_data(inline_addr, inline_number)
+            .has_track_data(inline_addr)
             .expect("gateway inline presence check"),
         "gateway should have dropped its local inline payload"
     );
@@ -447,7 +446,7 @@ async fn staked_gateway_inner() {
         gateway
             .context()
             .store
-            .has_track_data(inline_addr, inline_number)
+            .has_track_data(inline_addr)
             .expect("gateway inline presence check"),
         "gateway should re-cache the fetched inline payload"
     );
@@ -818,12 +817,11 @@ async fn wait_current_owner_slices(
 async fn wait_gateway_has_inline(
     gateway: &TestGateway,
     track: Address,
-    track_number: TrackNumber,
     timeout: Duration,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
     loop {
-        if gateway.context().store.has_track_data(track, track_number)? {
+        if gateway.context().store.has_track_data(track)? {
             return Ok(());
         }
         if start.elapsed() >= timeout {

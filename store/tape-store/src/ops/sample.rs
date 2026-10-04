@@ -1,6 +1,6 @@
 use tape_store_api::{Column, Store};
 use tape_core::spooler::GroupIndex;
-use tape_core::types::{SlotNumber, TrackNumber};
+use tape_core::types::SlotNumber;
 use tape_crypto::address::Address;
 
 use crate::columns::TrackSampleCol;
@@ -10,51 +10,33 @@ use crate::TapeStore;
 
 /// Operations over the replay-derived sample set for each group.
 ///
-/// Sample rows are independent of which slices a node stores locally. Every
-/// track has its own row, so tracks that share an address count once each.
+/// Sample rows are independent of which slices a node stores locally.
 pub trait SampleOps {
     /// Record a track's standing in its group's set.
     fn put_track_sample(
         &self,
         group: GroupIndex,
         track: Address,
-        track_number: TrackNumber,
         sample: TrackSample,
     ) -> Result<()>;
 
     /// One track's row, when it belongs to the group at all.
-    fn track_sample(
-        &self,
-        group: GroupIndex,
-        track: Address,
-        track_number: TrackNumber,
-    ) -> Result<Option<TrackSample>>;
-
-    /// Whether the group's set holds any track under this address.
-    fn has_track_samples(&self, group: GroupIndex, track: Address) -> Result<bool>;
+    fn track_sample(&self, group: GroupIndex, track: Address) -> Result<Option<TrackSample>>;
 
     /// Note a deletion, keeping the row while a round can still reference it.
     fn mark_track_sample_deleted(
         &self,
         group: GroupIndex,
         track: Address,
-        track_number: TrackNumber,
         slot: SlotNumber,
     ) -> Result<()>;
 
     /// One group's set, in the track order the draw is defined over.
-    fn iter_track_samples_by_group(
-        &self,
-        group: GroupIndex,
-    ) -> Result<Vec<(Address, TrackNumber, TrackSample)>>;
+    fn iter_track_samples_by_group(&self, group: GroupIndex)
+        -> Result<Vec<(Address, TrackSample)>>;
 
     /// Forget one track's row, once nothing can draw it any more.
-    fn delete_track_sample(
-        &self,
-        group: GroupIndex,
-        track: Address,
-        track_number: TrackNumber,
-    ) -> Result<()>;
+    fn delete_track_sample(&self, group: GroupIndex, track: Address) -> Result<()>;
 
     /// Tracks marked deleted before a slot, whichever group they sit in.
     ///
@@ -63,7 +45,7 @@ pub trait SampleOps {
     fn track_samples_deleted_before(
         &self,
         slot: SlotNumber,
-    ) -> Result<Vec<(GroupIndex, Address, TrackNumber)>>;
+    ) -> Result<Vec<(GroupIndex, Address)>>;
 }
 
 impl<S: Store> SampleOps for TapeStore<S> {
@@ -71,41 +53,25 @@ impl<S: Store> SampleOps for TapeStore<S> {
         &self,
         group: GroupIndex,
         track: Address,
-        track_number: TrackNumber,
         sample: TrackSample,
     ) -> Result<()> {
-        self.put::<TrackSampleCol>(&TrackSampleKey::new(group, track, track_number), &sample)?;
+        self.put::<TrackSampleCol>(&TrackSampleKey::new(group, track), &sample)?;
         Ok(())
     }
 
-    fn track_sample(
-        &self,
-        group: GroupIndex,
-        track: Address,
-        track_number: TrackNumber,
-    ) -> Result<Option<TrackSample>> {
-        Ok(self.get::<TrackSampleCol>(&TrackSampleKey::new(group, track, track_number))?)
-    }
-
-    fn has_track_samples(&self, group: GroupIndex, track: Address) -> Result<bool> {
-        let prefix = TrackSampleKey::track_prefix(group, track);
-        let keys = self
-            .inner()
-            .inner()
-            .iter_keys_prefix(TrackSampleCol::CF_NAME, &prefix)?;
-        Ok(!keys.is_empty())
+    fn track_sample(&self, group: GroupIndex, track: Address) -> Result<Option<TrackSample>> {
+        Ok(self.get::<TrackSampleCol>(&TrackSampleKey::new(group, track))?)
     }
 
     fn mark_track_sample_deleted(
         &self,
         group: GroupIndex,
         track: Address,
-        track_number: TrackNumber,
         slot: SlotNumber,
     ) -> Result<()> {
         // First deletion wins. A row can only be deleted once, and re-stamping
         // it would move the cut a round is judged against.
-        let Some(sample) = self.track_sample(group, track, track_number)? else {
+        let Some(sample) = self.track_sample(group, track)? else {
             return Ok(());
         };
         if sample.deleted_slot.is_some() {
@@ -115,7 +81,6 @@ impl<S: Store> SampleOps for TapeStore<S> {
         self.put_track_sample(
             group,
             track,
-            track_number,
             TrackSample {
                 deleted_slot: Some(slot),
                 ..sample
@@ -126,40 +91,35 @@ impl<S: Store> SampleOps for TapeStore<S> {
     fn iter_track_samples_by_group(
         &self,
         group: GroupIndex,
-    ) -> Result<Vec<(Address, TrackNumber, TrackSample)>> {
+    ) -> Result<Vec<(Address, TrackSample)>> {
         let prefix = TrackSampleKey::group_prefix(group);
         let iter = self
             .inner()
             .inner()
             .iter_prefix(TrackSampleCol::CF_NAME, &prefix)?;
 
-        // Group, then track, then track number, all big-endian, so the scan
-        // already arrives in the canonical order and needs no sort of its own.
+        // Group first then track, both big-endian, so the scan already arrives
+        // in the canonical order and needs no sort of its own.
         let mut entries = Vec::new();
         for (key_bytes, value_bytes) in iter {
             let key: TrackSampleKey = wincode::deserialize(&key_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("sample key: {e}")))?;
             let sample: TrackSample = wincode::deserialize(&value_bytes)
                 .map_err(|e| TapeStoreError::Serialization(format!("sample row: {e}")))?;
-            entries.push((key.track, key.track_number, sample));
+            entries.push((key.track, sample));
         }
         Ok(entries)
     }
 
-    fn delete_track_sample(
-        &self,
-        group: GroupIndex,
-        track: Address,
-        track_number: TrackNumber,
-    ) -> Result<()> {
-        self.delete::<TrackSampleCol>(&TrackSampleKey::new(group, track, track_number))?;
+    fn delete_track_sample(&self, group: GroupIndex, track: Address) -> Result<()> {
+        self.delete::<TrackSampleCol>(&TrackSampleKey::new(group, track))?;
         Ok(())
     }
 
     fn track_samples_deleted_before(
         &self,
         slot: SlotNumber,
-    ) -> Result<Vec<(GroupIndex, Address, TrackNumber)>> {
+    ) -> Result<Vec<(GroupIndex, Address)>> {
         let mut found = Vec::new();
         for (key_bytes, value_bytes) in self
             .inner()
@@ -171,7 +131,7 @@ impl<S: Store> SampleOps for TapeStore<S> {
             if sample.deleted_slot.is_some_and(|deleted| deleted < slot) {
                 let key: TrackSampleKey = wincode::deserialize(&key_bytes)
                     .map_err(|e| TapeStoreError::Serialization(format!("sample key: {e}")))?;
-                found.push((key.group, key.track, key.track_number));
+                found.push((key.group, key.track));
             }
         }
         Ok(found)
@@ -186,8 +146,6 @@ mod tests {
     use tape_crypto::Hash;
 
     use super::*;
-
-    const NUMBER: TrackNumber = TrackNumber(0);
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -210,12 +168,12 @@ mod tests {
         let store = test_store();
         let track = Address::new_unique();
 
-        assert_eq!(store.track_sample(GroupIndex(1), track, NUMBER).unwrap(), None);
-        store.put_track_sample(GroupIndex(1), track, NUMBER, sample(10)).unwrap();
-        assert_eq!(store.track_sample(GroupIndex(1), track, NUMBER).unwrap(), Some(sample(10)));
+        assert_eq!(store.track_sample(GroupIndex(1), track).unwrap(), None);
+        store.put_track_sample(GroupIndex(1), track, sample(10)).unwrap();
+        assert_eq!(store.track_sample(GroupIndex(1), track).unwrap(), Some(sample(10)));
 
         // The same track under another group is a different row.
-        assert_eq!(store.track_sample(GroupIndex(2), track, NUMBER).unwrap(), None);
+        assert_eq!(store.track_sample(GroupIndex(2), track).unwrap(), None);
     }
 
     // a group's set holds only its own tracks, in track order
@@ -224,46 +182,21 @@ mod tests {
         let store = test_store();
         let mut mine: Vec<Address> = (0..4).map(|_| Address::new_unique()).collect();
         for track in &mine {
-            store.put_track_sample(GroupIndex(3), *track, NUMBER, sample(1)).unwrap();
+            store.put_track_sample(GroupIndex(3), *track, sample(1)).unwrap();
         }
         store
-            .put_track_sample(GroupIndex(4), Address::new_unique(), NUMBER, sample(1))
+            .put_track_sample(GroupIndex(4), Address::new_unique(), sample(1))
             .unwrap();
 
         let listed: Vec<Address> = store
             .iter_track_samples_by_group(GroupIndex(3))
             .unwrap()
             .into_iter()
-            .map(|(track, _, _)| track)
+            .map(|(track, _)| track)
             .collect();
 
         mine.sort_unstable();
         assert_eq!(listed, mine);
-    }
-
-    // tracks that share an address in one group each keep a row
-    #[test]
-    fn shared_address() {
-        let store = test_store();
-        let track = Address::new_unique();
-        let group = GroupIndex(3);
-
-        assert!(!store.has_track_samples(group, track).unwrap());
-        store.put_track_sample(group, track, TrackNumber(300), sample(2)).unwrap();
-        store.put_track_sample(group, track, TrackNumber(4), sample(1)).unwrap();
-
-        let listed = store.iter_track_samples_by_group(group).unwrap();
-        assert_eq!(
-            listed,
-            vec![(track, TrackNumber(4), sample(1)), (track, TrackNumber(300), sample(2))]
-        );
-
-        store.delete_track_sample(group, track, TrackNumber(4)).unwrap();
-        assert!(store.has_track_samples(group, track).unwrap());
-        assert!(!store.has_track_samples(GroupIndex(4), track).unwrap());
-
-        store.delete_track_sample(group, track, TrackNumber(300)).unwrap();
-        assert!(!store.has_track_samples(group, track).unwrap());
     }
 
     // the cut is what decides membership, so a track registered after the
@@ -288,12 +221,12 @@ mod tests {
     fn first_deletion() {
         let store = test_store();
         let track = Address::new_unique();
-        store.put_track_sample(GroupIndex(1), track, NUMBER, sample(5)).unwrap();
+        store.put_track_sample(GroupIndex(1), track, sample(5)).unwrap();
 
-        store.mark_track_sample_deleted(GroupIndex(1), track, NUMBER, SlotNumber(30)).unwrap();
-        store.mark_track_sample_deleted(GroupIndex(1), track, NUMBER, SlotNumber(40)).unwrap();
+        store.mark_track_sample_deleted(GroupIndex(1), track, SlotNumber(30)).unwrap();
+        store.mark_track_sample_deleted(GroupIndex(1), track, SlotNumber(40)).unwrap();
 
-        let row = store.track_sample(GroupIndex(1), track, NUMBER).unwrap().expect("row");
+        let row = store.track_sample(GroupIndex(1), track).unwrap().expect("row");
         assert_eq!(row.deleted_slot, Some(SlotNumber(30)));
     }
 
@@ -303,8 +236,8 @@ mod tests {
         let store = test_store();
         let track = Address::new_unique();
 
-        store.mark_track_sample_deleted(GroupIndex(1), track, NUMBER, SlotNumber(30)).unwrap();
-        assert_eq!(store.track_sample(GroupIndex(1), track, NUMBER).unwrap(), None);
+        store.mark_track_sample_deleted(GroupIndex(1), track, SlotNumber(30)).unwrap();
+        assert_eq!(store.track_sample(GroupIndex(1), track).unwrap(), None);
     }
 
     // pruning drops deletions no round can reach and keeps live rows
@@ -316,18 +249,18 @@ mod tests {
         let recent = Address::new_unique();
 
         for track in [live, old, recent] {
-            store.put_track_sample(GroupIndex(1), track, NUMBER, sample(1)).unwrap();
+            store.put_track_sample(GroupIndex(1), track, sample(1)).unwrap();
         }
-        store.mark_track_sample_deleted(GroupIndex(1), old, NUMBER, SlotNumber(10)).unwrap();
-        store.mark_track_sample_deleted(GroupIndex(1), recent, NUMBER, SlotNumber(90)).unwrap();
+        store.mark_track_sample_deleted(GroupIndex(1), old, SlotNumber(10)).unwrap();
+        store.mark_track_sample_deleted(GroupIndex(1), recent, SlotNumber(90)).unwrap();
 
         assert_eq!(
             store.track_samples_deleted_before(SlotNumber(50)).unwrap(),
-            vec![(GroupIndex(1), old, NUMBER)]
+            vec![(GroupIndex(1), old)]
         );
-        store.delete_track_sample(GroupIndex(1), old, NUMBER).unwrap();
-        assert!(store.track_sample(GroupIndex(1), old, NUMBER).unwrap().is_none());
-        assert!(store.track_sample(GroupIndex(1), live, NUMBER).unwrap().is_some());
-        assert!(store.track_sample(GroupIndex(1), recent, NUMBER).unwrap().is_some());
+        store.delete_track_sample(GroupIndex(1), old).unwrap();
+        assert!(store.track_sample(GroupIndex(1), old).unwrap().is_none());
+        assert!(store.track_sample(GroupIndex(1), live).unwrap().is_some());
+        assert!(store.track_sample(GroupIndex(1), recent).unwrap().is_some());
     }
 }

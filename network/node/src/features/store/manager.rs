@@ -228,11 +228,7 @@ fn persist_raw_tracks<Db: Store>(
         }
 
         store
-            .put_track_data(
-                raw_track.track,
-                raw_track.track_number,
-                BlobData::Inline(raw_track.data.clone()),
-            )
+            .put_track_data(raw_track.track, BlobData::Inline(raw_track.data.clone()))
             .map_err(|error| NodeError::Store(format!("put_track_data: {error}")))?;
     }
 
@@ -337,17 +333,13 @@ mod tests {
             records: Vec::new(),
             raw_tracks: vec![RawTrack {
                 track,
-                track_number: TrackNumber(3),
                 group,
                 data: raw.clone(),
             }],
         };
 
         persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");
-        assert_eq!(
-            store.get_track_data(track, TrackNumber(3)).expect("track data"),
-            Some(BlobData::Inline(raw))
-        );
+        assert_eq!(store.get_track_data(track).expect("track data"), Some(BlobData::Inline(raw)));
         assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(78)));
     }
 
@@ -364,14 +356,13 @@ mod tests {
             records: Vec::new(),
             raw_tracks: vec![RawTrack {
                 track,
-                track_number: TrackNumber(3),
                 group,
                 data: vec![9, 8, 7],
             }],
         };
 
         persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");
-        assert_eq!(store.get_track_data(track, TrackNumber(3)).expect("track data"), None);
+        assert_eq!(store.get_track_data(track).expect("track data"), None);
         assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(79)));
     }
 }

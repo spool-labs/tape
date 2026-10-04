@@ -239,9 +239,8 @@ mod tests {
 
     /// Delete a track from the source and give the change a consumer reports for it
     fn remove(source: &mut MemorySource, tape: Address, number: u64) -> Change {
-        let track_number = TrackNumber(number);
-        let track = source.remove(tape, track_number).expect("written track");
-        Change::Removed { track, track_number }
+        let track = source.remove(tape, TrackNumber(number)).expect("written track");
+        Change::Removed { track }
     }
 
     fn follow(subscriptions: Vec<Subscription>, source: &MemorySource) -> Blacklists {
@@ -310,7 +309,7 @@ mod tests {
         assert!(!blacklists.is_denied(&BlacklistEntry::track(removed)));
     }
 
-    // a target two tracks with the same bytes name stays denied until both are deleted
+    // a target denied by two tracks with the same bytes stays denied until both are deleted
     #[test]
     fn doubled_track() {
         let (root, tape, removed) = (address(1), address(2), address(9));
@@ -324,7 +323,7 @@ mod tests {
         let one_left = apply(&mut blacklists, &[remove(&mut source, tape, 2)], &source);
         let none_left = apply(&mut blacklists, &[remove(&mut source, tape, 1)], &source);
 
-        assert_eq!(first, second);
+        assert_ne!(first, second);
         assert_eq!(one_left, Changes::default());
         assert_eq!(none_left.allowed, vec![BlacklistEntry::track(removed)]);
     }

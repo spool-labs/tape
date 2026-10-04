@@ -87,7 +87,7 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         };
 
         let data = client.timer(operation, Phase::BlobData);
-        let track_data = fetch_track_data(client, *track, &track_info, operation).await;
+        let track_data = fetch_track_data(client, *track, track_info.group, operation).await;
         data.finish_result(&track_data);
         let track_data = track_data?;
 
@@ -188,7 +188,8 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     }
 
     let data_timer = client.timer(Operation::Verify, Phase::BlobData);
-    let track_data = fetch_track_data(client, *track, &track_info, Operation::Verify).await;
+    let track_data =
+        fetch_track_data(client, *track, track_info.group, Operation::Verify).await;
     data_timer.finish_result(&track_data);
     let BlobData::Coded(blob) = track_data? else {
         return Err(TapedriveError::InvalidArgument(
@@ -215,7 +216,7 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
 async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track: Address,
-    info: &CompressedTrack,
+    group: GroupIndex,
     operation: Operation,
 ) -> Result<BlobData, TapedriveError> {
     let state = bootstrap_network_state(client, Some(operation)).await?;
@@ -223,7 +224,7 @@ async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
     let mut peers = Vec::new();
     let mut saw_not_found = false;
     let mut last_error = None;
-    for (_, node_id) in state.group_peers(info.group) {
+    for (_, node_id) in state.group_peers(group) {
         if peers.contains(&node_id) {
             continue;
         }

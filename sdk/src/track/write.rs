@@ -27,16 +27,18 @@ use tape_core::track::data::{
     track_key, BlobData, BlobDataSlice, BlobInfo, TrackMeta, TrackObjectInfo,
 };
 use tape_core::spooler::GroupIndex;
+use tape_core::track::archive::{TrackArchive, TRACK_TREE_HEIGHT};
 use tape_core::track::mirror::ArchiveMirror;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::ContentType;
 use tape_crypto::hash::hash;
+use tape_crypto::merkle::{hash_leaf, MerkleLeafTree};
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::tx::Txid;
 use tape_protocol::api::CertifyRes;
 use tape_protocol::Api;
 use tape_protocol::api::GetTrackDataReq;
-use tape_protocol::api::GetTrackByNumberReq;
+use tape_protocol::api::GetTrackReq;
 use futures::stream::StreamExt;
 use tape_retry::{retry_if, Backoff, RetryConfig, Retryable};
 use tape_slicer::num_stripes;
@@ -190,8 +192,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         operator: &impl TapeOperator,
         track: Address,
     ) -> Result<(), TapedriveError> {
-        let track_number = match self.get_track(&track).await {
-            Ok(info) => info.track_number,
+        match self.get_track(&track).await {
+            Ok(_) => {}
             Err(TapedriveError::NotFound) => return Ok(()),
             Err(error) => return Err(error),
         };
@@ -200,14 +202,13 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         // before the track.
         if let Ok((manifest, _)) = read_manifest(self, &track).await {
             for entry in &manifest.chunks {
-                let chunk_number = Some(entry.track_number);
-                if let Err(error) = self.delete_as(operator, entry.track, chunk_number).await {
-                    debug!(%error, chunk = %entry.track_number, "stream chunk delete failed");
+                if let Err(error) = self.delete_as(operator, entry.track).await {
+                    debug!(%error, chunk = %entry.track, "stream chunk delete failed");
                 }
             }
         }
 
-        if let Err(error) = self.delete_as(operator, track, Some(track_number)).await {
+        if let Err(error) = self.delete_as(operator, track).await {
             debug!(%error, %track, "object track delete failed");
         }
         Ok(())
@@ -1320,7 +1321,7 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
 
     let uploader = DistributedUploader::new(
         written.address,
-        &written.track,
+        written.track.group,
         slices,
         &state,
         client.write_options.slice_concurrency,
@@ -1536,7 +1537,8 @@ pub(crate) async fn collect_certification<Blockchain: Rpc, Cluster: Api>(
         collector
             .collect_signatures(
                 client.api.as_ref(),
-                &written.track,
+                &written.address,
+                written.track.group,
                 &state,
                 banked,
             )
@@ -1567,8 +1569,7 @@ pub(crate) async fn submit_certification<Blockchain: Rpc, Cluster: Api>(
     operation: Operation,
 ) -> Result<(), TapedriveError> {
     let proof_timer = client.timer(operation, Phase::CertifyProof);
-    let proof =
-        query::query_track_proof(client, &written.track.tape, written.track.track_number).await;
+    let proof = query::query_track_proof(client, &written.address).await;
     proof_timer.finish_result(&proof);
     let proof = proof?;
 
@@ -1675,8 +1676,7 @@ pub(crate) async fn confirm_certifies<Blockchain: Rpc, Cluster: Api>(
 
 pub(crate) async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape: &Address,
-    track_number: TrackNumber,
+    track: &Address,
 ) -> Result<CompressedTrack, TapedriveError> {
     let result = retry_if(
         completion_poll_config(),
@@ -1689,8 +1689,8 @@ pub(crate) async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
                 .await
                 .map_err(TrackCompletionError::from)?;
             let mut requests = query::race_peers(peers, |node| {
-                let req = GetTrackByNumberReq { tape: *tape, track_number };
-                async move { client.api.get_track_by_number(node, &req).await }
+                let req = GetTrackReq { track: *track };
+                async move { client.api.get_track(node, &req).await }
             });
 
             let mut uncertified = None;
@@ -1717,7 +1717,7 @@ pub(crate) async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
         Err(TrackCompletionError::Client(err)) => Err(err),
         // Nodes can trail the chain; the track account is the last word.
         Err(TrackCompletionError::NotCertifiedYet) => {
-            match client.get_track_by_number(tape, track_number).await {
+            match client.get_track(track).await {
                 Ok(track) if track.is_certified() => Ok(track),
                 _ => Err(TapedriveError::Upload(UploadError::Network(
                     "track never became visible as certified".into(),
@@ -1727,11 +1727,8 @@ pub(crate) async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
     }
 }
 
-/// The address a track with this key and content gets on `tape`.
-///
-/// A writer knows it before the write lands. The number, state and group stay
-/// out of the address, so the leaf built here leaves them at zero.
-fn content_address(tape: Address, key: Hash, meta: &TrackMeta, flags: u64) -> Address {
+/// The content address a track with this key and content gets on `tape`
+fn content_address(tape: Address, key: Hash, meta: &TrackMeta, flags: u64) -> Hash {
     CompressedTrack {
         tape,
         track_number: TrackNumber(0),
@@ -1743,16 +1740,16 @@ fn content_address(tape: Address, key: Hash, meta: &TrackMeta, flags: u64) -> Ad
         group: GroupIndex(0),
         value_hash: meta.value_hash,
     }
-    .address()
+    .content_address()
 }
 
-/// The address of a coded track for `name` registered with this plan
-pub(crate) fn coded_address(
+/// The content address of a coded track for `name` registered with this plan
+pub(crate) fn coded_content_address(
     tape: Address,
     name: &[u8],
     plan: &UploadPlan,
     flags: u64,
-) -> Result<Address, TapedriveError> {
+) -> Result<Hash, TapedriveError> {
     let slice = BlobDataSlice::Coded(plan_blob(plan));
     let meta = slice
         .meta(plan.profile)
@@ -1760,17 +1757,103 @@ pub(crate) fn coded_address(
     Ok(content_address(tape, track_key(name, &slice), &meta, flags))
 }
 
-/// The address of an inline track for `name` holding these bytes
-pub(crate) fn inline_address(tape: Address, name: &[u8], data: &[u8], flags: u64) -> Address {
+/// The content address of an inline track for `name` holding these bytes
+pub(crate) fn inline_content_address(tape: Address, name: &[u8], data: &[u8], flags: u64) -> Hash {
     let key = track_key(name, &BlobDataSlice::Inline(data));
     content_address(tape, key, &TrackMeta::inline(data), flags)
+}
+
+/// Tracks one listing page of a resumed write asks for
+const RESUME_LIST_PAGE: u32 = 1024;
+
+/// What a tape holds, by content address, for a resumed write to match against
+pub(crate) struct TapeContents {
+    tracks: HashMap<Hash, CompressedTrack>,
+}
+
+impl TapeContents {
+    /// List the tape, asking again while the listing trails the chain.
+    ///
+    /// A peer that has not seen the newest write would hide it, and the resume
+    /// would write it twice. A listing that rebuilds the tape's root on chain
+    /// is complete. One that never does is used as it is, since a miss only
+    /// costs a second track.
+    pub(crate) async fn load<Blockchain: Rpc, Cluster: Api>(
+        client: &Tapedrive<Blockchain, Cluster>,
+        tape: Address,
+    ) -> Result<Self, TapedriveError> {
+        let mut backoff = Backoff::new(completion_poll_config());
+        loop {
+            let archive = client.get_tape(&tape).await?.tracks;
+            if archive.next_number() == TrackNumber(0) {
+                return Ok(Self { tracks: HashMap::new() });
+            }
+
+            let listed = list_tape(client, tape).await?;
+            if listed_root(&listed, &archive) == Some(archive.tree.root()) {
+                return Ok(Self::from_tracks(listed));
+            }
+            match backoff.next_delay() {
+                Some(delay) => sleep(delay).await,
+                None => return Ok(Self::from_tracks(listed)),
+            }
+        }
+    }
+
+    /// Of the tracks with one content, the certified one with the highest
+    /// number stays, or the highest-numbered when none is certified, so an
+    /// unfinished write gets finished.
+    pub(crate) fn from_tracks(listed: Vec<CompressedTrack>) -> Self {
+        let mut tracks: HashMap<Hash, CompressedTrack> = HashMap::new();
+        for track in listed {
+            let held = tracks.entry(track.content_address()).or_insert(track);
+            if track.is_certified() || !held.is_certified() {
+                *held = track;
+            }
+        }
+        Self { tracks }
+    }
+
+    pub(crate) fn find(&self, content: &Hash) -> Option<CompressedTrack> {
+        self.tracks.get(content).copied()
+    }
+}
+
+/// Every track on a tape, in track-number order
+async fn list_tape<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape: Address,
+) -> Result<Vec<CompressedTrack>, TapedriveError> {
+    let mut tracks = Vec::new();
+    let mut cursor = None;
+    loop {
+        let (page, next) = client
+            .list_tracks_by_tape(&tape, cursor, RESUME_LIST_PAGE)
+            .await?;
+        tracks.extend(page);
+        match next {
+            Some(next) => cursor = Some(next),
+            None => return Ok(tracks),
+        }
+    }
+}
+
+/// The root the listed tracks give the tape's tree, or nothing when a track
+/// sits past the end of the tape as the chain has it
+fn listed_root(listed: &[CompressedTrack], archive: &TrackArchive) -> Option<Hash> {
+    let mut leaves = vec![hash_leaf(&[]); archive.next_number().as_usize()];
+    for track in listed {
+        *leaves.get_mut(track.track_number.as_usize())? = track.get_hash();
+    }
+    let tree = MerkleLeafTree::new(&leaves, TRACK_TREE_HEIGHT).ok()?;
+    Some(tree.root())
 }
 
 /// One-call write that reserves a fresh tape, or writes to the one already there.
 ///
 /// A missing tape is reserved and written normally. An existing tape gets the
-/// track appended, unless the client asks to resume: then the content is looked
-/// up by its address first, and a track found there is finished or returned.
+/// track appended, unless the client asks to resume: then the tape is listed
+/// first, and a track that holds this content is finished or returned.
 /// Backs the one-call write and write_named entry points.
 pub(crate) async fn write_or_resume<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
@@ -1801,18 +1884,6 @@ pub(crate) async fn write_or_resume<Blockchain: Rpc, Cluster: Api>(
     }
 }
 
-/// The track at an address, or nothing when no peer holds one
-pub(crate) async fn found_track<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    address: &Address,
-) -> Result<Option<CompressedTrack>, TapedriveError> {
-    match client.get_track(address).await {
-        Ok(track) => Ok(Some(track)),
-        Err(TapedriveError::NotFound) => Ok(None),
-        Err(other) => Err(other),
-    }
-}
-
 /// Write a track unless the tape already holds this content, which is then
 /// finished or returned as it is.
 async fn resume_track<Blockchain: Rpc, Cluster: Api>(
@@ -1824,19 +1895,20 @@ async fn resume_track<Blockchain: Rpc, Cluster: Api>(
     flags: u64,
 ) -> Result<CompressedTrack, TapedriveError> {
     let tape = tape_key.address();
+    let contents = TapeContents::load(client, tape).await?;
 
     if inline_write_fits(name, data.len()) {
         // Inline tracks certify at register, so one found is complete.
-        let address = inline_address(tape, name, data, flags);
-        return match found_track(client, &address).await? {
+        let content = inline_content_address(tape, name, data, flags);
+        return match contents.find(&content) {
             Some(existing) => Ok(existing),
             None => write_track_only(client, tape_key, name, content_type, data, None, flags).await,
         };
     }
 
     let plan = encode_blob(client, data.to_vec(), Operation::Write).await?;
-    let address = coded_address(tape, name, &plan, flags)?;
-    match found_track(client, &address).await? {
+    let content = coded_content_address(tape, name, &plan, flags)?;
+    match contents.find(&content) {
         Some(existing) => {
             finish_coded_track(client, tape_key, existing, &plan, Operation::Write).await
         }
@@ -1917,8 +1989,7 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
         write_encoded_track(client, operator, name, content_type, data, coded_plan, flags).await?;
     // Delete the old track; best-effort, never fails the write that already
     // landed. A failure leaves it for a later overwrite or sweep.
-    let old_number = Some(existing_track.track_number);
-    if let Err(error) = client.delete_as(operator, track_address, old_number).await {
+    if let Err(error) = client.delete_as(operator, track_address).await {
         debug!(%error, %track_address, "overwrite delete failed; old track left for a later delete");
     }
     Ok(written)
@@ -2124,7 +2195,7 @@ pub(crate) async fn certify_with_retry<Blockchain: Rpc, Cluster: Api>(
     certify_submit_with_retry(client, tape_key, written, operation, None, banked).await?;
 
     let visible = client.timer(operation, Phase::CertifyVisible).chunks(1);
-    let result = wait_for_certified_track(client, &tape_key.address(), written.track.track_number).await;
+    let result = wait_for_certified_track(client, &written.address).await;
     visible.finish_result(&result);
     result
 }

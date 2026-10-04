@@ -20,7 +20,7 @@ use tape_api::instruction::build_certify_track_ix;
 use tape_core::bls::BlsSignature;
 use tape_core::spooler::GroupIndex;
 use tape_core::thresholds::{NetworkParams, Thresholds};
-use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
+use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{BitmapRead, EpochNumber, SpoolBitmap};
 use tape_protocol::api::{Api, ApiError, CertifyReq, CertifyRes};
 use tape_protocol::ProtocolState;
@@ -185,11 +185,11 @@ impl CertificationCollector {
     pub async fn collect_signatures<P: Api>(
         &self,
         peer_client: &P,
-        track: &CompressedTrack,
+        track_address: &Address,
+        group: GroupIndex,
         state: &ProtocolState,
         banked: &[CertifyRes],
     ) -> Result<CollectedSignatures, CertificationError> {
-        let (tape, track_number, group) = (track.tape, track.track_number, track.group);
         let params = state.system.params().map_err(|_| {
             CertificationError::SystemState(
                 "system holds no valid encoding profile and trust model".into(),
@@ -238,11 +238,13 @@ impl CertificationCollector {
             .map(|request| request.weight)
             .sum::<u64>();
 
+        let track = *track_address;
         let max_retries = self.config.max_retries;
 
         let mut requests = stream::iter(signature_requests.into_iter().map(|request| {
+            let track = track;
             async move {
-                let req = CertifyReq { tape, track_number };
+                let req = CertifyReq { track };
                 let config = RetryConfig {
                     max_retries: Some(max_retries as u32),
                     ..RetryConfig::ten()

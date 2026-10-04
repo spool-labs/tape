@@ -222,6 +222,6 @@ impl S3WriteContext {
     {
         let client = self.client(context)?;
         let operator = self.operator(tape)?;
-        client.delete_as(&operator, track, None).await
+        client.delete_as(&operator, track).await
     }
 }

@@ -37,14 +37,10 @@ fn purge_track<Db: Store>(
     slice_cache: &GatewaySliceCache<Db>,
     track_address: Address,
 ) -> Result<(), GatewayCacheError> {
-    // A denied address covers every track written with that content.
-    for track in store.tracks_by_address(track_address).map_err(store_error)? {
+    if let Some(track) = store.get_track(track_address).map_err(store_error)? {
         slice_cache.purge_track(track_address, track.group)?;
-        store
-            .delete_track_data(track_address, track.track_number)
-            .map_err(store_error)?;
     }
-    Ok(())
+    store.delete_track_data(track_address).map_err(store_error)
 }
 
 fn purge_tape<Db: Store>(
@@ -56,9 +52,7 @@ fn purge_tape<Db: Store>(
     while let Some(scanned) = scan.next_track(store).map_err(store_error)? {
         slice_cache.purge_track(scanned.address, scanned.track.group)?;
         if scanned.data.is_some() {
-            store
-                .delete_track_data(scanned.address, scanned.track.track_number)
-                .map_err(store_error)?;
+            store.delete_track_data(scanned.address).map_err(store_error)?;
         }
     }
     Ok(())
@@ -101,7 +95,7 @@ mod tests {
         let address = track.address();
         store.put_track(address, track).expect("put track");
         store
-            .put_track_data(address, track.track_number, BlobData::Inline(vec![1, 2, 3]))
+            .put_track_data(address, BlobData::Inline(vec![1, 2, 3]))
             .expect("put track data");
         store
             .put_slice(track.group.spool_at(0), address, vec![4, 5, 6])
@@ -113,7 +107,7 @@ mod tests {
         let slice = store
             .get_slice(GroupIndex(0).spool_at(0), address)
             .expect("read slice");
-        let data = store.get_track_data(address, TrackNumber(0)).expect("read data");
+        let data = store.get_track_data(address).expect("read data");
         slice.is_some() || data.is_some()
     }
 

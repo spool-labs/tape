@@ -238,12 +238,10 @@ impl SimnetScenario<'_> {
                 break;
             }
 
-            let last = batch
-                .last()
-                .map(|(track, metadata)| (*track, metadata.track_number));
+            let last = batch.last().map(|(track, _)| *track);
             for (track, metadata) in batch {
                 let object_info = store
-                    .get_object_info(track, metadata.track_number)
+                    .get_object_info(track)
                     .with_context(|| format!("get_object_info node {index} track {track}"))?;
                 tracks.insert(
                     track,

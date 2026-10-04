@@ -83,7 +83,7 @@ pub fn coded_blob<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track_addr: Address,
     track: &CompressedTrack,
 ) -> Result<BlobEncoding, RouteError> {
-    let track_data = track_data_with_pending(state, track_addr, track)?.ok_or(RouteError::NotFound)?;
+    let track_data = track_data_with_pending(state, track_addr, track.tape)?.ok_or(RouteError::NotFound)?;
     let BlobData::Coded(blob) = track_data else {
         crate::metrics::inc_decode_result("data_mismatch");
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
@@ -108,7 +108,7 @@ async fn decode_inline<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track_addr: Address,
     track: CompressedTrack,
 ) -> Result<DecodedObject, RouteError> {
-    let bytes = match track_data_with_pending(state, track_addr, &track)? {
+    let bytes = match track_data_with_pending(state, track_addr, track.tape)? {
         Some(BlobData::Inline(bytes)) => {
             // The peer-fetch path verifies before caching, so only the local copy
             // needs checking here; either way the bytes are hashed exactly once.
@@ -140,13 +140,7 @@ async fn fetch_and_cache_inline<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<Vec<u8>, RouteError> {
     let peers = state.context.state().group_peers(track.group);
     let fetched =
-        fetch_inline_from_peers(
-            state.context.api.as_ref(),
-            &peers,
-            track_addr,
-            track.value_hash,
-        )
-        .await;
+        fetch_inline_from_peers(state.context.api.as_ref(), &peers, track_addr, track.value_hash).await;
     let payload = match fetched {
         Ok(payload) => payload,
         Err(InlineFetchError::NoPeers { .. }) => return Err(RouteError::NotFound),
@@ -162,7 +156,7 @@ async fn fetch_and_cache_inline<Db: Store, Cluster: Api, Blockchain: Rpc>(
         state
             .context
             .store
-            .put_track_data(track_addr, track.track_number, BlobData::Inline(payload.bytes.clone()))
+            .put_track_data(track_addr, BlobData::Inline(payload.bytes.clone()))
     });
     match cached {
         Some(result) => result.map_err(store_error)?,

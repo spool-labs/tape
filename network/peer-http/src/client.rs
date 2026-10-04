@@ -247,8 +247,8 @@ fn https_base_url(addr: NetworkAddress) -> Result<String, ApiError> {
 impl Api for HttpApi {
     async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
         let (client, _lease, base) = self.lease_slice(node)?;
-        let tape_id = req.tape.to_string();
-        let url = format!("{base}{}", put_slice_url(&tape_id, req.track_number, req.spool));
+        let track_id = req.track.to_string();
+        let url = format!("{base}{}", slice_url(&track_id, req.spool));
         let body = req.body.clone();
         let bytes_sent = body.len() as u64;
         let start = Instant::now();
@@ -304,10 +304,7 @@ impl Api for HttpApi {
     ) -> Result<GetSliceWindowRes, ApiError> {
         let (client, base) = self.resolve_slice(node)?;
         let track_id = req.track.to_string();
-        let url = format!(
-            "{base}{}",
-            slice_window_url(&track_id, req.spool, req.offset, req.len)
-        );
+        let url = format!("{base}{}", slice_window_url(&track_id, req.spool, req.offset, req.len));
 
         let start = Instant::now();
         let resp = stamp_request_scope(client.get(&url).timeout(self.get_slice_timeout))
@@ -339,11 +336,11 @@ impl Api for HttpApi {
         let resp = check_status(resp).await?;
         let bytes = resp.bytes().await.map_err(map_reqwest)?;
         self.record_rx(node, "get_track", bytes.len() as u64);
-        let wire: TracksResponse =
+        let wire: TrackResponse =
             wincode::deserialize(&bytes)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
         Ok(GetTrackRes {
-            tracks: wire.tracks.into_iter().map(CompressedTrack::unpack).collect(),
+            track: CompressedTrack::unpack(wire.track),
         })
     }
 
@@ -527,8 +524,8 @@ impl Api for HttpApi {
         req: &GetTrackProofReq,
     ) -> Result<GetTrackProofRes, ApiError> {
         let (client, base) = self.resolve(node)?;
-        let tape_id = req.tape.to_string();
-        let url = format!("{base}{}", track_proof_url(&tape_id, req.track_number));
+        let track_id = req.track.to_string();
+        let url = format!("{base}{}", track_proof_url(&track_id));
 
         let start = Instant::now();
         let resp = client
@@ -624,8 +621,8 @@ impl Api for HttpApi {
 
     async fn certify(&self, node: Address, req: &CertifyReq) -> Result<CertifyRes, ApiError> {
         let (client, base) = self.resolve(node)?;
-        let tape_id = req.tape.to_string();
-        let url = format!("{base}{}", sign_url(&tape_id, req.track_number));
+        let track_id = req.track.to_string();
+        let url = format!("{base}{}", sign_url(&track_id));
 
         let start = Instant::now();
         let resp = client
@@ -683,8 +680,8 @@ impl Api for HttpApi {
         req: &InvalidateReq,
     ) -> Result<InvalidateRes, ApiError> {
         let (client, base) = self.resolve(node)?;
-        let tape_id = req.tape.to_string();
-        let url = format!("{base}{}", inconsistency_url(&tape_id, req.track_number));
+        let track_id = req.track.to_string();
+        let url = format!("{base}{}", inconsistency_url(&track_id));
         let wire_req = InconsistencyRequest {
             proof: req.proof.clone(),
         };
@@ -934,9 +931,7 @@ mod tests {
     use tape_core::system::VoteKind;
     use tape_core::system::NodePreferences;
     use tape_core::types::coin::TAPE;
-    use tape_core::types::{
-        BasisPoints, EpochDuration, EpochNumber, SpoolIndex, StorageUnits, TrackNumber,
-    };
+    use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, SpoolIndex, StorageUnits};
     use tape_crypto::address::Address;
     use tape_crypto::ed25519::Keypair as EdKeypair;
     use tape_crypto::Hash;
@@ -1239,8 +1234,7 @@ mod tests {
 
         for spool in 0..6u64 {
             let request = PutSliceReq {
-                tape: address(9),
-                track_number: TrackNumber(0),
+                track: address(9),
                 spool: SpoolIndex::from(spool),
                 body: Bytes::from(vec![1u8; 64]),
             };

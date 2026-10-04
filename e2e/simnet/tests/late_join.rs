@@ -221,7 +221,7 @@ async fn late_join_inner() {
 
     let track = ctx
         .store
-        .get_track(replay_track.0, replay_track.1.track_number)
+        .get_track(replay_track.0)
         .expect("read replayed track")
         .expect("late node should have replayed uploaded track metadata");
     assert_eq!(track.tape, replay_track.1.tape, "replayed track tape mismatch");
@@ -236,7 +236,7 @@ async fn late_join_inner() {
 
     let object_info = ctx
         .store
-        .get_object_info(replay_track.0, replay_track.1.track_number)
+        .get_object_info(replay_track.0)
         .expect("read replayed object info");
     assert!(
         object_info.is_some(),

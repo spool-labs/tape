@@ -49,8 +49,7 @@ pub async fn fetch_inline_from_peers<Cluster: Api>(
             continue;
         }
 
-        let request = GetTrackDataReq { track };
-        let response = match api.get_track_data(*node, &request).await {
+        let response = match api.get_track_data(*node, &GetTrackDataReq { track }).await {
             Ok(response) => response,
             Err(error) => {
                 debug!(%track, node = %node, ?error, "inline fetch: peer request failed");

@@ -59,14 +59,14 @@ pub fn apply_event<Db: Store>(
         ReplayableEvent::Track(replay) => {
             put_track_object(store, replay, slot, block_time, profile)?;
         }
-        ReplayableEvent::CertifyTrack { track, track_number, epoch } => {
-            set_certified(store, *track, *track_number, *epoch, slot, profile)?;
+        ReplayableEvent::CertifyTrack { track, epoch } => {
+            set_certified(store, *track, *epoch, slot, profile)?;
         }
-        ReplayableEvent::DeleteTrack { track, track_number, .. } => {
-            delete_track_local(store, *track, *track_number, slot, profile)?;
+        ReplayableEvent::DeleteTrack { track, .. } => {
+            delete_track_local(store, *track, slot, profile)?;
         }
-        ReplayableEvent::InvalidateTrack { track, track_number, epoch } => {
-            invalidate_track(store, *track, *track_number, *epoch, slot, profile)?;
+        ReplayableEvent::InvalidateTrack { track, epoch } => {
+            invalidate_track(store, *track, *epoch, slot, profile)?;
         }
         ReplayableEvent::ReserveTape {
             tape,
@@ -210,7 +210,6 @@ fn put_track_object<Db: Store>(
     validate_replay_track(replay)?;
 
     let track = replay.state.address();
-    let track_number = replay.state.track_number;
 
     store.put_track(track, replay.state)
         .map_err(store_error)?;
@@ -226,7 +225,6 @@ fn put_track_object<Db: Store>(
         store,
         replay.state.group,
         track,
-        track_number,
         &data,
         replay.state.value_hash,
         slot,
@@ -238,12 +236,12 @@ fn put_track_object<Db: Store>(
     advance_track_cursor(
         store,
         replay.state.tape,
-        track_number
+        replay.state.track_number
     )?;
 
     if let Some(blob) = replay.blob {
         store
-            .put_track_data(track, track_number, BlobData::Coded(blob))
+            .put_track_data(track, BlobData::Coded(blob))
             .map_err(store_error)?;
     }
 
@@ -288,7 +286,6 @@ fn put_track_object<Db: Store>(
     store
         .put_object_info(
             track,
-            track_number,
             object_info,
         )
         .map_err(store_error)?;
@@ -314,7 +311,6 @@ fn put_named_object_entry<Db: Store>(
     store
         .put_object_metadata(
             track,
-            replay.state.track_number,
             ObjectMetadata {
                 name: object.name.clone(),
                 content_type: object.content_type,
@@ -417,20 +413,19 @@ fn update_tape<Db: Store, Edit: FnOnce(&mut TapeInfo)>(
 fn set_certified<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
-    track_number: TrackNumber,
     epoch: EpochNumber,
     certified_slot: SlotNumber,
     profile: ErasureCode,
 ) -> Result<(), NodeError> {
     // Both records or neither: object info stamped against a track never stored
     // leaves the pair disagreeing with nothing to repair it
-    let Some(mut track_info) = store.get_track(track, track_number).map_err(store_error)? else {
+    let Some(mut track_info) = store.get_track(track).map_err(store_error)? else {
         return Ok(());
     };
     track_info.state = TrackState::Certified as u64;
     store.put_track(track, track_info).map_err(store_error)?;
 
-    let Some(info) = store.get_object_info(track, track_number).map_err(store_error)? else {
+    let Some(info) = store.get_object_info(track).map_err(store_error)? else {
         return Ok(());
     };
 
@@ -443,7 +438,6 @@ fn set_certified<Db: Store>(
         store
             .put_object_info(
                 track,
-                track_number,
                 ObjectInfo::Valid {
                     track_address,
                     registered_epoch,
@@ -464,7 +458,6 @@ fn set_certified<Db: Store>(
         store
             .put_object_info(
                 track,
-                track_number,
                 ObjectInfo::System {
                     kind,
                     track_address,
@@ -515,24 +508,23 @@ fn defer_certified_repairs<Db: Store>(
 fn invalidate_track<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
-    track_number: TrackNumber,
     epoch: EpochNumber,
     slot: SlotNumber,
     profile: ErasureCode,
 ) -> Result<(), NodeError> {
-    if let Some(mut info) = store.get_track(track, track_number).map_err(store_error)? {
+    if let Some(mut info) = store.get_track(track).map_err(store_error)? {
         // Keep object_metadata across invalidation. Delete/GC still use it as
         // the track -> name reverse lookup when the track is eventually removed.
         remove_object_listing_for_track(store, track, &info)?;
-        let _ = cleanup_track_slices(store, track, &info, slot, profile)?;
+        let _ = cleanup_track_slices(store, track, info.group, slot, profile)?;
         info.state = TrackState::Invalidated as u64;
         store.put_track(track, info).map_err(store_error)?;
     }
 
-    store.delete_track_data(track, track_number).map_err(store_error)?;
+    store.delete_track_data(track).map_err(store_error)?;
 
     store
-        .put_object_info(track, track_number, ObjectInfo::Invalid { epoch, slot })
+        .put_object_info(track, ObjectInfo::Invalid { epoch, slot })
         .map_err(store_error)
 }
 
@@ -673,10 +665,9 @@ mod tests {
         }
     }
 
-    fn delete(track: Address, track_number: TrackNumber) -> ReplayableEvent {
+    fn delete(track: Address) -> ReplayableEvent {
         ReplayableEvent::DeleteTrack {
             track,
-            track_number,
             epoch: EpochNumber(8),
         }
     }
@@ -684,7 +675,6 @@ mod tests {
     fn certify(track: Address) -> ReplayableEvent {
         ReplayableEvent::CertifyTrack {
             track,
-            track_number: TrackNumber(0),
             epoch: EpochNumber(4),
         }
     }
@@ -702,7 +692,6 @@ mod tests {
         store
             .put_object_info(
                 track,
-                TrackNumber(0),
                 ObjectInfo::Valid {
                     track_address: track,
                     registered_epoch: EpochNumber(3),
@@ -755,7 +744,6 @@ mod tests {
             track_event,
             ReplayableEvent::CertifyTrack {
                 track,
-                track_number,
                 epoch: EpochNumber(8),
             },
         ];
@@ -775,7 +763,7 @@ mod tests {
             })
         );
 
-        let track_info = store.get_track(track, track_number).unwrap().unwrap();
+        let track_info = store.get_track(track).unwrap().unwrap();
         assert_eq!(track_info.tape, tape);
         assert_eq!(track_info.track_number, track_number);
         assert_eq!(track_info.kind, TrackKind::Coded as u64);
@@ -785,7 +773,7 @@ mod tests {
         match &events[1] {
             ReplayableEvent::Track(replay) => {
                 assert_eq!(
-                    store.get_track_data(track, track_number).unwrap(),
+                    store.get_track_data(track).unwrap(),
                     Some(BlobData::Coded(replay.blob.unwrap())),
                 );
             }
@@ -793,7 +781,7 @@ mod tests {
         }
 
         assert_eq!(
-            store.get_object_info(track, track_number).unwrap(),
+            store.get_object_info(track).unwrap(),
             Some(ObjectInfo::Valid {
                 track_address: track,
                 registered_epoch: EpochNumber(6),
@@ -865,7 +853,7 @@ mod tests {
         assert_eq!(page.objects[0].1.kind, TrackKind::Coded as u64);
         assert_eq!(page.objects[0].1.content_type, ContentType::ImageJpeg);
 
-        let metadata = store.get_object_metadata(track, track_number).unwrap().unwrap();
+        let metadata = store.get_object_metadata(track).unwrap().unwrap();
         assert_eq!(metadata.name, b"photos/cat.jpg".to_vec());
         assert_eq!(metadata.content_type, ContentType::ImageJpeg);
 
@@ -875,14 +863,13 @@ mod tests {
             None,
             &[ReplayableEvent::DeleteTrack {
                 track,
-                track_number,
                 epoch: EpochNumber(8),
             }],
         )
         .unwrap();
 
         assert!(store.get_object_entry(tape, b"photos/cat.jpg").unwrap().is_none());
-        assert!(store.get_object_metadata(track, track_number).unwrap().is_none());
+        assert!(store.get_object_metadata(track).unwrap().is_none());
     }
 
     #[test]
@@ -896,7 +883,7 @@ mod tests {
 
         apply(&store, slot, None, &[track_event]).unwrap();
 
-        let track_info = store.get_track(track, track_number).unwrap().unwrap();
+        let track_info = store.get_track(track).unwrap().unwrap();
         assert_eq!(track_info.tape, tape);
         assert_eq!(track_info.track_number, track_number);
         assert_eq!(track_info.kind, TrackKind::Inline as u64);
@@ -904,7 +891,7 @@ mod tests {
         assert_eq!(track_info.size, StorageUnits::from_bytes(4 * 1024));
 
         assert_eq!(
-            store.get_object_info(track, track_number).unwrap(),
+            store.get_object_info(track).unwrap(),
             Some(ObjectInfo::Valid {
                 track_address: track,
                 registered_epoch: EpochNumber(7),
@@ -914,41 +901,39 @@ mod tests {
         );
     }
 
-    // two tracks with one address are stored, read and deleted one at a time
+    // the same content written twice is two tracks, each stored and deleted on its own
     #[test]
-    fn shared_address() {
+    fn same_content_twice() {
         let store = test_store();
         let tape = Address::new_unique();
-        let (first, second) = (TrackNumber(3), TrackNumber(7));
-        let written = make_raw_track(tape, first, EpochNumber(7));
-        let track = track_address(&written);
-        let again = written_again(&written, second);
-        assert_eq!(track_address(&again), track);
+        let written = make_raw_track(tape, TrackNumber(3), EpochNumber(7));
+        let again = written_again(&written, TrackNumber(7));
+        let (first, second) = (track_address(&written), track_address(&again));
+        assert_ne!(first, second);
 
         apply(&store, SlotNumber(50), None, &[written.clone(), again]).unwrap();
 
-        assert_eq!(store.tracks_by_address(track).unwrap().len(), 2);
-        assert_eq!(store.latest_track(track).unwrap().unwrap().track_number, second);
-        assert!(store.get_object_info(track, first).unwrap().is_some());
-        assert!(store.get_object_info(track, second).unwrap().is_some());
+        assert!(store.get_object_info(first).unwrap().is_some());
+        assert!(store.get_object_info(second).unwrap().is_some());
 
-        apply(&store, SlotNumber(51), None, &[delete(track, second)]).unwrap();
+        apply(&store, SlotNumber(51), None, &[delete(second)]).unwrap();
 
-        assert_eq!(store.latest_track(track).unwrap().unwrap().track_number, first);
-        assert!(store.get_object_info(track, first).unwrap().is_some());
-        assert!(store.get_object_info(track, second).unwrap().is_none());
+        assert!(store.get_track(first).unwrap().is_some());
+        assert!(store.get_track(second).unwrap().is_none());
+        assert!(store.get_object_info(second).unwrap().is_none());
 
-        apply(&store, SlotNumber(52), None, &[delete(track, first)]).unwrap();
+        apply(&store, SlotNumber(52), None, &[delete(first)]).unwrap();
 
-        assert!(store.tracks_by_address(track).unwrap().is_empty());
+        assert!(store.get_track(first).unwrap().is_none());
 
-        // The same content written after the deletes is a track of its own.
-        let third = TrackNumber(9);
-        apply(&store, SlotNumber(53), None, &[written_again(&written, third)]).unwrap();
+        // The same content written after the deletes gets an address of its own.
+        let later = written_again(&written, TrackNumber(9));
+        let third = track_address(&later);
+        apply(&store, SlotNumber(53), None, &[later]).unwrap();
 
-        assert_eq!(store.latest_track(track).unwrap().unwrap().track_number, third);
-        assert!(store.get_object_info(track, third).unwrap().is_some());
-        assert!(store.get_track(track, first).unwrap().is_none());
+        assert_ne!(third, first);
+        assert!(store.get_object_info(third).unwrap().is_some());
+        assert!(store.get_track(first).unwrap().is_none());
     }
 
     #[test]
@@ -963,7 +948,6 @@ mod tests {
         store
             .put_object_info(
                 track,
-                TrackNumber(0),
                 ObjectInfo::Valid {
                     track_address: track,
                     registered_epoch: EpochNumber(3),
@@ -984,14 +968,13 @@ mod tests {
             None,
             &[ReplayableEvent::DeleteTrack {
                 track,
-                track_number: TrackNumber(0),
                 epoch: EpochNumber(4),
             }],
         )
         .unwrap();
 
-        assert!(store.get_track(track, TrackNumber(0)).unwrap().is_none());
-        assert!(store.get_object_info(track, TrackNumber(0)).unwrap().is_none());
+        assert!(store.get_track(track).unwrap().is_none());
+        assert!(store.get_object_info(track).unwrap().is_none());
         // The slices outlive the deletion: a round whose window opened before it
         // still asks about the track, and the sweep drops both together.
         for slice_index in 0..WIDTH {
@@ -1016,7 +999,6 @@ mod tests {
         store
             .put_object_info(
                 track,
-                TrackNumber(0),
                 ObjectInfo::Valid {
                     track_address: track,
                     registered_epoch: EpochNumber(3),
@@ -1037,15 +1019,14 @@ mod tests {
             None,
             &[ReplayableEvent::InvalidateTrack {
                 track,
-                track_number: TrackNumber(0),
                 epoch: EpochNumber(8),
             }],
         )
         .unwrap();
 
-        assert!(store.get_track(track, TrackNumber(0)).unwrap().is_some());
+        assert!(store.get_track(track).unwrap().is_some());
         assert_eq!(
-            store.get_object_info(track, TrackNumber(0)).unwrap(),
+            store.get_object_info(track).unwrap(),
             Some(ObjectInfo::Invalid {
                 epoch: EpochNumber(8),
                 slot: SlotNumber(55),

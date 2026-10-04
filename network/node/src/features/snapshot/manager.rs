@@ -399,7 +399,7 @@ where
             if self
                 .context
                 .store
-                .get_track_data(track, TrackNumber(number))
+                .get_track_data(track)
                 .map_err(|error| NodeError::Store(format!("get_track_data: {error}")))?
                 .is_none()
             {

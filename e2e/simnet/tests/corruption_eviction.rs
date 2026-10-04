@@ -280,14 +280,13 @@ fn rot_spool(harness: &SimnetHarness, spool: SpoolIndex) -> usize {
     // Inline tracks answer from the payload rather than a slice, and a group's
     // set holds plenty of them, so leaving them intact lets the victim answer
     // honestly whenever the draw lands on one and the run of misses never builds.
-    for (track, number, _) in store
+    for (track, _) in store
         .iter_track_samples_by_group(group_for_spool(spool))
         .expect("iter sample rows")
     {
-        if let Ok(Some(BlobData::Inline(payload))) = store.get_track_data(track, number) {
-            let junk = BlobData::Inline(vec![0x5A; payload.len().max(1)]);
+        if let Ok(Some(BlobData::Inline(payload))) = store.get_track_data(track) {
             store
-                .put_track_data(track, number, junk)
+                .put_track_data(track, BlobData::Inline(vec![0x5A; payload.len().max(1)]))
                 .expect("rot inline");
             rotted += 1;
         }

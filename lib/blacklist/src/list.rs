@@ -33,11 +33,10 @@ pub struct ListChanges {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct Contents {
     blacklist_tapes: HashSet<Address>,
-    /// Targets of each present, readable track. Tracks holding the same bytes
-    /// share an address, so the track number is part of the key.
-    tracks: HashMap<(Address, TrackNumber), Vec<BlacklistEntry>>,
-    missing: HashMap<(Address, TrackNumber), TrackRef>,
-    skipped: HashMap<(Address, TrackNumber), Skipped>,
+    /// Targets of each present, readable track, by track address
+    tracks: HashMap<Address, Vec<BlacklistEntry>>,
+    missing: HashMap<Address, TrackRef>,
+    skipped: HashMap<Address, Skipped>,
 }
 
 /// One followed list
@@ -87,7 +86,7 @@ impl List {
     pub fn missing(&self) -> Vec<TrackRef> {
         let mut missing = self.contents.missing.clone();
         for track in &self.reach.missing {
-            missing.insert((track.address, track.track_number), *track);
+            missing.insert(track.address, *track);
         }
         missing.into_values().collect()
     }
@@ -141,9 +140,9 @@ impl List {
                         self.write_track(*tape, *track_number, track, &mut touched);
                     }
                 }
-                Change::Removed { track, track_number } => {
-                    self.contents.missing.remove(&(*track, *track_number));
-                    self.drop_track(*track, *track_number, &mut touched);
+                Change::Removed { track } => {
+                    self.contents.missing.remove(track);
+                    self.drop_track(*track, &mut touched);
                 }
                 Change::Tape { .. } | Change::Epoch { .. } => {}
             }
@@ -159,7 +158,7 @@ impl List {
                         || (*track_number == FIRST_TRACK && self.reach.tapes.contains(tape))
                         || (self.watches(*tape) && !self.reach.tapes.contains(tape))
                 }
-                Change::Removed { track, .. } => self.reach.tracks.contains_key(track),
+                Change::Removed { track } => self.reach.tracks.contains_key(track),
                 Change::Tape { tape } => self.watches(*tape),
                 Change::Epoch { .. } => self.has_expired(source)?,
             };
@@ -191,18 +190,17 @@ impl List {
             Track::Pending { address } => (address, None),
             Track::Written { address, bytes } => (address, Some(bytes)),
         };
-        let key = (address, track_number);
-        self.drop_track(address, track_number, touched);
+        self.drop_track(address, touched);
         let reference = TrackRef {
             tape,
             track_number,
             address,
         };
         let Some(bytes) = bytes else {
-            self.contents.missing.insert(key, reference);
+            self.contents.missing.insert(address, reference);
             return;
         };
-        self.contents.missing.remove(&key);
+        self.contents.missing.remove(&address);
         match parse(&bytes) {
             Ok(entries) => {
                 let targets = targets(&entries);
@@ -210,23 +208,17 @@ impl List {
                     note(touched, &self.counts, *target);
                     *self.counts.entry(*target).or_insert(0) += 1;
                 }
-                self.contents.tracks.insert(key, targets);
+                self.contents.tracks.insert(address, targets);
             }
             Err(error) => {
-                self.contents.skipped.insert(key, skipped(reference, &error));
+                self.contents.skipped.insert(address, skipped(reference, &error));
             }
         }
     }
 
-    fn drop_track(
-        &mut self,
-        address: Address,
-        track_number: TrackNumber,
-        touched: &mut Vec<(BlacklistEntry, bool)>,
-    ) {
-        let key = (address, track_number);
-        self.contents.skipped.remove(&key);
-        let Some(targets) = self.contents.tracks.remove(&key) else {
+    fn drop_track(&mut self, address: Address, touched: &mut Vec<(BlacklistEntry, bool)>) {
+        self.contents.skipped.remove(&address);
+        let Some(targets) = self.contents.tracks.remove(&address) else {
             return;
         };
         for target in targets {
@@ -258,7 +250,7 @@ fn read_tape<S: TapeSource>(tape: Address, source: &S, contents: &mut Contents) 
                 track_number: FIRST_TRACK,
                 address,
             };
-            contents.missing.insert((address, FIRST_TRACK), reference);
+            contents.missing.insert(address, reference);
             return Ok(());
         }
         Track::Written { address, bytes } => {
@@ -287,7 +279,7 @@ fn read_tape<S: TapeSource>(tape: Address, source: &S, contents: &mut Contents) 
                     track_number,
                     address,
                 };
-                contents.missing.insert((address, track_number), reference);
+                contents.missing.insert(address, reference);
             }
             Track::Written { address, bytes } => {
                 let reference = TrackRef {
@@ -303,13 +295,12 @@ fn read_tape<S: TapeSource>(tape: Address, source: &S, contents: &mut Contents) 
 }
 
 fn hold(contents: &mut Contents, track: TrackRef, entries: Result<Vec<Entry>, BlacklistError>) {
-    let key = (track.address, track.track_number);
     match entries {
         Ok(entries) => {
-            contents.tracks.insert(key, targets(&entries));
+            contents.tracks.insert(track.address, targets(&entries));
         }
         Err(error) => {
-            contents.skipped.insert(key, skipped(track, &error));
+            contents.skipped.insert(track.address, skipped(track, &error));
         }
     }
 }
@@ -327,7 +318,7 @@ fn targets(entries: &[Entry]) -> Vec<BlacklistEntry> {
     distinct.into_iter().collect()
 }
 
-fn count(tracks: &HashMap<(Address, TrackNumber), Vec<BlacklistEntry>>) -> HashMap<BlacklistEntry, usize> {
+fn count(tracks: &HashMap<Address, Vec<BlacklistEntry>>) -> HashMap<BlacklistEntry, usize> {
     let mut counts = HashMap::new();
     for targets in tracks.values() {
         for target in targets {

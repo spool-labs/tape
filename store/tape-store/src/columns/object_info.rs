@@ -1,17 +1,18 @@
 //! ObjectInfo column family for tracked object metadata
 
 use tape_store_api::Column;
+use tape_crypto::address::Address;
 
-use crate::types::{ObjectInfo, TrackKey};
+use crate::types::ObjectInfo;
 
-/// Object info indexed by track address and track number
+/// Object info indexed by track address
 ///
-/// Key: TrackKey (track_address, track_number BE, 40 bytes)
+/// Key: Address (track_address, 32 bytes)
 /// Value: ObjectInfo (Blacklisted, Invalid, or Valid)
 pub struct ObjectInfoCol;
 
 impl Column for ObjectInfoCol {
     const CF_NAME: &'static str = "object_info";
-    type Key = TrackKey;
+    type Key = Address;
     type Value = ObjectInfo;
 }

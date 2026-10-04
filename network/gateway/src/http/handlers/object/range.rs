@@ -172,7 +172,6 @@ mod tests {
     fn manifest_bytes(segments: u64) -> Vec<u8> {
         let chunks = (0..segments)
             .map(|index| ChunkEntry {
-                track_number: TrackNumber(index),
                 track: Address::new_unique(),
                 offset: StorageUnits::from_bytes(index * 10),
                 size: StorageUnits::from_bytes(10),

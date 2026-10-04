@@ -3,7 +3,7 @@ use std::time::Instant;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tape_rpc::Rpc;
 use tokio::time::{Instant as TokioInstant, sleep};
-use tape_core::track::types::{latest_track, CompressedTrack, CompressedTrackProof};
+use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_core::types::TrackNumber;
@@ -22,16 +22,8 @@ use crate::track::bootstrap_network_state;
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
     /// Fetch a track's current compressed state from peers.
-    ///
-    /// Tracks written with the same content share an address. The latest
-    /// certified one answers, or the latest one when none is certified.
     pub async fn get_track(&self, track: &Address) -> Result<CompressedTrack, TapedriveError> {
         query_track(self, track).await
-    }
-
-    /// Fetch every track under an address, lowest track number first.
-    pub async fn get_tracks(&self, track: &Address) -> Result<Vec<CompressedTrack>, TapedriveError> {
-        query_tracks(self, track).await
     }
 
     /// Fetch a track by its version number under a tape.
@@ -64,14 +56,11 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 
     /// Fetch a verifiable proof for a track (used to delete it).
-    ///
-    /// The proof is for the track `get_track` answers with.
     pub async fn get_track_proof(
         &self,
         track: &Address,
     ) -> Result<CompressedTrackProof, TapedriveError> {
-        let found = query_track(self, track).await?;
-        query_track_proof(self, &found.tape, found.track_number).await
+        query_track_proof(self, track).await
     }
 }
 
@@ -223,22 +212,10 @@ fn finish_peer_query(last_error: Option<ApiError>, saw_not_found: bool) -> Taped
     }
 }
 
-/// Fetch the track a read by address answers with: the latest certified track
-/// under the address, or the latest one when none is certified.
 pub async fn query_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track: &Address,
 ) -> Result<CompressedTrack, TapedriveError> {
-    let tracks = query_tracks(client, track).await?;
-    latest_track(&tracks).ok_or(TapedriveError::NotFound)
-}
-
-/// Fetch every track under an address, lowest track number first. Tracks
-/// written with the same content share an address.
-pub async fn query_tracks<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    track: &Address,
-) -> Result<Vec<CompressedTrack>, TapedriveError> {
     query_ladder(
         client,
         |node| {
@@ -248,7 +225,7 @@ pub async fn query_tracks<Blockchain: Rpc, Cluster: Api>(
         |res: GetTrackRes| async move { Ok(Some(res)) },
     )
     .await
-    .map(|res| res.tracks)
+    .map(|res| res.track)
 }
 
 pub async fn query_track_by_number<Blockchain: Rpc, Cluster: Api>(
@@ -312,16 +289,14 @@ pub async fn query_tracks_by_tape<Blockchain: Rpc, Cluster: Api>(
     .map(|res| (res.tracks, res.next_cursor))
 }
 
-/// Fetch the proof of the one track at a number on a tape
 pub async fn query_track_proof<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    tape: &Address,
-    track_number: TrackNumber,
+    track: &Address,
 ) -> Result<CompressedTrackProof, TapedriveError> {
     query_ladder(
         client,
         |node| {
-            let req = GetTrackProofReq { tape: *tape, track_number };
+            let req = GetTrackProofReq { track: *track };
             async move { client.api.get_track_proof(node, &req).await }
         },
         // A proof can be honestly served and still be stale, so it is checked

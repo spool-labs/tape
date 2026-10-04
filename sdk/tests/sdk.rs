@@ -39,8 +39,8 @@ use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
 use tape_sdk::track::write::WrittenTrack;
 
-/// A two-segment stream read asks for the name, the manifest data, one track page and each segment's data
-const STREAM_ROUND_TRIPS: usize = 5;
+/// A two-segment stream read asks for the name, the manifest data, and each segment's track and data
+const STREAM_ROUND_TRIPS: usize = 6;
 
 struct Fixture {
     rpc: LiteSvmRpc,
@@ -118,7 +118,7 @@ fn setup() -> Fixture {
         requests.lock().unwrap().push(request_kind(&req));
         match req {
             PeerReq::GetTrack(req) => match tracks.lock().unwrap().get(&req.track).copied() {
-                Some(track) => PeerRes::GetTrack(Ok(GetTrackRes { tracks: vec![track] })),
+                Some(track) => PeerRes::GetTrack(Ok(GetTrackRes { track })),
                 None => PeerRes::GetTrack(Err(ApiError::NotFound)),
             },
             PeerReq::GetTrackByNumber(req) => {
@@ -247,15 +247,10 @@ fn setup() -> Fixture {
                 Some(data) => PeerRes::GetTrackData(Ok(GetTrackDataRes { data })),
                 None => PeerRes::GetTrackData(Err(ApiError::NotFound)),
             },
-            PeerReq::GetTrackProof(req) => {
-                let found = proofs.lock().unwrap().values().copied().find(|proof| {
-                    proof.state.tape == req.tape && proof.state.track_number == req.track_number
-                });
-                match found {
-                    Some(proof) => PeerRes::GetTrackProof(Ok(GetTrackProofRes { proof })),
-                    None => PeerRes::GetTrackProof(Err(ApiError::NotFound)),
-                }
-            }
+            PeerReq::GetTrackProof(req) => match proofs.lock().unwrap().get(&req.track).copied() {
+                Some(proof) => PeerRes::GetTrackProof(Ok(GetTrackProofRes { proof })),
+                None => PeerRes::GetTrackProof(Err(ApiError::NotFound)),
+            },
             PeerReq::SyncSlices(_) => unexpected_peer_response(&req),
             PeerReq::Repair(_) => unexpected_peer_response(&req),
             PeerReq::Certify(_) => unexpected_peer_response(&req),
@@ -570,7 +565,6 @@ async fn stream_round_trips() {
         let (track, data) = make_raw_track(tape, hash::hash(segment), number as u64, segment);
         fixture.insert_track(track, data);
         entries.push(ChunkEntry {
-            track_number: TrackNumber(number as u64),
             track: track.address(),
             offset: StorageUnits::from_bytes(offset),
             size: StorageUnits::from_bytes(segment.len() as u64),

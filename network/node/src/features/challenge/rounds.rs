@@ -414,7 +414,6 @@ mod protocol_tests {
     use tape_core::track::data::BlobData;
     use tape_core::types::{
         EpochDuration, EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex, StorageUnits,
-        TrackNumber,
     };
     use tape_crypto::Address;
     use tape_crypto::hash::{Hash, hash};
@@ -489,7 +488,7 @@ mod protocol_tests {
         let (slices, encoding) = coded_track(PAYLOAD_BYTES, 0x1234_5678_9ABC_DEF0);
         let track = Address::new_unique();
         ctx.store
-            .put_track_data(track, TrackNumber(0), BlobData::Coded(encoding))
+            .put_track_data(track, BlobData::Coded(encoding))
             .expect("track data");
         ctx.store
             .put_slice(mine, track, slices[leaf_position(mine).as_usize()].clone())
@@ -527,7 +526,6 @@ mod protocol_tests {
             .put_track_sample(
                 group,
                 track,
-                TrackNumber(0),
                 TrackSample {
                     kind: EntryKind::Coded {
                         slice_len: StorageUnits::from_bytes(slice_len as u64),
@@ -963,7 +961,7 @@ mod protocol_tests {
         fixture
             .ctx
             .store
-            .mark_track_sample_deleted(fixture.group, extra, TrackNumber(0), cutoff)
+            .mark_track_sample_deleted(fixture.group, extra, cutoff)
             .expect("delete at the cut");
 
         let (after, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
@@ -976,12 +974,7 @@ mod protocol_tests {
         fixture
             .ctx
             .store
-            .mark_track_sample_deleted(
-                fixture.group,
-                extra,
-                TrackNumber(0),
-                SlotNumber(cutoff.as_u64() - 1),
-            )
+            .mark_track_sample_deleted(fixture.group, extra, SlotNumber(cutoff.as_u64() - 1))
             .expect("delete before the cut");
         let (out, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
             .expect("a sample");
@@ -1002,9 +995,9 @@ mod protocol_tests {
         fixture
             .ctx
             .store
-            .put_track_data(track, TrackNumber(0), BlobData::Inline(payload.clone()))
+            .put_track_data(track, BlobData::Inline(payload.clone()))
             .expect("inline data");
-        for (held, track_number, _) in fixture
+        for (held, _) in fixture
             .ctx
             .store
             .iter_track_samples_by_group(fixture.group)
@@ -1013,7 +1006,7 @@ mod protocol_tests {
             fixture
                 .ctx
                 .store
-                .mark_track_sample_deleted(fixture.group, held, track_number, SlotNumber(0))
+                .mark_track_sample_deleted(fixture.group, held, SlotNumber(0))
                 .expect("clear the coded rows");
         }
         fixture
@@ -1022,7 +1015,6 @@ mod protocol_tests {
             .put_track_sample(
                 fixture.group,
                 track,
-                TrackNumber(0),
                 TrackSample {
                     kind: EntryKind::Inline,
                     value_hash: hash(&payload),

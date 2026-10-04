@@ -5,7 +5,6 @@ use std::convert::Infallible;
 
 use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
-use tape_crypto::hash::hashv;
 
 /// One track as a reader holds it
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,13 +50,8 @@ impl MemorySource {
     }
 
     /// Write a track with its bytes, returning its address
-    ///
-    /// The same bytes on the same tape give the same address at any number, as
-    /// on chain.
     pub fn write(&mut self, tape: Address, track_number: TrackNumber, bytes: &[u8]) -> Address {
-        let address = self
-            .address(tape, track_number)
-            .unwrap_or_else(|| Address::new(hashv(&[tape.as_ref(), bytes]).to_bytes()));
+        let address = self.address(tape, track_number).unwrap_or_else(Address::new_unique);
         self.put(tape, track_number, Track::Written { address, bytes: bytes.to_vec() });
         address
     }

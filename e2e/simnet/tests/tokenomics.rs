@@ -667,15 +667,12 @@ async fn wait_track(harness: &SimnetHarness, track: Address, timeout: Duration) 
             .filter(|node| node.is_running())
             .filter(|node| {
                 let store = &node.context().store;
-                let Some(info) = store.latest_track(track).expect("read track") else {
-                    return false;
-                };
-                let number = info.track_number;
-                let has_data = store.has_track_data(track, number).expect("read track data");
+                let has_track = store.has_track(track).expect("read track");
+                let has_data = store.has_track_data(track).expect("read track data");
                 let has_object_info = store
-                    .has_object_info(track, number)
+                    .has_object_info(track)
                     .expect("read object info");
-                has_data && has_object_info
+                has_track && has_data && has_object_info
             })
             .count();
 

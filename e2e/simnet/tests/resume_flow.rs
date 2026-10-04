@@ -3,7 +3,7 @@
 // the staged SDK API (reserve / write_blob / upload / certify), then calls the
 // one-call `write_named` on a resuming client and asserts it converges to a
 // single certified, readable track without re-spending capacity or duplicating
-// tracks. Resume looks the content up by its address on committee peers, so
+// tracks. Resume lists the tape on committee peers and matches the content, so
 // every case waits for the pre-state to be peer-visible first, which is the
 // cross-process timing real resume runs under. A client that does not ask to
 // resume appends, and two cases cover that.
@@ -221,7 +221,7 @@ async fn resume_flow_inner() {
     }
 
     // Case D2: the same repeat without resume appends. The tape then holds the
-    // content twice, as two tracks with one address, and a read still serves it.
+    // content twice, as two tracks with their own addresses, and each one reads.
     {
         let key = TapeKey::generate();
         let first = sdk
@@ -235,10 +235,12 @@ async fn resume_flow_inner() {
             .await
             .expect("D2 repeat appends");
         assert_ne!(again.track_number, first.track_number, "D2: a second track");
-        assert_eq!(again.address(), first.address(), "D2: one address");
+        assert_ne!(again.address(), first.address(), "D2: its own address");
+        assert_eq!(again.content_address(), first.content_address(), "D2: one content");
         assert!(again.is_certified(), "D2: second track certified");
         wait_track_count(&sdk, &key.address(), 2, active_timeout).await;
-        assert_eq!(read_track(&sdk, &again, active_timeout).await, data, "D2: data roundtrips");
+        assert_eq!(read_track(&sdk, &first, active_timeout).await, data, "D2: first copy reads");
+        assert_eq!(read_track(&sdk, &again, active_timeout).await, data, "D2: second copy reads");
     }
 
     // Case E: a tape key reused for different content gets a second track,
@@ -281,7 +283,7 @@ async fn resume_flow_inner() {
     }
 
     // Case G: interrupted multi-track stream. Register only chunk 0 (uncertified),
-    // then the resuming stream write finds chunk 0 by its address and finishes
+    // then the resuming stream write finds chunk 0 by its content and finishes
     // it, writes the remaining chunk, and writes the manifest. A 3-track tape
     // (two chunks + manifest) reads back.
     {

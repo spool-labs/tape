@@ -8,7 +8,7 @@ use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayTrackObject, 
 use tape_core::spooler::GroupIndex;
 use tape_core::track::data::BlobDataSlice;
 use tape_core::track::types::{CompressedTrack, TrackFlags};
-use tape_core::types::{EpochNumber, SlotNumber, TrackNumber};
+use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_crypto::tx::Txid;
 use tape_crypto::Hash;
@@ -25,7 +25,6 @@ pub struct CapturedEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTrack {
     pub track: Address,
-    pub track_number: TrackNumber,
     pub group: GroupIndex,
     pub data: Vec<u8>,
 }
@@ -277,7 +276,6 @@ fn capture_instruction(
                 actor,
                 ReplayableEvent::CertifyTrack {
                     track: (*track),
-                    track_number: event.track_number,
                     epoch: event.epoch,
                 },
             ),
@@ -290,7 +288,6 @@ fn capture_instruction(
                 actor,
                 ReplayableEvent::InvalidateTrack {
                     track: (*track),
-                    track_number: event.track_number,
                     epoch: event.epoch,
                 },
             ),
@@ -474,7 +471,6 @@ fn capture_track(
         raw_track: match data {
             BlobDataSlice::Inline(bytes) => Some(RawTrack {
                 track: event.track,
-                track_number: event.track_number,
                 group: event.group,
                 data: bytes.to_vec(),
             }),
@@ -523,11 +519,7 @@ fn capture_delete(
             epoch,
             tx_id,
             actor,
-            ReplayableEvent::DeleteTrack {
-                track: event.track,
-                track_number: event.track_number,
-                epoch,
-            },
+            ReplayableEvent::DeleteTrack { track: event.track, epoch },
         ),
         raw_track: None,
     }
@@ -748,7 +740,6 @@ mod tests {
             track,
             event: TrackCertified {
                 track,
-                track_number: TrackNumber(0),
                 epoch,
                 signer_count: 7,
                 signer_weight: 9,

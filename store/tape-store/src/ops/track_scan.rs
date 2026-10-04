@@ -9,7 +9,7 @@ use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 
 use crate::error::{Result, TapeStoreError};
-use crate::ops::track::tape_tracks;
+use crate::ops::track::tape_track_addresses;
 use crate::ops::{TrackDataOps, TrackOps};
 use crate::TapeStore;
 
@@ -53,15 +53,15 @@ impl TapeTrackScan {
     }
 
     fn read_batch<S: Store>(&mut self, store: &TapeStore<S>) -> Result<()> {
-        let listed = tape_tracks(store, self.tape, self.cursor, self.batch_size)?;
-        if listed.is_empty() {
+        let addresses = tape_track_addresses(store, self.tape, self.cursor, self.batch_size)?;
+        if addresses.is_empty() {
             self.is_exhausted = true;
             return Ok(());
         }
 
-        let tracks = store.get_tracks(&listed)?;
-        let datas = store.get_track_datas(&listed)?;
-        for (((address, _), track), data) in listed.into_iter().zip(tracks).zip(datas) {
+        let tracks = store.get_tracks(&addresses)?;
+        let datas = store.get_track_datas(&addresses)?;
+        for ((address, track), data) in addresses.into_iter().zip(tracks).zip(datas) {
             let track = track.ok_or_else(|| {
                 TapeStoreError::Serialization(format!("missing track {address} for lookup index"))
             })?;
@@ -102,7 +102,7 @@ mod tests {
         store.put_track(address, track).expect("put track");
         if is_held {
             store
-                .put_track_data(address, TrackNumber(number), BlobData::Inline(PAYLOAD.to_vec()))
+                .put_track_data(address, BlobData::Inline(PAYLOAD.to_vec()))
                 .expect("put track data");
         }
         address

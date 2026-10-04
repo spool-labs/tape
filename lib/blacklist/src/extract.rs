@@ -10,7 +10,7 @@ pub enum Change {
     /// A track was written, or the consumer received its bytes
     Written { tape: Address, track_number: TrackNumber },
     /// A track was deleted or invalidated
-    Removed { track: Address, track_number: TrackNumber },
+    Removed { track: Address },
     /// A tape was reserved or extended
     Tape { tape: Address },
     /// The epoch advanced, so tapes may have expired
@@ -25,13 +25,10 @@ pub fn change(record: &ReplayRecord) -> Option<Change> {
             track_number: written.state.track_number,
         });
     }
-    if let ReplayableEvent::DeleteTrack { track, track_number, .. }
-    | ReplayableEvent::InvalidateTrack { track, track_number, .. } = &record.event
+    if let ReplayableEvent::DeleteTrack { track, .. } | ReplayableEvent::InvalidateTrack { track, .. } =
+        &record.event
     {
-        return Some(Change::Removed {
-            track: *track,
-            track_number: *track_number,
-        });
+        return Some(Change::Removed { track: *track });
     }
     if let ReplayableEvent::ReserveTape { tape, .. } | ReplayableEvent::ExtendTape { tape, .. } = &record.event {
         return Some(Change::Tape { tape: *tape });
@@ -86,14 +83,13 @@ mod tests {
         let (tape, track) = (Address::new_unique(), Address::new_unique());
 
         let write = change(&record(written(tape, 3)));
-        let (track_number, epoch) = (TrackNumber(4), EpochNumber(2));
-        let delete = change(&record(ReplayableEvent::DeleteTrack { track, track_number, epoch }));
-        let invalidate = change(&record(ReplayableEvent::InvalidateTrack { track, track_number, epoch }));
-        let certify = change(&record(ReplayableEvent::CertifyTrack { track, track_number, epoch }));
+        let delete = change(&record(ReplayableEvent::DeleteTrack { track, epoch: EpochNumber(2) }));
+        let invalidate = change(&record(ReplayableEvent::InvalidateTrack { track, epoch: EpochNumber(2) }));
+        let certify = change(&record(ReplayableEvent::CertifyTrack { track, epoch: EpochNumber(2) }));
 
         assert_eq!(write, Some(Change::Written { tape, track_number: TrackNumber(3) }));
-        assert_eq!(delete, Some(Change::Removed { track, track_number }));
-        assert_eq!(invalidate, Some(Change::Removed { track, track_number }));
+        assert_eq!(delete, Some(Change::Removed { track }));
+        assert_eq!(invalidate, Some(Change::Removed { track }));
         assert_eq!(certify, None);
     }
 }

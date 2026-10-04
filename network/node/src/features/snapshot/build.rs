@@ -235,12 +235,11 @@ where
             .put_track(track_address, track.track)
             .map_err(store_err("put_track"))?;
         ctx.store
-            .put_track_data(track_address, track.track.track_number, BlobData::Coded(track.blob))
+            .put_track_data(track_address, BlobData::Coded(track.blob))
             .map_err(store_err("put_track_data"))?;
         ctx.store
             .put_object_info(
                 track_address,
-                track.track.track_number,
                 ObjectInfo::System {
                     kind: SystemObjectKind::Snapshot {
                         epoch: candidate.target_epoch,
@@ -277,7 +276,6 @@ fn store_err<E: std::fmt::Display>(op: &'static str) -> impl FnOnce(E) -> NodeEr
 mod tests {
     use tape_core::prelude::EpochPhase;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent};
-    use tape_core::types::TrackNumber;
     use tape_crypto::tx::Txid;
     use tape_snapshot::encode_snapshot;
 
@@ -299,7 +297,6 @@ mod tests {
             actor: None,
             event: ReplayableEvent::CertifyTrack {
                 track: Address::from([3u8; 32]),
-                track_number: TrackNumber(0),
                 epoch: EPOCH,
             },
         }

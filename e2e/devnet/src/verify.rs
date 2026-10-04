@@ -27,8 +27,7 @@ pub fn verify_spool_integrity(nodes: &[TestNode]) {
 
             let slices = store.iter_slices_by_spool(*spool_id).expect("iter slices");
             for (track_addr, slice_data) in &slices {
-                let held = store.spool_track(*spool_id, *track_addr).expect("read track");
-                let track_info = match held {
+                let track_info = match store.get_track(*track_addr).expect("read track") {
                     Some(t) => t,
                     None => {
                         skipped_no_track += 1;
@@ -36,10 +35,8 @@ pub fn verify_spool_integrity(nodes: &[TestNode]) {
                     }
                 };
 
-                let data = store
-                    .get_track_data(*track_addr, track_info.track_number)
-                    .expect("read track data");
-                let blob_encoding = match data {
+                let blob_encoding = match store.get_track_data(*track_addr).expect("read track data")
+                {
                     Some(BlobData::Coded(blob)) => blob,
                     Some(BlobData::Inline(_)) => {
                         tracing::error!(

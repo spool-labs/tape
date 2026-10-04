@@ -454,12 +454,11 @@ mod tests {
 
         store.put_track(track_address, state).unwrap();
         store
-            .put_track_data(track_address, track_number, BlobData::Inline(bytes_of(&entry).to_vec()))
+            .put_track_data(track_address, BlobData::Inline(bytes_of(&entry).to_vec()))
             .unwrap();
         store
             .put_object_info(
                 track_address,
-                track_number,
                 ObjectInfo::Valid {
                     track_address,
                     registered_epoch: epoch,
@@ -660,7 +659,6 @@ mod tests {
         store
             .put_object_info(
                 track_address,
-                track_number,
                 ObjectInfo::Valid {
                     track_address,
                     registered_epoch: EpochNumber(8),

@@ -69,7 +69,6 @@ pub fn delete_track(
     proof: CompressedTrackProof,
 ) -> ProgramResult {
     let track_address = proof.state.address();
-    let track_number = proof.state.track_number;
     let size = proof.state.size;
     let key = proof.state.key;
 
@@ -79,7 +78,6 @@ pub fn delete_track(
     TrackDeleted {
         track: track_address,
         tape: tape_address,
-        track_number,
         key,
         size,
     }

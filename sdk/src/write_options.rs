@@ -14,9 +14,8 @@ pub struct WriteOptions {
     pub store_depth: usize,
     /// Every track this client writes is registered with these flags.
     pub flags: u64,
-    /// Stream writes and the one-call write look for their content on the tape
-    /// first, by its address, and finish or reuse the tracks found. Off by
-    /// default: a write appends.
+    /// Stream writes and the one-call write list the tape first, and finish or
+    /// reuse the tracks that hold their content. Off by default: a write appends.
     pub resume: bool,
 }
 

@@ -8,6 +8,7 @@ use axum::response::IntoResponse;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::system::BlacklistEntry;
+use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{
     BINARY_CONTENT, SyncSliceEntry, SyncSlicesRequest, SyncSlicesResponse,
@@ -46,7 +47,7 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let current_epoch = state.context.state().epoch();
 
     // The blacklist is the same set for every row, and reading it per row read
-    // the whole thing per row.
+    // the whole thing per row. The track metadata comes back in one call too.
     let refused = state
         .context
         .blacklist
@@ -56,13 +57,18 @@ pub async fn sync_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
             current_epoch,
         )
         .map_err(store_error)?;
+    let mut addresses: Vec<Address> = Vec::with_capacity(slices.len());
+    for (track_address, _) in &slices {
+        addresses.push(*track_address);
+    }
+    let metadata = state
+        .context
+        .store
+        .get_tracks(&addresses)
+        .map_err(store_error)?;
+
     let mut entries = Vec::with_capacity(slices.len());
-    for (track_address, slice_data) in slices {
-        let held = state
-            .context
-            .store
-            .spool_track(request.spool_index, track_address)
-            .map_err(store_error)?;
+    for ((track_address, slice_data), held) in slices.into_iter().zip(metadata) {
         let Some(track) = held else {
             continue;
         };
