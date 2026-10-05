@@ -13,6 +13,7 @@ use tape_protocol::Api;
 use tape_store::TapeStore;
 
 use crate::context::NodeContext;
+use crate::observe::board::owned_spool_count;
 
 pub type CapacityFn = Box<dyn Fn() -> (usize, usize) + Send + Sync>;
 
@@ -176,7 +177,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static> Col
         if active {
             note_first_active(self.context.node_id().0);
         }
-        let shards = self.context.my_spools().len() as i64;
+        let shards = owned_spool_count(self.context.as_ref()) as i64;
         let (tip, _, lag) = self.context.ingest.progress().tip_and_lag();
         let (tip, lag) = (tip as i64, lag as i64);
 

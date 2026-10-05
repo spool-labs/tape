@@ -226,6 +226,7 @@ mod tests {
             current_epoch: curr,
             committee_size: COMMITTEE_SIZE,
             live_group_count: 1,
+            target_group_count: 1,
             ..System::zeroed()
         };
 
@@ -365,6 +366,7 @@ mod tests {
             current_epoch: curr,
             committee_size: COMMITTEE_SIZE,
             live_group_count: 1,
+            target_group_count: 1,
             ..System::zeroed()
         };
 
@@ -454,6 +456,7 @@ mod tests {
             current_epoch: curr,
             committee_size: COMMITTEE_SIZE,
             live_group_count: 1,
+            target_group_count: 1,
             ..System::zeroed()
         };
 

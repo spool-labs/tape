@@ -108,11 +108,10 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     let mut signer_pubkeys = Vec::with_capacity(signer_indices.len());
+    // The members of the live group that carries the track sign for it.
     let group = protocol
-        .current
-        .groups
-        .iter()
-        .find(|group| group.id == track_info.group)
+        .live_group(track_info.group)
+        .and_then(|live| protocol.group(live))
         .ok_or_else(|| RouteError::BadRequest("track group missing".into()))?;
 
     for signer_index in signer_indices {
@@ -158,7 +157,7 @@ mod tests {
     use tape_core::bls::BlsSignature;
     use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_snapshot::snapshot_chunk_key;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
@@ -202,7 +201,7 @@ mod tests {
 
         let epoch = EpochNumber(5);
 
-        let group = GroupIndex(2);
+        let group = TrackGroup(2);
         let track_number = TrackNumber(9);
         let (snapshot_tape, _) = snapshot_tape_pda(epoch);
 

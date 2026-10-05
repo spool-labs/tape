@@ -36,13 +36,16 @@ pub fn process_certify_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let proof = args.track;
     let track = proof.state;
 
-    let (expected_group_address, _) = group_pda(curr, track.group);
+    // The members of the live group that carries the track sign for it.
+    let live_group = system.live_group(track.group)?;
+
+    let (expected_group_address, _) = group_pda(curr, live_group);
     if expected_group_address != (*group_info.key).into() {
         return Err(TapeError::EpochChanged.into());
     }
 
     let group = group_info
-        .is_group(curr, track.group)?
+        .is_group(curr, live_group)?
         .as_account::<Group>(&tapedrive::ID)?;
 
     let tape = tape_info
@@ -170,11 +173,39 @@ mod tests {
         certify_case(trusted_system(NARROW), &[0, 1, 4], Some(TapeError::BadMember.into()));
     }
 
+    // a track written to a retired group certifies under the live group that carries it
+    #[test]
+    fn retired_group() {
+        let system = System {
+            live_group_count: 5,
+            track_group_count: 10,
+            ..permissionless_system()
+        };
+
+        certify_track(system, TrackGroup(7), &signers(14), None);
+        certify_track(system, TrackGroup(7), &signers(13), Some(TapeError::NoQuorum.into()));
+    }
+
     fn signers(count: usize) -> Vec<usize> {
         (0..count).collect()
     }
 
     fn certify_case(base: System, signed: &[usize], error: Option<ProgramError>) {
+        let system = System {
+            live_group_count: 1,
+            track_group_count: 1,
+            ..base
+        };
+
+        certify_track(system, TrackGroup(0), signed, error);
+    }
+
+    fn certify_track(
+        base: System,
+        track_group: TrackGroup,
+        signed: &[usize],
+        error: Option<ProgramError>,
+    ) {
         let profile = base.code().unwrap();
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
@@ -184,7 +215,7 @@ mod tests {
 
         let (tape_address, _) = tape_pda(authority.into());
         let (system_address, _) = system_pda();
-        let group_id = GroupIndex(0);
+        let group_id = base.live_group(track_group).unwrap();
         let (group_address, _) = group_pda(curr, group_id);
 
         let (sks, group) = make_group_of(curr, group_id, profile);
@@ -204,7 +235,7 @@ mod tests {
             state: TrackState::Registered as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
-            group: group_id,
+            group: track_group,
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();
@@ -256,6 +287,7 @@ mod tests {
             delegate.into(),
             CompressedTrackProof { state: track, proof },
             curr,
+            group_id,
             bitmap,
             agg_sig,
         );
@@ -313,6 +345,8 @@ mod tests {
         let system = System {
             current_epoch: curr,
             committee_size: 128,
+            live_group_count: 1,
+            track_group_count: 1,
             ..permissionless_system()
         };
 
@@ -325,7 +359,7 @@ mod tests {
             state: TrackState::Registered as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
-            group: group_id,
+            group: TrackGroup::from(group_id),
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();
@@ -363,6 +397,7 @@ mod tests {
             authority.into(),
             CompressedTrackProof { state: track, proof },
             stale,
+            group_id,
             bitmap,
             agg_sig,
         );

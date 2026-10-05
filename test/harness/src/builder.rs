@@ -96,6 +96,7 @@ pub struct ChainHarnessBuilder {
     next_committee_nodes: Option<Vec<usize>>,
     current_group_count: Option<u64>,
     prev_group_count: Option<u64>,
+    next_group_count: Option<u64>,
     node_specs: Vec<HarnessNodeSpec>,
     next_assignment_ready: bool,
     candidate_ready: bool,
@@ -119,6 +120,7 @@ impl Default for ChainHarnessBuilder {
             next_committee_nodes: None,
             current_group_count: None,
             prev_group_count: None,
+            next_group_count: None,
             node_specs: default_node_specs(DEFAULT_NODES, DEFAULT_EPOCH),
             next_assignment_ready: false,
             candidate_ready: false,
@@ -248,6 +250,12 @@ impl ChainHarnessBuilder {
         self
     }
 
+    /// The group count voted for the next epoch. Defaults to the current count.
+    pub fn next_group_count(mut self, count: u64) -> Self {
+        self.next_group_count = Some(count);
+        self
+    }
+
     pub fn next_assignment_ready(mut self) -> Self {
         self.next_assignment_ready = true;
         self
@@ -329,7 +337,12 @@ impl ChainHarnessBuilder {
             self.profile,
             "previous group count",
         )?;
-        if self.next_assignment_ready && current_group_count > 0 {
+        let next_group_count = self.next_group_count.unwrap_or(current_group_count);
+        ensure!(
+            next_group_count > 0 || current_group_count == 0,
+            "next group count must be at least 1 once a group is live"
+        );
+        if self.next_assignment_ready && next_group_count > 0 {
             ensure!(
                 next_committee_nodes.len() >= width,
                 "next assignment requires at least {width} committee members"
@@ -348,6 +361,7 @@ impl ChainHarnessBuilder {
             next_committee_nodes,
             current_group_count,
             prev_group_count,
+            next_group_count,
             next_assignment_ready: self.next_assignment_ready,
             candidate_ready: self.candidate_ready,
             seed_prev_snapshot_tape: self.seed_prev_snapshot_tape,
@@ -509,7 +523,7 @@ mod tests {
 
         assert_eq!(spec.current_committee_nodes.len(), 4);
         assert_eq!(state.system.params().expect("params").thresholds.certify, 3);
-        assert_eq!(state.group_peers(tape_core::spooler::GroupIndex(0)).len(), 4);
+        assert_eq!(state.group_peers(tape_core::spooler::TrackGroup(0)).len(), 4);
         assert_eq!(state.member_spools(seeded.nodes[0].node_address.into()).len(), 1);
     }
 

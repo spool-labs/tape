@@ -5,7 +5,7 @@ use tape_api::event::{TapeExtended, TapeReserved, TrackDeleted, TrackWritten};
 use tape_api::program::tapedrive::TrackAddress;
 use tape_core::encoding::ErasureCode;
 use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayTrackObject, ReplayableEvent};
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::track::data::BlobDataSlice;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, SlotNumber};
@@ -25,7 +25,7 @@ pub struct CapturedEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTrack {
     pub track: Address,
-    pub group: GroupIndex,
+    pub group: TrackGroup,
     pub data: Vec<u8>,
 }
 
@@ -603,7 +603,7 @@ mod tests {
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
     use tape_core::snapshot::replay::ReplayableEvent;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::system::{BlacklistEntry, NodePreferences};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
@@ -646,7 +646,7 @@ mod tests {
         key: Hash,
         value: &BlobData,
         track_number: TrackNumber,
-        group: GroupIndex,
+        group: TrackGroup,
         epoch: EpochNumber,
         flags: u64,
     ) -> TrackWritten {
@@ -678,7 +678,7 @@ mod tests {
     fn blob_track_write_instruction(_track: Address, tape: Address, epoch: EpochNumber) -> ParsedInstruction {
         let value = BlobData::Coded(default_blob());
         let key = Hash::new_unique();
-        let event = track_written_event(tape, key, &value, TrackNumber(7), GroupIndex(3), epoch, TrackFlags::NONE);
+        let event = track_written_event(tape, key, &value, TrackNumber(7), TrackGroup(3), epoch, TrackFlags::NONE);
 
         ParsedInstruction::TrackWrite {
             authority: Address::new_unique(),
@@ -705,7 +705,7 @@ mod tests {
     fn raw_track_write_instruction(tape: Address, epoch: EpochNumber) -> ParsedInstruction {
         let value = BlobData::Inline(vec![0xAB; 4 * 1024]);
         let key = Hash::new_unique();
-        let event = track_written_event(tape, key, &value, TrackNumber(8), GroupIndex(4), epoch, TrackFlags::NONE);
+        let event = track_written_event(tape, key, &value, TrackNumber(8), TrackGroup(4), epoch, TrackFlags::NONE);
 
         ParsedInstruction::TrackWrite {
             authority: Address::new_unique(),
@@ -724,7 +724,7 @@ mod tests {
         epoch: EpochNumber,
     ) -> ParsedInstruction {
         let value = BlobData::Inline(bytes_of(&entry).to_vec());
-        let event = track_written_event(tape, entry.key(), &value, TrackNumber(9), GroupIndex(6), epoch, TrackFlags::NONE);
+        let event = track_written_event(tape, entry.key(), &value, TrackNumber(9), TrackGroup(6), epoch, TrackFlags::NONE);
 
         ParsedInstruction::AddToBlacklist { node, entry, event }
     }
@@ -931,7 +931,7 @@ mod tests {
         let flags = TrackFlags::HIDDEN | TrackFlags::IMMUTABLE;
         let value = BlobData::Coded(default_blob());
         let key = Hash::new_unique();
-        let event = track_written_event(tape, key, &value, TrackNumber(7), GroupIndex(3), EpochNumber(9), flags);
+        let event = track_written_event(tape, key, &value, TrackNumber(7), TrackGroup(3), EpochNumber(9), flags);
         let instruction = ParsedInstruction::TrackWrite {
             authority: Address::new_unique(),
             track: event.track,

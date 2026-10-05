@@ -179,7 +179,10 @@ async fn submit_invalidate(
 
     let system = sdk.rpc().get_system().await?;
     let epoch = system.current_epoch;
-    let group = sdk.rpc().get_group(epoch, proof.state.group).await?;
+    let live_group = system
+        .live_group(proof.state.group)
+        .map_err(|_| anyhow::anyhow!("no spool group is live"))?;
+    let group = sdk.rpc().get_group(epoch, live_group).await?;
 
     let message = TrackInvalidateMessage::new(epoch, proof.state.get_hash()).to_bytes();
 
@@ -216,7 +219,7 @@ async fn submit_invalidate(
     let signature = BlsSignature::aggregate(&partials).expect("aggregate signatures");
 
     let admin: Address = harness.admin().pubkey().into();
-    let ix = build_invalidate_track_ix(admin, *proof, epoch, bitmap, signature);
+    let ix = build_invalidate_track_ix(admin, *proof, epoch, live_group, bitmap, signature);
 
     harness
         .chain()

@@ -208,7 +208,7 @@ mod tests {
     use super::*;
     use bytemuck::Zeroable;
     use tape_core::prelude::*;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::{GroupIndex, TrackGroup};
     use tape_core::system::{NodePreferences, VoteKind};
     use tape_core::types::{BasisPoints, EpochDuration, SpoolBitmap, TrackNumber};
     use tape_core::types::coin::TAPE;
@@ -308,7 +308,7 @@ mod tests {
             epoch: EpochNumber(3),
             track,
             tape,
-            group: GroupIndex(5),
+            group: TrackGroup(5),
             track_number: TrackNumber(7),
             flags: 0b11,
             track_hash: Hash::default(),
@@ -323,7 +323,7 @@ mod tests {
                 assert_eq!(e.tape, tape);
                 assert_eq!(e.epoch, EpochNumber(3));
                 assert_eq!(e.track_number, TrackNumber(7));
-                assert_eq!(e.group, GroupIndex(5));
+                assert_eq!(e.group, TrackGroup(5));
                 assert_eq!(e.flags, 0b11);
             }
             _ => panic!("Expected TrackWritten event"),

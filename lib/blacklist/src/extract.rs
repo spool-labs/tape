@@ -42,7 +42,7 @@ pub fn change(record: &ReplayRecord) -> Option<Change> {
 #[cfg(test)]
 mod tests {
     use tape_core::snapshot::replay::ReplayTrack;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
     use tape_crypto::Hash;
@@ -68,7 +68,7 @@ mod tests {
                 state: TrackState::Registered as u64,
                 flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(1),
-                group: GroupIndex::from(0),
+                group: TrackGroup::from(0),
                 value_hash: Hash::new_unique(),
             },
             epoch: EpochNumber(1),

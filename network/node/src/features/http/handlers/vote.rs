@@ -148,6 +148,6 @@ fn group_signer_pubkey(
     (protocol.epoch() == voting_epoch).then_some(())?;
 
     protocol
-        .spool_for_node_in_group(group, signer)
+        .spool_for_node_in_group(group.into(), signer)
         .map(|(_, spool)| spool.bls_pubkey)
 }

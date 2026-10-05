@@ -369,7 +369,7 @@ impl SnapshotLog {
 #[cfg(test)]
 mod tests {
     use bytemuck::Zeroable;
-    use crate::spooler::GroupIndex;
+    use crate::spooler::{GroupIndex, TrackGroup};
     use crate::track::types::{TrackFlags, TrackKind, TrackState};
     use tape_crypto::hash::Hash;
     #[cfg(feature = "wincode")]
@@ -389,7 +389,7 @@ mod tests {
                 state: TrackState::Certified as u64,
                 flags: TrackFlags::NONE,
                 size: 1u64.into(),
-                group: GroupIndex::from(0),
+                group: TrackGroup::from(0),
                 value_hash: Hash::default(),
             },
             epoch: EpochNumber(10),
@@ -417,7 +417,7 @@ mod tests {
                 state: TrackState::Registered as u64,
                 flags: TrackFlags::NONE,
                 size: 1024u64.into(),
-                group: GroupIndex::from(1),
+                group: TrackGroup::from(1),
                 value_hash: Hash::from([4u8; 32]),
             },
             epoch: EpochNumber(11),

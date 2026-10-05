@@ -1,6 +1,6 @@
 use tape_api::program::prelude::*;
 use tape_api::event::{TrackDeleted, TrackWritten};
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::tape::TapeFlags;
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
@@ -21,7 +21,9 @@ pub fn append_track(
         return Err(TapeError::TapeExpired.into());
     }
 
-    if system.live_group_count == 0 {
+    // A group that retires next epoch takes no new tracks.
+    let spool_groups = system.writable_group_count();
+    if spool_groups == 0 {
         return Err(TapeError::UnexpectedState.into());
     }
 
@@ -31,7 +33,7 @@ pub fn append_track(
         tape.id,
         track_number,
         slot_hash_seed(slot_hashes_info)?,
-        system.live_group_count,
+        spool_groups,
     )?;
 
     // A hidden or immutable tape makes every track written to it the same.
@@ -97,7 +99,7 @@ fn select_group(
     track_number: TrackNumber,
     seed: Hash,
     spool_groups: u64,
-) -> Result<GroupIndex, ProgramError> {
+) -> Result<TrackGroup, ProgramError> {
     let mixed_hash = hashv(&[
         seed.as_ref(),
         tape_address.as_ref(),
@@ -110,7 +112,7 @@ fn select_group(
             .map_err(|_| ProgramError::InvalidInstructionData)?,
     );
 
-    Ok(GroupIndex(mixed % spool_groups))
+    Ok(TrackGroup(mixed % spool_groups))
 }
 
 pub fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {

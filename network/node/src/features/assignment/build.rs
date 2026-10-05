@@ -10,7 +10,7 @@ use tape_core::cert::{
 };
 use tape_core::encoding::ErasureCode;
 use tape_core::erasure::MAX_GROUP_SIZE;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::{GroupIndex, TrackGroup};
 use tape_core::system::{BlacklistEntry, Member, Peer};
 use tape_core::types::{EpochNumber, StorageUnits};
 use tape_crypto::merkle::MerkleLeafTree;
@@ -88,24 +88,20 @@ pub fn build_assignment_blocking<Db: Store>(
         return Ok(None);
     }
 
-    let target_groups = usize::try_from(state.system.target_group_count)
-        .map_err(|_| NodeError::Store("assignment target_group_count overflow".into()))?;
-    if target_groups == 0 {
+    // The next epoch's group count, above or below the current one, and the
+    // track groups each of its groups will carry.
+    let Some(target) = state.fold_next() else {
         return Ok(None);
-    }
+    };
+    let target_groups = usize::try_from(target.live())
+        .map_err(|_| NodeError::Store("assignment target_group_count overflow".into()))?;
     if target_groups > (1usize << ASSIGNMENT_TREE_HEIGHT) {
         return Err(NodeError::Store(format!(
             "assignment target_group_count {target_groups} exceeds tree capacity"
         )));
     }
-    if state.current.groups.len() > target_groups {
-        return Err(NodeError::Store(format!(
-            "assignment current group count {} exceeds target group count {target_groups}",
-            state.current.groups.len()
-        )));
-    }
 
-    let weights = match group_weights(store, state.epoch(), next_epoch.id, target_groups, profile)
+    let weights = match group_weights(store, state.epoch(), next_epoch.id, target, profile)
         .map_err(|e| NodeError::Store(format!("assignment size calculation: {e}")))?
     {
         GroupWeights::Ready(weights) => weights,
@@ -115,7 +111,7 @@ pub fn build_assignment_blocking<Db: Store>(
         }
     };
 
-    let owners = current_owners(state, target_groups, profile)?;
+    let owners = current_owners(state, &weights.sizes, profile);
     let candidates = assignment_candidates(next_committee, &state.peers)?;
     let assignment =
         assign_spools(&weights.sizes, &owners, &candidates, &next_epoch.nonce, profile)
@@ -154,34 +150,39 @@ pub fn build_assignment_blocking<Db: Store>(
     }))
 }
 
-// Pack current group ownership into the spooler input format: the first n
-// spools of every group, back to back. A group's zeroed positions past n are
-// left out, so the spooler has no empty slot there to fill.
+// Pack who holds each target group's data now into the spooler input format:
+// the first n spools of every group, back to back. A group's zeroed positions
+// past n are left out, so the spooler has no empty slot there to fill.
+//
+// The holder of target group t at position p is whoever holds stored spool
+// (t, p) today. For a group that is live now that is its own owner, so a group
+// that stays live keeps its nodes when the count drops. For a group that is
+// retired now it is the owner in the group carrying it, so a group that
+// returns with data starts where that data already sits and nothing is
+// copied. A returning group with no data starts empty and gets a fresh fill:
+// the spooler never moves spools out of an empty group, so inheriting would
+// leave it sharing its carrier's nodes for good.
 fn current_owners(
     state: &ProtocolState,
-    target_groups: usize,
+    sizes: &[StorageUnits],
     profile: ErasureCode,
-) -> Result<Vec<Option<Address>>, NodeError> {
+) -> Vec<Option<Address>> {
     let width = usize::from(profile.n());
-    let mut owners = vec![None; target_groups * width];
-    for group in &state.current.groups {
-        let group_index = usize::try_from(group.id.0)
-            .map_err(|_| NodeError::Store("assignment group index overflow".into()))?;
-        if group_index >= target_groups {
-            return Err(NodeError::Store(format!(
-                "assignment current group {} exceeds target group count {target_groups}",
-                group.id.0
-            )));
+    let live_groups = state.current.epoch.total_groups;
+    let mut owners = vec![None; sizes.len() * width];
+
+    for (target, size) in sizes.iter().enumerate() {
+        let group = TrackGroup(target as u64);
+        if group.0 >= live_groups && *size == StorageUnits::zero() {
+            continue;
         }
 
-        let start = group_index * width;
-        for (offset, spool) in group.spools.iter().take(width).enumerate() {
-            if spool.node != Address::default() {
-                owners[start + offset] = Some(spool.node);
-            }
+        for position in 0..width {
+            owners[target * width + position] = state.spool_owner(group.spool_at(position));
         }
     }
-    Ok(owners)
+
+    owners
 }
 
 // Pair each next-committee member with the capacity it set, which its peer
@@ -322,6 +323,8 @@ fn blacklist_weights<Db: Store>(
         }
     }
 
+    // Bucketed by the group that carries each track in the target epoch, the
+    // same sets the sizes were summed over.
     let mut tracks = vec![Vec::<ActiveTrackFootprint>::new(); target_groups];
     for track in active_tracks {
         let group_index = usize::try_from(track.group.0)
@@ -447,7 +450,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
-            group: GroupIndex(0),
+            group: TrackGroup(0),
             value_hash: entry_hash,
         };
         let track_address = state.address();
@@ -487,6 +490,7 @@ mod tests {
         let committee: Vec<Member> = nodes.iter().map(|node| member(*node)).collect();
 
         let mut state = ProtocolState::default();
+        state.current.epoch.total_groups = 2;
         for id in 0..2u64 {
             let mut group = Group { id: GroupIndex(id), ..Group::zeroed() };
             for (position, node) in nodes.iter().enumerate() {
@@ -495,12 +499,12 @@ mod tests {
             state.current.groups.push(group);
         }
 
-        let owners = current_owners(&state, 2, profile).expect("owners");
+        let sizes = [StorageUnits::from_bytes(64); 2];
+        let owners = current_owners(&state, &sizes, profile);
         let expected: Vec<Option<Address>> = nodes.iter().chain(&nodes).copied().map(Some).collect();
         assert_eq!(owners, expected);
 
         let assignment: Vec<Address> = owners.into_iter().flatten().collect();
-        let sizes = [StorageUnits::from_bytes(64); 2];
         let blacklisted = [[StorageUnits::zero(); MAX_GROUP_SIZE]; 2];
         let payloads =
             group_payloads(EpochNumber(5), &assignment, &committee, &sizes, &blacklisted, profile)
@@ -511,6 +515,249 @@ mod tests {
             assert_eq!(payload.member_indices[..4], [0, 1, 2, 3]);
             assert!(payload.member_indices[4..].iter().all(|index| *index == 0));
         }
+    }
+
+    const NARROW: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
+    const NARROW_WIDTH: usize = 4;
+
+    /// A 3 of 4 network of `live` groups, each held by four nodes of its own,
+    /// with `track_groups` groups ever written to.
+    fn narrow_state(live: u64, track_groups: u64) -> (ProtocolState, Vec<Vec<Address>>) {
+        let mut state = ProtocolState::default();
+        state.system.live_group_count = live;
+        state.system.track_group_count = track_groups;
+        state.current.epoch.total_groups = live;
+        state.current.epoch.track_groups = track_groups;
+
+        let mut holders = Vec::new();
+        for id in 0..live {
+            let nodes: Vec<Address> = (0..NARROW_WIDTH).map(|_| Address::new_unique()).collect();
+            let mut group = Group { id: GroupIndex(id), ..Group::zeroed() };
+            for (position, node) in nodes.iter().enumerate() {
+                group.spools[position].node = *node;
+            }
+            state.current.groups.push(group);
+            holders.push(nodes);
+        }
+
+        (state, holders)
+    }
+
+    fn holders_of(owners: &[Option<Address>], group: usize) -> Vec<Option<Address>> {
+        owners[group * NARROW_WIDTH..(group + 1) * NARROW_WIDTH].to_vec()
+    }
+
+    fn all(nodes: &[Address]) -> Vec<Option<Address>> {
+        nodes.iter().copied().map(Some).collect()
+    }
+
+    // groups that stay live keep their nodes when the count drops, and the
+    // spooler leaves them there
+    #[test]
+    fn shrink_keeps_survivors() {
+        let (state, holders) = narrow_state(4, 4);
+        let sizes = [StorageUnits::from_bytes(64); 2];
+
+        let owners = current_owners(&state, &sizes, NARROW);
+
+        assert_eq!(owners.len(), 2 * NARROW_WIDTH);
+        assert_eq!(holders_of(&owners, 0), all(&holders[0]));
+        assert_eq!(holders_of(&owners, 1), all(&holders[1]));
+
+        let candidates: Vec<Candidate> = holders
+            .iter()
+            .flatten()
+            .map(|node| Candidate {
+                node: *node,
+                stake: tape_core::types::coin::TAPE(1_000),
+                capacity: StorageUnits::zero(),
+            })
+            .collect();
+        let assignment = assign_spools(&sizes, &owners, &candidates, &Hash::default(), NARROW)
+            .expect("assignment");
+
+        let kept: Vec<Address> = holders[0].iter().chain(&holders[1]).copied().collect();
+        assert_eq!(assignment, kept);
+    }
+
+    // a group that returns with data starts on the nodes that hold that data,
+    // and one that returns empty is left open for a fresh fill
+    #[test]
+    fn returning_group_inherits_with_bytes() {
+        let (state, holders) = narrow_state(2, 4);
+        let bytes = StorageUnits::from_bytes(64);
+        let sizes = [bytes, bytes, bytes, StorageUnits::zero()];
+
+        let owners = current_owners(&state, &sizes, NARROW);
+
+        // Track group 2 is carried by group 0 while two groups are live.
+        assert_eq!(holders_of(&owners, 0), all(&holders[0]));
+        assert_eq!(holders_of(&owners, 1), all(&holders[1]));
+        assert_eq!(holders_of(&owners, 2), all(&holders[0]));
+        assert_eq!(holders_of(&owners, 3), vec![None; NARROW_WIDTH]);
+    }
+
+    /// Seat every current holder in the next committee and give the next epoch a nonce.
+    fn with_next_epoch(mut state: ProtocolState, holders: &[Vec<Address>], target: u64) -> ProtocolState {
+        let nodes: Vec<Address> = holders.iter().flatten().copied().collect();
+
+        state.system.target_group_count = target;
+        state.current.epoch.id = EpochNumber(10);
+        state.next_epoch = Some(tape_api::state::Epoch {
+            id: EpochNumber(11),
+            nonce: Hash::from([9u8; 32]),
+            ..Zeroable::zeroed()
+        });
+        state.next_committee = Some(
+            nodes
+                .iter()
+                .map(|node| Member::new(*node, tape_core::types::coin::TAPE(1_000)))
+                .collect(),
+        );
+        state.peers = nodes.iter().map(|node| Peer::new(*node)).collect();
+        state
+    }
+
+    /// A certified inline track of `bytes` in a track group, old enough to count.
+    fn put_counted_track(store: &TapeStore<MemoryStore>, tape: Address, group: u64, bytes: u64) {
+        let state = CompressedTrack {
+            tape,
+            key: Hash::new_unique(),
+            track_number: TrackNumber(group),
+            kind: TrackKind::Inline as u64,
+            state: TrackState::Certified as u64,
+            flags: TrackFlags::NONE,
+            size: StorageUnits::from_bytes(bytes),
+            group: TrackGroup(group),
+            value_hash: Hash::new_unique(),
+        };
+        let track = state.address();
+
+        store.put_track(track, state).unwrap();
+        store
+            .put_object_info(
+                track,
+                ObjectInfo::Valid {
+                    track_address: track,
+                    registered_epoch: EpochNumber(8),
+                    certified_epoch: Some(EpochNumber(8)),
+                    slot: tape_core::types::SlotNumber(8),
+                },
+            )
+            .unwrap();
+    }
+
+    fn user_tape(store: &TapeStore<MemoryStore>) -> Address {
+        let tape = Address::new_unique();
+        store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    id: TapeNumber(7),
+                    flags: 0,
+                    end_epoch: EpochNumber(50),
+                    next_track_number: TrackNumber(0),
+                    authority: Address::default(),
+                    delegate: Address::default(),
+                    share_nonce: Hash::default(),
+                },
+            )
+            .unwrap();
+        tape
+    }
+
+    /// The nodes a candidate seats in a group, in position order.
+    fn seated(candidate: &AssignmentCandidate, state: &ProtocolState, group: usize) -> Vec<Address> {
+        let committee = state.next_committee.as_deref().expect("next committee");
+
+        candidate.groups[group].payload.member_indices[..NARROW_WIDTH]
+            .iter()
+            .map(|index| committee[*index as usize].node)
+            .collect()
+    }
+
+    // four groups going to two: the survivors keep their nodes, each weighs
+    // what it carries, and the same inputs give the same root
+    #[test]
+    fn fewer_groups() {
+        let store = test_store();
+        let tape = user_tape(&store);
+        put_counted_track(&store, tape, 0, 10);
+        put_counted_track(&store, tape, 1, 100);
+        put_counted_track(&store, tape, 2, 7);
+        put_counted_track(&store, tape, 3, 40);
+
+        let (state, holders) = narrow_state(4, 4);
+        let state = with_next_epoch(state, &holders, 2);
+
+        let candidate = build_assignment_blocking(&store, &state, NARROW)
+            .expect("build")
+            .expect("a candidate");
+
+        // Track group 2 folds onto group 0 and track group 3 onto group 1.
+        assert_eq!(candidate.groups.len(), 2);
+        assert_eq!(candidate.groups[0].payload.size, StorageUnits::from_bytes(17));
+        assert_eq!(candidate.groups[1].payload.size, StorageUnits::from_bytes(140));
+        assert_eq!(seated(&candidate, &state, 0), holders[0]);
+        assert_eq!(seated(&candidate, &state, 1), holders[1]);
+
+        let again = build_assignment_blocking(&store, &state, NARROW)
+            .expect("build")
+            .expect("a candidate");
+        assert_eq!(candidate.hash, again.hash);
+    }
+
+    // two groups growing back to four: a group that returns with data starts
+    // on the nodes that hold it, so nothing is copied
+    #[test]
+    fn regrow_copies_nothing() {
+        let store = test_store();
+        let tape = user_tape(&store);
+        put_counted_track(&store, tape, 0, 10);
+        put_counted_track(&store, tape, 1, 100);
+        put_counted_track(&store, tape, 2, 7);
+        put_counted_track(&store, tape, 3, 40);
+
+        let (state, holders) = narrow_state(2, 4);
+        let state = with_next_epoch(state, &holders, 4);
+
+        let candidate = build_assignment_blocking(&store, &state, NARROW)
+            .expect("build")
+            .expect("a candidate");
+
+        assert_eq!(candidate.groups.len(), 4);
+        assert_eq!(candidate.groups[0].payload.size, StorageUnits::from_bytes(10));
+        assert_eq!(candidate.groups[2].payload.size, StorageUnits::from_bytes(7));
+        assert_eq!(candidate.groups[3].payload.size, StorageUnits::from_bytes(40));
+
+        // Track group 2 was carried by group 0 and track group 3 by group 1.
+        assert_eq!(seated(&candidate, &state, 0), holders[0]);
+        assert_eq!(seated(&candidate, &state, 1), holders[1]);
+        assert_eq!(seated(&candidate, &state, 2), holders[0]);
+        assert_eq!(seated(&candidate, &state, 3), holders[1]);
+    }
+
+    // a group that was never live has no data and no holder to inherit
+    #[test]
+    fn new_group_is_empty() {
+        let (state, _) = narrow_state(2, 2);
+        let bytes = StorageUnits::from_bytes(64);
+        let sizes = [bytes, bytes, StorageUnits::zero()];
+
+        let owners = current_owners(&state, &sizes, NARROW);
+
+        assert_eq!(holders_of(&owners, 2), vec![None; NARROW_WIDTH]);
+    }
+
+    // a live group with no data keeps its nodes all the same
+    #[test]
+    fn empty_live_group_keeps_nodes() {
+        let (state, holders) = narrow_state(2, 2);
+        let sizes = [StorageUnits::zero(); 2];
+
+        let owners = current_owners(&state, &sizes, NARROW);
+
+        assert_eq!(holders_of(&owners, 1), all(&holders[1]));
     }
 
     #[test]
@@ -650,7 +897,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
-            group: GroupIndex(0),
+            group: TrackGroup(0),
             value_hash: entry.key(),
         };
         let track_address = state.address();

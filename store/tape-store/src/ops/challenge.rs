@@ -214,7 +214,7 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
         peer: Address,
         spool: SpoolIndex,
     ) -> Result<Vec<(EpochNumber, RoundNumber, bool)>> {
-        let prefix = ChallengeRoundKey::spool_prefix(peer, spool);
+        let prefix = ChallengeRoundKey::spool_prefix(peer, spool)?;
         let iter = self
             .inner()
             .inner()
@@ -242,7 +242,7 @@ impl<S: Store> ChallengeOps for TapeStore<S> {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let prefix = ChallengeRoundKey::spool_prefix(peer, spool);
+        let prefix = ChallengeRoundKey::spool_prefix(peer, spool)?;
         let iter = self
             .inner()
             .inner()

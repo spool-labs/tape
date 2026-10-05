@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use num_enum::TryFromPrimitive;
 use tape_core::bls::BlsPubkey;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::{GroupIndex, TrackGroup};
 use tape_core::staking::RateSpan;
 use tape_core::system::NodePreferences;
 use tape_core::types::{EpochNumber, NodeId, SpoolBitmap, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
@@ -128,8 +128,8 @@ pub struct TrackWritten {
     /// Track index within the tape
     pub track_number: TrackNumber,
 
-    /// The spool group that is responsible for this track
-    pub group: GroupIndex,
+    /// The track group this track was written to
+    pub group: TrackGroup,
 
     /// The track's flags: the ones the write asked for plus the tape's
     pub flags: u64,

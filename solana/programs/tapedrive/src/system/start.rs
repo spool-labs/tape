@@ -249,6 +249,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     }
 
     epoch.total_groups = 1;
+    epoch.track_groups = 1;
     epoch.total_assigned = StorageUnits::zero();
     epoch.preferences = genesis_preferences;
 
@@ -262,6 +263,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     epoch.state.phase = EpochPhase::Snapshot as u64;
 
     system.live_group_count = 1;
+    system.track_group_count = 1;
     system.current_epoch = target;
 
     Ok(())
@@ -528,12 +530,14 @@ mod tests {
                     System {
                         current_epoch: target,
                         live_group_count: 1,
+                        track_group_count: 1,
                         ..system
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&Pubkey::from(epoch_address)).data(
                     Epoch {
                         total_groups: 1,
+                        track_groups: 1,
                         total_assigned: StorageUnits::zero(),
                         preferences: genesis_preferences,
                         start_slot: SlotNumber(slot),

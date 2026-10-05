@@ -138,7 +138,7 @@ async fn fetch_and_cache_inline<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track_addr: Address,
     track: CompressedTrack,
 ) -> Result<Vec<u8>, RouteError> {
-    let peers = state.context.state().group_peers(track.group);
+    let peers = state.context.state().group_peers_with_prev(track.group);
     let fetched =
         fetch_inline_from_peers(state.context.api.as_ref(), &peers, track_addr, track.value_hash).await;
     let payload = match fetched {

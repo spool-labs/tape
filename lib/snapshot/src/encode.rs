@@ -6,7 +6,7 @@
 use tape_core::encoding::ErasureCode;
 use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
 use tape_core::snapshot::replay::SnapshotLog;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
 use tape_core::types::{ChunkNumber, EpochNumber, StorageUnits, StripeCount, TrackNumber};
@@ -25,7 +25,7 @@ use crate::SnapshotError;
 /// its group.
 #[derive(Debug, Clone)]
 pub struct BuiltChunk {
-    pub group: GroupIndex,
+    pub group: TrackGroup,
     pub chunk: ChunkNumber,
     pub blob: BlobEncoding,
     pub slices: Vec<Vec<u8>>,
@@ -36,7 +36,7 @@ pub struct BuiltChunk {
 /// can keep them all.
 #[derive(Debug, Clone)]
 pub struct SnapshotChunk {
-    pub group: GroupIndex,
+    pub group: TrackGroup,
     pub chunk: ChunkNumber,
     pub track: CompressedTrack,
     pub blob: BlobEncoding,
@@ -89,7 +89,7 @@ where
         let chunk = ChunkNumber(chunk_index as u64);
 
         for (group_index, symbol) in symbols.iter().enumerate() {
-            let group = GroupIndex(group_index as u64);
+            let group = TrackGroup(group_index as u64);
             let built = encode_chunk(epoch, group, chunk, symbol, profile)?;
             let track_number = TrackNumber((chunk_index as u64) * (total_groups as u64) + group.0);
 
@@ -146,7 +146,7 @@ pub fn encode_snapshot(
 /// Inner-encode one outer symbol into one slice per spool and derive its blob.
 pub fn encode_chunk(
     epoch: EpochNumber,
-    group: GroupIndex,
+    group: TrackGroup,
     chunk: ChunkNumber,
     symbol: &[u8],
     profile: ErasureCode,

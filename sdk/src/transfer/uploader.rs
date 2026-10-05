@@ -8,8 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::join_all;
-use tape_core::erasure::spool_for_slice;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::thresholds::NetworkParams;
 use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
@@ -116,7 +115,7 @@ impl SliceWithProof {
 /// SpoolAssignment.
 pub struct DistributedUploader {
     track: Address,
-    group: GroupIndex,
+    group: TrackGroup,
     slices: Vec<SliceWithProof>,
     group_peers: Vec<(SpoolIndex, Address)>,
     group_member_count: usize,
@@ -177,7 +176,7 @@ impl DistributedUploader {
     /// Create a new uploader with group-aware spool-based routing.
     pub fn new(
         track: Address,
-        group: GroupIndex,
+        group: TrackGroup,
         slices: Vec<SliceWithProof>,
         state: &ProtocolState,
         concurrency: usize,
@@ -272,7 +271,7 @@ impl DistributedUploader {
             .slices
             .iter()
             .map(|s| {
-                let global_spool = spool_for_slice(self.group, s.index.as_usize());
+                let global_spool = self.group.spool_at(s.index.as_usize());
                 (global_spool, s)
             })
             .collect();
@@ -718,6 +717,7 @@ mod tests {
     use tape_api::state::Group;
     use tape_core::bls::{BlsPubkey, BlsSignature};
     use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::spooler::GroupIndex;
     use tape_core::system::{Member, Spool};
     use tape_core::thresholds::TrustModel;
     use tape_core::types::coin::TAPE;
@@ -755,6 +755,7 @@ mod tests {
         state.system.profile = TAPENET_PROFILE.into();
         state.system.trust_model = TrustModel::Permissionless.into();
         state.current.epoch.id = EpochNumber(1);
+        state.current.epoch.total_groups = 1;
         for i in 0..member_count {
             let mut bytes = [0u8; 32];
             bytes[0] = i as u8 + 1;
@@ -812,7 +813,7 @@ mod tests {
         }));
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
+            TrackGroup(0),
             make_test_slices(WIDTH),
             &state,
             WIDTH,
@@ -843,7 +844,7 @@ mod tests {
 
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
+            TrackGroup(0),
             slices,
             &state,
             WIDTH,
@@ -918,7 +919,7 @@ mod tests {
     fn uploader_for(state: &ProtocolState, reputation: Arc<Reputation>) -> DistributedUploader {
         DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
+            TrackGroup(0),
             make_test_slices(WIDTH),
             state,
             WIDTH,
@@ -1110,7 +1111,7 @@ mod tests {
 
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
+            TrackGroup(0),
             slices,
             &state,
             WIDTH,

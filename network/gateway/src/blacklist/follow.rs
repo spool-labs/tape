@@ -184,7 +184,7 @@ where
         };
         let mut backoff = Backoff::new(RetryConfig::infinite());
         loop {
-            let peers = self.context.state().group_peers(track.group);
+            let peers = self.context.state().group_peers_with_prev(track.group);
             let fetched =
                 fetch_inline_from_peers(self.context.api.as_ref(), &peers, reference.address, track.value_hash).await;
             match fetched {

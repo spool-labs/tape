@@ -414,6 +414,7 @@ mod protocol_tests {
     use tape_core::track::data::BlobData;
     use tape_core::types::{
         EpochDuration, EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex, StorageUnits,
+        TrackGroup,
     };
     use tape_crypto::Address;
     use tape_crypto::hash::{Hash, hash};
@@ -426,7 +427,7 @@ mod protocol_tests {
 
     use crate::features::challenge::fold::holds_spool;
     use crate::features::challenge::audit::{
-        Round, accept_answer, admits_round, attest_message, expected_sample,
+        Round, accept_answer, admits_round, attest_message, build_answer, expected_sample,
     };
     use crate::features::challenge::refusal::RefusalReason;
     use crate::harness::{NodeHarness, TestContext, coded_track};
@@ -462,7 +463,7 @@ mod protocol_tests {
         // slot zero saturates to zero and holds nothing.
         state.current.epoch.start_slot = SlotNumber(10_000);
         let mine = state
-            .member_spools(ctx.node_address())
+            .member_live_spools(ctx.node_address())
             .first()
             .copied()
             .expect("this node holds a spool");
@@ -524,7 +525,7 @@ mod protocol_tests {
     ) {
         ctx.store
             .put_track_sample(
-                group,
+                group.into(),
                 track,
                 TrackSample {
                     kind: EntryKind::Coded {
@@ -547,7 +548,7 @@ mod protocol_tests {
 
     fn group_spools(state: &ProtocolState, group: GroupIndex) -> Vec<SpoolIndex> {
         state
-            .spools_in_group(group)
+            .spools_in_group(group.into())
             .map(|spools| spools.map(|(spool, _)| spool).collect())
             .unwrap_or_default()
     }
@@ -648,6 +649,129 @@ mod protocol_tests {
             !holds_spool(&aged, owner, spool),
             "a spool handed on two epochs ago still judged its old owner"
         );
+    }
+
+    // a group that carries a retired group draws from both groups' tracks, in one track order
+    #[tokio::test]
+    async fn merged_sample_set() {
+        let fixture = fixture().await;
+        let round = fixture.round();
+        let retired = TrackGroup(1);
+
+        // Two groups were live once, so track group 1 is folded onto the live one.
+        let mut state = fixture.state.clone();
+        state.current.epoch.track_groups = 2;
+        fixture.ctx.set_state(state).expect("publish state");
+
+        let mut tracks: Vec<Address> = (0..6).map(|_| Address::new_unique()).collect();
+        for (index, track) in tracks.iter().enumerate() {
+            let group = if index % 2 == 0 { retired } else { fixture.group.into() };
+            fixture
+                .ctx
+                .store
+                .put_track_sample(
+                    group,
+                    *track,
+                    TrackSample {
+                        kind: EntryKind::Coded { slice_len: StorageUnits::from_bytes(4_096) },
+                        value_hash: Hash::from([0u8; 32]),
+                        registered_slot: SlotNumber(0),
+                        deleted_slot: None,
+                    },
+                )
+                .expect("sample row");
+        }
+        bump_cursor(&fixture.ctx);
+        tracks.sort_unstable();
+
+        // Every spool's draw lands inside the merged set, and across the group
+        // the draws reach tracks of both groups.
+        let mut drawn = Vec::new();
+        for spool in group_spools(&fixture.state, fixture.group) {
+            let (asked, _) = expected_sample(&fixture.ctx, &round, spool).expect("a sample");
+            drawn.push(asked.track);
+        }
+
+        let from_retired = fixture
+            .ctx
+            .store
+            .iter_track_samples_by_group(retired)
+            .expect("rows")
+            .into_iter()
+            .map(|(track, _)| track)
+            .collect::<Vec<_>>();
+        assert_eq!(from_retired.len(), 3);
+        assert!(drawn.iter().any(|track| from_retired.contains(track)));
+        assert!(drawn.iter().any(|track| !from_retired.contains(track)));
+    }
+
+    // a sample that lands on a retired group's track is answered from the
+    // slice kept under that group, for the live spool that carries it
+    #[tokio::test]
+    async fn retired_track_answered_from_its_group() {
+        let fixture = fixture().await;
+        let round = fixture.round();
+        let retired = TrackGroup(1);
+
+        let mut state = fixture.state.clone();
+        state.current.epoch.track_groups = 2;
+        fixture.ctx.set_state(state).expect("publish state");
+
+        // The set holds one track of the retired group and nothing else, so
+        // the draw is bound to land on it.
+        for (held, _) in fixture
+            .ctx
+            .store
+            .iter_track_samples_by_group(fixture.group.into())
+            .expect("rows")
+        {
+            fixture
+                .ctx
+                .store
+                .mark_track_sample_deleted(fixture.group.into(), held, SlotNumber(0))
+                .expect("clear the live group's rows");
+        }
+
+        let (slices, encoding) = coded_track(PAYLOAD_BYTES, 0x0BAD_CAFE_0BAD_CAFE);
+        let track = Address::new_unique();
+        let position = leaf_position(fixture.mine).as_usize();
+        let stored = retired.spool_at(position);
+        fixture
+            .ctx
+            .store
+            .put_track_data(track, BlobData::Coded(encoding))
+            .expect("track data");
+        fixture
+            .ctx
+            .store
+            .put_slice(stored, track, slices[position].clone())
+            .expect("put slice");
+        fixture
+            .ctx
+            .store
+            .put_track_sample(
+                retired,
+                track,
+                TrackSample {
+                    kind: EntryKind::Coded {
+                        slice_len: StorageUnits::from_bytes(slices[0].len() as u64),
+                    },
+                    value_hash: Hash::from([0u8; 32]),
+                    registered_slot: SlotNumber(0),
+                    deleted_slot: None,
+                },
+            )
+            .expect("sample row");
+        bump_cursor(&fixture.ctx);
+
+        let (asked, _) = expected_sample(&fixture.ctx, &round, fixture.mine).expect("a sample");
+        assert_eq!(asked.track, track);
+        assert!(!fixture.ctx.store.has_slice(fixture.mine, track).expect("has slice"));
+
+        let answer = build_answer(&fixture.ctx, &round, fixture.mine).expect("an answer");
+        assert_eq!(answer.track, track);
+        assert_eq!(answer.spool, fixture.mine);
+        assert_eq!(answer.group, fixture.group);
     }
 
     // a round opened before the boundary is still answerable after it: the question
@@ -961,7 +1085,7 @@ mod protocol_tests {
         fixture
             .ctx
             .store
-            .mark_track_sample_deleted(fixture.group, extra, cutoff)
+            .mark_track_sample_deleted(fixture.group.into(), extra, cutoff)
             .expect("delete at the cut");
 
         let (after, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
@@ -974,7 +1098,7 @@ mod protocol_tests {
         fixture
             .ctx
             .store
-            .mark_track_sample_deleted(fixture.group, extra, SlotNumber(cutoff.as_u64() - 1))
+            .mark_track_sample_deleted(fixture.group.into(), extra, SlotNumber(cutoff.as_u64() - 1))
             .expect("delete before the cut");
         let (out, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
             .expect("a sample");
@@ -1000,20 +1124,20 @@ mod protocol_tests {
         for (held, _) in fixture
             .ctx
             .store
-            .iter_track_samples_by_group(fixture.group)
+            .iter_track_samples_by_group(fixture.group.into())
             .expect("rows")
         {
             fixture
                 .ctx
                 .store
-                .mark_track_sample_deleted(fixture.group, held, SlotNumber(0))
+                .mark_track_sample_deleted(fixture.group.into(), held, SlotNumber(0))
                 .expect("clear the coded rows");
         }
         fixture
             .ctx
             .store
             .put_track_sample(
-                fixture.group,
+                fixture.group.into(),
                 track,
                 TrackSample {
                     kind: EntryKind::Inline,

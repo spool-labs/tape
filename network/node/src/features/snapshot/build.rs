@@ -15,7 +15,7 @@ use tape_api::state::Tape;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::prelude::SpoolIndex;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
@@ -47,7 +47,7 @@ pub struct SnapshotCandidate {
 
 #[derive(Debug, Clone)]
 pub struct SnapshotTrack {
-    pub group: GroupIndex,
+    pub group: TrackGroup,
     pub chunk: ChunkNumber,
     pub track: CompressedTrack,
     pub blob: BlobEncoding,
@@ -189,8 +189,8 @@ where
     Ok(())
 }
 
-/// The spool this node owns in `group`, with its position in the group.
-fn owned_position(our_spools: &[SpoolIndex], group: GroupIndex) -> Option<(SpoolIndex, usize)> {
+/// The stored spool this node holds in `group`, with its position in the group.
+fn owned_position(our_spools: &[SpoolIndex], group: TrackGroup) -> Option<(SpoolIndex, usize)> {
     for &spool in our_spools {
         match group.position_of(spool) {
             Some(bitmap_index) => return Some((spool, bitmap_index)),
@@ -361,14 +361,14 @@ mod tests {
         for group_number in 0..GROUP_COUNT {
             stored += ctx
                 .store
-                .iter_snapshot_artifacts(EPOCH, GroupIndex(group_number))
+                .iter_snapshot_artifacts(EPOCH, TrackGroup(group_number))
                 .expect("iter artifacts")
                 .len();
         }
         assert_eq!(stored, OWNED_SPOOL_COUNT);
 
         for &spool in &our_spools {
-            let group = GroupIndex::containing(spool);
+            let group = TrackGroup::containing(spool);
             let position = group.position_of(spool).expect("group position");
             let artifact = ctx
                 .store

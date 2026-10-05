@@ -88,7 +88,7 @@ pub fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         build_epoch_bundle(
             next_epoch,
             &spec.next_committee_nodes,
-            spec.current_group_count,
+            spec.next_group_count,
             spec,
             &identities,
         )
@@ -119,8 +119,10 @@ pub fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         current_epoch: spec.epoch,
         total_nodes: spec.nodes.len() as u64,
         committee_size: committee_capacity,
-        target_group_count: spec.current_group_count,
+        target_group_count: spec.next_group_count,
         live_group_count: spec.current_group_count,
+        previous_group_count: spec.prev_group_count,
+        track_group_count: spec.current_group_count.max(spec.prev_group_count),
         min_epoch_duration: TEST_MIN_EPOCH_DURATION,
         max_epoch_duration: TEST_MAX_EPOCH_DURATION,
         profile: spec.profile.into(),
@@ -133,15 +135,20 @@ pub fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         state: spec.epoch_state(),
         nonce: Hash::default(),
         total_groups: spec.current_group_count,
+        track_groups: system.track_group_count,
         total_assigned: total_assigned(&current.groups, spec.profile),
+        preferences: current_preferences(spec),
         ..Epoch::zeroed()
     };
 
+    // The seeded history starts at the previous epoch, so it has seen no more
+    // groups than it ran.
     let prev_epoch_account = Epoch {
         id: prev_epoch,
         state: epoch_state(EpochPhase::Completed),
         nonce: Hash::default(),
         total_groups: spec.prev_group_count,
+        track_groups: spec.prev_group_count,
         total_assigned: total_assigned(&prev.groups, spec.profile),
         ..Epoch::zeroed()
     };
@@ -205,7 +212,7 @@ pub fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         let node_spec = &spec.nodes[index];
         let node_id = NodeId(index as u64);
         let bls_pubkey = identity.bls_keypair.public_key().expect("bls public key");
-        let preferences = node_preferences(node_spec, committee_capacity, spec.current_group_count);
+        let preferences = node_preferences(node_spec, committee_capacity, spec.next_group_count);
 
         let rate_span_start = node_spec.latest_advance_epoch.next().min(spec.epoch);
 
@@ -458,7 +465,7 @@ fn peer_set(spec: &HarnessSpec, identities: &[NodeIdentity]) -> Vec<Peer> {
             Peer {
                 node: identity.node_address.into(),
                 bls_pubkey: identity.bls_keypair.public_key().expect("bls public key"),
-                preferences: node_preferences(node_spec, committee_size, spec.current_group_count),
+                preferences: node_preferences(node_spec, committee_size, spec.next_group_count),
                 ..Peer::zeroed()
             }
         })
@@ -474,7 +481,7 @@ fn committed_preferences(
         network_capacity: StorageUnits(MIN_STORAGE_CAPACITY as u64),
         storage_price: TAPE(MIN_STORAGE_PRICE as u64),
         committee_size: u64::from(spec.profile.n()),
-        spool_groups: spec.current_group_count,
+        spool_groups: 1,
         burn_fee_bps: BasisPoints(0),
         subsidy_decay_bps: BasisPoints(0),
         access_threshold: TAPE(0),
@@ -482,8 +489,16 @@ fn committed_preferences(
         node_capacity: StorageUnits::zero(),
     };
 
-    aggregate_node_preferences(members, peers, bounds)
+    aggregate_node_preferences(members, peers, current_preferences(spec), bounds)
         .map_err(|error| anyhow!("aggregate node preferences: {error:?}"))
+}
+
+// The current epoch's preferences carry the group count voted for the next one.
+fn current_preferences(spec: &HarnessSpec) -> NodePreferences {
+    NodePreferences {
+        spool_groups: spec.next_group_count,
+        ..NodePreferences::zeroed()
+    }
 }
 
 fn node_preferences(

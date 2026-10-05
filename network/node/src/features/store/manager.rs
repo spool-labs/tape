@@ -240,7 +240,7 @@ mod tests {
     use tape_store_memory::MemoryStore;
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
@@ -298,7 +298,7 @@ mod tests {
                     state: TrackState::Certified as u64,
                     flags: TrackFlags::NONE,
                     size: StorageUnits(1),
-                    group: GroupIndex::from(0),
+                    group: TrackGroup::from(0),
                     value_hash: Hash::default(),
                 },
                 epoch: EpochNumber(1),
@@ -316,7 +316,7 @@ mod tests {
     fn persists_raw_writes_for_owned_spools() {
         let store = test_store();
         let track = Address::new_unique();
-        let group = GroupIndex::from(5);
+        let group = TrackGroup::from(5);
         let raw = vec![1, 2, 3, 4];
 
         store
@@ -347,7 +347,7 @@ mod tests {
     fn skips_raw_writes_for_non_owners() {
         let store = test_store();
         let track = Address::new_unique();
-        let group = GroupIndex::from(6);
+        let group = TrackGroup::from(6);
 
         let batch = ReplayBatch {
             slot: SlotNumber(79),

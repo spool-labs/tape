@@ -3,7 +3,7 @@ use tape_api::program::tapedrive::{blacklist_pda, history_pda, TrackAddress, SYS
 use tape_core::encoding::ErasureCode;
 use tape_core::object::object_etag;
 use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::tape::{
     blacklist_tape_number, history_tape_number, snapshot_tape_number, tape_index, tape_namespace,
     TapeFlags, TapeNamespace,
@@ -476,7 +476,7 @@ fn set_certified<Db: Store>(
 fn defer_certified_repairs<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
-    group: GroupIndex,
+    group: TrackGroup,
     certified_slot: SlotNumber,
     profile: ErasureCode,
 ) -> Result<(), NodeError> {
@@ -539,7 +539,7 @@ mod tests {
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::snapshot::replay::{ReplayTrack, ReplayTrackObject, ReplayableEvent};
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
@@ -618,7 +618,7 @@ mod tests {
                 state: TrackState::Registered as u64,
                 flags: TrackFlags::NONE,
                 size: blob.size,
-                group: GroupIndex::from(4),
+                group: TrackGroup::from(4),
                 value_hash: blob.get_hash(),
             },
             epoch,
@@ -637,7 +637,7 @@ mod tests {
                 state: TrackState::Certified as u64,
                 flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(4 * 1024),
-                group: GroupIndex::from(5),
+                group: TrackGroup::from(5),
                 value_hash: Hash::new_unique(),
             },
             epoch,
@@ -683,7 +683,7 @@ mod tests {
         store: &TapeStore<MemoryStore>,
         track: Address,
         tape: Address,
-        group: GroupIndex,
+        group: TrackGroup,
         slot: SlotNumber,
     ) {
         store
@@ -702,7 +702,7 @@ mod tests {
             .expect("put object info");
     }
 
-    fn track_info(tape: Address, track_number: TrackNumber, group: GroupIndex) -> CompressedTrack {
+    fn track_info(tape: Address, track_number: TrackNumber, group: TrackGroup) -> CompressedTrack {
         CompressedTrack {
             tape,
             key: Hash::new_unique(),
@@ -769,7 +769,7 @@ mod tests {
         assert_eq!(track_info.kind, TrackKind::Coded as u64);
         assert_eq!(track_info.state, TrackState::Certified as u64);
         assert_eq!(track_info.size, StorageUnits::mb(2));
-        assert_eq!(track_info.group, GroupIndex::from(4));
+        assert_eq!(track_info.group, TrackGroup::from(4));
         match &events[1] {
             ReplayableEvent::Track(replay) => {
                 assert_eq!(
@@ -942,7 +942,7 @@ mod tests {
         let slot = SlotNumber(21);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(11);
+        let group = TrackGroup::from(11);
 
         store.put_track(track, track_info(tape, TrackNumber(0), group)).unwrap();
         store
@@ -993,7 +993,7 @@ mod tests {
         let slot = SlotNumber(34);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(23);
+        let group = TrackGroup::from(23);
 
         store.put_track(track, track_info(tape, TrackNumber(0), group)).unwrap();
         store
@@ -1123,7 +1123,7 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
         let spool_id = group.spool_at(0);
 
         store
@@ -1151,7 +1151,7 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
         let spool_id = group.spool_at(0);
 
         store
@@ -1182,7 +1182,7 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
         let spool_id = group.spool_at(0);
 
         store
@@ -1212,7 +1212,7 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
         let spool_id = group.spool_at(0);
 
         store
@@ -1240,7 +1240,7 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
         let spool_id = group.spool_at(0);
 
         store
@@ -1267,7 +1267,7 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
 
         stage_certify(&store, track, tape, group, slot);
 

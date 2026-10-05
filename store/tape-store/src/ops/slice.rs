@@ -213,7 +213,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         &self,
         spool_id: SpoolIndex,
     ) -> Result<Vec<(Address, Vec<u8>)>> {
-        let prefix = SliceKey::spool_prefix(spool_id);
+        let prefix = SliceKey::spool_prefix(spool_id)?;
         let iter = self
             .inner()
             .inner()
@@ -234,7 +234,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         after_track: Option<Address>,
         limit: usize,
     ) -> Result<Vec<(Address, Vec<u8>)>> {
-        let prefix = SliceKey::spool_prefix(spool_id);
+        let prefix = SliceKey::spool_prefix(spool_id)?;
 
         let start_key = match after_track {
             Some(track) => serialize_slice_key(&SliceKey::new(spool_id, track))?,
@@ -272,7 +272,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         from: Option<&[u8]>,
         limit: usize,
     ) -> Result<(Vec<(Address, Vec<u8>)>, Option<Vec<u8>>)> {
-        let prefix = SliceKey::spool_prefix(spool_id);
+        let prefix = SliceKey::spool_prefix(spool_id)?;
         let (rows, next) =
             self.inner()
                 .inner()
@@ -293,7 +293,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         from: Option<&[u8]>,
         limit: usize,
     ) -> Result<(Vec<Address>, Option<Vec<u8>>)> {
-        let prefix = SliceKey::spool_prefix(spool_id);
+        let prefix = SliceKey::spool_prefix(spool_id)?;
         let (keys, next) =
             self.inner()
                 .inner()
@@ -312,7 +312,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         &self,
         spool_id: SpoolIndex,
     ) -> Result<Vec<Address>> {
-        let prefix = SliceKey::spool_prefix(spool_id);
+        let prefix = SliceKey::spool_prefix(spool_id)?;
         // Keys-only scan: the spool's slice values live in blob files, so reading
         // them just to extract the track address is wasted I/O.
         let keys = self
@@ -341,7 +341,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
     }
 
     fn count_slices_by_spool(&self, spool_id: SpoolIndex) -> Result<usize> {
-        let prefix = SliceKey::spool_prefix(spool_id);
+        let prefix = SliceKey::spool_prefix(spool_id)?;
         Ok(self.inner().inner().count_prefix(SliceCol::CF_NAME, &prefix)? as usize)
     }
 
@@ -349,7 +349,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
         &self,
         spool_id: SpoolIndex,
     ) -> Result<(u64, Option<StorageUnits>)> {
-        let prefix = SliceKey::spool_prefix(spool_id);
+        let prefix = SliceKey::spool_prefix(spool_id)?;
         let raw = self.inner().inner();
         let count = raw.count_prefix(SliceCol::CF_NAME, &prefix)?;
         let bytes = raw.bytes_prefix(SliceCol::CF_NAME, &prefix)?;
@@ -368,7 +368,7 @@ impl<S: Store> SliceOps for TapeStore<S> {
 
         // A spool's slices occupy the contiguous key range [spool, spool+1);
         // drop them with one range tombstone.
-        let (start, end) = SliceKey::spool_key_range(spool_id);
+        let (start, end) = SliceKey::spool_key_range(spool_id)?;
         match end {
             Some(end) => raw.delete_range(SliceCol::CF_NAME, &start, &end)?,
             None => {

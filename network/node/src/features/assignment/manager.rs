@@ -328,7 +328,7 @@ where
         track_address: Address,
         track: &CompressedTrack,
     ) -> Result<Option<BlobData>, NodeError> {
-        let peers = state.group_peers(track.group);
+        let peers = state.group_peers_with_prev(track.group);
         if peers.is_empty() {
             return Ok(None);
         }

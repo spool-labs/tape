@@ -29,7 +29,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::types::BasisPoints;
 use tape_crypto::Address;
 use tape_e2e_simnet::{
@@ -191,7 +191,7 @@ async fn inner() {
 /// migrated.
 async fn wait_migrated_owners(
     scenario: &SimnetScenario<'_>,
-    group: GroupIndex,
+    group: TrackGroup,
     before: &[Address],
     timeout: Duration,
 ) -> Result<Vec<Address>> {
@@ -229,7 +229,7 @@ fn migrated_owner_count(before: &[Address], after: &[Address]) -> usize {
 async fn wait_current_owner_slices(
     scenario: &SimnetScenario<'_>,
     track: &Address,
-    group: GroupIndex,
+    group: TrackGroup,
     timeout: Duration,
 ) -> Result<()> {
     let start = Instant::now();
@@ -253,10 +253,12 @@ async fn wait_current_owner_slices(
     }
 }
 
-async fn group_owners(scenario: &SimnetScenario<'_>, group: GroupIndex) -> Vec<Address> {
+/// The nodes of the live group that carries a track group.
+async fn group_owners(scenario: &SimnetScenario<'_>, group: TrackGroup) -> Vec<Address> {
     let system = scenario.read_system().await.expect("read system");
+    let live_group = system.live_group(group).expect("live group");
     let group = scenario
-        .read_group(system.current_epoch, group)
+        .read_group(system.current_epoch, live_group)
         .await
         .expect("read group");
 

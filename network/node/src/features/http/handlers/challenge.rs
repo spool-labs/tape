@@ -70,7 +70,7 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
 
     // Only a group-mate can audit an answer: nobody else settles the round
     // or holds a stake in it. Checked in the round's epoch, which can have turned.
-    if !protocol.is_member_at(answer.epoch, answer.group, state.context.node_address()) {
+    if !protocol.is_member_at(answer.epoch, answer.group.into(), state.context.node_address()) {
         return Err(RouteError::NotResponsible);
     }
 
@@ -200,7 +200,7 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
     // detection only; a disagreement never rejects its attestations.
     watch_digest(&state, &protocol, &payload);
     // A signer outside the round's epoch roster would fill a position it never had
-    if !protocol.is_member_at(payload.epoch, payload.group, payload.signer) {
+    if !protocol.is_member_at(payload.epoch, payload.group.into(), payload.signer) {
         return Err(RouteError::Forbidden("attestation signer is not in the group".into()));
     }
 
@@ -732,13 +732,13 @@ mod tests {
         let ctx: TestContext = harness.ctx_for(0);
         let protocol = ctx.state();
         let mine = protocol
-            .member_spools(ctx.node_address())
+            .member_live_spools(ctx.node_address())
             .first()
             .copied()
             .expect("this node holds a spool");
         let group = group_for_spool(mine);
         let target = protocol
-            .group_peers(group)
+            .group_peers(group.into())
             .into_iter()
             .map(|(spool, _)| spool)
             .find(|spool| *spool != mine)
@@ -765,7 +765,7 @@ mod tests {
         let threshold = ctx.params().thresholds.challenge as usize;
         let message = attest_message(&round, target).to_bytes();
         let members: Vec<Address> = protocol
-            .group_peers(group)
+            .group_peers(group.into())
             .into_iter()
             .map(|(_, owner)| owner)
             .collect();

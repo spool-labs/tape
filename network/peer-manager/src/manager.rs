@@ -6,7 +6,7 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use tape_rpc::{Rpc, RpcError};
 use tape_rpc_client::RpcClient;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::types::SpoolIndex;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::network::NetworkAddress;
@@ -263,11 +263,11 @@ impl PeerManager {
         }
     }
 
-    /// Return all healthy peers in a spool group.
+    /// Return all healthy peers that hold a track group.
     pub fn healthy_peers_for_group(
         &self,
         state: &ProtocolState,
-        group: GroupIndex,
+        group: TrackGroup,
     ) -> Vec<(SpoolIndex, Address)> {
         state
             .group_peers(group)
@@ -485,6 +485,7 @@ mod tests {
                 epoch: tape_api::state::Epoch {
                     id: epoch,
                     nonce: Hash::from([7; 32]),
+                    total_groups: 1,
                     ..Zeroable::zeroed()
                 },
                 committee,

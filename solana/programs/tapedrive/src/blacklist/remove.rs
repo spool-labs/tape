@@ -83,7 +83,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(entry_size),
-            group: GroupIndex(7),
+            group: TrackGroup(7),
             value_hash: hash(bytemuck::bytes_of(&entry)),
         };
         let track_hash = track.get_hash();

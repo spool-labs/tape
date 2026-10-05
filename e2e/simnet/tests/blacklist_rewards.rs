@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use bytemuck::bytes_of;
 use tape_api::program::tapedrive::{blacklist_pda, TrackAddress};
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::{GroupIndex, TrackGroup};
 use tape_core::system::{BlacklistEntry, Member};
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{CompressedTrack, TrackFlags};
@@ -202,7 +202,7 @@ async fn write_data(harness: &SimnetHarness, with_blacklist: bool) -> WrittenObj
         .await
         .expect("write raw track");
     assert_eq!(track.tape, tape, "raw track tape mismatch");
-    assert_eq!(track.group, GroupIndex(0), "unexpected raw track group");
+    assert_eq!(track.group, TrackGroup(0), "unexpected raw track group");
 
     let track_address = track.address();
     let mut blacklist_tracks = Vec::new();
@@ -243,7 +243,7 @@ fn blacklist_track(blacklist: Address, track_number: TrackNumber, entry: Blackli
         state: meta.state as u64,
         flags: TrackFlags::NONE,
         size: meta.size,
-        group: GroupIndex(0),
+        group: TrackGroup(0),
         value_hash: meta.value_hash,
     };
     track.address()

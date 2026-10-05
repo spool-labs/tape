@@ -15,7 +15,7 @@ use tape_core::erasure::{
     SUB_LEAF_BYTES,
 };
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-use tape_core::types::{GroupIndex, SpoolIndex, StorageUnits, TrackNumber};
+use tape_core::types::{TrackGroup, SpoolIndex, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_store::ops::{SliceOps, TrackOps};
@@ -36,7 +36,7 @@ fn track(tape: Address) -> CompressedTrack {
         state: TrackState::Certified as u64,
         flags: TrackFlags::NONE,
         size: StorageUnits::from_bytes(SLICE_SIZE as u64),
-        group: GroupIndex(3),
+        group: TrackGroup(3),
         value_hash: Hash::new_unique(),
     }
 }

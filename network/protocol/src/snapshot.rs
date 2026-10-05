@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tape_api::program::tapedrive::TrackAddress;
 use tape_core::encoding::ErasureCode;
 use tape_core::snapshot::replay::SnapshotLog;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
@@ -199,7 +199,7 @@ async fn decode_snapshot_tracks<A: Api + 'static>(
 }
 
 struct Decoded {
-    group: GroupIndex,
+    group: TrackGroup,
     chunk: ChunkNumber,
     symbol: Vec<u8>,
     track: CompressedTrack,
@@ -253,7 +253,7 @@ async fn fetch_and_decode_track<A: Api>(
 async fn fetch_verified_slices<A: Api>(
     api: &A,
     peers: &[(SpoolIndex, Address)],
-    group: GroupIndex,
+    group: TrackGroup,
     track: Address,
     blob: &BlobEncoding,
     profile: ErasureCode,

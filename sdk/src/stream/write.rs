@@ -1070,6 +1070,7 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
             tape_key.pubkey().into(),
             proof,
             EpochNumber(item.collected.epoch),
+            item.collected.group,
             item.collected.bitmap,
             item.collected.aggregated_signature,
         ));
@@ -1534,7 +1535,7 @@ mod tests {
     use tape_core::encoding::{RSParams, TAPENET_PROFILE};
     use tape_core::thresholds::TrustModel;
     use tape_crypto::ed25519::Keypair;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::{GroupIndex, TrackGroup};
     use tape_core::types::bitmap::SpoolBitmap;
     use tape_core::track::archive::TrackArchive;
     use tape_core::system::Member;
@@ -1661,6 +1662,7 @@ mod tests {
                 signature_count: 0,
                 spool_count: usize::from(TAPENET_PROFILE.n()),
                 epoch: 1,
+                group: GroupIndex(0),
                 responses: Vec::new(),
                 failures: Vec::new(),
                 early_exit: false,
@@ -1831,7 +1833,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: tape_flags,
             size: metadata.size,
-            group: GroupIndex(0),
+            group: TrackGroup(0),
             value_hash: metadata.value_hash,
         };
         let client = manifest_client(track);

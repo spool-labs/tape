@@ -30,7 +30,7 @@ where
     }
 
     let vote = candidate.vote();
-    for group in member_groups(&state.member_spools(me)) {
+    for group in member_groups(&state, me) {
         let sigs = ctx
             .store
             .iter_vote_sigs(vote, group)

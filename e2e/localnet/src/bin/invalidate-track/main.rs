@@ -101,9 +101,13 @@ async fn main() -> Result<()> {
     let profile = system
         .code()
         .map_err(|_| anyhow::anyhow!("System holds no valid encoding profile"))?;
+    // The members of the live group that carries the track sign for it.
+    let live_group = system
+        .live_group(proof.state.group)
+        .map_err(|_| anyhow::anyhow!("no spool group is live"))?;
     let group = sdk
         .rpc()
-        .get_group(epoch, proof.state.group)
+        .get_group(epoch, live_group)
         .await
         .context("get group")?;
 
@@ -146,7 +150,14 @@ async fn main() -> Result<()> {
         .map_err(|error| anyhow::anyhow!("aggregate: {error:?}"))?;
 
     let payer = sdk.payer().context("payer")?;
-    let ix = build_invalidate_track_ix(payer.pubkey().into(), proof, epoch, bitmap, signature);
+    let ix = build_invalidate_track_ix(
+        payer.pubkey().into(),
+        proof,
+        epoch,
+        live_group,
+        bitmap,
+        signature,
+    );
 
     println!("submitting invalidate with {} signers", indices.len());
     sdk.rpc()

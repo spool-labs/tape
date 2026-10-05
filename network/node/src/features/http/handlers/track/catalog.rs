@@ -34,6 +34,7 @@ use crate::features::http::handlers::track::{
 use crate::features::http::share::check_share_token;
 use crate::features::http::peer_identity::PeerIdentity;
 use crate::features::http::state::AppState;
+use crate::features::store::util::is_responsible_for_group;
 
 const MAX_TRACK_SCAN_LIMIT: usize = u32::MAX as usize;
 const MAX_OBJECT_LIST_LIMIT: usize = 1_000;
@@ -74,11 +75,15 @@ pub async fn get_track_data<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::Forbidden("staked peer required".into()));
     }
 
-    let protocol = state.context.state();
-    let is_owner = protocol
-        .group_peers(track.group)
-        .into_iter()
-        .any(|(_, node)| node == state.context.node_address());
+    // A node answers while it holds any spool of the track's group, one it is
+    // handing over included: after the group count drops, the new holders pull
+    // inline payloads from the nodes that held the group last epoch.
+    let is_owner = is_responsible_for_group(
+        state.context.store.as_ref(),
+        track.group,
+        state.context.params().profile,
+    )
+    .map_err(store_error)?;
 
     if !is_owner {
         return Err(RouteError::NotResponsible);
@@ -437,16 +442,59 @@ fn store_error(error: impl core::fmt::Display) -> RouteError {
 mod tests {
     use bytemuck::Zeroable;
     use tape_peer_manager::PeerNode;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
+    use tape_core::system::{SpoolState, SpoolStatus};
+    use tape_core::track::blob::BlobEncoding;
+    use tape_core::track::data::BlobData;
     use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{EpochNumber, StorageUnits, TapeNumber};
-    use tape_store::ops::{TapeOps, TrackOps};
+    use tape_store::ops::{SpoolOps, TapeOps, TrackOps};
     use tape_store::types::TapeInfo;
 
     use super::*;
     use crate::features::http::auth::StakedPeer;
     use crate::harness::{NodeHarness, TestContext};
+
+    async fn call_get_track_data(
+        ctx: &TestContext,
+        track: Address,
+    ) -> Result<impl IntoResponse, RouteError> {
+        get_track_data::<_, _, _>(
+            State(AppState {
+                context: ctx.clone(),
+            }),
+            MaybeStakedPeer(None),
+            MaybeActivePeer(None),
+            PeerIdentity::anonymous(),
+            Path(track.to_string()),
+            HeaderMap::new(),
+        )
+        .await
+    }
+
+    // a node answers for a track while it holds a spool of the track's group,
+    // one it is handing over included, so a new holder can pull from it
+    #[tokio::test]
+    async fn track_data_follows_held_spools() {
+        let ctx = test_context().await;
+        let track = seed_track(&ctx, false);
+        ctx.store
+            .put_track_data(track, BlobData::Coded(BlobEncoding::zeroed()))
+            .expect("track data");
+
+        let refused = call_get_track_data(&ctx, track).await;
+        assert!(matches!(refused, Err(RouteError::NotResponsible)));
+
+        ctx.store
+            .set_spool_state(
+                TrackGroup(0).spool_at(3),
+                SpoolState::new(SpoolStatus::LockedToMove, EpochNumber(1)),
+            )
+            .expect("spool state");
+
+        assert!(call_get_track_data(&ctx, track).await.is_ok());
+    }
 
     async fn test_context() -> TestContext {
         NodeHarness::builder()
@@ -498,7 +546,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(64),
-            group: GroupIndex(0),
+            group: TrackGroup(0),
             value_hash: Hash::from([2u8; 32]),
         };
         let track_addr = track.address();
@@ -573,7 +621,7 @@ mod tests {
                 state: TrackState::Certified as u64,
                 flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(64),
-                group: GroupIndex(0),
+                group: TrackGroup(0),
                 value_hash: Hash::from([2u8; 32]),
             };
             ctx.store.put_track(track.address(), track).expect("put track");
@@ -618,7 +666,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(64),
-            group: GroupIndex(0),
+            group: TrackGroup(0),
             value_hash: Hash::from([2u8; 32]),
         };
         let track_addr = track.address();

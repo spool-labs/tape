@@ -77,7 +77,7 @@ mod tests {
     use std::collections::HashMap;
 
     use tape_store_memory::MemoryStore;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::types::StorageUnits;
     use tape_crypto::Hash;
 
@@ -95,7 +95,7 @@ mod tests {
             state: 1,
             flags: 0,
             size: StorageUnits::from_bytes(PAYLOAD.len() as u64),
-            group: GroupIndex(0),
+            group: TrackGroup(0),
             value_hash: Hash::new_unique(),
         };
         let address = Address::new_unique();

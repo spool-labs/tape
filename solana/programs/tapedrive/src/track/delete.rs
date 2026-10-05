@@ -86,7 +86,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size,
-            group: GroupIndex(7),
+            group: TrackGroup(7),
             value_hash: Hash::new_unique(),
         };
         let track_hash = track.get_hash();
@@ -168,7 +168,7 @@ mod tests {
                 state: state as u64,
                 flags: TrackFlags::IMMUTABLE,
                 size: StorageUnits::mb(250),
-                group: GroupIndex(7),
+                group: TrackGroup(7),
                 value_hash: Hash::new_unique(),
             };
             let track_hash = track.get_hash();
@@ -241,7 +241,7 @@ mod tests {
             state: TrackState::Invalidated as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
-            group: GroupIndex(7),
+            group: TrackGroup(7),
             value_hash: Hash::new_unique(),
         };
         let track_hash = track.get_hash();

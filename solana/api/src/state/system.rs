@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_core::encoding::{EncodingProfile, ErasureCode};
+use tape_core::spooler::{GroupFold, GroupIndex, TrackGroup};
 use tape_core::thresholds::{NetworkParams, Thresholds, TrustModel};
 use tape_core::types::{BitmapRead, EpochDuration, EpochNumber, SpoolBitmap};
 use super::AccountType;
@@ -22,6 +23,12 @@ pub struct System {
 
     /// Number of spool groups live in the current epoch.
     pub live_group_count: u64,
+
+    /// Number of spool groups live in the previous epoch.
+    pub previous_group_count: u64,
+
+    /// Number of track groups: the most spool groups ever live. A leaf's group is below it.
+    pub track_group_count: u64,
 
     /// Lower bound on aggregated NodePreferences::epoch_duration.
     pub min_epoch_duration: EpochDuration,
@@ -63,6 +70,36 @@ impl System {
     pub fn params(&self) -> Result<NetworkParams, ProgramError> {
         NetworkParams::try_new(self.code()?, self.trust()?)
             .map_err(|_| TapeError::UnexpectedState.into())
+    }
+
+    /// Where each track group lives in the current epoch.
+    pub fn fold(&self) -> Result<GroupFold, ProgramError> {
+        GroupFold::new(self.live_group_count, self.track_group_count)
+            .ok_or_else(|| TapeError::UnexpectedState.into())
+    }
+
+    /// The live group that carries a track group.
+    pub fn live_group(&self, group: TrackGroup) -> Result<GroupIndex, ProgramError> {
+        Ok(self.fold()?.live_group(group))
+    }
+
+    /// How many groups take new tracks: the live ones that stay live next epoch.
+    pub fn writable_group_count(&self) -> u64 {
+        self.live_group_count.min(self.target_group_count)
+    }
+
+    /// Synced spools that make a group ready in the current epoch.
+    ///
+    /// After the group count drops, every holder of a retired group's data is
+    /// new, so a group waits for as many synced spools as certify a track.
+    pub fn synced_threshold(&self) -> Result<u64, ProgramError> {
+        let thresholds = self.thresholds()?;
+
+        if self.live_group_count < self.previous_group_count {
+            return Ok(thresholds.certify);
+        }
+
+        Ok(thresholds.synced)
     }
 
     /// Group positions set in a signer bitmap.
@@ -143,6 +180,50 @@ mod tests {
         };
 
         assert!(system.thresholds().is_err());
+    }
+
+    // a retired track group certifies under the live group that carries it
+    #[test]
+    fn live_group() {
+        let system = System {
+            target_group_count: 5,
+            live_group_count: 5,
+            track_group_count: 10,
+            ..System::zeroed()
+        };
+
+        assert_eq!(system.live_group(TrackGroup(3)), Ok(GroupIndex(3)));
+        assert_eq!(system.live_group(TrackGroup(7)), Ok(GroupIndex(3)));
+        assert_eq!(system.live_group(TrackGroup(8)), Ok(GroupIndex(0)));
+        assert!(System::zeroed().live_group(TrackGroup(0)).is_err());
+    }
+
+    // a group about to retire takes no new tracks
+    #[test]
+    fn writable_groups() {
+        let shrinking = System { target_group_count: 5, live_group_count: 10, ..System::zeroed() };
+        let growing = System { target_group_count: 10, live_group_count: 5, ..System::zeroed() };
+
+        assert_eq!(shrinking.writable_group_count(), 5);
+        assert_eq!(growing.writable_group_count(), 5);
+    }
+
+    // the epoch after the count drops waits for the certify count
+    #[test]
+    fn synced_after_shrink() {
+        let steady = System {
+            profile: TAPENET_PROFILE.into(),
+            trust_model: TrustModel::Permissionless.into(),
+            live_group_count: 10,
+            previous_group_count: 10,
+            ..System::zeroed()
+        };
+        let shrunk = System { live_group_count: 5, ..steady };
+        let grown = System { live_group_count: 20, ..steady };
+
+        assert_eq!(steady.synced_threshold(), Ok(7));
+        assert_eq!(shrunk.synced_threshold(), Ok(14));
+        assert_eq!(grown.synced_threshold(), Ok(7));
     }
 
     // a signer bit at or past n is refused, so empty spools add no weight

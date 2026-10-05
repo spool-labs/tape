@@ -161,7 +161,9 @@ fn owned_spool_list<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Vec::new();
     }
 
-    let mut spools = state.member_spools(node);
+    // The chain keeps one sync bit per live spool. `WaitSpoolReady` has already
+    // seen every stored spool under each of them become active.
+    let mut spools = state.member_live_spools(node);
     spools.sort_unstable();
     spools
 }

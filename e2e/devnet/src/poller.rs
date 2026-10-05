@@ -9,7 +9,7 @@ use rpc_litesvm::LiteSvmRpc;
 use tape_store_reel::ReelStore;
 use tape_store_api::Store;
 use tape_core::erasure::MAX_GROUP_SIZE;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::{GroupFold, GroupIndex};
 use tape_core::system::EpochPhase;
 use tape_crypto::Address;
 use tape_node::context::NodeContext;
@@ -312,9 +312,11 @@ async fn poll_once(
     let mut group_size = 0u64;
     let mut spools = Vec::new();
     let mut group_bytes = Vec::new();
+    let mut fold = None;
 
     if let Some(system) = system {
         live_group_count = system.live_group_count;
+        fold = system.fold().ok();
         // Spools a group holds on this chain's profile.
         group_size = system.code().map(|profile| u64::from(profile.n())).unwrap_or(0);
 
@@ -380,12 +382,14 @@ async fn poll_once(
 
         if let Ok(local_spools) = tracked.ctx.store.iter_all_spools() {
             for (spool_id, spool_state) in local_spools {
-                let index = spool_id.as_usize();
+                // A retired group's spool shows under the live spool that carries it.
+                let live_spool = fold.map_or(spool_id, |fold: GroupFold| fold.live_spool(spool_id));
+                let index = live_spool.as_usize();
                 if let Some(spool) = spools.get_mut(index) {
                     if spool_state.is_active() {
                         spool.available = true;
                         if counted_spools.insert(spool_id) {
-                            let group = GroupIndex::containing(spool_id).0 as usize;
+                            let group = GroupIndex::containing(live_spool).0 as usize;
                             if let Some(bytes) = group_bytes.get_mut(group) {
                                 if let Ok(slices) =
                                     tracked.ctx.store.iter_slices_by_spool(spool_id)

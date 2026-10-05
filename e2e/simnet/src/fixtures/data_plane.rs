@@ -5,8 +5,7 @@ use tape_peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
 use solana_keypair::Keypair;
 use tape_api::program::tapedrive::TrackAddress;
-use tape_core::erasure::spool_for_slice;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
@@ -60,13 +59,13 @@ impl SimnetScenario<'_> {
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
-    /// Count slices stored across all nodes for a track's spool group.
-    pub fn count_slices(&self, track: &Address, group: GroupIndex) -> Result<usize> {
+    /// Count slices stored across all nodes for a track's group.
+    pub fn count_slices(&self, track: &Address, group: TrackGroup) -> Result<usize> {
         let track_store_key = *track;
         let mut count = 0usize;
 
         for i in 0..usize::from(self.harness.config().profile.n()) {
-            let spool_id = spool_for_slice(group, i);
+            let spool_id = group.spool_at(i);
 
             for node in self.harness.nodes() {
                 if !node.is_running() {
@@ -98,14 +97,18 @@ impl SimnetScenario<'_> {
         Ok(count)
     }
 
-    /// Count slices stored by the canonical current owners of a track's group.
+    /// Count slices stored by the canonical current owners of a track's group:
+    /// the nodes of the live group that carries it.
     pub async fn count_current_owner_slices(
         &self,
         track: &Address,
-        group: GroupIndex,
+        group: TrackGroup,
     ) -> Result<usize> {
         let system = self.read_system().await?;
-        let group_account = self.read_group(system.current_epoch, group).await?;
+        let live_group = system
+            .live_group(group)
+            .map_err(|_| anyhow::anyhow!("no spool group is live"))?;
+        let group_account = self.read_group(system.current_epoch, live_group).await?;
         let mut count = 0usize;
 
         for (position, spool) in group_account.spools.iter().enumerate() {

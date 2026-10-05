@@ -505,7 +505,7 @@ impl PendingTracks {
 #[cfg(test)]
 mod tests {
     use tape_core::erasure::MAX_GROUP_SIZE;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{TrackFlags, TrackKind};
     use tape_core::types::{StorageUnits, StripeCount, TrackNumber};
@@ -522,7 +522,7 @@ mod tests {
             state: TrackState::Registered as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(1024),
-            group: GroupIndex::from(0),
+            group: TrackGroup::from(0),
             value_hash: Hash::new_unique(),
         }
     }

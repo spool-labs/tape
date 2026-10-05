@@ -303,7 +303,7 @@ mod tests {
     use tape_core::erasure::{slice_root, MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_snapshot::snapshot_chunk_key;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
@@ -339,7 +339,7 @@ mod tests {
     fn seed_projected_snapshot_track(ctx: &TestContext) -> (Address, SpoolIndex, Vec<u8>) {
         let epoch = EpochNumber(5);
 
-        let group = GroupIndex(2);
+        let group = TrackGroup(2);
         let track_number = TrackNumber(9);
         let owned_spool = group.spool_at(5);
         let slice_bytes = vec![0xAB; 96];
@@ -439,7 +439,7 @@ mod tests {
     }
 
     fn seed_hidden_track(ctx: &TestContext, authority: Address) -> (Address, SpoolIndex, Address, Hash) {
-        let group = GroupIndex(2);
+        let group = TrackGroup(2);
         let track_number = TrackNumber(3);
         let owned_spool = group.spool_at(4);
         let tape = Address::new_unique();
@@ -699,7 +699,7 @@ mod tests {
 
     fn seed_pending_slice(ctx: &TestContext) -> (Address, SpoolIndex, Vec<u8>) {
         let tape = Address::new_unique();
-        let group = GroupIndex(2);
+        let group = TrackGroup(2);
         let track_number = TrackNumber(3);
         let owned_spool = group.spool_at(5);
         let slice_bytes = vec![0xCD; 96];
@@ -781,7 +781,7 @@ mod tests {
     // it and answers with the certify signature.
     fn seed_writable_track(ctx: &TestContext) -> (Address, SpoolIndex, SlicePayload) {
         let epoch = ctx.state().epoch();
-        let group = GroupIndex(2);
+        let group = TrackGroup(2);
         let track_number = TrackNumber(11);
         let owned_spool = group.spool_at(5);
         let leaf_pos = group.position_of(owned_spool).expect("spool in group");

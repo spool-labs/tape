@@ -8,7 +8,7 @@ use tape_core::track::types::CompressedTrack;
 use tape_core::types::{SpoolIndex, StorageUnits};
 use tape_crypto::address::Address;
 use tape_protocol::Api;
-use tape_protocol::api::GetSliceWindowReq;
+use tape_protocol::api::{GetSliceWindowReq, GetSliceWindowRes};
 use tape_rpc::Rpc;
 use tape_sdk::bootstrap::counts_against_peer;
 use tape_sdk::stream::manifest::{ChunkEntry, ChunkManifest, MANIFEST_VERSION};
@@ -21,7 +21,7 @@ use super::decode::{SliceFailure, fetch_order};
 use super::hedge::fetch_hedged;
 use super::response::ByteRange;
 use crate::http::error::RouteError;
-use crate::http::handlers::track::slice::SliceOrigin;
+use crate::http::handlers::track::slice::{SliceOrigin, previous_holder};
 use crate::http::state::AppState;
 
 /// A coded track takes the stripe path only past this many stripes
@@ -139,19 +139,11 @@ async fn fetch_window<Db: Store, Cluster: Api, Blockchain: Rpc>(
         len: StorageUnits::from_bytes(window.slice_len as u64),
     };
 
-    let started = Instant::now();
-    let response = match state.context.api.get_slice_window(owner, &request).await {
-        Ok(response) => {
-            state.reputation.record_success(owner, started.elapsed());
-            response
-        }
-        Err(error) => {
-            if counts_against_peer(&error) {
-                state.reputation.record_failure(owner);
-            }
-            debug!(track = %origin.track_addr, %error, "gateway slice window fetch failed");
-            return Err(SliceFailure::Fetch);
-        }
+    let fetched = fetch_window_from(state, &request, owner).await;
+    let response = match (fetched, previous_holder(state, spool_id, owner)) {
+        (Ok(response), _) => response,
+        (Err(_), Some(previous)) => fetch_window_from(state, &request, previous).await?,
+        (Err(failure), None) => return Err(failure),
     };
 
     let position = SpoolIndex(position as u64);
@@ -160,6 +152,29 @@ async fn fetch_window<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(SliceFailure::Leaf);
     }
     Ok((position, response.data))
+}
+
+/// Ask one node for a slice window and record how it answered
+async fn fetch_window_from<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    request: &GetSliceWindowReq,
+    node: Address,
+) -> Result<GetSliceWindowRes, SliceFailure> {
+    let started = Instant::now();
+
+    match state.context.api.get_slice_window(node, request).await {
+        Ok(response) => {
+            state.reputation.record_success(node, started.elapsed());
+            Ok(response)
+        }
+        Err(error) => {
+            if counts_against_peer(&error) {
+                state.reputation.record_failure(node);
+            }
+            debug!(track = %request.track, %error, "gateway slice window fetch failed");
+            Err(SliceFailure::Fetch)
+        }
+    }
 }
 
 #[cfg(test)]

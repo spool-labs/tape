@@ -16,4 +16,4 @@ pub use numeric::*;
 pub use ring::*;
 pub use tls::*;
 
-pub use crate::spooler::GroupIndex;
+pub use crate::spooler::{GroupIndex, TrackGroup};

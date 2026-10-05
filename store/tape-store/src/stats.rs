@@ -242,7 +242,7 @@ mod tests {
         use crate::ops::{SliceOps, TrackOps};
         use crate::TapeStore;
         use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-        use tape_core::types::{GroupIndex, SpoolIndex, StorageUnits, TrackNumber};
+        use tape_core::types::{TrackGroup, SpoolIndex, StorageUnits, TrackNumber};
         use tape_crypto::address::Address;
         use tape_crypto::Hash;
         use tempfile::TempDir;
@@ -259,7 +259,7 @@ mod tests {
                 state: TrackState::Certified as u64,
                 flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(SLICE_SIZE as u64),
-                group: GroupIndex(0),
+                group: TrackGroup(0),
                 value_hash: Hash::new_unique(),
             }
         }

@@ -230,7 +230,7 @@ async fn peer_only_routes_reject_non_peers_inner() {
     // as the signer would seat a signature that spoils the round's aggregate.
     let source_address = source.context().node_address();
     let state = source.context().state();
-    let held = member_groups(&state.member_spools(source_address));
+    let held = member_groups(&state, source_address);
     // A group the source has no position in, or one past the roster if it
     // holds a position in every group.
     let foreign = (0..=state.current.groups.len() as u64)

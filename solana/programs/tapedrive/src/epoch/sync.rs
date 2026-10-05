@@ -65,7 +65,7 @@ pub fn process_sync_spool(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         return Err(TapeError::AlreadySynced.into());
     }
 
-    let required = system.thresholds()?.synced;
+    let required = system.synced_threshold()?;
     let was_recoverable = group.synced.count_ones() as u64 >= required;
     group.synced.set(slice_idx);
     let is_recoverable = group.synced.count_ones() as u64 >= required;
@@ -193,6 +193,16 @@ mod tests {
     fn sync_transition() {
         transition_case(permissionless_system(), 7, 6, true);
         transition_case(permissionless_system(), 7, 5, false);
+    }
+
+    // after the group count drops, tapenet readies a group at the certify count
+    #[test]
+    fn shrink_transition() {
+        let shrunk = System { previous_group_count: 2, ..permissionless_system() };
+
+        transition_case(shrunk, 7, 6, false);
+        transition_case(shrunk, 13, 12, false);
+        transition_case(shrunk, 14, 13, true);
     }
 
     // a 3-of-4 cluster readies a group on its third synced spool

@@ -6,7 +6,7 @@ use tape_api::genesis::GenesisConfig;
 use tape_api::program::tapedrive::TrackAddress;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::encoding::{ClayParams, ErasureCode, RSParams, RepParams};
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::thresholds::TrustModel;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BasisPoints, EpochNumber};
@@ -237,7 +237,7 @@ async fn wide_committee_inner() {
 
     let mut used: Vec<usize> = Vec::new();
     for group in 0..GROUPS {
-        used.extend(owners(&harness, GroupIndex(group)).await);
+        used.extend(owners(&harness, TrackGroup(group)).await);
     }
     used.sort_unstable();
     used.dedup();
@@ -473,12 +473,13 @@ async fn advance_to_epoch(harness: &SimnetHarness, target: EpochNumber) {
     }
 }
 
-/// The nodes that own the group's spools this epoch, in spool order
-async fn owners(harness: &SimnetHarness, group: GroupIndex) -> Vec<usize> {
+/// The nodes that hold a track group's spools this epoch, in spool order
+async fn owners(harness: &SimnetHarness, group: TrackGroup) -> Vec<usize> {
     let scenario = harness.scenario();
     let system = scenario.read_system().await.expect("read system");
+    let live_group = system.live_group(group).expect("live group");
     let account = scenario
-        .read_group(system.current_epoch, group)
+        .read_group(system.current_epoch, live_group)
         .await
         .expect("read group");
     let group_size = usize::from(harness.config().profile.n());
@@ -525,7 +526,7 @@ async fn wait_groups(harness: &SimnetHarness, groups: u64) {
         let system = harness.scenario().read_system().await.expect("read system");
         if system.live_group_count == groups {
             for group in 0..groups {
-                owners(harness, GroupIndex(group)).await;
+                owners(harness, TrackGroup(group)).await;
             }
             return;
         }

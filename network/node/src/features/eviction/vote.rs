@@ -35,7 +35,7 @@ where
         .map_err(|e| NodeError::Store(format!("eviction bls_sign: {e:?}")))?;
 
     let vote = candidate.vote();
-    for group in member_groups(&state.member_spools(me)) {
+    for group in member_groups(&state, me) {
         ctx.store
             .put_vote_sig(vote, group, me, &signature)
             .map_err(|e| NodeError::Store(format!("put_vote_sig: {e}")))?;

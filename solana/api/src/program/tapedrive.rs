@@ -318,6 +318,7 @@ pub fn eviction_vote_pda(voting: EpochNumber, target: EpochNumber, node: Address
 #[cfg(test)]
 mod tests {
     use solana_program::pubkey::Pubkey;
+    use tape_core::spooler::TrackGroup;
     use tape_core::types::TrackNumber;
 
     use super::*;
@@ -400,7 +401,7 @@ mod tests {
             state: 0,
             flags: 0,
             size: StorageUnits(1024),
-            group: GroupIndex(4),
+            group: TrackGroup(4),
             value_hash: Hash([5u8; 32]),
         }
     }
@@ -410,7 +411,7 @@ mod tests {
         let track = track();
 
         let certified = CompressedTrack { state: 1, ..track };
-        let moved = CompressedTrack { group: GroupIndex(9), ..track };
+        let moved = CompressedTrack { group: TrackGroup(9), ..track };
 
         assert_eq!(track_pda(&track), track_pda(&certified));
         assert_eq!(track_pda(&track), track_pda(&moved));

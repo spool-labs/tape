@@ -18,7 +18,7 @@ use thiserror::Error;
 
 use tape_api::instruction::build_certify_track_ix;
 use tape_core::bls::BlsSignature;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::{GroupIndex, TrackGroup};
 use tape_core::thresholds::{NetworkParams, Thresholds};
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{BitmapRead, EpochNumber, SpoolBitmap};
@@ -157,6 +157,8 @@ pub struct CollectedSignatures {
     pub spool_count: usize,
     /// The epoch that was signed (all responses must agree).
     pub epoch: u64,
+    /// The live group whose members signed.
+    pub group: GroupIndex,
     /// Individual responses (for debugging/verification).
     pub responses: Vec<CertifyRes>,
     /// Nodes that failed and why (for diagnostics).
@@ -186,7 +188,7 @@ impl CertificationCollector {
         &self,
         peer_client: &P,
         track_address: &Address,
-        group: GroupIndex,
+        group: TrackGroup,
         state: &ProtocolState,
         banked: &[CertifyRes],
     ) -> Result<CollectedSignatures, CertificationError> {
@@ -197,6 +199,9 @@ impl CertificationCollector {
         })?;
         let width = params.n();
         let thresholds = params.thresholds;
+        let live_group = state
+            .live_group(group)
+            .ok_or_else(|| CertificationError::SystemState("no spool group is live".into()))?;
 
         if state.current.committee.is_empty() {
             return Err(CertificationError::NoCommitteeMembers);
@@ -229,7 +234,7 @@ impl CertificationCollector {
                     unasked = signature_requests.len(),
                     "Spool group certify count already banked, asking no one"
                 );
-                return settle(bucket, epoch_key, Vec::new(), &params);
+                return settle(bucket, epoch_key, live_group, Vec::new(), &params);
             }
         }
 
@@ -295,7 +300,7 @@ impl CertificationCollector {
                             remaining_weight = remaining_node_weight,
                             "Spool group certify count reached, exiting early"
                         );
-                        return settle(bucket, epoch_key, failures, &params);
+                        return settle(bucket, epoch_key, live_group, failures, &params);
                     }
                 }
                 Err(e) => {
@@ -359,6 +364,7 @@ impl CertificationCollector {
             signature_count,
             spool_count: width,
             epoch: selected_epoch,
+            group: live_group,
             responses,
             failures,
             early_exit: false,
@@ -377,6 +383,7 @@ impl CertificationCollector {
             authority,
             track,
             EpochNumber(collected.epoch),
+            collected.group,
             collected.bitmap,
             collected.aggregated_signature,
         )
@@ -404,7 +411,7 @@ struct SignatureRequest {
 }
 
 fn collect_signature_requests(
-    group: GroupIndex,
+    group: TrackGroup,
     state: &ProtocolState,
 ) -> Result<Vec<SignatureRequest>, CertificationError> {
     let spools = state
@@ -496,6 +503,7 @@ fn can_reach_certify(
 fn settle(
     bucket: &SignatureBucket,
     epoch_key: u64,
+    group: GroupIndex,
     failures: Vec<(Address, NodeSignError)>,
     params: &NetworkParams,
 ) -> Result<CollectedSignatures, CertificationError> {
@@ -508,6 +516,7 @@ fn settle(
         signature_count: bucket.responses.len(),
         spool_count: params.n(),
         epoch: epoch_key,
+        group,
         responses: bucket.responses.clone(),
         failures,
         early_exit: true,

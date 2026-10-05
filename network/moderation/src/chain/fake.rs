@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use tape_api::program::tapedrive::TrackAddress;
 use tape_blacklist::list::List;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::system::BlacklistEntry;
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{CompressedTrack, TrackFlags};
@@ -289,7 +289,7 @@ fn inline_track(tape: Address, track_number: TrackNumber, bytes: &[u8]) -> Compr
         state: meta.state as u64,
         flags: TrackFlags::NONE,
         size: meta.size,
-        group: GroupIndex(0),
+        group: TrackGroup(0),
         value_hash: meta.value_hash,
     }
 }

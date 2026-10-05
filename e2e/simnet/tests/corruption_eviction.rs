@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tape_store_api::{Column, Store};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::challenge::EvictionPolicy;
-use tape_core::erasure::group_for_spool;
+use tape_core::spooler::TrackGroup;
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{
@@ -281,7 +281,7 @@ fn rot_spool(harness: &SimnetHarness, spool: SpoolIndex) -> usize {
     // set holds plenty of them, so leaving them intact lets the victim answer
     // honestly whenever the draw lands on one and the run of misses never builds.
     for (track, _) in store
-        .iter_track_samples_by_group(group_for_spool(spool))
+        .iter_track_samples_by_group(TrackGroup::containing(spool))
         .expect("iter sample rows")
     {
         if let Ok(Some(BlobData::Inline(payload))) = store.get_track_data(track) {

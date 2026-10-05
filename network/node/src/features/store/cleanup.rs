@@ -4,7 +4,7 @@ use tape_core::challenge::schedule::{
     SAMPLE_LOOKBACK_SLOTS, SETTLE_DEADLINE_SLOTS, round_width_slots,
 };
 use tape_core::encoding::ErasureCode;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{SlotNumber, SpoolIndex};
 use tape_crypto::address::Address;
@@ -89,7 +89,7 @@ pub fn delete_tape_local<Db: Store>(
 pub fn cleanup_track_slices<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
-    group: GroupIndex,
+    group: TrackGroup,
     deleted_at: SlotNumber,
     profile: ErasureCode,
 ) -> Result<usize, NodeError> {
@@ -154,7 +154,7 @@ pub struct DeletedSweep {
 pub fn drop_track_slices<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
-    group: GroupIndex,
+    group: TrackGroup,
     profile: ErasureCode,
 ) -> Result<usize, NodeError> {
     let mut deleted = 0usize;
@@ -241,7 +241,7 @@ mod tests {
         store: &TapeStore<MemoryStore>,
         tape: Address,
         track_number: TrackNumber,
-        group: GroupIndex,
+        group: TrackGroup,
     ) -> Address {
         let info = CompressedTrack {
             tape,
@@ -272,7 +272,7 @@ mod tests {
         let store = test_store();
         let target = Address::new_unique();
         let other = Address::new_unique();
-        let group = GroupIndex::from(3);
+        let group = TrackGroup::from(3);
 
         let mine: Vec<Address> = (0..5)
             .map(|n| seed_track(&store, target, TrackNumber(n), group))

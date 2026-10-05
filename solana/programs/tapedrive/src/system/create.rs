@@ -65,6 +65,8 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.committee_size = committee_size;
     system.target_group_count = spool_groups;
     system.live_group_count = 0;
+    system.previous_group_count = 0;
+    system.track_group_count = 0;
     system.min_epoch_duration = min_epoch_duration;
     system.max_epoch_duration = max_epoch_duration;
     system.profile = args.profile;

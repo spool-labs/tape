@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use tape_store_api::Store;
 use tape_core::encoding::ErasureCode;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::{GroupFold, GroupIndex};
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
@@ -35,6 +35,7 @@ pub enum AssignmentSizeError {
 pub struct ActiveTrackFootprint {
     pub track: Address,
     pub tape: Address,
+    /// The group that carries the track in the target epoch.
     pub group: GroupIndex,
     pub footprint: StorageUnits,
 }
@@ -71,6 +72,8 @@ enum TrackWeight {
 ///   - skip invalidated/deleted/uncertified/current-epoch tracks;
 ///   - skip tapes with end_epoch <= target_epoch;
 ///   - return zero for empty/new groups;
+///   - count a track under the group that carries it at the target epoch's
+///     group count, so a group that absorbs another weighs both;
 ///   - report Pending while a coded track's blob metadata has yet to arrive,
 ///     since every peer counts that track once it lands;
 ///   - derive blob per-spool footprint from the BlobEncoding metadata and the
@@ -79,9 +82,11 @@ pub fn group_weights<Db: Store>(
     store: &TapeStore<Db>,
     voting_epoch: EpochNumber,
     target_epoch: EpochNumber,
-    target_groups: usize,
+    target: GroupFold,
     profile: ErasureCode,
 ) -> Result<GroupWeights, AssignmentSizeError> {
+    let target_groups = usize::try_from(target.live())
+        .map_err(|_| AssignmentSizeError::Store("target group count overflows usize".into()))?;
     let mut sizes = vec![StorageUnits::zero(); target_groups];
     let mut active_tracks = Vec::new();
     let mut cursor: Option<Vec<u8>> = None;
@@ -106,6 +111,7 @@ pub fn group_weights<Db: Store>(
                 info,
                 voting_epoch,
                 target_epoch,
+                target,
                 profile,
             )?;
             let active = match weight {
@@ -114,19 +120,8 @@ pub fn group_weights<Db: Store>(
                 TrackWeight::Pending => return Ok(GroupWeights::Pending { track: *track }),
             };
 
-            let group_index = usize::try_from(active.group.0).map_err(|_| {
-                invalid_track(*track, format!("group index {} overflows usize", active.group.0))
-            })?;
-
-            if group_index >= target_groups {
-                return Err(invalid_track(
-                    *track,
-                    format!(
-                        "group {} exceeds target group count {target_groups}",
-                        active.group.0
-                    ),
-                ));
-            }
+            // The fold always lands below the target count.
+            let group_index = active.group.as_usize();
 
             sizes[group_index] = sizes[group_index]
                 .checked_add(active.footprint)
@@ -159,6 +154,7 @@ fn active_track_footprint<Db: Store>(
     info: Option<ObjectInfo>,
     voting_epoch: EpochNumber,
     target_epoch: EpochNumber,
+    target: GroupFold,
     profile: ErasureCode,
 ) -> Result<TrackWeight, AssignmentSizeError> {
     // Only ObjectInfo::Valid is accounted user data. System-owned tracks are
@@ -211,7 +207,7 @@ fn active_track_footprint<Db: Store>(
     Ok(TrackWeight::Counted(ActiveTrackFootprint {
         track,
         tape: metadata.tape,
-        group: metadata.group,
+        group: target.live_group(metadata.group),
         footprint,
     }))
 }
@@ -307,7 +303,7 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_store_memory::MemoryStore;
     use tape_core::encoding::{RSParams, RepParams, TAPENET_CLAY, TAPENET_PROFILE};
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
@@ -322,18 +318,66 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
+    /// A target epoch of `groups` groups with none retired.
+    fn fold(groups: u64) -> GroupFold {
+        GroupFold::new(groups, groups).expect("live groups")
+    }
+
     fn ready_sizes(
         store: &TapeStore<MemoryStore>,
         voting_epoch: EpochNumber,
         target_epoch: EpochNumber,
-        target_groups: usize,
+        target_groups: u64,
     ) -> Option<Vec<StorageUnits>> {
-        match group_weights(store, voting_epoch, target_epoch, target_groups, TAPENET_PROFILE)
+        folded_sizes(store, voting_epoch, target_epoch, fold(target_groups))
+    }
+
+    fn folded_sizes(
+        store: &TapeStore<MemoryStore>,
+        voting_epoch: EpochNumber,
+        target_epoch: EpochNumber,
+        target: GroupFold,
+    ) -> Option<Vec<StorageUnits>> {
+        match group_weights(store, voting_epoch, target_epoch, target, TAPENET_PROFILE)
             .expect("weights build")
         {
             GroupWeights::Ready(weights) => Some(weights.sizes),
             GroupWeights::Pending { .. } => None,
         }
+    }
+
+    // a retired group's tracks weigh on the group that carries them, and split
+    // off again when the group returns
+    #[test]
+    fn retired_group_weighs_on_its_carrier() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let kept = Address::new_unique();
+        let retired = Address::new_unique();
+        let kept_size = StorageUnits::from_bytes(100);
+        let retired_size = StorageUnits::from_bytes(40);
+
+        store.put_tape(tape, tape_info(EpochNumber(20))).unwrap();
+        store.put_track(kept, raw_track(tape, TrackGroup(3), kept_size)).unwrap();
+        store.put_track(retired, raw_track(tape, TrackGroup(7), retired_size)).unwrap();
+        for track in [kept, retired] {
+            store
+                .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
+                .unwrap();
+        }
+
+        let shrunk = GroupFold::new(5, 10).expect("live groups");
+        let sizes = folded_sizes(&store, EpochNumber(10), EpochNumber(11), shrunk)
+            .expect("weights ready");
+
+        assert_eq!(sizes.len(), 5);
+        assert_eq!(sizes[3], StorageUnits::from_bytes(140));
+
+        let sizes = ready_sizes(&store, EpochNumber(10), EpochNumber(11), 10)
+            .expect("weights ready");
+
+        assert_eq!(sizes[3], kept_size);
+        assert_eq!(sizes[7], retired_size);
     }
 
     fn tape_info(end_epoch: EpochNumber) -> TapeInfo {
@@ -348,7 +392,7 @@ mod tests {
         }
     }
 
-    fn raw_track(tape: Address, group: GroupIndex, size: StorageUnits) -> CompressedTrack {
+    fn raw_track(tape: Address, group: TrackGroup, size: StorageUnits) -> CompressedTrack {
         CompressedTrack {
             tape,
             track_number: TrackNumber(0),
@@ -362,7 +406,7 @@ mod tests {
         }
     }
 
-    fn coded_track(tape: Address, group: GroupIndex, size: StorageUnits) -> CompressedTrack {
+    fn coded_track(tape: Address, group: TrackGroup, size: StorageUnits) -> CompressedTrack {
         let mut track = raw_track(tape, group, size);
         track.kind = TrackKind::Coded as u64;
         track
@@ -385,7 +429,7 @@ mod tests {
         let size = StorageUnits::from_bytes(123);
 
         store.put_tape(tape, tape_info(EpochNumber(20))).unwrap();
-        store.put_track(track, raw_track(tape, GroupIndex(2), size)).unwrap();
+        store.put_track(track, raw_track(tape, TrackGroup(2), size)).unwrap();
         store
             .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
             .unwrap();
@@ -407,7 +451,7 @@ mod tests {
         let size = StorageUnits::from_bytes(64);
 
         store.put_tape(tape, tape_info(EpochNumber(11))).unwrap();
-        store.put_track(track, raw_track(tape, GroupIndex(1), size)).unwrap();
+        store.put_track(track, raw_track(tape, TrackGroup(1), size)).unwrap();
         store
             .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
             .unwrap();
@@ -443,14 +487,14 @@ mod tests {
             .put_tape(snapshot_tape, tape_info(EpochNumber(20)))
             .unwrap();
         store
-            .put_track(user_track, raw_track(user_tape, GroupIndex(1), user_size))
+            .put_track(user_track, raw_track(user_tape, TrackGroup(1), user_size))
             .unwrap();
         store
             .put_track(
                 snapshot_track,
                 raw_track(
                     snapshot_tape,
-                    GroupIndex(1),
+                    TrackGroup(1),
                     StorageUnits::from_bytes(999),
                 ),
             )
@@ -483,10 +527,10 @@ mod tests {
             .put_tape(tape, tape_info(EpochNumber(20)))
             .expect("tape stored");
         store
-            .put_track(inline_track, raw_track(tape, GroupIndex(0), size))
+            .put_track(inline_track, raw_track(tape, TrackGroup(0), size))
             .expect("inline track stored");
         store
-            .put_track(coded, coded_track(tape, GroupIndex(1), size))
+            .put_track(coded, coded_track(tape, TrackGroup(1), size))
             .expect("coded track stored");
         store
             .put_object_info(
@@ -498,7 +542,7 @@ mod tests {
             .put_object_info(coded, valid_object(coded, EpochNumber(8), SlotNumber(1)))
             .expect("coded object info stored");
 
-        let weights = group_weights(&store, EpochNumber(10), EpochNumber(11), 2, TAPENET_PROFILE)
+        let weights = group_weights(&store, EpochNumber(10), EpochNumber(11), fold(2), TAPENET_PROFILE)
             .expect("weights build");
 
         assert_eq!(weights, GroupWeights::Pending { track: coded });
@@ -574,7 +618,7 @@ mod tests {
         store
             .put_track(
                 track,
-                coded_track(tape, GroupIndex(0), StorageUnits::from_bytes(256)),
+                coded_track(tape, TrackGroup(0), StorageUnits::from_bytes(256)),
             )
             .expect("track stored");
         store
@@ -584,7 +628,7 @@ mod tests {
             .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
             .expect("object info stored");
 
-        let error = group_weights(&store, EpochNumber(10), EpochNumber(11), 1, TAPENET_PROFILE)
+        let error = group_weights(&store, EpochNumber(10), EpochNumber(11), fold(1), TAPENET_PROFILE)
             .expect_err("mismatch refused");
 
         assert!(matches!(

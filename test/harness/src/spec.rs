@@ -23,6 +23,8 @@ pub struct HarnessSpec {
     pub next_committee_nodes: Vec<usize>,
     pub current_group_count: u64,
     pub prev_group_count: u64,
+    /// The next epoch runs this many groups, which is the System's target.
+    pub next_group_count: u64,
     /// Whether to seed the next epoch as having a finalized assignment.
     /// This is useful for exercising `AdvanceEpoch`, which now requires the
     /// assignment manager to have completed before lifecycle can advance.

@@ -266,7 +266,7 @@ fn blacklist_track_is_before_cutoff<Db: Store>(
 mod tests {
     use bytemuck::bytes_of;
     use tape_api::program::tapedrive::TrackAddress;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
     use tape_core::types::{TapeNumber, TrackNumber};
     use tape_store::ops::{TrackDataOps, TrackOps};
@@ -296,7 +296,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
-            group: GroupIndex(0),
+            group: TrackGroup(0),
             value_hash: entry.key(),
         };
         let track_address = track.address();

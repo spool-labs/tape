@@ -95,8 +95,8 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let (_, peers) = 
         PeerSet::read(peer_set_info, &tapedrive::ID)?;
 
-    let preferences = 
-        aggregate_preferences(system, curr_members, peers)?;
+    let preferences =
+        aggregate_preferences(system, curr_epoch.preferences, curr_members, peers)?;
 
     snapshot_tape_info
         .is_snapshot_tape(prev)?;
@@ -119,6 +119,7 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
 fn aggregate_preferences(
     system: &System,
+    current: NodePreferences,
     members: &[Member],
     peers: &[Peer],
 ) -> Result<NodePreferences, ProgramError> {
@@ -127,7 +128,7 @@ fn aggregate_preferences(
         network_capacity: StorageUnits(MIN_STORAGE_CAPACITY as u64),
         storage_price: TAPE(MIN_STORAGE_PRICE as u64),
         committee_size: u64::from(system.code()?.n()),
-        spool_groups: system.target_group_count,
+        spool_groups: 1,
         burn_fee_bps: BasisPoints(0),
         subsidy_decay_bps: BasisPoints(0),
         access_threshold: TAPE(0),
@@ -135,7 +136,7 @@ fn aggregate_preferences(
         node_capacity: StorageUnits::zero(),
     };
 
-    aggregate_node_preferences(members, peers, bounds).map_err(|error| match error {
+    aggregate_node_preferences(members, peers, current, bounds).map_err(|error| match error {
         NodePreferenceAggregationError::MissingPeer { .. } => TapeError::BadMember.into(),
         NodePreferenceAggregationError::ZeroWeight => TapeError::UnexpectedState.into(),
     })
@@ -218,7 +219,12 @@ mod tests {
     }
 
     fn peer_set() -> Vec<u8> {
-        let prefs = test_preferences();
+        peer_set_voting(test_preferences().spool_groups)
+    }
+
+    // every peer votes the same group count
+    fn peer_set_voting(spool_groups: u64) -> Vec<u8> {
+        let prefs = NodePreferences { spool_groups, ..test_preferences() };
         let peers: Vec<Peer> = members()
             .iter()
             .map(|m| Peer {
@@ -234,6 +240,20 @@ mod tests {
 
     #[test]
     fn commit() {
+        let spool_groups = test_preferences().spool_groups;
+
+        commit_groups(spool_groups, spool_groups);
+    }
+
+    // a unanimous vote moves the group count down as well as up
+    #[test]
+    fn group_count_moves() {
+        commit_groups(10, 5);
+        commit_groups(5, 10);
+    }
+
+    // commits an epoch whose count is `current` while every peer votes `voted`
+    fn commit_groups(current: u64, voted: u64) {
         let fee_payer = Pubkey::new_unique();
 
         let curr = EpochNumber(10);
@@ -253,8 +273,8 @@ mod tests {
 
         let system = System {
             current_epoch: curr,
-            target_group_count: SPOOL_GROUPS,
-            live_group_count: SPOOL_GROUPS,
+            target_group_count: current,
+            live_group_count: current,
             committee_size: COMMITTEE_SIZE,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
@@ -264,7 +284,7 @@ mod tests {
         let curr_epoch = Epoch {
             id: curr,
             start_time: now - TEST_EPOCH_DURATION.0 as i64,
-            preferences: test_preferences(),
+            preferences: NodePreferences { spool_groups: current, ..test_preferences() },
             state: EpochState {
                 phase: EpochPhase::Active as u64,
                 ..EpochState::zeroed()
@@ -274,7 +294,7 @@ mod tests {
 
         let next_epoch = Epoch {
             id: next,
-            total_groups: SPOOL_GROUPS,
+            total_groups: current,
             state: EpochState::zeroed(), // phase = Unknown
             ..Epoch::zeroed()
         };
@@ -290,7 +310,7 @@ mod tests {
             pda(next_epoch_address, next_epoch.pack(), tapedrive::ID),
             pda(curr_committee_address, populated_committee(curr), tapedrive::ID),
             pda(next_committee_address, populated_committee(next), tapedrive::ID),
-            pda(peer_set_address, peer_set(), tapedrive::ID),
+            pda(peer_set_address, peer_set_voting(voted), tapedrive::ID),
             pda(snapshot_tape_address, snapshot_tape.pack(), tapedrive::ID),
             slot_hashes_account(),
         ];
@@ -302,7 +322,7 @@ mod tests {
 
         let mut expected_next = next_epoch;
         expected_next.nonce = expected_nonce;
-        expected_next.preferences = test_preferences();
+        expected_next.preferences = NodePreferences { spool_groups: voted, ..test_preferences() };
 
         env.process_instruction(
             &instruction,

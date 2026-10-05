@@ -518,7 +518,7 @@ mod tests {
     use tape_core::bls::BlsPubkey;
     use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::prelude::*;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::{GroupIndex, TrackGroup};
     use tape_core::staking::RateSpan;
     use tape_core::system::{EpochPhase, ExchangeRate, NodePreferences, VoteKind};
     use tape_core::track::data::BlobData;
@@ -877,7 +877,7 @@ mod tests {
             epoch: EpochNumber(2),
             track: track1,
             tape: Address::new_unique(),
-            group: GroupIndex(0),
+            group: TrackGroup(0),
             track_number: TrackNumber(0),
             flags: TrackFlags::NONE,
             track_hash: Hash::default(),
@@ -1031,7 +1031,7 @@ mod tests {
                     epoch: EpochNumber(2),
                     track: register_track,
                     tape: register_tape,
-                    group: GroupIndex(0),
+                    group: TrackGroup(0),
                     track_number: TrackNumber(0),
                     flags: TrackFlags::NONE,
                     track_hash: Hash::default(),

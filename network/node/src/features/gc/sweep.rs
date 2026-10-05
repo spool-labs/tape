@@ -3,7 +3,7 @@ use tokio::task::yield_now;
 
 use tape_store_api::Store;
 use tape_core::encoding::ErasureCode;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::types::SpoolIndex;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
@@ -167,7 +167,7 @@ async fn sweep_uncertified_tracks<Db: Store>(
 fn cleanup_unowned_track_slices<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
-    group: GroupIndex,
+    group: TrackGroup,
     owned_spools: &HashSet<SpoolIndex>,
     profile: ErasureCode,
 ) -> Result<usize, NodeError> {
@@ -424,7 +424,7 @@ mod tests {
     use std::collections::HashSet;
 
     use tape_store_memory::MemoryStore;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
@@ -478,7 +478,7 @@ mod tests {
         }
     }
 
-    fn track_info(tape: Address, track_number: TrackNumber, group: GroupIndex) -> CompressedTrack {
+    fn track_info(tape: Address, track_number: TrackNumber, group: TrackGroup) -> CompressedTrack {
         CompressedTrack {
             tape,
             key: Hash::new_unique(),
@@ -497,7 +497,7 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let info = track_info(tape, TrackNumber(0), GroupIndex(1));
+        let info = track_info(tape, TrackNumber(0), TrackGroup(1));
         let track = info.address();
         let spool_id = SpoolIndex(20);
         let slot = SlotNumber(10);
@@ -575,7 +575,7 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let info = track_info(tape, TrackNumber(0), GroupIndex(1));
+        let info = track_info(tape, TrackNumber(0), TrackGroup(1));
         let track = info.address();
         let spool_id = SpoolIndex(20);
 
@@ -602,7 +602,7 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let info = track_info(tape, TrackNumber(0), GroupIndex(1));
+        let info = track_info(tape, TrackNumber(0), TrackGroup(1));
         let track = info.address();
         let spool_id = SpoolIndex(20);
 
@@ -652,7 +652,7 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let info = track_info(tape, TrackNumber(0), GroupIndex(1));
+        let info = track_info(tape, TrackNumber(0), TrackGroup(1));
         let track = info.address();
         let spool_id = SpoolIndex(20);
 
@@ -712,7 +712,7 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let info = track_info(tape, TrackNumber(0), GroupIndex(1));
+        let info = track_info(tape, TrackNumber(0), TrackGroup(1));
         let track = info.address();
         let spool_id = SpoolIndex(20);
 
@@ -757,7 +757,7 @@ mod tests {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
-        let info = track_info(tape, TrackNumber(0), GroupIndex(1));
+        let info = track_info(tape, TrackNumber(0), TrackGroup(1));
         let track = info.address();
         let spool_id = SpoolIndex(20);
 
@@ -803,7 +803,7 @@ mod tests {
         let config = test_config();
 
         let tape = Address::new_unique();
-        let group = GroupIndex(1);
+        let group = TrackGroup(1);
         let info_stale = track_info(tape, TrackNumber(0), group);
         let info_recent = track_info(tape, TrackNumber(1), group);
         let track_stale = info_stale.address();
@@ -915,7 +915,7 @@ mod tests {
     async fn slice_kept_when_register_only_pending() {
         let store = test_store();
         let pending = PendingTracks::new();
-        let group = GroupIndex(1);
+        let group = TrackGroup(1);
         let spool_id = group.spool_at(0);
         let track = Address::new_unique();
 
@@ -946,7 +946,7 @@ mod tests {
     async fn slices_outlive_the_delete_by_a_round_horizon() {
         let store = test_store();
         let track = Address::new_unique();
-        let group = GroupIndex(0);
+        let group = TrackGroup(0);
         let spool = group.spool_at(0);
 
         store.put_slice(spool, track, vec![7u8; 32]).unwrap();
@@ -996,7 +996,7 @@ mod tests {
     #[tokio::test]
     async fn own_slices() {
         let store = test_store();
-        let group = GroupIndex(0);
+        let group = TrackGroup(0);
         let spool = group.spool_at(0);
         let written = track_info(Address::new_unique(), TrackNumber(2), group);
         let again = CompressedTrack { track_number: TrackNumber(5), ..written };

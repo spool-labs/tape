@@ -1,6 +1,7 @@
 use core::mem::size_of;
 
 use tape_core::bls::BlsSignature;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::{
     BlobData, BlobDataSlice, BlobInfo, BlobInfoSlice, TrackObjectInfoSlice,
@@ -99,11 +100,12 @@ pub fn build_certify_track_ix(
     authority: Address,
     track: CompressedTrackProof,
     epoch: EpochNumber,
+    group: GroupIndex,
     bitmap: SpoolBitmap,
     signature: BlsSignature,
 ) -> Instruction {
     let (system_address, _) = system_pda();
-    let (group_address, _) = group_pda(epoch, track.state.group);
+    let (group_address, _) = group_pda(epoch, group);
 
     Instruction {
         program_id: tapedrive::ID,
@@ -127,11 +129,12 @@ pub fn build_invalidate_track_ix(
     fee_payer: Address,
     track: CompressedTrackProof,
     epoch: EpochNumber,
+    group: GroupIndex,
     bitmap: SpoolBitmap,
     signature: BlsSignature,
 ) -> Instruction {
     let (system_address, _) = system_pda();
-    let (group_address, _) = group_pda(epoch, track.state.group);
+    let (group_address, _) = group_pda(epoch, group);
 
     Instruction {
         program_id: tapedrive::ID,

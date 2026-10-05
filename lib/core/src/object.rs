@@ -17,7 +17,7 @@ pub fn object_etag(track: &CompressedTrack, blob: Option<&BlobEncoding>) -> Hash
 mod tests {
     use super::*;
     use crate::erasure::MAX_GROUP_SIZE;
-    use crate::spooler::GroupIndex;
+    use crate::spooler::TrackGroup;
     use crate::track::types::{TrackFlags, TrackKind, TrackState};
     use crate::types::{StorageUnits, StripeCount};
     use tape_crypto::address::Address;
@@ -31,7 +31,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(17),
-            group: GroupIndex::from(0),
+            group: TrackGroup::from(0),
             value_hash,
         }
     }

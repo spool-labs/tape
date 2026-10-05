@@ -744,11 +744,14 @@ async fn assert_gateway_head_advertises_ranges(
 async fn assert_direct_slice_forbidden(
     harness: &tape_e2e_simnet::SimnetHarness,
     track: &Address,
-    group: tape_core::spooler::GroupIndex,
+    group: tape_core::spooler::TrackGroup,
 ) -> anyhow::Result<()> {
     let scenario = harness.scenario();
     let system = scenario.read_system().await?;
-    let group_account = scenario.read_group(system.current_epoch, group).await?;
+    let live_group = system
+        .live_group(group)
+        .map_err(|_| anyhow::anyhow!("no spool group is live"))?;
+    let group_account = scenario.read_group(system.current_epoch, live_group).await?;
     let (position, owner) = group_account
         .spools
         .iter()
@@ -792,7 +795,7 @@ async fn assert_direct_slice_forbidden(
 async fn wait_current_owner_slices(
     scenario: &SimnetScenario<'_>,
     track: &Address,
-    group: tape_core::spooler::GroupIndex,
+    group: tape_core::spooler::TrackGroup,
     expected: usize,
     timeout: Duration,
 ) -> anyhow::Result<()> {

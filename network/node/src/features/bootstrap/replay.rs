@@ -35,7 +35,7 @@ mod tests {
     use tape_core::snapshot::replay::{
         ReplayRecord, ReplayTrack, ReplayTrackObject, ReplayableEvent, SnapshotEntry, SnapshotLog,
     };
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::{track_key, BlobData, BlobDataSlice, TrackMeta};
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
@@ -101,7 +101,7 @@ mod tests {
                 state: TrackState::Registered as u64,
                 flags: TrackFlags::NONE,
                 size: blob.size,
-                group: GroupIndex::from(4),
+                group: TrackGroup::from(4),
                 value_hash: blob.get_hash(),
             },
             epoch,
@@ -128,7 +128,7 @@ mod tests {
                 state: TrackState::Certified as u64,
                 flags: TrackFlags::NONE,
                 size: blob.size,
-                group: GroupIndex::from(4),
+                group: TrackGroup::from(4),
                 value_hash: blob.get_hash(),
             },
             epoch,
@@ -160,7 +160,7 @@ mod tests {
                 state: meta.state as u64,
                 flags: TrackFlags::NONE,
                 size: meta.size,
-                group: GroupIndex::from(4),
+                group: TrackGroup::from(4),
                 value_hash: meta.value_hash,
             },
             epoch,
@@ -272,7 +272,7 @@ mod tests {
         let track_info = store.get_track(track).unwrap().unwrap();
         assert_eq!(track_info.tape, tape);
         assert_eq!(track_info.track_number, track_number);
-        assert_eq!(track_info.group, GroupIndex::from(4));
+        assert_eq!(track_info.group, TrackGroup::from(4));
 
         assert!(matches!(
             store.get_object_info(track).unwrap(),

@@ -71,6 +71,7 @@ pub enum NodePreferenceAggregationError {
 pub fn aggregate_node_preferences(
     members: &[Member],
     peers: &[Peer],
+    current: NodePreferences,
     bounds: NodePreferences,
 ) -> Result<NodePreferences, NodePreferenceAggregationError> {
     let mut total_weight: u64 = 0;
@@ -109,7 +110,12 @@ pub fn aggregate_node_preferences(
     Ok(NodePreferences {
         committee_size: quorum_above(&committee_sizes, total_weight)
             .max(bounds.committee_size),
-        spool_groups: quorum_above(&spool_group_counts, total_weight)
+        // The group count moves only when two thirds voted past the current
+        // one: up to the highest count they all reach, down to the lowest.
+        spool_groups: current
+            .spool_groups
+            .max(quorum_above(&spool_group_counts, total_weight))
+            .min(quorum_below(&spool_group_counts, total_weight))
             .max(bounds.spool_groups),
         burn_fee_bps: BasisPoints(
             quorum_below(&burn_fee_bps, total_weight)
@@ -139,4 +145,60 @@ pub fn aggregate_node_preferences(
         ),
         node_capacity: StorageUnits::zero(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spool weight per voted group count, against a current count of 10
+    fn spool_groups(votes: &[(u64, u64)]) -> u64 {
+        let mut members = Vec::new();
+        let mut peers = Vec::new();
+
+        for (index, (count, weight)) in votes.iter().enumerate() {
+            let node = Address::from([index as u8 + 1; 32]);
+
+            members.push(Member { spools: *weight, ..Member::new(node, TAPE(1)) });
+            peers.push(Peer {
+                preferences: NodePreferences { spool_groups: *count, ..NodePreferences::zeroed() },
+                ..Peer::new(node)
+            });
+        }
+
+        let current = NodePreferences { spool_groups: 10, ..NodePreferences::zeroed() };
+        let bounds = NodePreferences { spool_groups: 1, ..NodePreferences::zeroed() };
+
+        aggregate_node_preferences(&members, &peers, current, bounds)
+            .expect("aggregate")
+            .spool_groups
+    }
+
+    // just over a third can't move the count either way
+    #[test]
+    fn minority_keeps_count() {
+        assert_eq!(spool_groups(&[(10, 66), (5, 34)]), 10);
+        assert_eq!(spool_groups(&[(10, 66), (20, 34)]), 10);
+    }
+
+    #[test]
+    fn two_thirds_lower() {
+        assert_eq!(spool_groups(&[(10, 30), (5, 70)]), 5);
+    }
+
+    // the count stops at the lowest value two thirds reach
+    #[test]
+    fn split_lower() {
+        assert_eq!(spool_groups(&[(10, 30), (7, 30), (5, 40)]), 7);
+    }
+
+    #[test]
+    fn two_thirds_higher() {
+        assert_eq!(spool_groups(&[(20, 70), (10, 30)]), 20);
+    }
+
+    #[test]
+    fn never_zero() {
+        assert_eq!(spool_groups(&[(0, 100)]), 1);
+    }
 }

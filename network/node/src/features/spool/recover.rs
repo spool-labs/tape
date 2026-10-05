@@ -4,7 +4,7 @@ use tape_peer_manager::PeerManager;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::encoding::ErasureCode;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::types::SpoolIndex;
 use tape_core::track::data::BlobData;
 use tape_core::types::StorageUnits;
@@ -66,11 +66,11 @@ const RECOVER_FETCH_CONCURRENCY: usize = 4;
 // NOTE:
 //
 // The spool relationships are:
-//   - GroupIndex::containing(spool) → group is derived from spool
+//   - TrackGroup::containing(spool) → group is derived from spool
 //   - group.position_of(spool) → slice index is derived from spool + group
 //   - group.spool_at(slice) → spool is derived from group + slice
 //
-//   Given a SpoolIndex, you can always derive the GroupIndex and the SliceIndex within it. So passing
+//   Given a SpoolIndex, you can always derive the TrackGroup and the SliceIndex within it. So passing
 //   spool, group, AND lost is redundant, any one of these plus spool is computable from the other.
 //   The helpers should just take spool and derive what they need.
 
@@ -91,7 +91,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     };
 
     let peers = group_peers(ctx.as_ref(), &spool_state, spool);
-    let group = GroupIndex::containing(spool);
+    let group = TrackGroup::containing(spool);
     let position = group.position_of(spool).unwrap_or_default();
     let batch_size = config.recover_batch.max(1);
     let profile = ctx.params().profile;
@@ -286,7 +286,7 @@ async fn fetch_slices<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     token: &CancellationToken,
 ) -> Result<Vec<(SliceIndex, Vec<u8>)>, ()> {
 
-    let group = GroupIndex::containing(spool);
+    let group = TrackGroup::containing(spool);
     let track = track_addr;
     let k = usize::from(profile.k());
     let mut slices = Vec::with_capacity(k);
@@ -450,7 +450,7 @@ mod tests {
     use peer_memory::MemoryApi;
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::erasure::{SLICE_TREE_HEIGHT, slice_root};
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
@@ -519,7 +519,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size),
-            group: GroupIndex::containing(SPOOL),
+            group: TrackGroup::containing(SPOOL),
             value_hash: blob.get_hash(),
         }
     }
@@ -573,7 +573,7 @@ mod tests {
         let mut slicer = tapenet_slicer();
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
-        let group = GroupIndex::containing(SPOOL);
+        let group = TrackGroup::containing(SPOOL);
         let lost_pos = group.position_of(SPOOL).unwrap();
         let expected = slices[lost_pos].clone();
 
@@ -665,7 +665,7 @@ mod tests {
         let mut slicer = tapenet_slicer();
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
-        let group = GroupIndex::containing(SPOOL);
+        let group = TrackGroup::containing(SPOOL);
         let lost_pos = group.position_of(SPOOL).unwrap();
         let expected = slices[lost_pos].clone();
 
@@ -733,7 +733,7 @@ mod tests {
         let mut slicer = tapenet_slicer();
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
-        let group = GroupIndex::containing(SPOOL);
+        let group = TrackGroup::containing(SPOOL);
         let lost_pos = group.position_of(SPOOL).unwrap();
         let expected = slices[lost_pos].clone();
 

@@ -109,7 +109,7 @@ impl TrackArchive {
 mod tests {
     use tape_crypto::address::Address;
 
-    use crate::spooler::GroupIndex;
+    use crate::spooler::TrackGroup;
     use crate::types::StorageUnits;
 
     use super::*;
@@ -124,7 +124,7 @@ mod tests {
                 state: 0,
                 flags: 0,
                 size: StorageUnits(1024),
-                group: GroupIndex(3),
+                group: TrackGroup(3),
                 value_hash: Hash([4u8; 32]),
             },
             proof: [Hash::default(); TRACK_TREE_HEIGHT],
@@ -144,7 +144,7 @@ mod tests {
             CompressedTrack { kind: 0, ..track },
             CompressedTrack { flags: 1, ..track },
             CompressedTrack { size: StorageUnits(1025), ..track },
-            CompressedTrack { group: GroupIndex(4), ..track },
+            CompressedTrack { group: TrackGroup(4), ..track },
             CompressedTrack { value_hash: Hash([7u8; 32]), ..track },
         ];
 

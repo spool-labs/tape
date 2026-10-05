@@ -135,12 +135,38 @@ mod tests {
         let tape_flags = TapeFlags::HIDDEN | TapeFlags::IMMUTABLE;
 
         tape_write_case(
-            permissionless_system(),
+            fifty_groups(permissionless_system()),
             blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE),
             tape_flags,
             TrackFlags::NONE,
             None,
         );
+    }
+
+    // a write lands in a group that stays live after the count drops
+    #[test]
+    fn shrinking_target() {
+        let shrinking = System {
+            live_group_count: 50,
+            target_group_count: 2,
+            ..permissionless_system()
+        };
+
+        tape_write_case(
+            shrinking,
+            blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE),
+            TapeFlags::NONE,
+            TrackFlags::NONE,
+            None,
+        );
+    }
+
+    fn fifty_groups(base: System) -> System {
+        System {
+            live_group_count: 50,
+            target_group_count: 50,
+            ..base
+        }
     }
 
     // a flag the program does not define is refused
@@ -167,7 +193,7 @@ mod tests {
     }
 
     fn write_case(base: System, blob: BlobEncoding, flags: u64, error: Option<ProgramError>) {
-        tape_write_case(base, blob, TapeFlags::NONE, flags, error);
+        tape_write_case(fifty_groups(base), blob, TapeFlags::NONE, flags, error);
     }
 
     fn tape_write_case(
@@ -206,7 +232,6 @@ mod tests {
 
         let system = System {
             current_epoch: EpochNumber(0),
-            live_group_count: 50,
             ..base
         };
         let tape = Tape {
@@ -243,8 +268,9 @@ mod tests {
             &track_number.pack(),
         ]);
 
-        let group = GroupIndex(
-            u64::from_le_bytes(mixed_hash.0[..8].try_into().unwrap()) % system.live_group_count,
+        let writable = system.live_group_count.min(system.target_group_count);
+        let group = TrackGroup(
+            u64::from_le_bytes(mixed_hash.0[..8].try_into().unwrap()) % writable,
         );
 
         let track = CompressedTrack {

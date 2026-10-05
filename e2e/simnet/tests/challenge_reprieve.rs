@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use tape_store_api::{Column, Store};
 use tape_core::challenge::{EvictionPolicy, PeerRecord};
-use tape_core::erasure::group_for_spool;
+use tape_core::spooler::TrackGroup;
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{
@@ -333,7 +333,7 @@ fn inline_payloads(harness: &SimnetHarness, spool: SpoolIndex) -> Vec<(Address, 
     let store = node.context().store.clone();
 
     store
-        .iter_track_samples_by_group(group_for_spool(spool))
+        .iter_track_samples_by_group(TrackGroup::containing(spool))
         .expect("iter sample rows")
         .into_iter()
         .filter_map(|(track, _)| match store.get_track_data(track) {

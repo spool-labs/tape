@@ -67,7 +67,7 @@ fn best<F: FnMut() -> usize>(mut scan: F, expect: usize, rounds: u32) -> Duratio
 
 fn sweep<A: BenchArm>() {
     let spool = SpoolIndex(7);
-    let prefix = SliceKey::spool_prefix(spool);
+    let prefix = SliceKey::spool_prefix(spool).expect("spool key");
 
     println!(
         "{:>7}  {:>8}  {:>6}  {:>9}  {:>13}  {:>11}  {:>8}  {:>11}",
