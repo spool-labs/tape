@@ -3,6 +3,7 @@ use std::future::Future;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use tape_rpc::{InstructionError, RpcError, looks_like_transaction_error};
 use tape_rpc_client::parse_tape_error;
@@ -38,7 +39,7 @@ where
     if slot.as_ref().is_some_and(|handle| !handle.is_finished()) {
         return;
     }
-    *slot = Some(tokio::spawn(task));
+    *slot = Some(tokio::spawn(task.in_current_span()));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -19,7 +19,7 @@ use tape_protocol::{Api, ProtocolState};
 use tape_spooler::migrate_dhondt;
 use tape_store::TapeStore;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
@@ -139,6 +139,15 @@ pub fn build_assignment_blocking<Db: Store>(
     )?;
 
     let (root, groups) = group_candidates(payloads)?;
+    debug!(
+        epoch = %next_epoch.id,
+        hash = %root,
+        tracks = weights.tracks.len(),
+        bytes = weights.sizes.iter().map(|size| size.0).sum::<u64>(),
+        blacklisted = blacklisted.iter().flatten().map(|units| units.0).sum::<u64>(),
+        committee = next_committee.len(),
+        "assignment: candidate built"
+    );
 
     Ok(Some(AssignmentCandidate {
         voting_epoch: state.epoch(),
