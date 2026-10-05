@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_api::errors::TapeError;
+use tape_core::bft::has_honest_signer;
 use tape_core::bls::BlsSignature;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, SpoolBitmap};
 use tape_protocol::{Api, ProtocolState};
@@ -178,7 +180,7 @@ where
 {
     let me = ctx.node_address();
     let vote = vote_candidate(candidate);
-    for group in member_groups(&state, me) {
+    for group in member_groups(&state.member_spools(me)) {
         let sigs = ctx
             .store
             .iter_vote_sigs(vote, group)
@@ -195,7 +197,7 @@ where
             partials.push(signature);
         }
 
-        if (partials.len() as u64) < ctx.params().thresholds.assignment {
+        if !has_honest_signer(partials.len() as u64, GROUP_SIZE as u64) {
             continue;
         }
 

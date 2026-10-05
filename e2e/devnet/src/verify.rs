@@ -1,3 +1,4 @@
+use tape_core::erasure::slice_for_spool;
 use tape_core::track::data::BlobData;
 use tape_e2e_simnet::TestNode;
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
@@ -95,9 +96,7 @@ fn validate_slice_entry(
     blob_encoding: &BlobEncoding,
     data: &[u8],
 ) -> Result<(), String> {
-    let slice_index = track_info
-        .group
-        .position_of(spool)
+    let slice_index = slice_for_spool(track_info.group, spool)
         .ok_or_else(|| "track not mapped to this spool group".to_string())?;
 
     if blob_encoding.size.0 > 0 && data.is_empty() {

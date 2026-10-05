@@ -6,6 +6,7 @@ use std::future::Future;
 use futures::stream::{self, Stream, StreamExt};
 use tape_rpc::Rpc;
 use tape_store_api::Store;
+use tape_api::program::tapedrive::track_pda;
 use tape_core::share::ShareToken;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::Hash;
@@ -83,14 +84,8 @@ fn resolve_planned_chunks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut chunks = Vec::with_capacity(plan.len());
     for planned in plan {
         let entry = &manifest.chunks[planned.index];
-        let chunk_addr = entry.track;
+        let chunk_addr = track_pda(tape, entry.track_number).0;
         let chunk = track_with_pending(state, chunk_addr)?.ok_or(RouteError::NotFound)?;
-        if chunk.tape != tape {
-            return Err(RouteError::BadGateway(format!(
-                "manifest chunk {} is on another tape",
-                planned.index
-            )));
-        }
         if !chunk.is_certified() {
             return Err(RouteError::BadGateway(format!(
                 "manifest chunk {} is not certified",
@@ -213,7 +208,6 @@ where
 mod tests {
     use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::Hash;
-    use tape_crypto::address::Address;
     use tape_sdk::stream::manifest::{ChunkEntry, ChunkManifest, MANIFEST_VERSION};
 
     use std::sync::Arc;
@@ -236,8 +230,9 @@ mod tests {
             key: Hash::default(),
             chunks: [(0, 100), (100, 100), (200, 100), (300, 100), (400, 50)]
                 .into_iter()
-                .map(|(offset, size)| ChunkEntry {
-                    track: Address::new_unique(),
+                .enumerate()
+                .map(|(index, (offset, size))| ChunkEntry {
+                    track_number: TrackNumber(index as u64),
                     offset: StorageUnits::from_bytes(offset),
                     size: StorageUnits::from_bytes(size),
                 })

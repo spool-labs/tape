@@ -1,6 +1,6 @@
 //! Error types for tape-store operations
 
-use tape_core::types::{EpochNumber, SpoolIndex};
+use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use thiserror::Error;
 
@@ -34,10 +34,6 @@ pub enum TapeStoreError {
     /// Invalid data length
     #[error("Invalid data length: expected {expected}, got {actual}")]
     InvalidDataLength { expected: usize, actual: usize },
-
-    /// Spool index past what the two-byte store key holds
-    #[error("Spool {0} is past the two-byte store key")]
-    SpoolKeyOverflow(SpoolIndex),
 
     /// Serialization error
     #[error("Serialization error: {0}")]

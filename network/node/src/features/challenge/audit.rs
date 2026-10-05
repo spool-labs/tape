@@ -16,7 +16,7 @@ use tape_core::erasure::{
 };
 use tape_core::track::blob::SubLeafProof;
 use tape_core::track::data::BlobData;
-use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex, TrackGroup};
+use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 use tape_protocol::api::{AttestReq, ProofOfAccessReq, SpoolAttestation};
@@ -104,8 +104,7 @@ pub fn has_sample_set<Db: Store, Cluster: Api, Blockchain: Rpc>(
 }
 
 /// The sample set for one round, shared by every answer drawn against it.
-/// Each row carries the track group its track was written to.
-pub type SampleSet = (Vec<(Address, TrackGroup, TrackSample)>, Vec<SampleEntry>);
+pub type SampleSet = (Vec<(Address, TrackSample)>, Vec<SampleEntry>);
 
 /// One round's sample set, built once and reused, or nothing while this node's
 /// store has yet to reach the round's cut.
@@ -145,7 +144,7 @@ fn set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
     // Read before the store is, so a backdated row landing mid-build is not
     // stamped as though the set already held it.
     let built_at = context.sample_sets.generation();
-    let built = Arc::new(build_set_entries(context, round, cutoff)?);
+    let built = Arc::new(build_set_entries(context, round.group, cutoff));
     context.sample_sets.put(key, built_at, built.clone());
     Some(built)
 }
@@ -168,41 +167,27 @@ fn store_reaches<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 fn build_set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
-    round: &Round,
+    group: GroupIndex,
     cutoff: SlotNumber,
-) -> Option<SampleSet> {
-    // A live group answers for every track group folded onto it in the round's
-    // epoch. A state that no longer holds that epoch can't say which, so no set.
-    let fold = context.state().fold_at(round.epoch)?;
-
-    let mut rows: Vec<(Address, TrackGroup, TrackSample)> = Vec::new();
-    for group in fold.carried(round.group) {
-        let scanned = context
-            .store
-            .iter_track_samples_by_group(group)
-            .map_err(|error| debug!(%error, "challenge: sample set unavailable"))
-            .ok()?;
-
-        rows.extend(
-            scanned
-                .into_iter()
-                .filter(|(_, sample)| sample.in_set_at(cutoff))
-                .map(|(track, sample)| (track, group, sample)),
-        );
-    }
-
-    // Each scan arrives in track order. The draw is defined over one track
-    // order across every group carried, so the scans are merged into it.
-    rows.sort_unstable_by_key(|(track, _, _)| *track);
-
+) -> SampleSet {
+    // Already in track order: the rows are keyed group-then-track, so the scan
+    // arrives in the canonical order the draw is defined over.
+    let rows: Vec<(Address, TrackSample)> = context
+        .store
+        .iter_track_samples_by_group(group)
+        .map_err(|error| debug!(%error, "challenge: sample set unavailable"))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, sample)| sample.in_set_at(cutoff))
+        .collect();
     let entries = rows
         .iter()
-        .map(|(track, _, sample)| SampleEntry {
+        .map(|(track, sample)| SampleEntry {
             track: *track,
             kind: sample.kind,
         })
         .collect();
-    Some((rows, entries))
+    (rows, entries)
 }
 
 /// Derives the sample a spool owes from replayed state at the round's cutoff.
@@ -214,15 +199,6 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
     round: &Round,
     spool: SpoolIndex,
 ) -> Option<(Sample, Hash)> {
-    drawn_row(context, round, spool).map(|(sample, _, value_hash)| (sample, value_hash))
-}
-
-/// The sample a spool owes, with the track group and value hash of its track.
-fn drawn_row<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    context: &NodeContext<Db, Cluster, Blockchain>,
-    round: &Round,
-    spool: SpoolIndex,
-) -> Option<(Sample, TrackGroup, Hash)> {
     let held = set_entries(context, round)?;
     let (rows, entries) = (&held.0, &held.1);
 
@@ -231,12 +207,11 @@ fn drawn_row<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     // The row's own value hash travels with the draw: an inline answer is
     // checked against it, and the track record it came from may be gone.
-    let index = rows
-        .binary_search_by_key(&sample.track, |(track, _, _)| *track)
-        .ok()?;
-    let (_, group, row) = &rows[index];
-
-    Some((sample, *group, row.value_hash))
+    let value_hash = rows
+        .binary_search_by_key(&sample.track, |(track, _)| *track)
+        .ok()
+        .map(|index| rows[index].1.value_hash)?;
+    Some((sample, value_hash))
 }
 
 pub fn build_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -244,19 +219,15 @@ pub fn build_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     round: &Round,
     spool: SpoolIndex,
 ) -> Option<ProofOfAccess> {
-    let (sample, track_group, _) = drawn_row(context, round, spool)?;
+    let (sample, _) = expected_sample(context, round, spool)?;
     let proof = match sample.leaf {
         SampleLeaf::Coded { sub_leaf } => {
-            // The slice sits under the track's own group, at this spool's
-            // position in the live group that carries it.
-            let stored = track_group.spool_at(round.group.position_of(spool)?);
-
             // One window of the slice and the sidecar above it, which is every
             // byte a proof reads. The rest of the slice stays on the device.
             let window = sample_window_range(sub_leaf);
             let (sidecar, bytes) = context
                 .store
-                .slice_window(stored, sample.track, window.start, window.len())
+                .slice_window(spool, sample.track, window.start, window.len())
                 .ok()
                 .flatten()?;
             if sidecar.is_empty() {
@@ -571,7 +542,7 @@ pub fn round_of(answer: &ProofOfAccess) -> Round {
 }
 
 pub fn group_members(state: &ProtocolState, group: GroupIndex) -> Vec<Address> {
-    owners_of(state.group_peers(group.into()))
+    owners_of(state.group_peers(group))
 }
 
 /// The group's roster in the round's epoch, or nothing once the state no longer holds it
@@ -580,7 +551,7 @@ pub fn group_members_at(
     epoch: EpochNumber,
     group: GroupIndex,
 ) -> Option<Vec<Address>> {
-    state.group_peers_at(epoch, group.into()).map(owners_of)
+    state.group_peers_at(epoch, group).map(owners_of)
 }
 
 fn owners_of(peers: Vec<(SpoolIndex, Address)>) -> Vec<Address> {
@@ -630,7 +601,7 @@ mod tests {
             deleted_slot: None,
         };
         ctx.store
-            .put_track_sample(group.into(), Address::new_unique(), row)
+            .put_track_sample(group, Address::new_unique(), row)
             .expect("sample row");
 
         let round = Round {

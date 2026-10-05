@@ -12,10 +12,9 @@ use tape_store_memory::MemoryStore;
 use tape_chain_harness::{
     ChainHarness, ChainHarnessBuilder, HarnessNode, HarnessNodeSpec, IntoEpochNumber,
 };
-use tape_core::encoding::{ErasureCode, TAPENET_PROFILE};
+use tape_core::encoding::EncodingProfile;
 use tape_core::erasure::{SLICE_TREE_HEIGHT, slice_root};
 use tape_core::prelude::{EpochNumber, EpochPhase, SlotNumber, SpoolIndex, SpoolState, SpoolStatus};
-use tape_core::thresholds::TrustModel;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::types::{StorageUnits, StripeCount};
 use tape_crypto::ed25519::Keypair;
@@ -162,12 +161,6 @@ pub struct NodeHarnessBuilder {
 }
 
 impl NodeHarnessBuilder {
-    /// Run the chain on another profile and trust model than tapenet's.
-    pub fn network(mut self, profile: ErasureCode, trust_model: TrustModel) -> Self {
-        self.chain = self.chain.network(profile, trust_model);
-        self
-    }
-
     pub fn nodes(mut self, count: usize) -> Self {
         self.chain = self.chain.nodes(count);
         self
@@ -296,8 +289,7 @@ impl NodeHarnessBuilder {
 
 pub use tape_chain_harness::{ChainFixture, HarnessSpec};
 
-/// Encode a payload on tapenet's profile and build the encoding a track would
-/// register for it.
+/// Clay-encode a payload and build the encoding a track would register for it.
 ///
 /// The fill is xorshift rather than a counter because a payload that repeats
 /// inside one sample leaf makes every leaf identical, and a merkle tree over
@@ -314,9 +306,9 @@ pub fn coded_track(len: usize, seed: u64) -> (Vec<Vec<u8>>, BlobEncoding) {
         })
         .collect();
 
-    let mut slicer = Slicer::try_from_profile(TAPENET_PROFILE).expect("tapenet slicer");
+    let mut slicer = Slicer::clay_default();
     let slices = slicer.encode(&payload).expect("clay encode");
-    let metadata = SliceMetadata::parse(&slices[0]).expect("slice metadata");
+    let metadata = SliceMetadata::from_slice(&slices[0]).expect("slice metadata");
     let stripe_size = metadata.stripe_size() as u64;
     let leaves =
         core::array::from_fn(|index| slice_root(&slices[index]).expect("slice within capacity"));
@@ -324,6 +316,7 @@ pub fn coded_track(len: usize, seed: u64) -> (Vec<Vec<u8>>, BlobEncoding) {
     let encoding = BlobEncoding {
         size: StorageUnits::from_bytes(len as u64),
         commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves),
+        profile: EncodingProfile::clay_default(),
         stripe_size: StorageUnits::from_bytes(stripe_size),
         stripe_count: StripeCount((len as u64).div_ceil(stripe_size)),
         leaves,

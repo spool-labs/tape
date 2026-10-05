@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
@@ -47,7 +47,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut gaps = 0usize;
     let mut had_error = false;
 
-    let group = TrackGroup::containing(spool);
+    let group = GroupIndex::containing(spool);
     let batch_size = config.scan_batch.max(1);
 
     loop {
@@ -136,7 +136,8 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -161,14 +162,15 @@ mod tests {
         Address::from([n; 32])
     }
 
-    fn track(group: TrackGroup) -> CompressedTrack {
+    fn track(group: GroupIndex) -> CompressedTrack {
+        let _profile = EncodingProfile::clay_default();
         CompressedTrack {
             tape: Address::from([0; 32]),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            flags: TrackFlags::NONE,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(1024),
             group,
             value_hash: Hash::new_unique(),
@@ -186,7 +188,7 @@ mod tests {
     async fn all_present() {
         let ctx = test_context().await;
         let a = addr(1);
-        let group = TrackGroup::containing(SPOOL);
+        let group = GroupIndex::containing(SPOOL);
 
         ctx.store.put_track(a, track(group)).unwrap();
         ctx.store.put_object_info(a, certified(a)).unwrap();
@@ -221,7 +223,7 @@ mod tests {
     async fn finds_gaps() {
         let ctx = test_context().await;
         let a = addr(1);
-        let group = TrackGroup::containing(SPOOL);
+        let group = GroupIndex::containing(SPOOL);
 
         // Certified track exists but no slice data.
         ctx.store.put_track(a, track(group)).unwrap();
@@ -237,7 +239,7 @@ mod tests {
     async fn skips_other_groups() {
         let ctx = test_context().await;
         let a = addr(1);
-        let other_group = TrackGroup(TrackGroup::containing(SPOOL).0 + 1);
+        let other_group = GroupIndex::containing(SPOOL + SpoolIndex(20)); // Different group.
 
         ctx.store.put_track(a, track(other_group)).unwrap();
 
@@ -249,7 +251,7 @@ mod tests {
     async fn idempotent_adds() {
         let ctx = test_context().await;
         let a = addr(1);
-        let group = TrackGroup::containing(SPOOL);
+        let group = GroupIndex::containing(SPOOL);
 
         ctx.store.put_track(a, track(group)).unwrap();
         ctx.store.put_object_info(a, certified(a)).unwrap();
@@ -266,7 +268,7 @@ mod tests {
     async fn skips_uncertified() {
         let ctx = test_context().await;
         let a = addr(1);
-        let group = TrackGroup::containing(SPOOL);
+        let group = GroupIndex::containing(SPOOL);
 
         // Track exists, no slice, but NOT certified.
         ctx.store.put_track(a, track(group)).unwrap();
@@ -286,7 +288,7 @@ mod tests {
     async fn scans_certified() {
         let ctx = test_context().await;
         let a = addr(1);
-        let group = TrackGroup::containing(SPOOL);
+        let group = GroupIndex::containing(SPOOL);
 
         // Track exists, no slice, IS certified -> should be a gap.
         ctx.store.put_track(a, track(group)).unwrap();
@@ -301,7 +303,7 @@ mod tests {
     async fn scans_snapshot_tracks() {
         let ctx = test_context().await;
         let a = addr(1);
-        let group = TrackGroup::containing(SPOOL);
+        let group = GroupIndex::containing(SPOOL);
 
         ctx.store.put_track(a, track(group)).unwrap();
         ctx.store.put_object_info(a, snapshot(a)).unwrap();

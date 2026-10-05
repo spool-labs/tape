@@ -3,7 +3,6 @@
 use std::future::Future;
 
 use tape_core::track::data::{track_key, BlobDataSlice};
-use tape_core::track::types::CompressedTrack;
 use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -35,12 +34,12 @@ pub trait TrackWriter {
         track: Address,
     ) -> impl Future<Output = Result<(), ChainError>> + Send;
 
-    /// The track at a number, `None` while no peer holds one
-    fn landed_track(
+    /// The key of the track at a number, `None` while no peer holds one
+    fn landed_key(
         &self,
         tape: Address,
         track_number: TrackNumber,
-    ) -> impl Future<Output = Result<Option<CompressedTrack>, ChainError>> + Send;
+    ) -> impl Future<Output = Result<Option<Hash>, ChainError>> + Send;
 }
 
 /// The key the chain gives an unnamed inline track holding these bytes

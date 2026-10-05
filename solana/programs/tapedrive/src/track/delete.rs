@@ -38,11 +38,6 @@ pub fn process_delete_track(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         return Err(ProgramError::InvalidAccountData);
     }
 
-    // The leaf hash covers the flags, so a leaf with the flag cleared fails its proof below.
-    if proof.state.is_immutable() {
-        return Err(TapeError::TrackImmutable.into());
-    }
-
     delete_track(
         tape,
         tape_address,
@@ -60,9 +55,9 @@ mod tests {
     use tape_core::track::types::{
         CompressedTrack,
         CompressedTrackProof,
-        TrackFlags,
         TrackKind,
         TrackState,
+        TrackVisibility,
     };
     use tape_crypto::merkle::{create_proof_from_leaf_hashes, MerkleTree};
     use tape_crypto::Hash;
@@ -84,9 +79,9 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            flags: TrackFlags::NONE,
+            visibility: TrackVisibility::Public as u64,
             size,
-            group: TrackGroup(7),
+            group: GroupIndex(7),
             value_hash: Hash::new_unique(),
         };
         let track_hash = track.get_hash();
@@ -151,78 +146,6 @@ mod tests {
         );
     }
 
-    // an immutable track can't be deleted in any state, and the tape is left as it was
-    #[test]
-    fn immutable_refused() {
-        for state in [TrackState::Registered, TrackState::Certified, TrackState::Invalidated] {
-            let fee_payer = Pubkey::new_unique();
-            let authority = Pubkey::new_unique();
-
-            let (tape_address, _) = tape_pda(authority.into());
-            let track_number = TrackNumber(0);
-            let track = CompressedTrack {
-                tape: tape_address,
-                key: Hash::new_unique(),
-                track_number,
-                kind: TrackKind::Coded as u64,
-                state: state as u64,
-                flags: TrackFlags::IMMUTABLE,
-                size: StorageUnits::mb(250),
-                group: TrackGroup(7),
-                value_hash: Hash::new_unique(),
-            };
-            let track_hash = track.get_hash();
-            let mut track_tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
-            track_tree.add_leaf_hash(track_hash).unwrap();
-            let proof: [Hash; TRACK_TREE_HEIGHT] = create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
-                    &[track_hash],
-                    track_number.0 as usize,
-                )
-                .expect("track proof is valid")
-                .try_into()
-                .expect("proof has correct length");
-
-            let tape = Tape {
-                authority: authority.into(),
-                capacity: StorageUnits::mb(1000),
-                used: track.size,
-                active_epoch: EpochNumber(15),
-                expiry_epoch: EpochNumber(100),
-                tracks: TrackArchive {
-                    tree: track_tree,
-                    next_number: TrackNumber(1),
-                    num_tracks: 1,
-                },
-                ..Tape::zeroed()
-            };
-
-            let instruction = build_delete_track_ix(
-                fee_payer.into(),
-                authority.into(),
-                CompressedTrackProof { state: track, proof },
-            );
-
-            let accounts = vec![
-                sol(fee_payer, 1_000_000_000),
-                sol(authority, 0),
-
-                pda(tape_address, tape.pack(), tapedrive::ID),
-            ];
-
-            let env = test_env();
-            env.process_instruction(
-                &instruction,
-                &accounts,
-                &[
-                    Check::err(TapeError::TrackImmutable.into()),
-                    Check::account(&Pubkey::from(tape_address))
-                        .data(tape.pack().as_ref())
-                        .build(),
-                ],
-            );
-        }
-    }
-
     // deleting an invalidated track does not refund capacity a second time
     #[test]
     fn delete_invalidated_track() {
@@ -239,9 +162,9 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Invalidated as u64,
-            flags: TrackFlags::NONE,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::mb(250),
-            group: TrackGroup(7),
+            group: GroupIndex(7),
             value_hash: Hash::new_unique(),
         };
         let track_hash = track.get_hash();

@@ -185,7 +185,7 @@ fn iter_ripe_repairs<S: Store>(
     applied: SlotNumber,
     limit: usize,
 ) -> Result<Vec<Address>> {
-    let prefix = SliceKey::spool_prefix(spool_id)?;
+    let prefix = SliceKey::spool_prefix(spool_id);
     let iter = store
         .inner()
         .inner()
@@ -214,7 +214,7 @@ fn iter_pending_by_spool<S: Store>(
     spool_id: SpoolIndex,
     limit: usize,
 ) -> Result<Vec<Address>> {
-    let prefix = SliceKey::spool_prefix(spool_id)?;
+    let prefix = SliceKey::spool_prefix(spool_id);
     let iter = store.inner().inner().iter_prefix(cf_name, &prefix)?;
 
     let mut results = Vec::new();
@@ -235,7 +235,7 @@ fn clear_all_pending_by_spool<S: Store>(
     spool_id: SpoolIndex,
 ) -> Result<()> {
     let raw = store.inner().inner();
-    let prefix = SliceKey::spool_prefix(spool_id)?;
+    let prefix = SliceKey::spool_prefix(spool_id);
 
     let keys: Vec<Vec<u8>> = raw
         .iter_prefix(cf_name, &prefix)?

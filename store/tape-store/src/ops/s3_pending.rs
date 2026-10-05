@@ -155,7 +155,7 @@ impl<Backend: Store> PendingWriteOps for TapeStore<Backend> {
             return Ok(false);
         };
         match &mut entry.op {
-            PendingOp::Put { old_track: old_track @ None, .. } => *old_track = Some(track),
+            PendingOp::Put { prior: prior @ None, .. } => *prior = Some(track),
             PendingOp::Delete { track: named @ None } => *named = Some(track),
             PendingOp::Put { .. } => return Ok(false),
             PendingOp::Delete { .. } => return Ok(false),
@@ -314,7 +314,7 @@ mod tests {
                 etag: hash(data),
                 size: data.len() as u64,
                 block_time: 1_700_000_000,
-                old_track: None,
+                prior: None,
             },
             state: PendingState::Queued,
         }

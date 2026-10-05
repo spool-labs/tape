@@ -11711,20 +11711,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tape-spool-sim"
-version = "0.4.8"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "rand 0.8.5",
- "ratatui",
- "tape-core",
- "tape-crypto",
- "tape-spooler",
-]
-
-[[package]]
 name = "tape-spooler"
 version = "0.4.8"
 dependencies = [
@@ -11739,6 +11725,7 @@ dependencies = [
  "bytemuck",
  "rocksdb",
  "serde",
+ "tape-api",
  "tape-core",
  "tape-crypto",
  "tape-store-api",

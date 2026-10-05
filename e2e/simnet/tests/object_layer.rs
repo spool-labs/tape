@@ -2,8 +2,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits};
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE, run_simnet_test};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, run_simnet_test};
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::metrics::{InMemory, Operation, Phase};
 use tape_sdk::object::{ListObjectsQuery, ObjectBatchItem};
@@ -16,7 +17,7 @@ fn object_layer_round_trip() {
 }
 
 async fn object_layer_round_trip_inner() {
-    let node_count = TAPENET_GROUP_SIZE;
+    let node_count = GROUP_SIZE;
     let mut harness = SimnetBuilder::new()
         .node_count(node_count)
         .runtime_mode(NodeRuntimeMode::Full)

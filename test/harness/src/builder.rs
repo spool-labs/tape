@@ -3,9 +3,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
 use tape_api::program::tapedrive;
-use tape_core::encoding::{ErasureCode, TAPENET_PROFILE};
+use tape_api::program::MIN_COMMITTEE_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::system::EpochPhase;
-use tape_core::thresholds::TrustModel;
 use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_protocol::ProtocolState;
@@ -82,8 +82,6 @@ impl ChainHarness {
 
 #[derive(Clone, Debug)]
 pub struct ChainHarnessBuilder {
-    profile: ErasureCode,
-    trust_model: TrustModel,
     node_count: usize,
     epoch: EpochNumber,
     phase: EpochPhase,
@@ -96,7 +94,6 @@ pub struct ChainHarnessBuilder {
     next_committee_nodes: Option<Vec<usize>>,
     current_group_count: Option<u64>,
     prev_group_count: Option<u64>,
-    next_group_count: Option<u64>,
     node_specs: Vec<HarnessNodeSpec>,
     next_assignment_ready: bool,
     candidate_ready: bool,
@@ -106,8 +103,6 @@ pub struct ChainHarnessBuilder {
 impl Default for ChainHarnessBuilder {
     fn default() -> Self {
         Self {
-            profile: TAPENET_PROFILE,
-            trust_model: TrustModel::Permissionless,
             node_count: DEFAULT_NODES,
             epoch: DEFAULT_EPOCH,
             phase: EpochPhase::Active,
@@ -120,7 +115,6 @@ impl Default for ChainHarnessBuilder {
             next_committee_nodes: None,
             current_group_count: None,
             prev_group_count: None,
-            next_group_count: None,
             node_specs: default_node_specs(DEFAULT_NODES, DEFAULT_EPOCH),
             next_assignment_ready: false,
             candidate_ready: false,
@@ -130,13 +124,6 @@ impl Default for ChainHarnessBuilder {
 }
 
 impl ChainHarnessBuilder {
-    /// Run the chain on another profile and trust model than tapenet's.
-    pub fn network(mut self, profile: ErasureCode, trust_model: TrustModel) -> Self {
-        self.profile = profile;
-        self.trust_model = trust_model;
-        self
-    }
-
     pub fn nodes(mut self, count: usize) -> Self {
         self.node_count = count;
         self.node_specs = resize_node_specs(self.node_specs, count, self.epoch);
@@ -250,12 +237,6 @@ impl ChainHarnessBuilder {
         self
     }
 
-    /// The group count voted for the next epoch. Defaults to the current count.
-    pub fn next_group_count(mut self, count: u64) -> Self {
-        self.next_group_count = Some(count);
-        self
-    }
-
     pub fn next_assignment_ready(mut self) -> Self {
         self.next_assignment_ready = true;
         self
@@ -303,13 +284,11 @@ impl ChainHarnessBuilder {
         ensure!(self.node_count > 0, "chain harness requires at least one node");
         self.node_specs = resize_node_specs(self.node_specs, self.node_count, self.epoch);
 
-        // A group puts each of its n spools on its own committee member.
-        let width = usize::from(self.profile.n());
         let current_committee_nodes = resolve_committee_selection(
             self.node_count,
             self.current_committee_nodes,
             self.current_committee_size
-                .unwrap_or_else(|| self.node_count.min(width)),
+                .unwrap_or_else(|| self.node_count.min(MIN_COMMITTEE_SIZE)),
             "current committee",
         )?;
         let prev_committee_nodes = resolve_committee_selection(
@@ -328,30 +307,21 @@ impl ChainHarnessBuilder {
         let current_group_count = resolve_group_count(
             self.current_group_count,
             current_committee_nodes.len(),
-            self.profile,
             "current group count",
         )?;
         let prev_group_count = resolve_group_count(
             self.prev_group_count,
             prev_committee_nodes.len(),
-            self.profile,
             "previous group count",
         )?;
-        let next_group_count = self.next_group_count.unwrap_or(current_group_count);
-        ensure!(
-            next_group_count > 0 || current_group_count == 0,
-            "next group count must be at least 1 once a group is live"
-        );
-        if self.next_assignment_ready && next_group_count > 0 {
+        if self.next_assignment_ready && current_group_count > 0 {
             ensure!(
-                next_committee_nodes.len() >= width,
-                "next assignment requires at least {width} committee members"
+                next_committee_nodes.len() >= GROUP_SIZE,
+                "next assignment requires at least {GROUP_SIZE} committee members"
             );
         }
 
         Ok(HarnessSpec {
-            profile: self.profile,
-            trust_model: self.trust_model,
             epoch: self.epoch,
             phase: self.phase,
             last_epoch: self.last_epoch.unwrap_or_else(default_last_epoch),
@@ -361,7 +331,6 @@ impl ChainHarnessBuilder {
             next_committee_nodes,
             current_group_count,
             prev_group_count,
-            next_group_count,
             next_assignment_ready: self.next_assignment_ready,
             candidate_ready: self.candidate_ready,
             seed_prev_snapshot_tape: self.seed_prev_snapshot_tape,
@@ -446,7 +415,6 @@ fn resolve_committee_selection(
 fn resolve_group_count(
     count: Option<u64>,
     member_count: usize,
-    profile: ErasureCode,
     label: &str,
 ) -> Result<u64> {
     if member_count == 0 {
@@ -456,11 +424,10 @@ fn resolve_group_count(
     }
 
     let count = count.unwrap_or(1);
-    let width = usize::from(profile.n());
     if count > 0 {
         ensure!(
-            member_count >= width,
-            "{label} requires at least {width} committee members"
+            member_count >= GROUP_SIZE,
+            "{label} requires at least {GROUP_SIZE} committee members"
         );
     }
     Ok(count)
@@ -502,29 +469,9 @@ mod tests {
             .finalize_spec()
             .expect("spec");
 
-        assert_eq!(spec.current_committee_nodes.len(), usize::from(TAPENET_PROFILE.n()));
+        assert_eq!(spec.current_committee_nodes.len(), MIN_COMMITTEE_SIZE);
         assert!(spec.prev_committee_nodes.is_empty());
         assert!(spec.next_committee_nodes.is_empty());
-    }
-
-    // a 3 of 4 cluster seeds a four-member committee and four spools a group
-    #[test]
-    fn small_network() {
-        use tape_core::encoding::RSParams;
-
-        let profile = ErasureCode::ReedSolomon(RSParams::new(3, 1));
-        let spec = ChainHarness::builder()
-            .network(profile, TrustModel::Trusted)
-            .nodes(6)
-            .finalize_spec()
-            .expect("spec");
-        let seeded = build_seeded_world(&spec).expect("seeded world");
-        let state = &seeded.protocol_state;
-
-        assert_eq!(spec.current_committee_nodes.len(), 4);
-        assert_eq!(state.system.params().expect("params").thresholds.certify, 3);
-        assert_eq!(state.group_peers(tape_core::spooler::TrackGroup(0)).len(), 4);
-        assert_eq!(state.member_spools(seeded.nodes[0].node_address.into()).len(), 1);
     }
 
     #[test]

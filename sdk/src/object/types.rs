@@ -22,7 +22,6 @@ pub struct ListedObject {
     pub slot: SlotNumber,
     pub data_tape: Address,
     pub track_number: TrackNumber,
-    pub track: Address,
     pub kind: u64,
     pub content_type: ContentType,
 }
@@ -88,7 +87,6 @@ impl From<tape_protocol::api::ObjectListItem> for ListedObject {
             slot: value.slot,
             data_tape: value.data_tape,
             track_number: value.track_number,
-            track: value.track,
             kind: value.kind,
             content_type: value.content_type,
         }

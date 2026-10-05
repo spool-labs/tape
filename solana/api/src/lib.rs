@@ -41,7 +41,6 @@ pub mod prelude {
         track_pda,
         treasury_pda,
         vault_pda,
-        TrackAddress,
     };
     pub use crate::state::{
         AccountType,

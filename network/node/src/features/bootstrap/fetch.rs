@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress, SYSTEM_ADDRESS};
+use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
 use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::track::data::BlobData;
 use tape_core::types::{EpochNumber, TrackNumber};
@@ -91,7 +91,7 @@ pub fn persist_snapshot_metadata<Db: Store>(
 
     for snapshot_track in &decoded.tracks {
         let track = snapshot_track.state;
-        let track_address = track.address();
+        let track_address = track_pda(track.tape, track.track_number).0;
 
         store.put_track(track_address, track).map_err(store_err)?;
 
@@ -123,13 +123,14 @@ fn store_err(error: impl std::fmt::Display) -> NodeError {
 #[cfg(test)]
 mod tests {
     use tape_store_memory::MemoryStore;
-    use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress, SYSTEM_ADDRESS};
-    use tape_core::erasure::MAX_GROUP_SIZE;
+    use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda, SYSTEM_ADDRESS};
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::snapshot::replay::SnapshotLog;
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
@@ -150,9 +151,10 @@ mod tests {
         BlobEncoding {
             size: StorageUnits::from_bytes(128),
             commitment: Hash::new_unique(),
+            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(2),
-            leaves: [Hash::default(); MAX_GROUP_SIZE],
+            leaves: [Hash::default(); GROUP_SIZE],
         }
     }
 
@@ -162,6 +164,7 @@ mod tests {
         let epoch = EpochNumber(12);
         let snapshot_tape = snapshot_tape_pda(epoch).0;
         let track_number = TrackNumber(0);
+        let track_address = track_pda(snapshot_tape, track_number).0;
         let blob = blob();
         let track = CompressedTrack {
             tape: snapshot_tape,
@@ -169,12 +172,11 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            flags: TrackFlags::NONE,
+            visibility: TrackVisibility::Public as u64,
             size: blob.size,
-            group: TrackGroup::from(0),
+            group: GroupIndex::from(0),
             value_hash: blob.get_hash(),
         };
-        let track_address = track.address();
         let decoded = DecodedSnapshot {
             log: SnapshotLog {
                 epoch,

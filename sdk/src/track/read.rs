@@ -3,21 +3,21 @@ use std::collections::HashMap;
 use bytes::Bytes;
 
 use tape_rpc::Rpc;
-use tape_core::prelude::{SpoolIndex, BlobData, TrackGroup};
-use tape_core::spooler::GroupFold;
+use tape_core::erasure::group_start;
+use tape_core::prelude::{GroupIndex, SpoolIndex, BlobData};
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::prelude::{Address, Hash};
 use tape_crypto::hash::hash;
 use tape_protocol::api::{with_share_token, ApiError, GetTrackDataReq};
-use tape_protocol::{Api, ProtocolState};
+use tape_protocol::Api;
 use tokio::task::spawn_blocking;
 
 use crate::codec::decoder::BlobDecoder;
 use crate::codec::encoder::BlobEncoder;
-use crate::error::{ClientError, DownloadError, TapedriveError};
+use crate::error::{ClientError, TapedriveError};
 use crate::metrics::{Operation, Phase};
 use crate::tapedrive::Tapedrive;
-use crate::track::{bootstrap_network_state, network_params, params_of};
+use crate::track::bootstrap_network_state;
 use crate::transfer::downloader::ParallelDownloader;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
@@ -58,8 +58,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 }
 
-pub fn localize_slices(group: TrackGroup, slices: &[(SpoolIndex, Bytes)]) -> Vec<(SpoolIndex, &[u8])> {
-    let base = group.base_spool();
+pub fn localize_slices(group: GroupIndex, slices: &[(SpoolIndex, Bytes)]) -> Vec<(SpoolIndex, &[u8])> {
+    let base = group_start(group);
     slices
         .iter()
         .map(|(global_idx, data)| (*global_idx - base, data.as_ref()))
@@ -113,27 +113,29 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         }
 
         let group = track_info.group;
+        let k = blob.profile.k() as usize;
 
         let locate = client.timer(operation, Phase::Locate);
         let state = bootstrap_network_state(client, Some(operation)).await;
         locate.finish_result(&state);
 
         let state = state?;
-        let profile = params_of(&state)?.profile;
-        let k = usize::from(profile.k());
+        let slice_to_node: HashMap<SpoolIndex, Address> =
+            state.group_peers(group).into_iter().collect();
+
+        let downloader = ParallelDownloader::new(
+            *track,
+            slice_to_node,
+            k,
+            client.read_options.slice_concurrency,
+        )
+        .with_reputation(client.reputation.clone());
         let download = client.timer(operation, Phase::Download);
 
-        let slices = download_slices(client, *track, state.group_peers(group), k).await;
-        let slices = match slices {
-            Ok(slices) => Ok(slices),
-            // This epoch's holders fell short, so ask the nodes that held the
-            // group last epoch. They keep serving it while the new ones pull.
-            Err(error) => match previous_group_peers(client, &state, group).await {
-                Some(previous) => download_slices(client, *track, previous, k).await,
-                None => Err(error),
-            },
-        }
-        .map_err(ClientError::Download);
+        let slices = downloader
+            .download_enough_slices(client.api.as_ref())
+            .await
+            .map_err(ClientError::Download);
 
         let download = match &slices {
             Ok(slices) => download
@@ -145,8 +147,9 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         let slices = slices?;
 
         let decode = client.timer(operation, Phase::Decode);
+        let profile = blob.profile;
         let data = spawn_blocking(move || {
-            BlobDecoder::try_new(profile)?.decode(&localize_slices(group, &slices))
+            BlobDecoder::with_profile(profile).decode(&localize_slices(group, &slices))
         })
         .await
         .map_err(|error| TapedriveError::Download(ClientError::Decoding(error.to_string())))
@@ -173,7 +176,7 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     track: &Address,
     data: &[u8],
 ) -> Result<bool, TapedriveError> {
-    let profile = network_params(client, Some(Operation::Verify)).await?.profile;
+    bootstrap_network_state(client, Some(Operation::Verify)).await?;
 
     let metadata = client.timer(Operation::Verify, Phase::TrackMetadata);
     let track_info = client.get_track(track).await;
@@ -200,8 +203,9 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     let encode = client
         .timer(Operation::Verify, Phase::Encode)
         .bytes(data.len() as u64);
-    let result = BlobEncoder::try_new(profile)
-        .and_then(|mut encoder| encoder.encode_with_root(data.to_vec()))
+    let mut encoder = BlobEncoder::with_profile(blob.profile);
+    let result = encoder
+        .encode_with_root(data.to_vec())
         .map_err(|e| TapedriveError::Encoding(e.to_string()));
     encode.finish_result(&result);
     let (_, root) = result?;
@@ -210,65 +214,10 @@ pub async fn verify_track_data<Blockchain: Rpc, Cluster: Api>(
     Ok(computed == blob.commitment)
 }
 
-/// Fetch enough of a track's slices from the given holders to decode it
-async fn download_slices<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    track: Address,
-    holders: Vec<(SpoolIndex, Address)>,
-    k: usize,
-) -> Result<Vec<(SpoolIndex, Bytes)>, DownloadError> {
-    let slice_to_node: HashMap<SpoolIndex, Address> = holders.into_iter().collect();
-
-    ParallelDownloader::new(
-        track,
-        slice_to_node,
-        k,
-        client.read_options.slice_concurrency.unwrap_or(k + 1),
-    )
-    .with_reputation(client.reputation.clone())
-    .download_enough_slices(client.api.as_ref())
-    .await
-}
-
-/// The nodes that held a track group last epoch, by the group's stored spools
-///
-/// Read from the chain only when this epoch's holders fall short, so a read
-/// that succeeds pays nothing for it. After the group count drops, the nodes
-/// that held a retired group keep serving it while the new holders pull.
-async fn previous_group_peers<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    state: &ProtocolState,
-    group: TrackGroup,
-) -> Option<Vec<(SpoolIndex, Address)>> {
-    if state.epoch().is_zero() {
-        return None;
-    }
-
-    let system = &state.system;
-    let previous = GroupFold::new(system.previous_group_count, system.track_group_count)?;
-    let account = client
-        .rpc()
-        .get_group(state.epoch().prev(), previous.live_group(group))
-        .await
-        .ok()?;
-
-    let width = usize::from(system.code().ok()?.n());
-    let peers: Vec<(SpoolIndex, Address)> = account
-        .spools
-        .iter()
-        .take(width)
-        .enumerate()
-        .filter(|(_, spool)| spool.node != Address::default())
-        .map(|(position, spool)| (group.spool_at(position), spool.node))
-        .collect();
-
-    (!peers.is_empty()).then_some(peers)
-}
-
 async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track: Address,
-    group: TrackGroup,
+    group: GroupIndex,
     operation: Operation,
 ) -> Result<BlobData, TapedriveError> {
     let state = bootstrap_network_state(client, Some(operation)).await?;
@@ -288,20 +237,6 @@ async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
             Err(ApiError::NotFound) => saw_not_found = true,
             Err(ApiError::NotResponsible) => {}
             Err(error) => last_error = Some(error),
-        }
-    }
-
-    // None of this epoch's holders had it, so ask the nodes that held the
-    // group last epoch. They keep an inline payload the new ones still pull.
-    for (_, node_id) in previous_group_peers(client, &state, group).await.unwrap_or_default() {
-        if peers.contains(&node_id) {
-            continue;
-        }
-        peers.push(node_id);
-
-        let req = GetTrackDataReq { track };
-        if let Ok(res) = client.api.get_track_data(node_id, &req).await {
-            return Ok(res.data);
         }
     }
 

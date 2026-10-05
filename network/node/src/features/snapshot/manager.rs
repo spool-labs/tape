@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_api::program::tapedrive::snapshot_tape_pda;
+use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
 use tape_blocks::ParsedInstruction;
 use tape_core::system::{EpochPhase, VoteKind};
 use tape_core::types::{EpochNumber, TrackNumber};
@@ -388,14 +388,16 @@ where
         }
 
         for number in 0..tape.next_track_number.0 {
-            let Some(track) = self
+            let track = track_pda(snapshot_tape, TrackNumber(number)).0;
+            if self
                 .context
                 .store
-                .track_address_by_number(snapshot_tape, TrackNumber(number))
-                .map_err(|error| NodeError::Store(format!("track_address_by_number: {error}")))?
-            else {
+                .get_track(track)
+                .map_err(|error| NodeError::Store(format!("get_track: {error}")))?
+                .is_none()
+            {
                 return Ok(false);
-            };
+            }
             if self
                 .context
                 .store

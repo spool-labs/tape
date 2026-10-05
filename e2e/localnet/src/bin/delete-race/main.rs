@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 use tape_rpc_solana::RpcConfig;
-use tape_api::program::tapedrive::TrackAddress;
+use tape_api::program::tapedrive::track_pda;
 use tape_core::types::StorageUnits;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_sdk::keys::helpers::load_solana_keypair;
@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
             .write_track(&tape_key, &payload)
             .await
             .context("write track")?;
-        let track = written_track.address();
+        let track = track_pda(written_track.tape, written_track.track_number).0;
 
         let written = Instant::now();
         let mut attempts = 0usize;

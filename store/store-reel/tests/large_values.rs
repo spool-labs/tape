@@ -202,7 +202,7 @@ fn queued_object() {
             etag: Hash::default(),
             size: QUEUED_OBJECT_BYTES as u64,
             block_time: 0,
-            old_track: None,
+            prior: None,
         },
         state: PendingState::Queued,
     };

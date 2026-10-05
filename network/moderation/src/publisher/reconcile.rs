@@ -1,6 +1,6 @@
 //! Settling a tape's records against the chain after a write or delete of unknown outcome
 
-use tape_api::program::tapedrive::TrackAddress;
+use tape_api::program::tapedrive::track_pda;
 use tape_core::types::TrackNumber;
 use tape_sdk::stream::manifest::MAX_TRACKS_PER_TAPE;
 use tracing::{info, warn};
@@ -82,14 +82,14 @@ async fn adopt<Chain>(
 where
     Chain: TapeChain + TrackWriter,
 {
-    let landed = chain
-        .landed_track(tape.address, track_number)
+    let key = chain
+        .landed_key(tape.address, track_number)
         .await
         .map_err(|source| PublishError::Read {
             tape: tape.address,
             source,
         })?;
-    let Some(landed) = landed else {
+    let Some(key) = key else {
         return Err(PublishError::NotVisible {
             tape: tape.address,
             track_number,
@@ -97,11 +97,11 @@ where
     };
 
     let written = WrittenTrack {
-        track: landed.address(),
+        track: track_pda(tape.address, track_number).0,
         track_number,
     };
     let number = track_number.0;
-    match records.adopt_track(tape.address, written, landed.key, now).await? {
+    match records.adopt_track(tape.address, written, key, now).await? {
         Adopted::Planned(track) => info!(tape = %tape.address, number, %track, "found a planned track that landed"),
         Adopted::Duplicate(track) => warn!(tape = %tape.address, number, %track, "found a track that landed twice; deleting the copy"),
         Adopted::Unknown(track) => warn!(tape = %tape.address, number, %track, "found a track matching nothing recorded; leaving it"),

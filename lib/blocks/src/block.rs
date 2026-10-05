@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use tape_api::program::tapedrive::ID as TAPE_PROGRAM_ID;
-use tape_core::encoding::ErasureCode;
 use tape_crypto::address::Address;
 
 use crate::error::ParseError;
@@ -50,15 +49,12 @@ pub struct ParsedBlock {
 ///
 /// Returns instructions and events separately. Consumers can:
 /// - Use `parsed.events` directly for event-only processing (monitoring)
-/// - Use `parse_and_merge(block, profile)` for node-safe, per-transaction merged
+/// - Use `parse_and_merge(block)` for node-safe, per-transaction merged
 ///   instructions
-///
-/// `profile` is the network's erasure code, read from `System`. A coded track
-/// write's commitment is checked over its n leaves, as the program checked it.
 ///
 /// # Example
 /// ```ignore
-/// let parsed = tape_blocks::parse(&block, profile)?;
+/// let parsed = tape_blocks::parse(&block)?;
 ///
 /// // Event-only usage (monitor):
 /// for event in parsed.events {
@@ -68,7 +64,7 @@ pub struct ParsedBlock {
 /// // Merged usage (node):
 /// let merged = tape_blocks::merge(parsed.raw_instructions, parsed.events)?;
 /// ```
-pub fn parse(block: &wire::Block, profile: ErasureCode) -> Result<ParsedBlock, ParseError> {
+pub fn parse(block: &wire::Block) -> Result<ParsedBlock, ParseError> {
     let mut result = ParsedBlock::default();
 
     let Some(transactions) = &block.transactions else {
@@ -85,7 +81,7 @@ pub fn parse(block: &wire::Block, profile: ErasureCode) -> Result<ParsedBlock, P
 
         // Parse instructions and events from this transaction
         let tx_id = transaction_id(tx)?;
-        let (instructions, events) = parse_transaction(tx, profile)?;
+        let (instructions, events) = parse_transaction(tx)?;
         result.transactions.push(ParsedTransaction {
             tx_id,
             raw_instructions: instructions.clone(),
@@ -103,11 +99,8 @@ pub fn parse(block: &wire::Block, profile: ErasureCode) -> Result<ParsedBlock, P
 /// Instruction/event alignment is performed on a per-transaction basis so
 /// same-type instructions or events in one block cannot cross-map across
 /// different transactions.
-pub fn parse_and_merge(
-    block: &wire::Block,
-    profile: ErasureCode,
-) -> Result<Vec<ParsedInstruction>, ParseError> {
-    let parsed = parse(block, profile)?;
+pub fn parse_and_merge(block: &wire::Block) -> Result<Vec<ParsedInstruction>, ParseError> {
+    let parsed = parse(block)?;
     merge_transactions(&parsed.transactions)
 }
 
@@ -115,9 +108,8 @@ pub fn parse_and_merge(
 /// source transaction id for each merged instruction.
 pub fn parse_and_merge_with_sources(
     block: &wire::Block,
-    profile: ErasureCode,
 ) -> Result<Vec<ParsedInstructionWithSource>, ParseError> {
-    let parsed = parse(block, profile)?;
+    let parsed = parse(block)?;
     merge_transactions_with_sources(&parsed.transactions)
 }
 
@@ -160,7 +152,6 @@ fn transaction_id(tx: &wire::Transaction) -> Result<Option<Txid>, ParseError> {
 /// Parse a single transaction for tapedrive instructions and events.
 fn parse_transaction(
     tx: &wire::Transaction,
-    profile: ErasureCode,
 ) -> Result<(Vec<RawInstruction>, Vec<TapedriveEvent>), ParseError> {
     let raw_message = &tx.transaction.message;
 
@@ -178,11 +169,11 @@ fn parse_transaction(
 
     let events = parse_log_messages(meta)?;
     let mut raw_instructions = Vec::new();
-    let mut inner_by_outer_index = parse_inner_instructions(&resolved_keys, meta, profile)?;
+    let mut inner_by_outer_index = parse_inner_instructions(&resolved_keys, meta)?;
 
     // Process each top-level instruction followed immediately by its inner instructions.
     for (outer_index, ix) in raw_message.instructions.iter().enumerate() {
-        if let Some(parsed) = parse_raw_instruction(ix, &resolved_keys, profile)? {
+        if let Some(parsed) = parse_raw_instruction(ix, &resolved_keys)? {
             raw_instructions.push(parsed);
         }
 
@@ -236,7 +227,6 @@ fn parse_log_messages(meta: &wire::Meta) -> Result<Vec<TapedriveEvent>, ParseErr
 fn parse_inner_instructions(
     account_keys: &[Address],
     meta: &wire::Meta,
-    profile: ErasureCode,
 ) -> Result<BTreeMap<u8, Vec<RawInstruction>>, ParseError> {
     let mut instructions = BTreeMap::new();
 
@@ -247,7 +237,7 @@ fn parse_inner_instructions(
     for inner_ix_set in inner_instructions {
         let parsed_for_index = instructions.entry(inner_ix_set.index).or_default();
         for inner_ix in &inner_ix_set.instructions {
-            if let Some(parsed) = parse_raw_instruction(inner_ix, account_keys, profile)? {
+            if let Some(parsed) = parse_raw_instruction(inner_ix, account_keys)? {
                 parsed_for_index.push(parsed);
             }
         }
@@ -267,7 +257,7 @@ mod tests {
     use solana_message::MessageHeader;
     use solana_pubkey::Pubkey;
     use solana_signer::Signer;
-    use tape_core::spooler::{GroupIndex, TrackGroup};
+    use tape_core::spooler::GroupIndex;
     use tape_core::system::{EpochPhase, NodePreferences};
     use bytemuck::Zeroable;
     use solana_transaction_status::{
@@ -279,12 +269,12 @@ mod tests {
     use tape_api::event::{EpochAdvanced, EventType, SpoolSynced, TrackWritten};
     use tape_api::instruction::build_track_write_ix;
     use tape_api::program::tapedrive::{self, system_pda, tape_pda};
-    use tape_core::encoding::TAPENET_PROFILE;
-    use tape_core::erasure::MAX_GROUP_SIZE;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::GROUP_SIZE;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::types::coin::TAPE;
     use tape_core::track::data::{BlobData, BlobInfo};
-    use tape_core::track::types::TrackFlags;
+    use tape_core::track::types::TrackVisibility;
     use tape_core::types::{EpochNumber, SpoolIndex, StorageUnits, StripeCount};
     use tape_crypto::address::Address;
     use tape_crypto::hash::hash;
@@ -306,7 +296,7 @@ mod tests {
         };
 
         let block = wire::Block::try_from(block).unwrap();
-        let result = parse(&block, TAPENET_PROFILE).unwrap();
+        let result = parse(&block).unwrap();
         assert!(result.raw_instructions.is_empty());
         assert!(result.events.is_empty());
         assert_eq!(result.tx_count, 0);
@@ -352,7 +342,7 @@ mod tests {
         };
 
         let block = wire::Block::try_from(block).unwrap();
-        let parsed = parse(&block, TAPENET_PROFILE).unwrap();
+        let parsed = parse(&block).unwrap();
 
         assert_eq!(parsed.transactions.len(), 1);
         assert_eq!(parsed.transactions[0].tx_id, Some(Txid::from(signature)));
@@ -368,15 +358,17 @@ mod tests {
         let tx1 = ParsedTransaction {
             tx_id: None,
             raw_instructions: vec![RawInstruction::TrackWrite {
+                visibility: TrackVisibility::Public,
                 authority: Address::new_unique(),
                 key: Hash::default(),
                 object: None,
                 value: BlobData::Coded(BlobEncoding {
                     size: 1_024u64.into(),
                     commitment: Hash::default(),
+                    profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
                     stripe_count: StripeCount(1),
-                    leaves: [Hash::default(); MAX_GROUP_SIZE],
+                    leaves: [Hash::default(); GROUP_SIZE],
                 }),
             }],
             events: vec![],
@@ -386,24 +378,25 @@ mod tests {
             epoch: 2.into(),
             track: tx2_track,
             tape: Address::new_unique(),
-            group: TrackGroup(0),
+            group: GroupIndex(0),
             track_number: 0u64.into(),
-            flags: TrackFlags::NONE,
             track_hash: Hash::default(),
         };
 
         let tx2 = ParsedTransaction {
             tx_id: None,
             raw_instructions: vec![RawInstruction::TrackWrite {
+                visibility: TrackVisibility::Public,
                 authority: Address::new_unique(),
                 key: Hash::default(),
                 object: None,
                 value: BlobData::Coded(BlobEncoding {
                     size: 1_024u64.into(),
                     commitment: Hash::default(),
+                    profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
                     stripe_count: StripeCount(1),
-                    leaves: [Hash::default(); MAX_GROUP_SIZE],
+                    leaves: [Hash::default(); GROUP_SIZE],
                 }),
             }],
             events: vec![TapedriveEvent::TrackWritten(track_event)],
@@ -559,7 +552,7 @@ mod tests {
                 object: None,
                 data: BlobData::Inline(inner_data.to_vec()),
             },
-            TrackFlags::NONE,
+            TrackVisibility::Public,
         )
         .expect("valid inner track write instruction");
         let outer_ix = build_track_write_ix(
@@ -570,7 +563,7 @@ mod tests {
                 object: None,
                 data: BlobData::Inline(outer_data.to_vec()),
             },
-            TrackFlags::NONE,
+            TrackVisibility::Public,
         )
         .expect("valid outer track write instruction");
 
@@ -612,9 +605,8 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
-                            group: TrackGroup(1),
+                            group: GroupIndex(1),
                             track_number: 7u64.into(),
-                            flags: TrackFlags::NONE,
                             track_hash: Hash::new_unique(),
                         },
                     ),
@@ -627,9 +619,8 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
-                            group: TrackGroup(2),
+                            group: GroupIndex(2),
                             track_number: 8u64.into(),
-                            flags: TrackFlags::NONE,
                             track_hash: Hash::new_unique(),
                         },
                     ),
@@ -647,7 +638,7 @@ mod tests {
         };
 
         let tx = wire::Transaction::try_from(tx).unwrap();
-        let (instructions, events) = parse_transaction(&tx, TAPENET_PROFILE).unwrap();
+        let (instructions, events) = parse_transaction(&tx).unwrap();
 
         assert_eq!(instructions.len(), 2);
         match &instructions[0] {
@@ -727,7 +718,7 @@ mod tests {
                 object: None,
                 data: BlobData::Inline(inner_data.to_vec()),
             },
-            TrackFlags::NONE,
+            TrackVisibility::Public,
         )
         .expect("valid inner track write instruction");
 
@@ -766,9 +757,8 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
-                            group: TrackGroup(1),
+                            group: GroupIndex(1),
                             track_number: 21u64.into(),
-                            flags: TrackFlags::NONE,
                             track_hash: Hash::new_unique(),
                         },
                     ),
@@ -787,7 +777,7 @@ mod tests {
         };
 
         let tx = wire::Transaction::try_from(tx).unwrap();
-        let (instructions, events) = parse_transaction(&tx, TAPENET_PROFILE).unwrap();
+        let (instructions, events) = parse_transaction(&tx).unwrap();
 
         assert_eq!(instructions.len(), 1);
         match &instructions[0] {

@@ -129,7 +129,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     if next_committee.members.capacity != system.committee_size {
         return Err(TapeError::InsufficientCommittee.into());
     }
-    if next_committee.members.count < u64::from(system.code()?.n()) {
+    if (next_committee.members.count as usize) < GROUP_SIZE {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -186,7 +186,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         .saturating_add(leftover);
     archive.rewards_paid = TAPE::zero();
     archive.recent_usage = epoch_usage.reserved();
-    archive.storage_capacity = preferences.network_capacity;
+    archive.storage_capacity = preferences.storage_capacity;
     archive.storage_price = preferences.storage_price;
     archive.burn_fee_bps = preferences.burn_fee_bps;
     archive.subsidy_decay_bps = preferences.subsidy_decay_bps;
@@ -204,12 +204,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.current_epoch = next;
     system.committee_size = preferences.committee_size;
     system.target_group_count = preferences.spool_groups;
-    system.previous_group_count = system.live_group_count;
     system.live_group_count = next_epoch.total_groups;
-    system.track_group_count = system.track_group_count.max(system.live_group_count);
-
-    // Each epoch keeps its own count, so it can be folded on its own later.
-    next_epoch.track_groups = system.track_group_count;
 
     EpochAdvanced {
         old_epoch: curr,
@@ -226,16 +221,16 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 }
 
 fn validate_preferences(system: &System, preferences: NodePreferences) -> ProgramResult {
-    if preferences.network_capacity.0 < MIN_STORAGE_CAPACITY as u64 {
+    if preferences.storage_capacity.0 < MIN_STORAGE_CAPACITY as u64 {
         return Err(TapeError::UnexpectedState.into());
     }
     if preferences.storage_price.0 < MIN_STORAGE_PRICE as u64 {
         return Err(TapeError::UnexpectedState.into());
     }
-    if preferences.committee_size < u64::from(system.code()?.n()) {
+    if preferences.committee_size < MIN_COMMITTEE_SIZE as u64 {
         return Err(TapeError::InsufficientCommittee.into());
     }
-    if preferences.spool_groups == 0 {
+    if preferences.spool_groups < system.target_group_count {
         return Err(TapeError::UnexpectedState.into());
     }
     if !preferences.burn_fee_bps.is_valid() {
@@ -277,7 +272,7 @@ mod tests {
 
     fn pref(capacity_mb: u64, price: u64, committee: u64, spool_groups: u64) -> NodePreferences {
         NodePreferences {
-            network_capacity: StorageUnits::mb(capacity_mb),
+            storage_capacity: StorageUnits::mb(capacity_mb),
             storage_price: TAPE(price),
             committee_size: committee,
             spool_groups,
@@ -285,7 +280,6 @@ mod tests {
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
-            node_capacity: StorageUnits::zero(),
         }
     }
 
@@ -339,10 +333,9 @@ mod tests {
             committee_size: COMMITTEE_SIZE,
             target_group_count: 50,
             live_group_count: 50,
-            track_group_count: 50,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..permissionless_system()
+            ..System::zeroed()
         };
 
         let mut archive = Archive::zeroed();
@@ -409,7 +402,6 @@ mod tests {
             committee_size: 256,
             target_group_count: 75,
             live_group_count: 50,
-            previous_group_count: 50,
             ..system
         };
 
@@ -424,7 +416,6 @@ mod tests {
         let expected_next_epoch = Epoch {
             start_slot: SlotNumber(slot),
             start_time: now,
-            track_groups: 50,
             state: EpochState {
                 phase: EpochPhase::Sync as u64,
                 ..EpochState::zeroed()
@@ -470,86 +461,8 @@ mod tests {
         );
     }
 
-    // a committee vote below the current size takes effect
     #[test]
-    fn committee_shrinks() {
-        let system = System {
-            committee_size: 256,
-            target_group_count: 75,
-            live_group_count: 75,
-            track_group_count: 75,
-            ..permissionless_system()
-        };
-        let expected = System {
-            committee_size: 64,
-            previous_group_count: 75,
-            ..system
-        };
-
-        advance_case(system, 75, pref(2_048, 950, 64, 75), Ok(expected));
-    }
-
-    // the live count drops to the target the last advance set
-    #[test]
-    fn fewer_groups() {
-        let system = System {
-            committee_size: 64,
-            target_group_count: 5,
-            live_group_count: 10,
-            track_group_count: 10,
-            ..permissionless_system()
-        };
-        let expected = System {
-            live_group_count: 5,
-            previous_group_count: 10,
-            ..system
-        };
-
-        advance_case(system, 5, pref(2_048, 950, 64, 5), Ok(expected));
-    }
-
-    // growing past the highest count so far adds track groups
-    #[test]
-    fn more_groups() {
-        let system = System {
-            committee_size: 64,
-            target_group_count: 20,
-            live_group_count: 5,
-            previous_group_count: 10,
-            track_group_count: 10,
-            ..permissionless_system()
-        };
-        let expected = System {
-            live_group_count: 20,
-            previous_group_count: 5,
-            track_group_count: 20,
-            ..system
-        };
-
-        advance_case(system, 20, pref(2_048, 950, 64, 20), Ok(expected));
-    }
-
-    #[test]
-    fn zero_groups_refused() {
-        let system = System {
-            committee_size: 64,
-            target_group_count: 5,
-            live_group_count: 5,
-            track_group_count: 5,
-            ..permissionless_system()
-        };
-
-        advance_case(system, 5, pref(2_048, 950, 64, 0), Err(TapeError::UnexpectedState.into()));
-    }
-
-    // advances into an epoch with `total_groups` finalized groups and the
-    // given voted preferences, expecting the System's counts and sizes after
-    fn advance_case(
-        base: System,
-        total_groups: u64,
-        prefs: NodePreferences,
-        expected: Result<System, ProgramError>,
-    ) {
+    fn holds_against_shrinking_votes() {
         let fee_payer = Pubkey::new_unique();
 
         let curr = EpochNumber(10);
@@ -568,6 +481,7 @@ mod tests {
         let (subsidy_address, _) = subsidy_pda();
         let (subsidy_ata_address, _) = subsidy_ata();
 
+        let prefs = pref(2_048, 950, /*committee*/ 64, /*spool_groups*/ 75);
         let next_members: Vec<Member> = (0..20)
             .map(|i| {
                 let mut bytes = [0u8; 32];
@@ -586,11 +500,15 @@ mod tests {
             .map(|m| Peer { node: m.node, preferences: prefs, ..Peer::zeroed() })
             .collect();
 
+        // System sits at values HIGHER than the votes.
         let system = System {
             current_epoch: curr,
+            committee_size: 256,
+            target_group_count: 75,
+            live_group_count: 75,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..base
+            ..System::zeroed()
         };
 
         let archive = Archive {
@@ -609,7 +527,7 @@ mod tests {
 
         let next_epoch_data = Epoch {
             id: next,
-            total_groups,
+            total_groups: 75,
             assignment_hash: Hash::from([0x88; 32]),
             preferences: prefs,
             state: EpochState::zeroed(),
@@ -655,22 +573,15 @@ mod tests {
             token_program(),
         ];
 
-        let env = test_env();
-        let expected = match expected {
-            Ok(expected) => expected,
-            Err(error) => {
-                env.process_instruction(&instruction, &accounts, &[Check::err(error)]);
-                return;
-            }
-        };
-
         let expected_system = System {
             current_epoch: next,
-            min_epoch_duration: TEST_MIN_EPOCH_DURATION,
-            max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..expected
+            committee_size: 64,
+            target_group_count: 75,
+            live_group_count: next_epoch_data.total_groups,
+            ..system
         };
 
+        let env = test_env();
         env.process_instruction(
             &instruction,
             &accounts,

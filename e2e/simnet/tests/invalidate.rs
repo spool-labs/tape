@@ -5,16 +5,15 @@ use rand::{RngCore, SeedableRng};
 use solana_signer::Signer;
 use tape_api::compute::INVALIDATE_TRACK_CU;
 use tape_api::instruction::build_invalidate_track_ix;
-use tape_api::program::tapedrive::TrackAddress;
+use tape_api::program::tapedrive::track_pda;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::bls::BlsSignature;
 use tape_core::cert::track::TrackInvalidateMessage;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{BasisPoints, SpoolBitmap, StorageUnits};
 use tape_crypto::address::Address;
-use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, run_simnet_test,
-};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
 
@@ -108,7 +107,7 @@ async fn invalidate_track_inner() {
         .expect("write blob track");
     assert!(track.is_certified(), "blob track should be certified");
 
-    let track_address = track.address();
+    let track_address = track_pda(track.tape, track.track_number).0;
 
     // Peers only serve the proof once they have ingested the finalized track.
     let proof = wait_track_proof(&sdk, &track_address, active_timeout, |_| true).await;
@@ -179,10 +178,7 @@ async fn submit_invalidate(
 
     let system = sdk.rpc().get_system().await?;
     let epoch = system.current_epoch;
-    let live_group = system
-        .live_group(proof.state.group)
-        .map_err(|_| anyhow::anyhow!("no spool group is live"))?;
-    let group = sdk.rpc().get_group(epoch, live_group).await?;
+    let group = sdk.rpc().get_group(epoch, proof.state.group).await?;
 
     let message = TrackInvalidateMessage::new(epoch, proof.state.get_hash()).to_bytes();
 
@@ -211,7 +207,7 @@ async fn submit_invalidate(
     }
     assert_eq!(
         indices.len(),
-        TAPENET_GROUP_SIZE,
+        GROUP_SIZE,
         "every group spool should belong to a harness node"
     );
 
@@ -219,7 +215,7 @@ async fn submit_invalidate(
     let signature = BlsSignature::aggregate(&partials).expect("aggregate signatures");
 
     let admin: Address = harness.admin().pubkey().into();
-    let ix = build_invalidate_track_ix(admin, *proof, epoch, live_group, bitmap, signature);
+    let ix = build_invalidate_track_ix(admin, *proof, epoch, bitmap, signature);
 
     harness
         .chain()

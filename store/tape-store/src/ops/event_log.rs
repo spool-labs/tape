@@ -159,8 +159,8 @@ mod tests {
     use tape_core::types::NodeId;
     use tape_store_memory::MemoryStore;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
-    use tape_core::spooler::{GroupIndex, TrackGroup};
-    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
+    use tape_core::spooler::GroupIndex;
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{SpoolIndex, StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::hash::Hash;
@@ -214,9 +214,9 @@ mod tests {
                         track_number: TrackNumber(1),
                         kind: TrackKind::Inline as u64,
                         state: TrackState::Certified as u64,
-                        flags: TrackFlags::NONE,
+                        visibility: TrackVisibility::Public as u64,
                         size: StorageUnits(100),
-                        group: TrackGroup::from(7),
+                        group: GroupIndex::from(7),
                         value_hash: Hash::default(),
                     },
                     epoch,

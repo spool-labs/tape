@@ -16,9 +16,10 @@ pub fn object_etag(track: &CompressedTrack, blob: Option<&BlobEncoding>) -> Hash
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::erasure::MAX_GROUP_SIZE;
-    use crate::spooler::TrackGroup;
-    use crate::track::types::{TrackFlags, TrackKind, TrackState};
+    use crate::encoding::EncodingProfile;
+    use crate::erasure::GROUP_SIZE;
+    use crate::spooler::GroupIndex;
+    use crate::track::types::{TrackKind, TrackState, TrackVisibility};
     use crate::types::{StorageUnits, StripeCount};
     use tape_crypto::address::Address;
 
@@ -29,9 +30,9 @@ mod tests {
             key: Hash::from([2u8; 32]),
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            flags: TrackFlags::NONE,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(17),
-            group: TrackGroup::from(0),
+            group: GroupIndex::from(0),
             value_hash,
         }
     }
@@ -49,9 +50,10 @@ mod tests {
         let blob = BlobEncoding {
             size: StorageUnits::from_bytes(17),
             commitment,
+            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(8),
             stripe_count: StripeCount(1),
-            leaves: [Hash::default(); MAX_GROUP_SIZE],
+            leaves: [Hash::default(); GROUP_SIZE],
         };
 
         assert_eq!(object_etag(&track(value_hash), Some(&blob)), commitment);

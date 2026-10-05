@@ -9,21 +9,14 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 
-use bytemuck::Zeroable;
-use tape_core::encoding::{
-    ClayParams, ErasureCode, RSParams, RepParams, TAPENET_CLAY, TAPENET_PROFILE,
-};
-use tape_core::erasure::{slice_root, MAX_GROUP_SIZE};
-use tape_core::track::blob::BlobEncoding;
-use tape_crypto::Hash;
+use tape_core::encoding::ClayParams;
 use tape_slicer::{
-    blob_merkle_root, derive_stripe_size, num_stripes, ClayCoder, ErasureCoder, SliceIndex,
-    SliceMetadata, Slicer, STRIPE_CAP,
+    derive_stripe_size, num_stripes, ErasureCoder, SliceIndex, SliceMetadata, Slicer, STRIPE_CAP,
 };
 
-/// Tapenet's encode granularity (k * alpha * 2).
+/// Default Clay profile encode granularity (k * alpha * 2).
 fn align() -> usize {
-    TAPENET_CLAY.stripe_alignment() as usize
+    ClayParams::default().stripe_alignment() as usize
 }
 
 /// Snapshot symbol payload size: 4 MiB plus the chunk number header.
@@ -40,8 +33,8 @@ const REPAIR_SIZES: &[usize] = &[1_400, 100_001, 250_000, 1_000_001, SNAPSHOT_PA
 /// stripes.
 const CAPS: [usize; 2] = [STRIPE_CAP, 350_000];
 
-fn slicer_at(cap: usize) -> Slicer<ClayCoder> {
-    let mut slicer = Slicer::with_rotation(ClayCoder::from_params(TAPENET_CLAY));
+fn slicer_at(cap: usize) -> Slicer<tape_slicer::ClayCoder> {
+    let mut slicer = Slicer::clay_default();
     slicer.set_stripe_cap(cap);
     slicer
 }
@@ -211,14 +204,14 @@ fn padding_and_range_bounds() {
 fn parser_takes_writer_output_only() {
     for &len in &[1usize, 500_000, 1_000_000, 100_001, 1_000_001, 2_000_000, SNAPSHOT_PACKED] {
         let payload = mk(len);
-        let mut writer = slicer_at(STRIPE_CAP);
+        let mut writer = Slicer::clay_default();
         let meta = SliceMetadata::parse(&writer.encode(&payload).unwrap()[0]).unwrap();
 
         assert_eq!(meta.stripe_size(), writer.derived_stripe_size(len));
 
         let mut raw = vec![0u8; 64];
         raw.extend_from_slice(&meta.to_bytes());
-        assert!(writer.read_metadata(&raw).is_ok());
+        assert!(SliceMetadata::from_slice(&raw).is_ok());
 
         for off_scheme in [0u64, 100_000, 999_999, 1_000_000, 10_000_000] {
             let mut forged = meta;
@@ -226,41 +219,10 @@ fn parser_takes_writer_output_only() {
             let mut raw = vec![0u8; 64];
             raw.extend_from_slice(&forged.to_bytes());
             assert!(
-                writer.read_metadata(&raw).is_err(),
+                SliceMetadata::from_slice(&raw).is_err(),
                 "len {len}: parser accepted off-scheme stripe {off_scheme}"
             );
         }
-    }
-}
-
-// the root a writer commits to is the one the chain recomputes over the
-// network's n leaves, at every width
-#[test]
-fn commitment_matches_chain() {
-    let profiles = [
-        TAPENET_PROFILE,
-        ErasureCode::Clay(ClayParams::new(4, 2, 3)),
-        ErasureCode::ReedSolomon(RSParams::new(3, 1)),
-        ErasureCode::ReedSolomon(RSParams::new(4, 2)),
-        ErasureCode::Replication(RepParams::new(1)),
-        ErasureCode::Replication(RepParams::new(2)),
-    ];
-
-    for profile in profiles {
-        let mut slicer = Slicer::try_from_profile(profile).expect("valid profile");
-        let slices = slicer.encode(&mk(100_001)).unwrap();
-
-        let mut leaves = [Hash::default(); MAX_GROUP_SIZE];
-        for (leaf, slice) in leaves.iter_mut().zip(&slices) {
-            *leaf = slice_root(slice).expect("slice within the sample tree");
-        }
-        let blob = BlobEncoding { leaves, ..BlobEncoding::zeroed() };
-
-        assert_eq!(
-            blob.commitment_root(profile),
-            Some(blob_merkle_root(&slices)),
-            "{profile:?}"
-        );
     }
 }
 
@@ -287,5 +249,5 @@ fn hostile_stripe_count_rejected() {
 
     let refs: Vec<(usize, &[u8])> = slices.iter().enumerate().map(|(i, s)| (i, s.as_slice())).collect();
     assert_eq!(slicer.decode(&refs).unwrap(), payload);
-    assert!(slicer_at(STRIPE_CAP).read_metadata(&slices[0]).is_err());
+    assert!(SliceMetadata::from_slice(&slices[0]).is_err());
 }

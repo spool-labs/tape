@@ -29,10 +29,6 @@ pub fn process_set_spool_groups(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(ProgramError::InvalidAccountData);
     }
 
-    if args.spool_groups == 0 {
-        return Err(ProgramError::InvalidArgument);
-    }
-
     node.preferences.spool_groups = args.spool_groups;
 
     Ok(())
@@ -42,38 +38,6 @@ pub fn process_set_spool_groups(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
 mod tests {
     use super::*;
     use tape_test::*;
-
-    #[test]
-    fn zero_refused() {
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-
-        let (node_address, _) = node_pda(authority.into());
-
-        let instruction = build_set_spool_groups_ix(
-            fee_payer.into(),
-            authority.into(),
-            node_address,
-            0,
-        );
-
-        let node = Node {
-            authority: authority.into(),
-            ..Node::zeroed()
-        };
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-            pda(node_address, node.pack(), tapedrive::ID),
-        ];
-
-        test_env().process_instruction(
-            &instruction,
-            &accounts,
-            &[Check::err(ProgramError::InvalidArgument)],
-        );
-    }
 
     #[test]
     fn set_spool_groups() {

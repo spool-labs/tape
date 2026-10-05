@@ -15,14 +15,12 @@ pub mod system;
 pub mod types;
 pub mod snapshot;
 pub mod tape;
-pub mod thresholds;
 mod macros;
 
 pub mod prelude {
-    pub use crate::encoding::{EncodingProfile, ErasureCode, TAPENET_PROFILE};
-    pub use crate::thresholds::{validate_profile, NetworkParams, Thresholds, TrustModel};
+    pub use crate::encoding::EncodingProfile;
     pub use crate::object::object_etag;
-    pub use crate::types::{GroupIndex, SpoolIndex, TrackGroup};
+    pub use crate::types::{GroupIndex, SpoolIndex};
     pub use crate::system::{
         EpochPhase, EpochState, NodeStatus, SpoolState, SpoolStatus, VoteKind,
     };

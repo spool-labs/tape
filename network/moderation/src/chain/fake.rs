@@ -3,15 +3,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, MutexGuard};
 
-use tape_api::program::tapedrive::TrackAddress;
+use tape_api::program::tapedrive::track_pda;
 use tape_blacklist::list::List;
-use tape_core::spooler::TrackGroup;
 use tape_core::system::BlacklistEntry;
-use tape_core::track::data::TrackMeta;
-use tape_core::track::types::{CompressedTrack, TrackFlags};
 use tape_core::types::coin::{SOL, TAPE};
 use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
+use tape_crypto::Hash;
 use tape_rack::source::MemorySource;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::stream::manifest::MAX_TRACKS_PER_TAPE;
@@ -245,8 +243,8 @@ impl TrackWriter for FakeChain {
         }
         let fake = state.tapes.get_mut(&tape.address).ok_or(ChainError::TrackNotFound(track))?;
         let mut found = None;
-        for (number, bytes) in &fake.tracks {
-            if inline_track(tape.address, *number, bytes).address() == track {
+        for number in fake.tracks.keys() {
+            if track_pda(tape.address, *number).0 == track {
                 found = Some(*number);
             }
         }
@@ -264,33 +262,13 @@ impl TrackWriter for FakeChain {
         }
     }
 
-    async fn landed_track(
-        &self,
-        tape: Address,
-        track_number: TrackNumber,
-    ) -> Result<Option<CompressedTrack>, ChainError> {
+    async fn landed_key(&self, tape: Address, track_number: TrackNumber) -> Result<Option<Hash>, ChainError> {
         let state = self.state();
         let bytes = state
             .tapes
             .get(&tape)
             .and_then(|fake| fake.tracks.get(&track_number));
-        Ok(bytes.map(|bytes| inline_track(tape, track_number, bytes)))
-    }
-}
-
-/// The leaf the chain holds for an unnamed inline track of these bytes
-fn inline_track(tape: Address, track_number: TrackNumber, bytes: &[u8]) -> CompressedTrack {
-    let meta = TrackMeta::inline(bytes);
-    CompressedTrack {
-        tape,
-        track_number,
-        key: inline_key(bytes),
-        kind: meta.kind as u64,
-        state: meta.state as u64,
-        flags: TrackFlags::NONE,
-        size: meta.size,
-        group: TrackGroup(0),
-        value_hash: meta.value_hash,
+        Ok(bytes.map(|bytes| inline_key(bytes)))
     }
 }
 
@@ -312,7 +290,7 @@ fn land_write(state: &mut FakeState, tape: Address, bytes: &[u8]) -> Result<Writ
     fake.tracks.insert(track_number, bytes.to_vec());
     state.landed.push(Landed::Write { tape, track_number });
     Ok(WrittenTrack {
-        track: inline_track(tape, track_number, bytes).address(),
+        track: track_pda(tape, track_number).0,
         track_number,
     })
 }

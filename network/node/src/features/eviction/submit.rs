@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
+use tape_core::bft::is_supermajority;
 use tape_core::bls::BlsSignature;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::SpoolBitmap;
 use tape_protocol::{Api, ProtocolState};
@@ -55,7 +57,7 @@ where
     }
 
     let vote = candidate.vote();
-    for group in member_groups(&state, me) {
+    for group in member_groups(&state.member_spools(me)) {
         let sigs = ctx
             .store
             .iter_vote_sigs(vote, group)
@@ -72,7 +74,7 @@ where
             partials.push(signature);
         }
 
-        if (partials.len() as u64) < ctx.params().thresholds.evict {
+        if !is_supermajority(partials.len() as u64, GROUP_SIZE as u64) {
             continue;
         }
 

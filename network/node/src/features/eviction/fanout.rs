@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
+use tape_core::bft::is_supermajority;
+use tape_core::erasure::GROUP_SIZE;
 use tape_protocol::api::VoteReq;
 use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::VoteOps;
@@ -30,13 +32,13 @@ where
     }
 
     let vote = candidate.vote();
-    for group in member_groups(&state, me) {
+    for group in member_groups(&state.member_spools(me)) {
         let sigs = ctx
             .store
             .iter_vote_sigs(vote, group)
             .map_err(|e| NodeError::Store(format!("iter_vote_sigs: {e}")))?;
 
-        if sigs.len() as u64 >= ctx.params().thresholds.evict {
+        if is_supermajority(sigs.len() as u64, GROUP_SIZE as u64) {
             continue;
         }
 

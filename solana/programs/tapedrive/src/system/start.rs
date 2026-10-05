@@ -48,10 +48,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     token_program_info
         .is_program(&spl_token::ID)?;
 
-    // Genesis seats one node on each spool of the first group, so the
-    // committee has to be exactly as wide as a group.
     let committee_size = system.committee_size;
-    if committee_size != u64::from(system.code()?.n()) {
+    if committee_size != GROUP_SIZE as u64 {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -82,7 +80,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     archive.schedule = EpochSchedule::new_at(target);
     let genesis_preferences = NodePreferences {
-        network_capacity: archive.storage_capacity,
+        storage_capacity: archive.storage_capacity,
         storage_price: archive.storage_price,
         committee_size,
         spool_groups,
@@ -90,7 +88,6 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         subsidy_decay_bps: archive.subsidy_decay_bps,
         access_threshold: TAPE(0),
         epoch_duration,
-        node_capacity: StorageUnits::zero(),
     };
 
     subsidy_info
@@ -249,7 +246,6 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     }
 
     epoch.total_groups = 1;
-    epoch.track_groups = 1;
     epoch.total_assigned = StorageUnits::zero();
     epoch.preferences = genesis_preferences;
 
@@ -263,7 +259,6 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     epoch.state.phase = EpochPhase::Snapshot as u64;
 
     system.live_group_count = 1;
-    system.track_group_count = 1;
     system.current_epoch = target;
 
     Ok(())
@@ -302,15 +297,13 @@ pub fn ensure_committee_capacity<'info>(
 mod tests {
     use super::*;
     use tape_api::state::{Committee, PeerSet};
-    use tape_core::encoding::RSParams;
     use tape_core::system::{sort_members_for_committee, Peer};
     use tape_test::*;
 
-    fn genesis_committee(profile: ErasureCode) -> (Vec<Member>, Vec<Member>, Vec<Peer>) {
-        let width = usize::from(profile.n());
-        let mut staged_members: Vec<Member> = Vec::with_capacity(width);
-        let mut expected_peers: Vec<Peer> = Vec::with_capacity(width);
-        for i in 0..width {
+    fn genesis_committee() -> (Vec<Member>, Vec<Member>, Vec<Peer>) {
+        let mut staged_members: Vec<Member> = Vec::with_capacity(GROUP_SIZE);
+        let mut expected_peers: Vec<Peer> = Vec::with_capacity(GROUP_SIZE);
+        for i in 0..GROUP_SIZE {
             let bls_sk = BlsPrivateKey::from_random();
             let bls_pk = bls_sk.public_key().expect("bls pk");
             let mut bytes = [0u8; 32];
@@ -343,65 +336,6 @@ mod tests {
     // happy-path
     #[test]
     fn start() {
-        start_case(GenesisConfig {
-            spool_groups: 50,
-            subsidy_amount: TAPE(50),
-            ..GenesisConfig::simnet()
-        });
-    }
-
-    // a trusted 3-of-4 cluster starts on four staged nodes, one per live spool
-    #[test]
-    fn custom_start() {
-        let profile = ErasureCode::ReedSolomon(RSParams::new(3, 1));
-        let config = GenesisConfig::try_custom(profile, TrustModel::Trusted).expect("3 of 4");
-
-        start_case(GenesisConfig { subsidy_amount: TAPE(50), ..config });
-    }
-
-    // a committee wider than a group can't start, since genesis seats one node per spool
-    #[test]
-    fn wide_committee() {
-        let fee_payer = Pubkey::new_unique();
-        let subsidy_authority = Pubkey::new_unique();
-        let profile = ErasureCode::ReedSolomon(RSParams::new(3, 1));
-        let config = GenesisConfig::try_custom(profile, TrustModel::Trusted).expect("3 of 4");
-
-        let system = System {
-            committee_size: 5,
-            target_group_count: config.spool_groups,
-            min_epoch_duration: config.min_epoch_duration,
-            max_epoch_duration: config.max_epoch_duration,
-            ..trusted_system(profile)
-        };
-
-        let instruction = build_start_network_ix(
-            fee_payer.into(),
-            subsidy_authority.into(),
-            &config,
-        );
-        let (system_address, _) = system_pda();
-        let accounts: Vec<(Pubkey, solana_account::Account)> = instruction
-            .accounts
-            .iter()
-            .map(|meta| match meta.pubkey {
-                key if key == fee_payer => sol(fee_payer, 1_000_000_000),
-                key if key == Pubkey::from(system_address) => pda(system_address, system.pack(), tapedrive::ID),
-                key if key == spl_token::ID => token_program(),
-                key if key == system_program::ID => system_program(),
-                key if key == sysvar::rent::ID => rent_sysvar(),
-                key => empty(key),
-            })
-            .collect();
-
-        test_env().process_instruction(
-            &instruction,
-            &accounts,
-            &[Check::err(TapeError::InsufficientCommittee.into())],
-        );
-    }
-
-    fn start_case(config: GenesisConfig) {
         let fee_payer = Pubkey::new_unique();
         let subsidy_authority = Pubkey::new_unique();
 
@@ -420,9 +354,13 @@ mod tests {
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
 
-        let width = usize::from(config.profile.n());
-        let (staged_members, expected_members, expected_peers) = genesis_committee(config.profile);
+        let (staged_members, expected_members, expected_peers) = genesis_committee();
 
+        let config = GenesisConfig {
+            spool_groups: 50,
+            subsidy_amount: TAPE(50),
+            ..GenesisConfig::simnet()
+        };
         let committee_size = config.committee_size;
         let peer_capacity = committee_size;
 
@@ -432,8 +370,6 @@ mod tests {
             target_group_count: config.spool_groups,
             min_epoch_duration: config.min_epoch_duration,
             max_epoch_duration: config.max_epoch_duration,
-            profile: config.profile.into(),
-            trust_model: config.trust_model.into(),
             ..System::zeroed()
         };
 
@@ -507,7 +443,7 @@ mod tests {
             epoch: target,
             ..Group::zeroed()
         };
-        for i in 0..width {
+        for i in 0..GROUP_SIZE {
             let peer = expected_peers
                 .iter()
                 .find(|peer| peer.node == expected_members[i].node)
@@ -530,14 +466,12 @@ mod tests {
                     System {
                         current_epoch: target,
                         live_group_count: 1,
-                        track_group_count: 1,
                         ..system
                     }.pack().as_ref()
                 ).build(),
                 Check::account(&Pubkey::from(epoch_address)).data(
                     Epoch {
                         total_groups: 1,
-                        track_groups: 1,
                         total_assigned: StorageUnits::zero(),
                         preferences: genesis_preferences,
                         start_slot: SlotNumber(slot),
@@ -602,7 +536,7 @@ mod tests {
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
 
-        let (mut staged_members, _, expected_peers) = genesis_committee(TAPENET_PROFILE);
+        let (mut staged_members, _, expected_peers) = genesis_committee();
         staged_members[0].stake = TAPE::zero();
 
         let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::simnet() };
@@ -615,7 +549,7 @@ mod tests {
             target_group_count: config.spool_groups,
             min_epoch_duration: config.min_epoch_duration,
             max_epoch_duration: config.max_epoch_duration,
-            ..permissionless_system()
+            ..System::zeroed()
         };
 
         let epoch = Epoch {
@@ -635,7 +569,7 @@ mod tests {
         }
         .pack_with(&staged_members);
         let candidate_committee_data =
-            Committee { epoch: candidate, members: Tail::empty(MAX_GROUP_SIZE as u64) }
+            Committee { epoch: candidate, members: Tail::empty(GROUP_SIZE as u64) }
                 .pack_with(&[]);
         let peer_set_data = PeerSet {
             peers: Tail::new(peer_capacity, expected_peers.len() as u64),
@@ -695,8 +629,8 @@ mod tests {
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
 
-        let (staged_members, _, expected_peers) = genesis_committee(TAPENET_PROFILE);
-        let staged_members = &staged_members[..MAX_GROUP_SIZE - 1];
+        let (staged_members, _, expected_peers) = genesis_committee();
+        let staged_members = &staged_members[..GROUP_SIZE - 1];
 
         let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::simnet() };
         let committee_size = config.committee_size;
@@ -708,7 +642,7 @@ mod tests {
             target_group_count: config.spool_groups,
             min_epoch_duration: config.min_epoch_duration,
             max_epoch_duration: config.max_epoch_duration,
-            ..permissionless_system()
+            ..System::zeroed()
         };
         let epoch = Epoch {
             id: target,
@@ -786,8 +720,8 @@ mod tests {
         let (peer_set_address, _) = peer_set_pda();
         let (group_address, _) = group_pda(target, group_id);
 
-        let (staged_members, _, expected_peers) = genesis_committee(TAPENET_PROFILE);
-        let expected_peers = &expected_peers[..MAX_GROUP_SIZE - 1];
+        let (staged_members, _, expected_peers) = genesis_committee();
+        let expected_peers = &expected_peers[..GROUP_SIZE - 1];
 
         let config = GenesisConfig { spool_groups: 50, ..GenesisConfig::simnet() };
         let committee_size = config.committee_size;
@@ -799,7 +733,7 @@ mod tests {
             target_group_count: config.spool_groups,
             min_epoch_duration: config.min_epoch_duration,
             max_epoch_duration: config.max_epoch_duration,
-            ..permissionless_system()
+            ..System::zeroed()
         };
         let epoch = Epoch {
             id: target,

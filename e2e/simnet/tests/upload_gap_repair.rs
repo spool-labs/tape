@@ -3,16 +3,16 @@
 use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::bft::is_supermajority;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
-use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, run_simnet_test,
-};
+use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
 use tape_store::ops::{SliceOps, SpoolOps};
 
 // One group, one spool each, so stopping a node is guaranteed to strand a
 // slice rather than landing on a spool somebody else also holds.
-const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
+const NODE_COUNT: usize = GROUP_SIZE;
 const VICTIM: usize = 1;
 const TARGET_GROUPS: u64 = 1;
 const STAKE: u64 = 1_000;
@@ -106,11 +106,9 @@ async fn upload_gap_repair_inner() {
         "the stopped owner should hold nothing for a track written while it was down"
     );
     let holders = slice_holders(&harness, track);
-    let witness_node = harness.node(0).expect("node 0");
-    let certify = witness_node.context().params().thresholds.certify;
     assert!(
-        holders.len() as u64 >= certify,
-        "a certified write left {} of {TAPENET_GROUP_SIZE} owners holding their slice",
+        is_supermajority(holders.len() as u64, GROUP_SIZE as u64),
+        "a certified write left {} of {GROUP_SIZE} owners holding their slice",
         holders.len()
     );
     let (_, witness) = holders

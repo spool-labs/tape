@@ -8,6 +8,7 @@ use axum::response::IntoResponse;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::track::data::BlobData;
+use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{BINARY_CONTENT, RepairRequest};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
@@ -15,7 +16,6 @@ use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 use crate::features::blacklist::refuses_object;
 use crate::features::http::auth::{MaybeActivePeer, StakedPeer};
 use crate::features::http::error::RouteError;
-use crate::features::http::handlers::track::parse_track;
 use crate::features::http::share::check_share_token;
 use crate::features::http::peer_identity::PeerIdentity;
 use crate::features::http::state::AppState;
@@ -34,7 +34,11 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let request: RepairRequest = wincode::deserialize(&body)
         .map_err(|error| RouteError::BadRequest(format!("repair request: {error}")))?;
 
-    let track_key = parse_track(&track_id)?;
+    let track: Address = track_id
+        .parse()
+        .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
+
+    let track_key = track;
 
     state
         .context
@@ -74,7 +78,7 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .get_track_data(track_key)
         .map_err(store_error)?
         .ok_or(RouteError::NotFound)?;
-    let BlobData::Coded(_) = track_data else {
+    let BlobData::Coded(blob) = track_data else {
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };
 
@@ -86,8 +90,8 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .ok_or(RouteError::NotFound)?;
 
     let output = extract_repair_data(
-        state.context.params().profile,
-        &request.stripes,
+        &blob,
+        &request.stripes, 
         &helper_slice
     ).map_err(|error| RouteError::BadRequest(error.to_string()))?;
 
@@ -109,22 +113,20 @@ mod tests {
     use axum::http::{HeaderMap, StatusCode};
     use axum::response::IntoResponse;
 
-    use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress};
-    use tape_core::encoding::TAPENET_PROFILE;
-    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
+    use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
+    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE, slice_root};
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_snapshot::snapshot_chunk_key;
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::GroupIndex;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
     use tape_crypto::Hash;
-    use tape_crypto::address::Address;
     use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_protocol::api::{RepairRequest, StripeSubChunkRequest};
     use tape_slicer::{ErasureCoder, Slicer};
@@ -153,21 +155,22 @@ mod tests {
         // Build a real Clay-encoded snapshot chunk: 20 slices, each carrying
         // the per-slice metadata suffix that the repair extractor parses.
         let chunk = vec![0xCDu8; 2048];
-        let group = TrackGroup(2);
-        let mut slicer = Slicer::try_from_profile(TAPENET_PROFILE).expect("tapenet slicer");
+        let group = GroupIndex(2);
+        let mut slicer = Slicer::clay_default();
         slicer.set_chunk_index(ChunkNumber(group.0));
 
         let slices = slicer.encode(&chunk).expect("slicer encode");
         let stripe_size = slicer.stripe_size();
         let stripe_count = chunk.len().div_ceil(stripe_size);
 
-        let leaves: [Hash; MAX_GROUP_SIZE] =
+        let leaves: [Hash; GROUP_SIZE] =
             core::array::from_fn(|index| slice_root(&slices[index]).expect("slice within capacity"));
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
 
         let blob = BlobEncoding {
             size: StorageUnits::from_bytes(chunk.len() as u64),
             commitment,
+            profile: slicer.profile(),
             stripe_size: StorageUnits::from_bytes(stripe_size as u64),
             stripe_count: StripeCount(stripe_count as u64),
             leaves,
@@ -184,6 +187,7 @@ mod tests {
         let helper_slice = slices[slice_position].clone();
 
         let (snapshot_tape, _) = snapshot_tape_pda(epoch);
+        let track_address = track_pda(snapshot_tape, track_number).0;
 
         ctx.store
             .put_tape(
@@ -206,12 +210,11 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            flags: TrackFlags::NONE,
+            visibility: TrackVisibility::Public as u64,
             size: blob.size,
             group,
             value_hash: blob.get_hash(),
         };
-        let track_address = track.address();
 
         ctx.store
             .put_track(track_address, track)

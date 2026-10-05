@@ -6,7 +6,6 @@ use tape_core::bls::BlsPrivateKey;
 use tape_core::challenge::schedule::{Schedule, rounds_in_seconds};
 use tape_api::consts::NAME_LENGTH;
 use tape_api::genesis::GenesisConfig;
-use tape_core::thresholds::{NetworkParams, ThresholdError};
 use tape_core::types::{BasisPoints, SlotNumber};
 use tape_crypto::ed25519::Keypair;
 use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed25519_keypair};
@@ -108,9 +107,6 @@ pub enum GenesisPreset {
     Localnet,
     /// In-memory simnet profile (20s epochs).
     Simnet,
-    /// A private cluster on its own profile and trust model, with devnet's
-    /// values for everything else.
-    Custom,
 }
 
 impl GenesisPreset {
@@ -124,7 +120,7 @@ impl GenesisPreset {
     pub fn challenge_spacing_ms(self) -> u64 {
         match self {
             Self::Mainnet => 60_000,
-            Self::Devnet | Self::Custom => 30_000,
+            Self::Devnet => 30_000,
             Self::Localnet => 10_000,
             Self::Simnet => 10_000,
         }
@@ -135,15 +131,14 @@ impl GenesisPreset {
     ///
     /// Mainnet plans at 200 ms, where it is heading from 250 today. A slower
     /// live rate only stretches each round, so a span converted here lasts at
-    /// least as long as stated. The simnet producer ticks once a wall second,
-    /// while its chain clock counts `SLOT_MS` a slot. `SLOT_MS` is the fallback
-    /// before ingest measures a live rate, and no cluster preset plans slower.
+    /// least as long as stated. The simnet producer closes a block every 300 ms
+    /// of wall time. `SLOT_MS` is the fallback before ingest measures a live rate.
     pub fn slot_ms(self) -> u64 {
         match self {
             Self::Mainnet => 200,
-            Self::Devnet | Self::Custom => 166,
+            Self::Devnet => 166,
             Self::Localnet => 400,
-            Self::Simnet => 1_000,
+            Self::Simnet => 300,
         }
     }
 
@@ -155,9 +150,9 @@ impl GenesisPreset {
     pub fn challenge_handover_grace_seconds(self) -> u64 {
         match self {
             Self::Mainnet => 480,
-            Self::Devnet | Self::Custom => 225,
+            Self::Devnet => 225,
             Self::Localnet => 80,
-            Self::Simnet => 80,
+            Self::Simnet => 75,
         }
     }
 
@@ -168,30 +163,18 @@ impl GenesisPreset {
     pub fn challenge_realign_after_blank_seconds(self) -> u64 {
         match self {
             Self::Mainnet => 180,
-            Self::Devnet | Self::Custom => 75,
+            Self::Devnet => 75,
             Self::Localnet => 30,
-            Self::Simnet => 30,
+            Self::Simnet => 29,
         }
     }
 
-    /// A tapenet preset's genesis values; `custom` has none of its own.
-    pub fn tapenet(self) -> Option<GenesisConfig> {
+    pub fn config(self) -> GenesisConfig {
         match self {
-            GenesisPreset::Mainnet => Some(GenesisConfig::mainnet()),
-            GenesisPreset::Devnet => Some(GenesisConfig::devnet()),
-            GenesisPreset::Localnet => Some(GenesisConfig::localnet()),
-            GenesisPreset::Simnet => Some(GenesisConfig::simnet()),
-            GenesisPreset::Custom => None,
-        }
-    }
-
-    /// The preset's genesis values, which set a node's preferences when it
-    /// registers. `custom` takes the profile and trust model of the chain the
-    /// node is joining, so its committee size preference is that chain's n.
-    pub fn config(self, params: &NetworkParams) -> Result<GenesisConfig, ThresholdError> {
-        match self.tapenet() {
-            Some(config) => Ok(config),
-            None => GenesisConfig::try_custom(params.profile, params.trust),
+            GenesisPreset::Mainnet => GenesisConfig::mainnet(),
+            GenesisPreset::Devnet => GenesisConfig::devnet(),
+            GenesisPreset::Localnet => GenesisConfig::localnet(),
+            GenesisPreset::Simnet => GenesisConfig::simnet(),
         }
     }
 }
@@ -958,7 +941,7 @@ network:
     }
 
     #[test]
-    fn eviction_off_by_default() {
+    fn eviction_is_on_unless_turned_off() {
         let config = NodeConfig::from_yaml_str(
             r#"
 node:
@@ -969,8 +952,7 @@ network:
         )
         .unwrap();
 
-        assert!(!config.eviction.enabled);
-        assert!(!config.eviction_enabled());
+        assert!(config.eviction.enabled);
     }
 
     #[test]
@@ -1005,8 +987,7 @@ eviction:
             ("mainnet", 300, 200, 8, 3),
             ("devnet", 180, 166, 8, 3),
             ("localnet", 25, 400, 8, 3),
-            ("simnet", 10, 1_000, 8, 3),
-            ("custom", 180, 166, 8, 3),
+            ("simnet", 33, 300, 8, 3),
         ];
 
         for (preset, interval, slot_ms, grace, realign) in spans {
@@ -1048,35 +1029,6 @@ challenge:
         }
     }
 
-    // a custom node registers with devnet's preferences, except the committee
-    // size, which is the n of the chain it joins
-    #[test]
-    fn custom_preset() {
-        use tape_api::genesis::GenesisConfig;
-        use tape_core::encoding::{ErasureCode, RSParams, TAPENET_PROFILE};
-        use tape_core::thresholds::{NetworkParams, TrustModel};
-
-        let narrow = ErasureCode::ReedSolomon(RSParams::new(3, 1));
-        let small = NetworkParams::try_new(narrow, TrustModel::Trusted).expect("3 of 4");
-        let tapenet = NetworkParams::try_new(TAPENET_PROFILE, TrustModel::Permissionless)
-            .expect("tapenet");
-
-        let config = NodeConfig::from_yaml_str("genesis_preset: custom").expect("valid preset");
-        assert_eq!(config.genesis_preset, GenesisPreset::Custom);
-
-        let custom = config.genesis_preset.config(&small).expect("custom genesis");
-        let devnet = GenesisConfig::devnet();
-        assert_eq!(custom.committee_size, 4);
-        assert_eq!(custom.profile, small.profile);
-        assert_eq!(custom.trust_model, TrustModel::Trusted);
-        assert_eq!(custom.epoch_duration, devnet.epoch_duration);
-        assert_eq!(custom.storage_price, devnet.storage_price);
-
-        // A tapenet preset keeps its own values whatever chain the node joins.
-        assert_eq!(GenesisPreset::Devnet.config(&small), Ok(devnet));
-        assert_eq!(GenesisPreset::Mainnet.config(&tapenet), Ok(GenesisConfig::mainnet()));
-    }
-
     // each preset's cadence comes from its own slot time, and the fallback slot
     // time is no faster than any cluster preset plans for
     #[test]
@@ -1086,7 +1038,6 @@ challenge:
             GenesisPreset::Devnet,
             GenesisPreset::Localnet,
             GenesisPreset::Simnet,
-            GenesisPreset::Custom,
         ];
 
         for preset in presets {
@@ -1107,8 +1058,7 @@ challenge:
             ("mainnet", 300),
             ("devnet", 180),
             ("localnet", 25),
-            ("simnet", 10),
-            ("custom", 180),
+            ("simnet", 33),
         ];
 
         for (preset, interval) in presets {

@@ -67,8 +67,8 @@ mod tests {
     use std::sync::Arc;
 
     use tape_store_memory::MemoryStore;
-    use tape_api::program::tapedrive::TrackAddress;
-    use tape_core::spooler::TrackGroup;
+    use tape_api::program::tapedrive::track_pda;
+    use tape_core::spooler::GroupIndex;
     use tape_core::system::BlacklistEntry;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::CompressedTrack;
@@ -87,12 +87,12 @@ mod tests {
             key: Hash::new_unique(),
             kind: 0,
             state: 1,
-            flags: 0,
+            visibility: 0,
             size: StorageUnits::from_bytes(3),
-            group: TrackGroup(0),
+            group: GroupIndex(0),
             value_hash: Hash::new_unique(),
         };
-        let address = track.address();
+        let address = track_pda(tape, track.track_number).0;
         store.put_track(address, track).expect("put track");
         store
             .put_track_data(address, BlobData::Inline(vec![1, 2, 3]))
@@ -105,7 +105,7 @@ mod tests {
 
     fn is_held(store: &TapeStore<MemoryStore>, address: Address) -> bool {
         let slice = store
-            .get_slice(TrackGroup(0).spool_at(0), address)
+            .get_slice(GroupIndex(0).spool_at(0), address)
             .expect("read slice");
         let data = store.get_track_data(address).expect("read data");
         slice.is_some() || data.is_some()

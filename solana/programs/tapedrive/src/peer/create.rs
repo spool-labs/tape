@@ -2,8 +2,7 @@ use tape_api::dynamic::DynamicState;
 use tape_api::program::prelude::*;
 use tape_api::state::PeerSet;
 
-// No System is loaded here, so the first peer set is sized for the widest group.
-const BOOTSTRAP_PEER_CAPACITY: u64 = MAX_GROUP_SIZE as u64;
+const BOOTSTRAP_PEER_CAPACITY: u64 = GROUP_SIZE as u64;
 
 pub fn process_create_peer_set(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     let [

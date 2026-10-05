@@ -3,7 +3,7 @@ use tape_api::program::prelude::*;
 use tape_api::event::PoolAdvanced;
 use bytemuck::bytes_of;
 use tape_core::track::data::TrackMeta;
-use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
+use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
 
 use crate::track::helpers::append_track;
 
@@ -111,7 +111,7 @@ pub fn process_advance_pool(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         history_address,
         closing_span.key(),
         meta,
-        TrackFlags::NONE,
+        TrackVisibility::Public,
     )?;
 
     node.pool.advance_epoch(curr, claim)
@@ -226,7 +226,6 @@ mod tests {
             current_epoch: curr,
             committee_size: COMMITTEE_SIZE,
             live_group_count: 1,
-            target_group_count: 1,
             ..System::zeroed()
         };
 
@@ -366,7 +365,6 @@ mod tests {
             current_epoch: curr,
             committee_size: COMMITTEE_SIZE,
             live_group_count: 1,
-            target_group_count: 1,
             ..System::zeroed()
         };
 
@@ -456,7 +454,6 @@ mod tests {
             current_epoch: curr,
             committee_size: COMMITTEE_SIZE,
             live_group_count: 1,
-            target_group_count: 1,
             ..System::zeroed()
         };
 

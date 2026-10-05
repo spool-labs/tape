@@ -23,7 +23,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::RwLock;
 
 use tape_blocks::ParsedInstruction;
-use tape_core::encoding::ErasureCode;
 use tape_core::object::object_etag;
 use tape_core::snapshot::replay::ReplayTrackObject;
 use tape_core::track::data::BlobData;
@@ -195,19 +194,20 @@ impl PendingTracks {
     /// Mirrors the registration and certification subset of
     /// `features/store/apply.rs`. Invalidate and Delete are intentionally
     /// not applied here — those are destructive and remain on the finalized
-    /// path. The network's profile sets how wide a coded commitment is.
-    pub fn apply_block(&self, block: &ParsedBlock, profile: ErasureCode) {
+    /// path.
+    pub fn apply_block(&self, block: &ParsedBlock) {
         for instruction in &block.instructions {
             match instruction {
                 ParsedInstruction::TrackWrite {
                     track,
                     key,
                     object,
+                    visibility,
                     value,
                     event,
                     ..
                 } => {
-                    let Some(meta) = value.meta(profile) else {
+                    let Some(meta) = value.meta() else {
                         continue;
                     };
                     let state = CompressedTrack {
@@ -216,7 +216,7 @@ impl PendingTracks {
                         key: *key,
                         kind: meta.kind as u64,
                         state: meta.state as u64,
-                        flags: event.flags,
+                        visibility: *visibility as u64,
                         size: meta.size,
                         group: event.group,
                         value_hash: meta.value_hash,
@@ -384,18 +384,6 @@ impl PendingTracks {
         tracks
     }
 
-    /// Return the address of the pending registered track at one number on `tape`.
-    pub fn track_address_by_number(
-        &self,
-        tape: Address,
-        track_number: TrackNumber,
-    ) -> Option<Address> {
-        self.registered_tracks_by_tape(tape)
-            .into_iter()
-            .find(|(_, track)| track.track_number == track_number)
-            .map(|(address, _)| address)
-    }
-
     /// Resolve the newest certified pending registration for one object name.
     ///
     /// Registered-but-uncertified coded objects remain hidden. If several
@@ -504,10 +492,11 @@ impl PendingTracks {
 
 #[cfg(test)]
 mod tests {
-    use tape_core::erasure::MAX_GROUP_SIZE;
-    use tape_core::spooler::TrackGroup;
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::spooler::GroupIndex;
     use tape_core::track::blob::BlobEncoding;
-    use tape_core::track::types::{TrackFlags, TrackKind};
+    use tape_core::track::types::{TrackKind, TrackVisibility};
     use tape_core::types::{StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::Hash;
 
@@ -520,9 +509,9 @@ mod tests {
             key: Hash::new_unique(),
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
-            flags: TrackFlags::NONE,
+            visibility: TrackVisibility::Public as u64,
             size: StorageUnits::from_bytes(1024),
-            group: TrackGroup::from(0),
+            group: GroupIndex::from(0),
             value_hash: Hash::new_unique(),
         }
     }
@@ -531,9 +520,10 @@ mod tests {
         BlobEncoding {
             size: StorageUnits::from_bytes(1024),
             commitment: Hash::default(),
+            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(64),
             stripe_count: StripeCount(1),
-            leaves: [Hash::default(); MAX_GROUP_SIZE],
+            leaves: [Hash::default(); GROUP_SIZE],
         }
     }
 
@@ -842,26 +832,5 @@ mod tests {
         assert_eq!(object.track_address, track);
         assert_eq!(object.size, bytes.len() as u64);
         assert_eq!(object.etag, object_etag(&state, None));
-    }
-
-    // a pending registration is found by its tape and number
-    #[test]
-    fn address_by_number() {
-        let pending = PendingTracks::new();
-        let tape = Address::new_unique();
-        let track = Address::new_unique();
-        let state = registered_blob(tape);
-
-        pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(sample_blob()));
-
-        assert_eq!(pending.track_address_by_number(tape, TrackNumber(0)), Some(track));
-        assert_eq!(pending.track_address_by_number(tape, TrackNumber(1)), None);
-        assert_eq!(
-            pending.track_address_by_number(Address::new_unique(), TrackNumber(0)),
-            None
-        );
-
-        pending.drop_slot(SlotNumber(10));
-        assert_eq!(pending.track_address_by_number(tape, TrackNumber(0)), None);
     }
 }

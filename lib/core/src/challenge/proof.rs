@@ -161,7 +161,8 @@ mod tests {
     use super::*;
     use crate::bls::BlsPrivateKey;
     use crate::cert::challenge::ChallengeRespondMessage;
-    use crate::erasure::{MAX_GROUP_SIZE, SUB_LEAF_BYTES, SLICE_TREE_HEIGHT, slice_root};
+    use crate::encoding::EncodingProfile;
+    use crate::erasure::{GROUP_SIZE, SUB_LEAF_BYTES, SLICE_TREE_HEIGHT, slice_root};
     use crate::types::{StorageUnits, StripeCount};
     use tape_crypto::merkle::root_from_leaf_hashes;
 
@@ -172,7 +173,7 @@ mod tests {
     /// symmetry, plus the encoding a verifier holds for them.
     fn encoding_and_slices() -> (BlobEncoding, Vec<Vec<u8>>) {
         let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
-        let slices: Vec<Vec<u8>> = (0..MAX_GROUP_SIZE)
+        let slices: Vec<Vec<u8>> = (0..GROUP_SIZE)
             .map(|_| {
                 (0..SUB_LEAF_BYTES * 8)
                     .map(|_| {
@@ -185,11 +186,12 @@ mod tests {
             })
             .collect();
 
-        let leaves: [Hash; MAX_GROUP_SIZE] =
+        let leaves: [Hash; GROUP_SIZE] =
             core::array::from_fn(|index| slice_root(&slices[index]).expect("within capacity"));
         let encoding = BlobEncoding {
             size: StorageUnits::from_bytes(1),
             commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves),
+            profile: EncodingProfile::clay_default(),
             stripe_size: StorageUnits::from_bytes(1),
             stripe_count: StripeCount(1),
             leaves,

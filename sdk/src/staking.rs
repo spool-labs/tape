@@ -11,7 +11,7 @@ use tape_api::instruction::{
     build_advance_pool_ix, build_request_stake_unlock_ix, build_stake_with_pool_ix,
     build_unstake_from_pool_ix,
 };
-use tape_api::program::tapedrive::{history_pda, TrackAddress};
+use tape_api::program::tapedrive::{history_pda, track_pda};
 use tape_core::staking::{PoolRate, RateSpan};
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::{EpochNumber, TrackNumber};
@@ -186,7 +186,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 .await?;
 
             for track in tracks {
-                let track_address = track.address();
+                let (track_address, _) = track_pda(history_tape, track.track_number);
                 let data = match self.read(&track_address).await {
                     Ok(data) => data,
                     Err(TapedriveError::NotFound) => continue,

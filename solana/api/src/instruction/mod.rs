@@ -95,12 +95,11 @@ pub enum TapeInstruction {
     SetStoragePrice,
     SetBurnFeeBps,
     SetSubsidyDecayBps,
-    SetNetworkCapacity,
+    SetStorageCapacity,
     SetAccessThreshold,
     SetCommitteeSize,
     SetSpoolGroups,
     SetEpochDuration,
-    SetNodeCapacity,
     ClaimCommission,
 
     // Blacklist
@@ -192,12 +191,11 @@ tape_solana::instruction!(TapeInstruction, SetCommissionRate);
 tape_solana::instruction!(TapeInstruction, SetStoragePrice);
 tape_solana::instruction!(TapeInstruction, SetBurnFeeBps);
 tape_solana::instruction!(TapeInstruction, SetSubsidyDecayBps);
-tape_solana::instruction!(TapeInstruction, SetNetworkCapacity);
+tape_solana::instruction!(TapeInstruction, SetStorageCapacity);
 tape_solana::instruction!(TapeInstruction, SetAccessThreshold);
 tape_solana::instruction!(TapeInstruction, SetCommitteeSize);
 tape_solana::instruction!(TapeInstruction, SetSpoolGroups);
 tape_solana::instruction!(TapeInstruction, SetEpochDuration);
-tape_solana::instruction!(TapeInstruction, SetNodeCapacity);
 
 tape_solana::instruction!(TapeInstruction, AddToBlacklist);
 tape_solana::instruction!(TapeInstruction, RemoveFromBlacklist);

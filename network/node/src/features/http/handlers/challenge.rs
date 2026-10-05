@@ -10,8 +10,7 @@ use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::challenge::{ProofOfAccess, SuccessCertificate};
-use tape_core::erasure::group_for_spool;
-use tape_core::thresholds::Thresholds;
+use tape_core::erasure::{GROUP_SIZE, group_for_spool};
 use tape_core::types::SpoolIndex;
 use tape_crypto::Address;
 use tape_protocol::{Api, ProtocolState};
@@ -21,6 +20,7 @@ use tracing::{debug, trace, warn};
 use crate::features::challenge::audit::{
     Round, admits_round, attest_message, group_members_at, round_of, spawn_relay_and_attest,
 };
+use crate::features::challenge::certify::agreement_threshold;
 use crate::features::challenge::fold::fold_outcome;
 use crate::features::challenge::refusal::RefusalReason;
 use crate::features::challenge::rounds::RoundKey;
@@ -70,9 +70,10 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
 
     // Only a group-mate can audit an answer: nobody else settles the round
     // or holds a stake in it. Checked in the round's epoch, which can have turned.
-    if !protocol.is_member_at(answer.epoch, answer.group.into(), state.context.node_address()) {
+    if !protocol.is_member_at(answer.epoch, answer.group, state.context.node_address()) {
         return Err(RouteError::NotResponsible);
     }
+    let threshold = threshold_at(&protocol, &round)?;
 
     // Relayed copies land before the first is stored; only one pays the pairing.
     let Some(_verifying) = state.context.round_buffer.begin_verify(key) else {
@@ -126,7 +127,7 @@ pub async fn proof_of_access<Db: Store + 'static, Cluster: Api + 'static, Blockc
     mark(&state, &protocol, &round, key, MarkKind::AnswerIn);
     trace!(spool = %answer.spool, round = answer.round.0, "challenge: answer accepted");
     spawn_relay_and_attest(&state.context, &protocol, &answer);
-    if let Some(ready) = claim_certificate(&state, &protocol, key) {
+    if let Some(ready) = claim_certificate(&state, &protocol, key, threshold) {
         spawn_certify_batch(&state, &round, vec![ready]);
     }
 
@@ -200,9 +201,10 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
     // detection only; a disagreement never rejects its attestations.
     watch_digest(&state, &protocol, &payload);
     // A signer outside the round's epoch roster would fill a position it never had
-    if !protocol.is_member_at(payload.epoch, payload.group.into(), payload.signer) {
+    if !protocol.is_member_at(payload.epoch, payload.group, payload.signer) {
         return Err(RouteError::Forbidden("attestation signer is not in the group".into()));
     }
+    let threshold = threshold_at(&protocol, &round)?;
 
     // A key outside the rounds this node settles would sit in the buffer until
     // it retired, and an admitted peer could name as many of them as it liked.
@@ -211,7 +213,7 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
     }
 
     // One signature per spool in the group, each spool once, each in the group
-    if payload.attests.len() > state.context.params().n() {
+    if payload.attests.len() > GROUP_SIZE {
         return Err(RouteError::BadRequest("attestation batch too large".into()));
     }
     let mut seen = BTreeSet::new();
@@ -252,7 +254,7 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
             // An attestation only adds to a quorum, so bank it while the view is
             // being refreshed but do not fold an outcome against that view.
             if !state.context.challenge_tripwire.is_realigning() {
-                if let Some(ready) = claim_certificate(&state, &protocol, key) {
+                if let Some(ready) = claim_certificate(&state, &protocol, key, threshold) {
                     claimed.push(ready);
                 }
             }
@@ -273,9 +275,9 @@ pub async fn attest<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc
 struct Claimed {
     key: RoundKey,
     owner: Address,
-    thresholds: Thresholds,
-    /// The challenged group's roster in the round's epoch, which the challenge
-    /// threshold counts signers from
+    threshold: usize,
+    /// The challenged group's roster in the round's epoch, which the threshold
+    /// is a fraction of
     members: Vec<Address>,
     attestations: Vec<(Address, BlsSignature)>,
     signers: BTreeMap<Address, BlsPubkey>,
@@ -305,7 +307,10 @@ pub(crate) async fn certify_banked<
             round: key.round,
             block: key.block,
         };
-        let Some(claimed) = claim_certificate(&state, &protocol, key) else {
+        let Ok(threshold) = threshold_at(&protocol, &round) else {
+            continue;
+        };
+        let Some(claimed) = claim_certificate(&state, &protocol, key, threshold) else {
             continue;
         };
 
@@ -388,6 +393,14 @@ fn watch_digest<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 }
 
+/// Signatures a certificate needs, sized by the roster of the round's epoch
+fn threshold_at(protocol: &ProtocolState, round: &Round) -> Result<usize, RouteError> {
+    protocol
+        .group_member_count_at(round.epoch, round.group)
+        .map(agreement_threshold)
+        .ok_or(RouteError::NotResponsible)
+}
+
 /// Takes the right to certify a spool, or nothing if it is not this node's to
 /// take. Cheap and synchronous, so a batch can claim every spool it carried
 /// before any of them reaches the executor.
@@ -395,15 +408,15 @@ fn claim_certificate<Db: Store, Cluster: Api, Blockchain: Rpc>(
     state: &AppState<Db, Cluster, Blockchain>,
     protocol: &ProtocolState,
     key: RoundKey,
+    threshold: usize,
 ) -> Option<Claimed> {
     // Both resolved before the claim, which is spent either way this returns,
     // so a spool with no owner to credit is never left marked certified with
     // nothing to verify it.
     let owner = protocol.spool_owner_at(key.epoch, key.spool)?;
     let members = group_members_at(protocol, key.epoch, group_for_spool(key.spool))?;
-    let thresholds = state.context.params().thresholds;
 
-    if !state.context.round_buffer.claim_certificate(key, &thresholds) {
+    if !state.context.round_buffer.claim_certificate(key, threshold) {
         return None;
     }
     if owner == state.context.node_address() {
@@ -418,7 +431,7 @@ fn claim_certificate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .filter_map(|(signer, _)| Some((*signer, protocol.peer(*signer)?.bls_pubkey)))
         .collect();
 
-    Some(Claimed { key, owner, thresholds, members, attestations, signers })
+    Some(Claimed { key, owner, threshold, members, attestations, signers })
 }
 
 /// Certifies everything one batch claimed, on the certify stage rather than
@@ -515,7 +528,7 @@ fn certify_claim<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
 
         let protocol = state.context.state();
-        claim = claim_certificate(state, &protocol, claim.key)?;
+        claim = claim_certificate(state, &protocol, claim.key, claim.threshold)?;
     }
 }
 
@@ -557,7 +570,7 @@ fn aggregate_stands(round: &Round, claim: &Claimed) -> bool {
     let summed = quorum_key(claim).is_some_and(|quorum| {
         certificate.as_ref().is_some_and(|certificate| {
             certificate
-                .verify_summed(&claim.thresholds, claim.owner, &claim.members, &quorum)
+                .verify_summed(claim.threshold, claim.owner, &claim.members, &quorum)
                 .is_ok()
         })
     });
@@ -565,7 +578,7 @@ fn aggregate_stands(round: &Round, claim: &Claimed) -> bool {
     summed
         || certificate.as_ref().is_some_and(|certificate| {
             certificate
-                .verify(&claim.thresholds, claim.owner, &claim.members, |signer| {
+                .verify(claim.threshold, claim.owner, &claim.members, |signer| {
                     claim.signers.get(&signer).copied()
                 })
                 .inspect_err(|rejection| {
@@ -657,7 +670,7 @@ fn mark<Db: Store, Cluster: Api, Blockchain: Rpc>(
 #[cfg(test)]
 mod tests {
     use tape_core::challenge::proof::SampleProof;
-    use tape_core::erasure::group_for_spool;
+    use tape_core::erasure::{GROUP_SIZE, group_for_spool};
     use tape_core::spooler::GroupIndex;
     use tape_core::types::RoundNumber;
     use tape_core::types::tls::NetworkTlsPubkey;
@@ -732,13 +745,13 @@ mod tests {
         let ctx: TestContext = harness.ctx_for(0);
         let protocol = ctx.state();
         let mine = protocol
-            .member_live_spools(ctx.node_address())
+            .member_spools(ctx.node_address())
             .first()
             .copied()
             .expect("this node holds a spool");
         let group = group_for_spool(mine);
         let target = protocol
-            .group_peers(group.into())
+            .group_peers(group)
             .into_iter()
             .map(|(spool, _)| spool)
             .find(|spool| *spool != mine)
@@ -762,10 +775,10 @@ mod tests {
         };
         assert!(ctx.round_buffer.accept_answer(key, dummy));
 
-        let threshold = ctx.params().thresholds.challenge as usize;
+        let threshold = agreement_threshold(GROUP_SIZE);
         let message = attest_message(&round, target).to_bytes();
         let members: Vec<Address> = protocol
-            .group_peers(group.into())
+            .group_peers(group)
             .into_iter()
             .map(|(_, owner)| owner)
             .collect();

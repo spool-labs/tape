@@ -5,9 +5,9 @@ use tape_crypto::address::Address;
 
 use crate::types::ObjectInfo;
 
-/// Object info indexed by track address
+/// Object info indexed by object address
 ///
-/// Key: Address (track_address, 32 bytes)
+/// Key: Address (object address, 32 bytes)
 /// Value: ObjectInfo (Blacklisted, Invalid, or Valid)
 pub struct ObjectInfoCol;
 

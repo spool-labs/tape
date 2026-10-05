@@ -7,17 +7,16 @@ use tape_peer_manager::{PeerManager, PeerNode};
 use peer_memory::MemoryApi;
 use tape_rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
-use tape_api::program::tapedrive::{self, group_pda, tape_pda, TrackAddress};
+use tape_api::program::tapedrive::{self, tape_pda, track_pda};
 use tape_api::state::{Group, Tape};
 use tape_core::bls::BlsPubkey;
-use tape_core::encoding::TAPENET_PROFILE;
-use tape_core::spooler::{GroupIndex, TrackGroup};
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, NodePreferences, Spool};
-use tape_core::thresholds::TrustModel;
-use tape_core::track::data::BlobData;
+use tape_core::track::data::{track_key, BlobData, BlobDataSlice};
 use tape_core::track::archive::TrackArchive;
 use tape_core::track::types::{
-    CompressedTrack, CompressedTrackProof, TrackFlags, TrackKind, TrackState,
+    CompressedTrack, CompressedTrackProof, TrackKind, TrackState, TrackVisibility,
 };
 use tape_core::types::coin::TAPE;
 use tape_core::types::network::NetworkAddress;
@@ -39,8 +38,8 @@ use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
 use tape_sdk::track::write::WrittenTrack;
 
-/// A two-segment stream read asks for the name, the manifest data, and each segment's track and data
-const STREAM_ROUND_TRIPS: usize = 6;
+/// A two-segment stream read asks for the name, the manifest data, one track page and each segment's data
+const STREAM_ROUND_TRIPS: usize = 5;
 
 struct Fixture {
     rpc: LiteSvmRpc,
@@ -49,8 +48,6 @@ struct Fixture {
     data: Arc<Mutex<HashMap<Address, BlobData>>>,
     objects: Arc<Mutex<HashMap<Address, Vec<ObjectListItem>>>>,
     requests: Arc<Mutex<Vec<&'static str>>>,
-    /// When set, only this node answers for track data
-    data_holder: Arc<Mutex<Option<Address>>>,
 }
 
 fn unexpected_error() -> ApiError {
@@ -82,7 +79,7 @@ fn unexpected_peer_response(request: &PeerReq) -> PeerRes {
 
 impl Fixture {
     fn insert_track(&self, track: CompressedTrack, data: BlobData) -> Address {
-        let address = track.address();
+        let address = track_pda(track.tape, track.track_number).0;
         self.tracks.lock().unwrap().insert(address, track);
         self.data.lock().unwrap().insert(address, data);
         address
@@ -109,7 +106,6 @@ fn setup() -> Fixture {
     let objects = Arc::new(Mutex::new(HashMap::<Address, Vec<ObjectListItem>>::new()));
     let proofs = Arc::new(Mutex::new(HashMap::<Address, CompressedTrackProof>::new()));
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let data_holder = Arc::new(Mutex::new(None::<Address>));
 
     let api = Arc::new(MemoryApi::new({
         let tracks = tracks.clone();
@@ -117,23 +113,16 @@ fn setup() -> Fixture {
         let objects = objects.clone();
         let proofs = proofs.clone();
         let requests = requests.clone();
-        let data_holder = data_holder.clone();
-        move |node, req| {
+        move |_node, req| {
         requests.lock().unwrap().push(request_kind(&req));
-        let holds_data = data_holder.lock().unwrap().is_none_or(|holder| holder == node);
         match req {
             PeerReq::GetTrack(req) => match tracks.lock().unwrap().get(&req.track).copied() {
                 Some(track) => PeerRes::GetTrack(Ok(GetTrackRes { track })),
                 None => PeerRes::GetTrack(Err(ApiError::NotFound)),
             },
             PeerReq::GetTrackByNumber(req) => {
-                let found = tracks
-                    .lock()
-                    .unwrap()
-                    .values()
-                    .copied()
-                    .find(|track| track.tape == req.tape && track.track_number == req.track_number);
-                match found {
+                let address = track_pda(req.tape, req.track_number).0;
+                match tracks.lock().unwrap().get(&address).copied() {
                     Some(track) => PeerRes::GetTrackByNumber(Ok(GetTrackByNumberRes { track })),
                     None => PeerRes::GetTrackByNumber(Err(ApiError::NotFound)),
                 }
@@ -248,7 +237,6 @@ fn setup() -> Fixture {
                     is_truncated,
                 }))
             }
-            PeerReq::GetTrackData(_) if !holds_data => PeerRes::GetTrackData(Err(ApiError::NotFound)),
             PeerReq::GetTrackData(req) => match data.lock().unwrap().get(&req.track).cloned() {
                 Some(data) => PeerRes::GetTrackData(Ok(GetTrackDataRes { data })),
                 None => PeerRes::GetTrackData(Err(ApiError::NotFound)),
@@ -277,10 +265,7 @@ fn setup() -> Fixture {
     peer_manager.add_peer(make_peer(node, 3001));
 
     let mut state = ProtocolState::default();
-    state.system.profile = TAPENET_PROFILE.into();
-    state.system.trust_model = TrustModel::Permissionless.into();
     state.current.epoch.id = EpochNumber(1);
-    state.current.epoch.total_groups = 1;
     state
         .current
         .committee
@@ -291,7 +276,7 @@ fn setup() -> Fixture {
         size: StorageUnits::mb(1),
         ..Group::zeroed()
     };
-    for position in 0..usize::from(TAPENET_PROFILE.n()) {
+    for position in 0..GROUP_SIZE {
         group.spools[position] = Spool::new(node, BlsPubkey::zeroed());
     }
     state.current.groups.push(group);
@@ -314,7 +299,6 @@ fn setup() -> Fixture {
         data,
         objects,
         requests,
-        data_holder,
     }
 }
 
@@ -396,9 +380,9 @@ fn make_raw_track(
         track_number: TrackNumber(track_number),
         kind: TrackKind::Inline as u64,
         state: TrackState::Certified as u64,
-        flags: TrackFlags::NONE,
+        visibility: TrackVisibility::Public as u64,
         size: StorageUnits::from_bytes(bytes.len() as u64),
-        group: TrackGroup(0),
+        group: GroupIndex(0),
         value_hash: hash::hash(&bytes),
     };
     (track, BlobData::Inline(bytes))
@@ -413,7 +397,6 @@ fn object_item(name: &[u8], track_number: TrackNumber) -> ObjectListItem {
         slot: SlotNumber(track_number.0),
         data_tape: Address::new([0x44; 32]),
         track_number,
-        track: Address::new([0x55; 32]),
         kind: TrackKind::Inline as u64,
         content_type: ContentType::TextPlain,
     }
@@ -491,6 +474,67 @@ async fn track_queries() {
 }
 
 #[tokio::test]
+async fn matching_retry() {
+    let fixture = setup();
+    let tape_key = TapeKey::generate();
+    let name = b"demo/chat/000000-user.json";
+    let raw = br#"{"role":"user","markdown":"hello"}"#;
+    let key = track_key(name, &BlobDataSlice::Inline(raw));
+    let (track, data) = make_raw_track(tape_key.address(), key, 0, raw);
+    let address = fixture.insert_track(track, data);
+
+    let resumed = fixture
+        .client
+        .write_or_resume_track_at_as(
+            &tape_key,
+            TrackNumber(0),
+            name,
+            ContentType::ApplicationJson,
+            raw,
+        )
+        .await
+        .expect("matching outbox retry resumes");
+
+    assert_eq!(resumed.track.track_number, TrackNumber(0));
+    assert_eq!(track_pda(tape_key.address(), TrackNumber(0)).0, address);
+    assert_eq!(fixture.tracks.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn write_conflict() {
+    let fixture = setup();
+    let tape_key = TapeKey::generate();
+    let name = b"demo/chat/000000-user.json";
+    let original = br#"{"role":"user","markdown":"hello"}"#;
+    let key = track_key(name, &BlobDataSlice::Inline(original));
+    let (track, data) = make_raw_track(tape_key.address(), key, 0, original);
+    fixture.insert_track(track, data);
+
+    let result = fixture
+        .client
+        .write_or_resume_track_at_as(
+            &tape_key,
+            TrackNumber(0),
+            name,
+            ContentType::ApplicationJson,
+            br#"{"role":"user","markdown":"different"}"#,
+        )
+        .await;
+    let error = match result {
+        Ok(_) => panic!("different content at a persisted slot must conflict"),
+        Err(error) => error,
+    };
+
+    assert!(matches!(
+        error,
+        tape_sdk::error::TapedriveError::WriteConflict {
+            track_number: TrackNumber(0)
+        }
+    ));
+    assert_eq!(fixture.tracks.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn object_list() {
     let fixture = setup();
     let bucket = Address::new_unique();
@@ -547,49 +591,6 @@ async fn read_raw_track() {
     assert_eq!(read, raw);
 }
 
-// after the group count drops, a retired group's inline track is read from
-// the node that held the group last epoch while the new holder has no copy
-#[tokio::test]
-async fn reads_from_last_epochs_holder() {
-    let fixture = setup();
-    let mut rng = rand::thread_rng();
-    let tape_authority = Keypair::new(&mut rng);
-    let tape_address: Address = tape_pda(tape_authority.pubkey().into()).0;
-    let raw = b"written to a group that retired";
-    let old_holder = address(2);
-    let retired = GroupIndex(1);
-
-    // Last epoch ran two groups and this one runs one, so track group 1 is
-    // carried by group 0.
-    let mut state = (**fixture.client.state()).clone();
-    state.system.current_epoch = EpochNumber(2);
-    state.system.live_group_count = 1;
-    state.system.previous_group_count = 2;
-    state.system.track_group_count = 2;
-    state.current.epoch.id = EpochNumber(2);
-    state.current.epoch.track_groups = 2;
-    state.touch();
-    fixture.client.store_state(state);
-
-    let mut group = Group {
-        id: retired,
-        epoch: EpochNumber(1),
-        ..Group::zeroed()
-    };
-    for position in 0..usize::from(TAPENET_PROFILE.n()) {
-        group.spools[position] = Spool::new(old_holder, BlsPubkey::zeroed());
-    }
-    pipe(&fixture.rpc, group_pda(EpochNumber(1), retired).0, &group.pack());
-
-    let (mut track, data) = make_raw_track(tape_address, hash::hash(b"retired-track"), 0, raw);
-    track.group = TrackGroup::from(retired);
-    let address = fixture.insert_track(track, data);
-    *fixture.data_holder.lock().unwrap() = Some(old_holder);
-
-    let read = fixture.client.read(&address).await.unwrap();
-    assert_eq!(read, raw);
-}
-
 // reading an object by name asks for the track data straight after the lookup
 #[tokio::test]
 async fn object_round_trips() {
@@ -616,7 +617,7 @@ async fn stream_round_trips() {
         let (track, data) = make_raw_track(tape, hash::hash(segment), number as u64, segment);
         fixture.insert_track(track, data);
         entries.push(ChunkEntry {
-            track: track.address(),
+            track_number: TrackNumber(number as u64),
             offset: StorageUnits::from_bytes(offset),
             size: StorageUnits::from_bytes(segment.len() as u64),
         });
@@ -666,7 +667,7 @@ async fn certified_receipt() {
     let key = hash::hash(b"certified");
     let (track, _) = make_raw_track(tape_key.address(), key, 0, b"done");
     let written = WrittenTrack {
-        address: track.address(),
+        address: track_pda(track.tape, track.track_number).0,
         track,
     };
 

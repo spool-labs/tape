@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use tape_core::encoding::ErasureCode;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{ChunkNumber, EpochNumber};
@@ -12,6 +11,9 @@ use tape_slicer::{ErasureCoder, OuterCoder, Slicer};
 
 use crate::chunk::{snapshot_outer_k, unpack_segment, SnapshotChunkPayload};
 use crate::SnapshotError;
+
+/// Minimum verified inner slices needed to Clay-decode one chunk.
+pub const K_INNER: usize = 7;
 
 /// Reject a chunk-track list that is empty, references the wrong tape, or
 /// carries a non-blob track. Structural checks only; the cryptographic anchor is
@@ -56,18 +58,15 @@ pub fn snapshot_track_group_count(
     Ok(total_groups)
 }
 
-/// Inner-decode one chunk's verified slices to its `(chunk, outer-symbol)`
-/// pair. `slices` must hold at least the profile's k `(leaf_index, bytes)`
-/// entries.
+/// Clay-decode one chunk's verified inner slices to its `(chunk, outer-symbol)`
+/// pair. `slices` must hold at least [`K_INNER`] `(leaf_index, bytes)` entries.
 pub fn decode_chunk_payload(
     slices: &[(usize, &[u8])],
-    profile: ErasureCode,
 ) -> Result<(ChunkNumber, Vec<u8>), SnapshotError> {
-    let slicer = Slicer::try_from_profile(profile)
-        .map_err(|e| SnapshotError::InnerDecode(e.to_string()))?;
+    let slicer = Slicer::clay_default();
     let plaintext = slicer
         .decode(slices)
-        .map_err(|e| SnapshotError::InnerDecode(e.to_string()))?;
+        .map_err(|e| SnapshotError::ClayDecode(e.to_string()))?;
 
     let payload = SnapshotChunkPayload::unpack(&plaintext)
         .map_err(|e| SnapshotError::ChunkPayload(e.to_string()))?;

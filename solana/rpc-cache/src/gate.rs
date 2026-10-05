@@ -259,7 +259,6 @@ mod tests {
     use solana_transaction::versioned::VersionedTransaction;
     use tape_api::helpers::build_authority_with_tokens_ix;
     use tape_api::instruction::build_reserve_tape_ix;
-    use tape_core::tape::TapeFlags;
     use tape_core::types::coin::TAPE;
     use tape_core::types::{EpochNumber, StorageUnits};
     use tape_rpc::RpcError;
@@ -367,7 +366,6 @@ mod tests {
             StorageUnits(1 << 20),
             EpochNumber(1),
             EpochNumber(2),
-            TapeFlags::NONE,
         ));
 
         let verdict = gate.check_request("sendTransaction", &send(&v1(payer, &instructions)));

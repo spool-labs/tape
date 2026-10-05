@@ -369,12 +369,13 @@ impl SnapshotLog {
 #[cfg(test)]
 mod tests {
     use bytemuck::Zeroable;
-    use crate::spooler::{GroupIndex, TrackGroup};
-    use crate::track::types::{TrackFlags, TrackKind, TrackState};
+    use crate::spooler::GroupIndex;
+    use crate::track::types::{TrackKind, TrackState, TrackVisibility};
     use tape_crypto::hash::Hash;
     #[cfg(feature = "wincode")]
+    use crate::encoding::EncodingProfile;
     #[cfg(feature = "wincode")]
-    use crate::erasure::MAX_GROUP_SIZE;
+    use crate::erasure::GROUP_SIZE;
     #[cfg(feature = "wincode")]
     use crate::types::{StorageUnits, StripeCount};
     use super::*;
@@ -387,9 +388,9 @@ mod tests {
                 track_number: 0u64.into(),
                 kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
-                flags: TrackFlags::NONE,
+                visibility: TrackVisibility::Public as u64,
                 size: 1u64.into(),
-                group: TrackGroup::from(0),
+                group: GroupIndex::from(0),
                 value_hash: Hash::default(),
             },
             epoch: EpochNumber(10),
@@ -415,18 +416,19 @@ mod tests {
                 track_number: 1u64.into(),
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Registered as u64,
-                flags: TrackFlags::NONE,
+                visibility: TrackVisibility::Public as u64,
                 size: 1024u64.into(),
-                group: TrackGroup::from(1),
+                group: GroupIndex::from(1),
                 value_hash: Hash::from([4u8; 32]),
             },
             epoch: EpochNumber(11),
             blob: Some(BlobEncoding {
                 size: StorageUnits::from_bytes(1024),
                 commitment: Hash::from([6u8; 32]),
+                profile: EncodingProfile::basic_default(),
                 stripe_size: StorageUnits::from_bytes(128),
                 stripe_count: StripeCount(4),
-                leaves: [Hash::from([7u8; 32]); MAX_GROUP_SIZE],
+                leaves: [Hash::from([7u8; 32]); GROUP_SIZE],
             }),
             object: None,
         }

@@ -100,8 +100,6 @@ pub enum TapeError {
     AlreadyCertified = 0x74,
     #[error("already signed")]
     AlreadySigned = 0x75,
-    #[error("track immutable")]
-    TrackImmutable = 0x76,
 }
 
 impl From<TapeError> for solana_program::program_error::ProgramError {
@@ -198,7 +196,6 @@ impl TapeError {
             Self::AlreadyInvalidated => "Track already invalidated",
             Self::AlreadyCertified => "Track already certified",
             Self::AlreadySigned => "Snapshot group has already signed",
-            Self::TrackImmutable => "Track is immutable and can't be deleted",
         }
     }
 }

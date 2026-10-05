@@ -33,7 +33,7 @@ pub struct ListChanges {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct Contents {
     blacklist_tapes: HashSet<Address>,
-    /// Targets of each present, readable track, by track address
+    /// Targets each present, readable track names, by track address
     tracks: HashMap<Address, Vec<BlacklistEntry>>,
     missing: HashMap<Address, TrackRef>,
     skipped: HashMap<Address, Skipped>,

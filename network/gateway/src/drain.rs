@@ -16,7 +16,7 @@ use tape_node::core::error::NodeError;
 use tape_protocol::Api;
 use tape_sdk::error::TapedriveError;
 use tape_sdk::object::{MAX_OBJECT_BATCH_BYTES, MAX_OBJECT_BATCH_ITEMS, ObjectBatchItem};
-use tape_sdk::stream::manifest::max_track_size;
+use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_store::types::{PendingOp, PendingState, PendingWrite};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -93,8 +93,9 @@ fn classify(error: &TapedriveError) -> Failure {
         TapedriveError::Upload(_) => Failure::Transient,
         TapedriveError::Download(_) => Failure::Transient,
         TapedriveError::NotFound => Failure::Transient,
-        TapedriveError::Immutable => Failure::Permanent,
         TapedriveError::InsufficientCapacity { .. } => Failure::Permanent,
+        TapedriveError::WriteConflict { .. } => Failure::Permanent,
+        TapedriveError::TrackPositionConflict { .. } => Failure::Permanent,
         TapedriveError::CommitmentMismatch => Failure::Permanent,
         TapedriveError::MissingPayer => Failure::Permanent,
         TapedriveError::Encoding(_) => Failure::Permanent,
@@ -431,12 +432,11 @@ where
 
     /// A queued put that can share a batch: a fresh object of one track, or one replacing different content
     fn batch_candidate(&self, tape: Address, key: &[u8], write: &PendingWrite) -> Option<Candidate> {
-        let PendingOp::Put { etag, size, old_track, .. } = write.op else {
+        let PendingOp::Put { etag, size, prior, .. } = write.op else {
             return None;
         };
         let name = String::from_utf8(key.to_vec()).ok()?;
-        let max_size = max_track_size(self.context.params().profile) as u64;
-        if name.is_empty() || name.contains(['\0', '\n', '\r']) || size > max_size {
+        if name.is_empty() || name.contains(['\0', '\n', '\r']) || size > MAX_TRACK_SIZE as u64 {
             return None;
         }
         // The single path handles matching content, whether landed or left to finish.
@@ -447,7 +447,7 @@ where
         Some(Candidate {
             name,
             write: write.clone(),
-            old_track: old_track.or(indexed.map(|object| object.track_address)),
+            reclaim: prior.or(indexed.map(|object| object.track_address)),
         })
     }
 
@@ -484,7 +484,7 @@ where
                 content_type,
                 plan: self.staging.take_plan(&etag),
             });
-            entries.push((key, candidate.write, candidate.old_track));
+            entries.push((key, candidate.write, candidate.reclaim));
         }
         if items.is_empty() {
             return;
@@ -492,9 +492,9 @@ where
 
         match self.write_ctx.write_objects(self.context.as_ref(), tape, items).await {
             Ok(receipts) => {
-                for ((key, write, old_track), receipt) in entries.iter().zip(receipts) {
+                for ((key, write, reclaim), receipt) in entries.iter().zip(receipts) {
                     self.landed(tape, key, write, receipt.address);
-                    self.delete_old_track(tape, *old_track, receipt.address).await;
+                    self.reclaim(tape, *reclaim, receipt.address).await;
                 }
             }
             Err(error) if entries.len() == 1 || !matches!(classify(&error), Failure::Permanent) => {
@@ -512,12 +512,12 @@ where
     }
 
     /// Delete the old track after a batched overwrite lands; a failure leaves it for a later sweep
-    async fn delete_old_track(&self, tape: Address, old_track: Option<Address>, written: Address) {
-        let Some(old_track) = old_track.filter(|old_track| *old_track != written) else {
+    async fn reclaim(&self, tape: Address, prior: Option<Address>, written: Address) {
+        let Some(prior) = prior.filter(|prior| *prior != written) else {
             return;
         };
-        if let Err(error) = self.write_ctx.delete_object(self.context.as_ref(), tape, old_track).await {
-            debug!(%error, %tape, %old_track, "s3 drain: overwrite delete failed, old track left for a later delete");
+        if let Err(error) = self.write_ctx.delete_object(self.context.as_ref(), tape, prior).await {
+            debug!(%error, %tape, %prior, "s3 drain: overwrite reclaim failed, stale track left for later reclaim");
         }
     }
 
@@ -556,27 +556,10 @@ where
 
         match self.write_chain(tape, key, write).await {
             Ok(track) => self.landed(tape, key, write, track),
-            Err(TapedriveError::Immutable) => return self.drop_refused(tape, key, write),
             Err(error) => self.record_failure(tape, key, write, &error),
         }
         // The index has not seen the write yet, so the entry stays.
         false
-    }
-
-    /// Drop a queued delete of an immutable track. The chain never takes it,
-    /// and the entry would hide the object for as long as it stayed.
-    fn drop_refused(&self, tape: Address, key: &[u8], write: &PendingWrite) -> bool {
-        warn!(
-            %tape,
-            key = %String::from_utf8_lossy(key),
-            "s3 drain: delete dropped, the track is immutable"
-        );
-        if let Err(error) = self.staging.remove(tape, key, write.seq) {
-            warn!(%error, %tape, "s3 drain: dropping a refused delete failed");
-            return false;
-        }
-        self.retries.clear(tape, key);
-        true
     }
 
     /// Record that an entry's write reached the chain as `track`
@@ -599,8 +582,8 @@ where
         write: &PendingWrite,
     ) -> Result<Address, TapedriveError> {
         match write.op {
-            PendingOp::Put { content_type, old_track, etag, .. } => {
-                self.put(tape, key, content_type, old_track, etag).await
+            PendingOp::Put { content_type, prior, etag, .. } => {
+                self.put(tape, key, content_type, prior, etag).await
             }
             PendingOp::Delete { track } => self.delete(tape, key, track).await,
         }
@@ -612,7 +595,7 @@ where
         tape: Address,
         key: &[u8],
         content_type: ContentType,
-        old_track: Option<Address>,
+        prior: Option<Address>,
         etag: Hash,
     ) -> Result<Address, TapedriveError> {
         // A queued Put with no payload is a corrupt row, not an outage.
@@ -627,7 +610,7 @@ where
                 ))
             })?;
 
-        let existing = match old_track {
+        let existing = match prior {
             Some(track) => Some(track),
             None => self.indexed_track(tape, key)?,
         };
@@ -729,7 +712,7 @@ where
 struct Candidate {
     name: String,
     write: PendingWrite,
-    old_track: Option<Address>,
+    reclaim: Option<Address>,
 }
 
 impl Candidate {
@@ -775,7 +758,6 @@ fn retry_delay(steps: u32, is_parked: bool) -> Duration {
 mod tests {
     use tape_core::types::StorageUnits;
     use tape_sdk::error::UploadError;
-    use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 
     use super::*;
 
@@ -864,7 +846,6 @@ mod tests {
             Failure::Permanent
         );
         assert_eq!(classify(&TapedriveError::MissingPayer), Failure::Permanent);
-        assert_eq!(classify(&TapedriveError::Immutable), Failure::Permanent);
         assert_eq!(
             classify(&TapedriveError::Rpc(RpcError::SlotSkipped)),
             Failure::Permanent

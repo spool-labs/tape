@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use tape_core::types::{SpoolIndex, StorageUnits};
+use tape_core::types::{SpoolIndex, StorageUnits, TrackNumber};
 use tape_protocol::ApiError;
 use thiserror::Error;
 use tape_rpc::RpcError;
@@ -67,9 +67,6 @@ pub enum UploadError {
 
     #[error("epoch changed during upload: {not_responsible} slices rejected")]
     EpochChanged { not_responsible: usize },
-
-    #[error("network state holds no valid encoding profile and trust model")]
-    NoNetworkParams,
 }
 
 /// Errors that can occur during download.
@@ -130,11 +127,19 @@ pub enum TapedriveError {
     #[error("commitment mismatch")]
     CommitmentMismatch,
 
+    #[error("write conflict at {track_number}: the tape already holds a different track here, resume the original write or use a fresh tape key")]
+    WriteConflict {
+        track_number: TrackNumber,
+    },
+
+    #[error("track position conflict: expected {expected}, but the tape's next track is {next}")]
+    TrackPositionConflict {
+        expected: TrackNumber,
+        next: TrackNumber,
+    },
+
     #[error("not found")]
     NotFound,
-
-    #[error("track is immutable and can't be deleted")]
-    Immutable,
 
     #[error("insufficient capacity: need {need}, available {available}")]
     InsufficientCapacity {

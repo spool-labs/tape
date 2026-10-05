@@ -649,8 +649,8 @@ fn describe_object_info(info: Option<&ObjectInfo>) -> String {
 mod tests {
     use super::*;
 
-    use tape_core::spooler::TrackGroup;
-    use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
+    use tape_core::spooler::GroupIndex;
+    use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::Hash;
 
@@ -674,9 +674,9 @@ mod tests {
                 track_number: TrackNumber(0),
                 kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
-                flags: TrackFlags::NONE,
+                visibility: TrackVisibility::Public as u64,
                 size: StorageUnits::from_bytes(64),
-                group: TrackGroup::from(0),
+                group: GroupIndex::from(0),
                 value_hash: Hash::new_unique(),
             },
             object_info: None,

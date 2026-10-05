@@ -130,10 +130,9 @@ impl ErasureCoder for ClayCoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::encoding::TAPENET_CLAY;
 
     fn test_coder() -> ClayCoder {
-        ClayCoder::from_params(TAPENET_CLAY)
+        ClayCoder::from_params(ClayParams::default())
     }
 
     fn make_data(len: usize) -> Vec<u8> {
@@ -155,7 +154,8 @@ mod tests {
 
     #[test]
     fn test_from_params() {
-        let coder = ClayCoder::from_params(TAPENET_CLAY);
+        let params = ClayParams::new(20, 7, 16);
+        let coder = ClayCoder::from_params(params);
         assert_eq!(coder.k(), 7);
         assert_eq!(coder.m(), 13);
         assert_eq!(coder.n(), 20);

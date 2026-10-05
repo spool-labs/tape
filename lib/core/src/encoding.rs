@@ -1,8 +1,5 @@
 //! Encoding profile types for erasure-coded track data.
 
-use core::fmt::{Display, Formatter};
-use core::str::FromStr;
-
 use bytemuck::{Pod, Zeroable};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
@@ -11,67 +8,24 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-use crate::erasure::MAX_GROUP_SIZE;
-
-/// Tapenet's Clay parameters: any 7 of 20 slices recover, and a repair reads from 16.
-pub const TAPENET_CLAY: ClayParams = ClayParams::new(20, 7, 16);
-
-/// Tapenet's profile. The only place its numbers are written down.
-pub const TAPENET_PROFILE: ErasureCode = ErasureCode::Clay(TAPENET_CLAY);
-
-/// Why a profile is no code a network can run
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProfileError {
-    /// The encoding discriminant is no known code
-    UnknownEncoding,
-
-    /// n is zero or wider than a group's arrays
-    Width,
-
-    /// k is zero or leaves no parity slice
-    Recovery,
-
-    /// d is outside k + 1 ..= n - 1
-    Helpers,
-
-    /// The text is none of `clay:n,k,d`, `rs:n,k` and `copies:n`
-    Syntax,
-}
-
-impl Display for ProfileError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::UnknownEncoding => write!(f, "unknown encoding type"),
-            Self::Width => write!(f, "n is outside 1..={MAX_GROUP_SIZE}"),
-            Self::Recovery => write!(f, "k is outside 1..n"),
-            Self::Helpers => write!(f, "d is outside k + 1..n"),
-            Self::Syntax => write!(f, "expected clay:n,k,d, rs:n,k or copies:n"),
-        }
-    }
-}
-
-impl std::error::Error for ProfileError {}
 
 /// Encoding type for erasure-coded track data.
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 pub enum EncodingType {
 
-    /// Unknown encoding (default for uninitialized profiles).
+    /// Unknown encoding (default for uninitialized tracks).
     #[default]
     Unknown = 0,
 
-    /// Reed-Solomon with striping and rotation.
-    ReedSolomon = 1,
+    /// Basic encoding - single RS pass, testing only.
+    Basic = 1,
 
     /// Clay encoding - Clay codes with striping and rotation.
     Clay = 2,
-
-    /// Replication - n full copies.
-    Replication = 3,
 }
 
-/// Encoding configuration as stored: type + params, unchecked.
+/// Encoding configuration: type + params.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize, SchemaRead, SchemaWrite))]
@@ -92,6 +46,18 @@ impl EncodingProfile {
         EncodingType::try_from(self.encoding).ok()
     }
 
+    /// Check if this is Clay encoding.
+    #[inline]
+    pub fn is_clay(&self) -> bool {
+        matches!(self.encoding_type(), Some(EncodingType::Clay))
+    }
+
+    /// Check if this is Basic encoding.
+    #[inline]
+    pub fn is_basic(&self) -> bool {
+        matches!(self.encoding_type(), Some(EncodingType::Basic))
+    }
+
     /// Create a Clay encoding profile with the given parameters.
     #[inline]
     pub const fn clay(params: ClayParams) -> Self {
@@ -101,22 +67,70 @@ impl EncodingProfile {
         }
     }
 
-    /// Create a Reed-Solomon encoding profile with the given parameters.
+    /// Create a Clay encoding profile with default parameters.
+    pub fn clay_default() -> Self {
+        Self::clay(ClayParams::default())
+    }
+
+    /// Get the Clay parameters (only valid if is_clay()).
     #[inline]
-    pub const fn reed_solomon(params: RSParams) -> Self {
+    pub const fn clay_params(&self) -> ClayParams {
+        ClayParams::from_u64(self.params)
+    }
+
+    /// Create a Basic (RS) encoding profile with given parameters.
+    #[inline]
+    pub const fn basic(params: RSParams) -> Self {
         Self {
-            encoding: EncodingType::ReedSolomon as u64,
+            encoding: EncodingType::Basic as u64,
             params: params.as_u64(),
         }
     }
 
-    /// Create a Replication profile holding n full copies.
+    /// Create a Basic encoding profile with default parameters (k=10, m=10).
+    pub fn basic_default() -> Self {
+        Self::basic(RSParams::default())
+    }
+
+    /// Get the RS parameters (only valid if is_basic()).
     #[inline]
-    pub const fn replication(params: RepParams) -> Self {
-        Self {
-            encoding: EncodingType::Replication as u64,
-            params: params.as_u64(),
+    pub const fn rs_params(&self) -> RSParams {
+        RSParams::from_u64(self.params)
+    }
+
+    /// Get k (data slices) for any encoding type.
+    ///
+    /// # Panics
+    /// Panics if encoding type is Unknown.
+    #[inline]
+    pub fn k(&self) -> u8 {
+        match self.encoding_type() {
+            Some(EncodingType::Clay) => self.clay_params().k(),
+            Some(EncodingType::Basic) => self.rs_params().k(),
+            Some(EncodingType::Unknown) | None => panic!("cannot get k from Unknown encoding"),
         }
+    }
+
+    /// Get m (parity slices) for any encoding type.
+    ///
+    /// # Panics
+    /// Panics if encoding type is Unknown.
+    #[inline]
+    pub fn m(&self) -> u8 {
+        match self.encoding_type() {
+            Some(EncodingType::Clay) => self.clay_params().m(),
+            Some(EncodingType::Basic) => self.rs_params().m(),
+            Some(EncodingType::Unknown) | None => panic!("cannot get m from Unknown encoding"),
+        }
+    }
+
+    /// Get n (total slices) for any encoding type.
+    ///
+    /// # Panics
+    /// Panics if encoding type is Unknown.
+    #[inline]
+    pub fn n(&self) -> u8 {
+        self.k() + self.m()
     }
 
     /// Pack into a byte array (for unaligned instruction data).
@@ -145,130 +159,10 @@ impl EncodingProfile {
     }
 }
 
-/// The code a network runs, with its parameters
-///
-/// Every accessor is total. A value parsed from an `EncodingProfile` has also
-/// passed `validate`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ErasureCode {
-    /// Clay code: any k of n recover, and a repair reads part of d helpers.
-    Clay(ClayParams),
-
-    /// Reed-Solomon: any k of n recover.
-    ReedSolomon(RSParams),
-
-    /// n full copies: any one recovers.
-    Replication(RepParams),
-}
-
-impl ErasureCode {
-    /// Total slices, one per spool of a group.
-    #[inline]
-    pub const fn n(&self) -> u8 {
-        match self {
-            Self::Clay(params) => params.n(),
-            Self::ReedSolomon(params) => params.n(),
-            Self::Replication(params) => params.n(),
-        }
+impl Default for EncodingProfile {
+    fn default() -> Self {
+        Self::clay_default()
     }
-
-    /// Slices needed to reconstruct.
-    #[inline]
-    pub const fn k(&self) -> u8 {
-        match self {
-            Self::Clay(params) => params.k(),
-            Self::ReedSolomon(params) => params.k(),
-            Self::Replication(params) => params.k(),
-        }
-    }
-
-    /// Parity slices (m = n - k).
-    #[inline]
-    pub const fn m(&self) -> u8 {
-        match self {
-            Self::Clay(params) => params.m(),
-            Self::ReedSolomon(params) => params.m(),
-            Self::Replication(params) => params.m(),
-        }
-    }
-
-    /// Check the parameters against the code's own rules.
-    pub const fn validate(&self) -> Result<(), ProfileError> {
-        match self {
-            Self::Clay(params) => params.validate(),
-            Self::ReedSolomon(params) => params.validate(),
-            Self::Replication(params) => params.validate(),
-        }
-    }
-}
-
-impl TryFrom<EncodingProfile> for ErasureCode {
-    type Error = ProfileError;
-
-    fn try_from(profile: EncodingProfile) -> Result<Self, ProfileError> {
-        let code = match profile.encoding_type() {
-            Some(EncodingType::Clay) => Self::Clay(ClayParams::from_u64(profile.params)),
-            Some(EncodingType::ReedSolomon) => Self::ReedSolomon(RSParams::from_u64(profile.params)),
-            Some(EncodingType::Replication) => Self::Replication(RepParams::from_u64(profile.params)),
-            Some(EncodingType::Unknown) | None => return Err(ProfileError::UnknownEncoding),
-        };
-        code.validate()?;
-
-        Ok(code)
-    }
-}
-
-impl From<ErasureCode> for EncodingProfile {
-    fn from(code: ErasureCode) -> Self {
-        match code {
-            ErasureCode::Clay(params) => Self::clay(params),
-            ErasureCode::ReedSolomon(params) => Self::reed_solomon(params),
-            ErasureCode::Replication(params) => Self::replication(params),
-        }
-    }
-}
-
-/// Writes `clay:n,k,d`, `rs:n,k` or `copies:n`, the form a flag or config takes.
-impl Display for ErasureCode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Clay(params) => write!(f, "clay:{},{},{}", params.n(), params.k(), params.d()),
-            Self::ReedSolomon(params) => write!(f, "rs:{},{}", params.n(), params.k()),
-            Self::Replication(params) => write!(f, "copies:{}", params.n()),
-        }
-    }
-}
-
-/// Reads the form `Display` writes and checks the code's rules.
-impl FromStr for ErasureCode {
-    type Err = ProfileError;
-
-    fn from_str(text: &str) -> Result<Self, ProfileError> {
-        let (name, list) = text.split_once(':').ok_or(ProfileError::Syntax)?;
-
-        let mut numbers = [0u8; 3];
-        let mut count = 0;
-        for number in list.split(',') {
-            let slot = numbers.get_mut(count).ok_or(ProfileError::Syntax)?;
-            *slot = number.trim().parse().map_err(|_| ProfileError::Syntax)?;
-            count += 1;
-        }
-
-        let code = match (name.trim(), &numbers[..count]) {
-            ("clay", [n, k, d]) => Self::Clay(ClayParams::new(*n, *k, *d)),
-            ("rs", [n, k]) => Self::ReedSolomon(RSParams::new(*k, n.saturating_sub(*k))),
-            ("copies", [n]) => Self::Replication(RepParams::new(*n)),
-            _ => return Err(ProfileError::Syntax),
-        };
-        code.validate()?;
-
-        Ok(code)
-    }
-}
-
-// Shared by every code: a group's arrays hold at most MAX_GROUP_SIZE slices.
-const fn is_width(n: u8) -> bool {
-    n >= 1 && n as usize <= MAX_GROUP_SIZE
 }
 
 /// Clay erasure code parameters, packed into u64.
@@ -327,17 +221,15 @@ impl ClayParams {
     }
 
     /// Sub-chunks per chunk: alpha = q^t with q = d - k + 1 and t = ceil(n/q).
-    ///
-    /// Total over every packed byte pattern.
     #[inline]
     pub const fn alpha(&self) -> u64 {
-        let q = self.d().saturating_sub(self.k()) as u64 + 1;
+        let q = (self.d() - self.k() + 1) as u64;
         let n = self.n() as u64;
         let t = (n + q - 1) / q;
         let mut out = 1u64;
         let mut i = 0;
         while i < t {
-            out = out.saturating_mul(q);
+            out *= q;
             i += 1;
         }
         out
@@ -346,24 +238,7 @@ impl ClayParams {
     /// Encode granularity in bytes: stripe inputs pad to k * alpha * 2.
     #[inline]
     pub const fn stripe_alignment(&self) -> u64 {
-        (self.k() as u64).saturating_mul(self.alpha()).saturating_mul(2)
-    }
-
-    /// Check the parameters are a Clay code that fits a group.
-    ///
-    /// The helper bounds are the ones `clay_codes::ClayCode::new` needs.
-    pub const fn validate(&self) -> Result<(), ProfileError> {
-        let (n, k, d) = (self.n(), self.k(), self.d());
-        if !is_width(n) {
-            return Err(ProfileError::Width);
-        }
-        if k == 0 || k >= n {
-            return Err(ProfileError::Recovery);
-        }
-        if d <= k || d >= n {
-            return Err(ProfileError::Helpers);
-        }
-        Ok(())
+        self.k() as u64 * self.alpha() * 2
     }
 
     /// Convert to raw u64 for storage.
@@ -379,8 +254,20 @@ impl ClayParams {
     }
 }
 
+/// Default Clay parameters: n=20, k=7, d=16 -> m=13 parity
+impl ClayParams {
+    pub const DEFAULT: Self = Self::new(20, 7, 16);
+}
+
+impl Default for ClayParams {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// Reed-Solomon erasure code parameters, packed into u64.
 ///
+/// Basic RS encoding with parameters:
 /// - k: data slices (1-255)
 /// - m: parity slices (1-255), where n = k + m
 #[repr(C)]
@@ -398,7 +285,7 @@ impl RSParams {
     /// - `m`: parity slices
     #[inline]
     pub const fn new(k: u8, m: u8) -> Self {
-        let n = k.saturating_add(m);
+        let n = k + m;
         Self {
             packed: (n as u64) | ((k as u64) << 8),
         }
@@ -422,18 +309,6 @@ impl RSParams {
         self.n().saturating_sub(self.k())
     }
 
-    /// Check the parameters are a Reed-Solomon code that fits a group.
-    pub const fn validate(&self) -> Result<(), ProfileError> {
-        let (n, k) = (self.n(), self.k());
-        if !is_width(n) {
-            return Err(ProfileError::Width);
-        }
-        if k == 0 || k >= n {
-            return Err(ProfileError::Recovery);
-        }
-        Ok(())
-    }
-
     /// Convert to raw u64 for storage.
     #[inline]
     pub const fn as_u64(&self) -> u64 {
@@ -447,57 +322,10 @@ impl RSParams {
     }
 }
 
-/// Replication parameters, packed into u64: n full copies of the blob.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
-pub struct RepParams {
-    /// Packed parameters: byte 0 = n
-    packed: u64,
-}
-
-impl RepParams {
-    /// Create new replication parameters for n copies.
-    #[inline]
-    pub const fn new(n: u8) -> Self {
-        Self { packed: n as u64 }
-    }
-
-    /// Total slices (n copies).
-    #[inline]
-    pub const fn n(&self) -> u8 {
-        (self.packed & 0xFF) as u8
-    }
-
-    /// Copies needed to reconstruct: any one is the whole blob.
-    #[inline]
-    pub const fn k(&self) -> u8 {
-        1
-    }
-
-    /// Redundant copies (m = n - 1).
-    #[inline]
-    pub const fn m(&self) -> u8 {
-        self.n().saturating_sub(1)
-    }
-
-    /// Check the copy count fits a group.
-    pub const fn validate(&self) -> Result<(), ProfileError> {
-        if !is_width(self.n()) {
-            return Err(ProfileError::Width);
-        }
-        Ok(())
-    }
-
-    /// Convert to raw u64 for storage.
-    #[inline]
-    pub const fn as_u64(&self) -> u64 {
-        self.packed
-    }
-
-    /// Create from raw u64.
-    #[inline]
-    pub const fn from_u64(v: u64) -> Self {
-        Self { packed: v }
+impl Default for RSParams {
+    fn default() -> Self {
+        // k=10, m=10 (standard default)
+        Self::new(10, 10)
     }
 }
 
@@ -515,6 +343,15 @@ mod tests {
     }
 
     #[test]
+    fn test_clay_params_default() {
+        let params = ClayParams::default();
+        assert_eq!(params.n(), 20);
+        assert_eq!(params.k(), 7);
+        assert_eq!(params.d(), 16);
+        assert_eq!(params.m(), 13);
+    }
+
+    #[test]
     fn test_clay_params_roundtrip() {
         let params = ClayParams::new(20, 10, 19);
         let packed = params.as_u64();
@@ -523,8 +360,55 @@ mod tests {
     }
 
     #[test]
+    fn test_encoding_profile_clay() {
+        let params = ClayParams::new(20, 10, 19);
+        let profile = EncodingProfile::clay(params);
+
+        assert!(profile.is_clay());
+        assert!(!profile.is_basic());
+        assert_eq!(profile.encoding_type(), Some(EncodingType::Clay));
+        assert_eq!(profile.clay_params(), params);
+    }
+
+    #[test]
+    fn test_encoding_profile_clay_default() {
+        let profile = EncodingProfile::clay_default();
+        assert!(profile.is_clay());
+        assert_eq!(profile.clay_params(), ClayParams::default());
+    }
+
+    #[test]
+    fn test_encoding_profile_basic() {
+        let params = RSParams::new(10, 10);
+        let profile = EncodingProfile::basic(params);
+
+        assert!(profile.is_basic());
+        assert!(!profile.is_clay());
+        assert_eq!(profile.encoding_type(), Some(EncodingType::Basic));
+        assert_eq!(profile.rs_params(), params);
+    }
+
+    #[test]
+    fn test_encoding_profile_basic_default() {
+        let profile = EncodingProfile::basic_default();
+        assert!(profile.is_basic());
+        assert_eq!(profile.rs_params(), RSParams::default());
+        assert_eq!(profile.k(), 10);
+        assert_eq!(profile.m(), 10);
+        assert_eq!(profile.n(), 20);
+    }
+
+    #[test]
     fn test_rs_params_new() {
         let params = RSParams::new(10, 10);
+        assert_eq!(params.n(), 20);
+        assert_eq!(params.k(), 10);
+        assert_eq!(params.m(), 10);
+    }
+
+    #[test]
+    fn test_rs_params_default() {
+        let params = RSParams::default();
         assert_eq!(params.n(), 20);
         assert_eq!(params.k(), 10);
         assert_eq!(params.m(), 10);
@@ -541,6 +425,29 @@ mod tests {
     #[test]
     fn test_rs_params_size() {
         assert_eq!(std::mem::size_of::<RSParams>(), 8);
+    }
+
+    #[test]
+    fn test_profile_k_m_n_clay() {
+        let profile = EncodingProfile::clay_default();
+        assert_eq!(profile.k(), 7);
+        assert_eq!(profile.m(), 13);
+        assert_eq!(profile.n(), 20);
+    }
+
+    #[test]
+    fn test_profile_k_m_n_basic() {
+        let profile = EncodingProfile::basic(RSParams::new(8, 4));
+        assert_eq!(profile.k(), 8);
+        assert_eq!(profile.m(), 4);
+        assert_eq!(profile.n(), 12);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot get k from Unknown encoding")]
+    fn test_profile_k_unknown_panics() {
+        let profile = EncodingProfile::unknown();
+        let _ = profile.k();
     }
 
     #[test]
@@ -568,9 +475,8 @@ mod tests {
     #[test]
     fn test_encoding_type_values() {
         assert_eq!(EncodingType::Unknown as u64, 0);
-        assert_eq!(EncodingType::ReedSolomon as u64, 1);
+        assert_eq!(EncodingType::Basic as u64, 1);
         assert_eq!(EncodingType::Clay as u64, 2);
-        assert_eq!(EncodingType::Replication as u64, 3);
     }
 
     #[test]
@@ -587,140 +493,5 @@ mod tests {
 
         // They should be different
         assert_ne!(params1, params2);
-    }
-
-    // tapenet's profile is Clay (20, 7, 16) with alpha 100, and it parses back
-    #[test]
-    fn tapenet() {
-        let code = ErasureCode::try_from(EncodingProfile::from(TAPENET_PROFILE)).expect("tapenet");
-
-        assert_eq!(code, TAPENET_PROFILE);
-        assert_eq!((code.n(), code.k(), code.m()), (20, 7, 13));
-        assert_eq!(TAPENET_CLAY.d(), 16);
-        assert_eq!(TAPENET_CLAY.alpha(), 100);
-        assert_eq!(TAPENET_CLAY.stripe_alignment(), 1_400);
-    }
-
-    // every code survives the trip through its stored form
-    #[test]
-    fn stored_form() {
-        let codes = [
-            ErasureCode::Clay(ClayParams::new(10, 7, 9)),
-            ErasureCode::ReedSolomon(RSParams::new(4, 2)),
-            ErasureCode::Replication(RepParams::new(2)),
-        ];
-
-        for code in codes {
-            let profile = EncodingProfile::from(code);
-            let unpacked = EncodingProfile::unpack(profile.pack());
-
-            assert_eq!(ErasureCode::try_from(unpacked), Ok(code));
-        }
-    }
-
-    // each code reports n, k and m from its own parameters
-    #[test]
-    fn counts() {
-        let reed_solomon = ErasureCode::ReedSolomon(RSParams::new(4, 2));
-        let copies = ErasureCode::Replication(RepParams::new(3));
-
-        assert_eq!((reed_solomon.n(), reed_solomon.k(), reed_solomon.m()), (6, 4, 2));
-        assert_eq!((copies.n(), copies.k(), copies.m()), (3, 1, 2));
-    }
-
-    // a zeroed or unassigned discriminant is no code
-    #[test]
-    fn unknown_encoding() {
-        let unassigned = EncodingProfile { encoding: 9, params: TAPENET_CLAY.as_u64() };
-
-        assert_eq!(ErasureCode::try_from(EncodingProfile::unknown()), Err(ProfileError::UnknownEncoding));
-        assert_eq!(ErasureCode::try_from(EncodingProfile::zeroed()), Err(ProfileError::UnknownEncoding));
-        assert_eq!(ErasureCode::try_from(unassigned), Err(ProfileError::UnknownEncoding));
-    }
-
-    // Clay needs two parity slices and helpers strictly between k and n
-    #[test]
-    fn clay_rules() {
-        assert_eq!(TAPENET_CLAY.validate(), Ok(()));
-        assert_eq!(ClayParams::new(4, 2, 3).validate(), Ok(()));
-        assert_eq!(ClayParams::new(20, 10, 12).validate(), Ok(()));
-
-        assert_eq!(ClayParams::new(0, 0, 0).validate(), Err(ProfileError::Width));
-        assert_eq!(ClayParams::new(21, 7, 16).validate(), Err(ProfileError::Width));
-        assert_eq!(ClayParams::new(20, 0, 16).validate(), Err(ProfileError::Recovery));
-        assert_eq!(ClayParams::new(20, 20, 16).validate(), Err(ProfileError::Recovery));
-        assert_eq!(ClayParams::new(20, 7, 7).validate(), Err(ProfileError::Helpers));
-        assert_eq!(ClayParams::new(20, 7, 20).validate(), Err(ProfileError::Helpers));
-        assert_eq!(ClayParams::new(4, 3, 3).validate(), Err(ProfileError::Helpers));
-    }
-
-    // Reed-Solomon takes any parity count from one up
-    #[test]
-    fn reed_solomon_rules() {
-        assert_eq!(RSParams::new(3, 1).validate(), Ok(()));
-        assert_eq!(RSParams::new(4, 2).validate(), Ok(()));
-        assert_eq!(RSParams::new(1, 19).validate(), Ok(()));
-
-        assert_eq!(RSParams::new(0, 0).validate(), Err(ProfileError::Width));
-        assert_eq!(RSParams::new(10, 11).validate(), Err(ProfileError::Width));
-        assert_eq!(RSParams::new(0, 4).validate(), Err(ProfileError::Recovery));
-        assert_eq!(RSParams::new(4, 0).validate(), Err(ProfileError::Recovery));
-    }
-
-    // copies run from a single drive up to a full group
-    #[test]
-    fn replication_rules() {
-        assert_eq!(RepParams::new(1).validate(), Ok(()));
-        assert_eq!(RepParams::new(20).validate(), Ok(()));
-
-        assert_eq!(RepParams::new(0).validate(), Err(ProfileError::Width));
-        assert_eq!(RepParams::new(21).validate(), Err(ProfileError::Width));
-    }
-
-    // a stored profile with bad parameters is refused at parse
-    #[test]
-    fn parse_validates() {
-        let wide = EncodingProfile::replication(RepParams::new(255));
-        let no_parity = EncodingProfile::reed_solomon(RSParams::new(4, 0));
-
-        assert_eq!(ErasureCode::try_from(wide), Err(ProfileError::Width));
-        assert_eq!(ErasureCode::try_from(no_parity), Err(ProfileError::Recovery));
-    }
-
-    // every code reads back from the text it writes
-    #[test]
-    fn text_form() {
-        let codes = [
-            (TAPENET_PROFILE, "clay:20,7,16"),
-            (ErasureCode::ReedSolomon(RSParams::new(3, 1)), "rs:4,3"),
-            (ErasureCode::Replication(RepParams::new(2)), "copies:2"),
-        ];
-
-        for (code, text) in codes {
-            assert_eq!(code.to_string(), text);
-            assert_eq!(text.parse(), Ok(code));
-        }
-    }
-
-    // text that is no code, or a code its rules refuse, does not parse
-    #[test]
-    fn bad_text() {
-        for text in ["", "clay", "clay:20,7", "rs:4,3,2", "copies:two", "raid:4,3"] {
-            assert_eq!(text.parse::<ErasureCode>(), Err(ProfileError::Syntax), "{text}");
-        }
-        assert_eq!("rs:4,4".parse::<ErasureCode>(), Err(ProfileError::Recovery));
-        assert_eq!("copies:21".parse::<ErasureCode>(), Err(ProfileError::Width));
-    }
-
-    // alpha and the alignment stay total over every packed byte pattern
-    #[test]
-    fn alpha_total() {
-        for packed in [0u64, u64::MAX, ClayParams::new(255, 255, 0).as_u64(), ClayParams::new(255, 0, 1).as_u64()] {
-            let params = ClayParams::from_u64(packed);
-
-            let _ = params.alpha();
-            let _ = params.stripe_alignment();
-        }
-        assert_eq!(ClayParams::new(20, 10, 12).alpha(), 2_187);
     }
 }

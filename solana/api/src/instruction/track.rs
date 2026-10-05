@@ -1,12 +1,11 @@
 use core::mem::size_of;
 
 use tape_core::bls::BlsSignature;
-use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::{
     BlobData, BlobDataSlice, BlobInfo, BlobInfoSlice, TrackObjectInfoSlice,
 };
-use tape_core::track::types::{CompressedTrackProof, TrackKind};
+use tape_core::track::types::{CompressedTrackProof, TrackKind, TrackVisibility};
 use tape_core::types::{ContentType, EpochNumber, SpoolBitmap, StorageUnits, StripeCount};
 use tape_crypto::address::Address;
 use tape_solana::*;
@@ -23,14 +22,15 @@ pub const MAX_NAME_LEN: usize = 1024;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct TrackWrite {
     pub kind: u8,
-    pub flags: [u8; 8],
+    pub visibility: u8,
     pub data_len: [u8; 2],
 }
 
 impl TrackWrite {
-    /// Decode the flags carried by the wire header
-    pub fn flags(&self) -> u64 {
-        u64::from_le_bytes(self.flags)
+    /// Decode the visibility byte carried by the wire header
+    pub fn visibility(&self) -> Result<TrackVisibility, ProgramError> {
+        TrackVisibility::try_from(self.visibility as u64)
+            .map_err(|_| ProgramError::InvalidInstructionData)
     }
 }
 
@@ -61,7 +61,7 @@ pub fn build_track_write_ix(
     signer: Address,
     tape: Address,
     blob: BlobInfo,
-    flags: u64,
+    visibility: TrackVisibility,
 ) -> Result<Instruction, ProgramError> {
     let (system_address, _) = system_pda();
 
@@ -75,7 +75,7 @@ pub fn build_track_write_ix(
             AccountMeta::new(tape.into(), false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
-        data: make_track_write(blob, flags)?,
+        data: make_track_write(blob, visibility)?,
     })
 }
 
@@ -100,12 +100,11 @@ pub fn build_certify_track_ix(
     authority: Address,
     track: CompressedTrackProof,
     epoch: EpochNumber,
-    group: GroupIndex,
     bitmap: SpoolBitmap,
     signature: BlsSignature,
 ) -> Instruction {
     let (system_address, _) = system_pda();
-    let (group_address, _) = group_pda(epoch, group);
+    let (group_address, _) = group_pda(epoch, track.state.group);
 
     Instruction {
         program_id: tapedrive::ID,
@@ -129,12 +128,11 @@ pub fn build_invalidate_track_ix(
     fee_payer: Address,
     track: CompressedTrackProof,
     epoch: EpochNumber,
-    group: GroupIndex,
     bitmap: SpoolBitmap,
     signature: BlsSignature,
 ) -> Instruction {
     let (system_address, _) = system_pda();
-    let (group_address, _) = group_pda(epoch, group);
+    let (group_address, _) = group_pda(epoch, track.state.group);
 
     Instruction {
         program_id: tapedrive::ID,
@@ -265,7 +263,7 @@ fn check_name(name: &[u8], expected_len: usize) -> Result<(), ProgramError> {
 #[inline(always)]
 fn make_track_write(
     blob: BlobInfo,
-    flags: u64,
+    visibility: TrackVisibility,
 ) -> Result<Vec<u8>, ProgramError> {
     if blob
         .object
@@ -302,7 +300,7 @@ fn make_track_write(
 
     let mut out = TrackWrite {
         kind: kind as u8,
-        flags: flags.to_le_bytes(),
+        visibility: visibility as u8,
         data_len: data_len.to_le_bytes(),
     }
     .to_bytes();
@@ -327,17 +325,18 @@ fn make_track_write(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::encoding::EncodingProfile;
+    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_core::track::data::TrackObjectInfo;
-    use tape_core::track::types::TrackFlags;
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
 
     fn valid_blob(size: StorageUnits) -> BlobEncoding {
-        let leaves = [Hash::from([0x11; 32]); MAX_GROUP_SIZE];
+        let leaves = [Hash::from([0x11; 32]); GROUP_SIZE];
         BlobEncoding {
             size,
             commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves),
+            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(1),
             leaves,
@@ -363,7 +362,7 @@ mod tests {
                 }),
                 data: BlobData::Coded(blob),
             },
-            TrackFlags::NONE,
+            TrackVisibility::Public,
         )
         .expect("track write instruction");
         assert_eq!(
@@ -394,7 +393,7 @@ mod tests {
                 object: None,
                 data: BlobData::Inline(payload.clone()),
             },
-            TrackFlags::NONE,
+            TrackVisibility::Public,
         )
         .expect("track write instruction");
         assert_eq!(
@@ -411,9 +410,9 @@ mod tests {
         assert_eq!(parsed_payload, payload.as_slice());
     }
 
-    // a hidden write carries its flags through the wire header
+    // a hidden write carries its visibility through the wire header
     #[test]
-    fn carries_flags() {
+    fn carries_visibility() {
         let ix = build_track_write_ix(
             Address::new_unique(),
             Address::new_unique(),
@@ -422,13 +421,27 @@ mod tests {
                 object: None,
                 data: BlobData::Inline(b"secret".to_vec()),
             },
-            TrackFlags::HIDDEN,
+            TrackVisibility::Hidden,
         )
         .expect("track write instruction");
 
         let (header, _parsed) = parse_track_write(&ix.data[1..]).expect("parse track write");
 
-        assert_eq!(header.flags(), TrackFlags::HIDDEN);
+        assert_eq!(header.visibility().expect("visibility"), TrackVisibility::Hidden);
+    }
+
+    // an unknown visibility byte is rejected
+    #[test]
+    fn unknown_visibility() {
+        let header = TrackWrite {
+            kind: TrackKind::Inline as u8,
+            visibility: 0xff,
+            data_len: [0, 0],
+        };
+
+        let err = header.visibility().expect_err("unknown visibility");
+
+        assert_eq!(err, ProgramError::InvalidInstructionData);
     }
 
     #[test]
@@ -441,7 +454,7 @@ mod tests {
                 object: None,
                 data: BlobData::Inline(b"chunk-data".to_vec()),
             },
-            TrackFlags::NONE,
+            TrackVisibility::Public,
         )
         .expect("track write instruction");
         ix.data.push(0xff);

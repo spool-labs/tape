@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::GroupIndex;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
 use tape_core::types::SpoolIndex;
@@ -79,7 +79,7 @@ pub async fn read_resolved_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 pub struct SliceOrigin {
     pub track_addr: Address,
     pub tape: Address,
-    pub group: TrackGroup,
+    pub group: GroupIndex,
     pub blob: BlobEncoding,
 }
 
@@ -128,14 +128,25 @@ async fn fetch_verified_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .position_of(spool_id)
         .ok_or_else(|| RouteError::BadRequest("spool is not in track group".into()))?;
 
-    let fetched = fetch_slice_from(state, origin, spool_id, owner).await;
-    let data = match (fetched, previous_holder(state, spool_id, owner)) {
-        (Ok(data), _) => data,
-        (Err(_), Some(previous)) => fetch_slice_from(state, origin, spool_id, previous).await?,
-        (Err(error), None) => return Err(error),
+    let started = Instant::now();
+    let request = GetSliceReq {
+        track: origin.track_addr,
+        spool: spool_id,
+    };
+    let response = match state.context.api.get_slice(owner, &request).await {
+        Ok(response) => {
+            state.reputation.record_success(owner, started.elapsed());
+            response
+        }
+        Err(error) => {
+            if counts_against_peer(&error) {
+                state.reputation.record_failure(owner);
+            }
+            return Err(RouteError::BadGateway(format!("get_slice: {error}")));
+        }
     };
 
-    if !origin.blob.verify_slice(SpoolIndex(position as u64), &data) {
+    if !origin.blob.verify_slice(SpoolIndex(position as u64), &response.data) {
         return Err(RouteError::BadGateway("slice leaf hash mismatch".into()));
     }
 
@@ -143,52 +154,9 @@ async fn fetch_verified_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         track = %origin.track_addr,
         spool = spool_id.0,
         owner = %owner,
-        bytes = data.len(),
+        bytes = response.data.len(),
         "gateway fetched slice from owner"
     );
 
-    Ok(data)
-}
-
-/// The node that held a stored spool last epoch, when today's holder is another node
-///
-/// It keeps serving the spool while the new holder pulls it, which after the
-/// group count drops is every spool of a retired group.
-pub fn previous_holder<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
-    spool_id: SpoolIndex,
-    owner: Address,
-) -> Option<Address> {
-    state
-        .context
-        .state()
-        .spool_owner_prev(spool_id)
-        .filter(|held| *held != owner)
-}
-
-/// Ask one node for a slice and record how it answered
-async fn fetch_slice_from<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
-    origin: &SliceOrigin,
-    spool_id: SpoolIndex,
-    node: Address,
-) -> Result<Bytes, RouteError> {
-    let started = Instant::now();
-    let request = GetSliceReq {
-        track: origin.track_addr,
-        spool: spool_id,
-    };
-
-    match state.context.api.get_slice(node, &request).await {
-        Ok(response) => {
-            state.reputation.record_success(node, started.elapsed());
-            Ok(response.data)
-        }
-        Err(error) => {
-            if counts_against_peer(&error) {
-                state.reputation.record_failure(node);
-            }
-            Err(RouteError::BadGateway(format!("get_slice: {error}")))
-        }
-    }
+    Ok(response.data)
 }

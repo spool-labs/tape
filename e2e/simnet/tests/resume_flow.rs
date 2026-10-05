@@ -1,37 +1,36 @@
-// Failure-injection matrix for write resume, which a client asks for through
-// its write options. Each case leaves a tape in a distinct interrupted state via
-// the staged SDK API (reserve / write_blob / upload / certify), then calls the
-// one-call `write_named` on a resuming client and asserts it converges to a
-// single certified, readable track without re-spending capacity or duplicating
-// tracks. Resume lists the tape on committee peers and matches the content, so
-// every case waits for the pre-state to be peer-visible first, which is the
-// cross-process timing real resume runs under. A client that does not ask to
-// resume appends, and two cases cover that.
+// Failure-injection matrix for one-call write resume. Each case leaves a tape
+// in a distinct interrupted state via the staged SDK API (reserve / write_blob /
+// upload / certify), then calls the one-call `write_named` and asserts it
+// converges to a single certified, readable track without re-spending capacity
+// or duplicating tracks. Resume detection reads track state from committee
+// peers, so every case waits for the pre-state to be peer-visible first, which
+// is the cross-process timing real resume runs under.
 //
-// Cases I and J cover the gateway overwrite path instead: a new track is
-// written and the old one deleted, and a multi-track stream is deleted
-// whole. Both assert the tape returns to its live track count once the old
-// chunks and manifest are gone.
+// Cases I and J cover the gateway overwrite path instead: an existing prior
+// track is overwritten and reclaimed rather than rejected, and a multi-track
+// stream is reclaimed whole. Both assert the tape returns to its live track
+// count once the old chunks and manifest are gone.
 
 use std::time::{Duration, Instant};
 
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use tape_rpc::Rpc;
-use tape_api::program::tapedrive::TrackAddress;
+use tape_api::program::tapedrive::track_pda;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
-use tape_e2e_simnet::{run_simnet_test, NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE};
+use tape_e2e_simnet::{run_simnet_test, NodeRuntimeMode, SimnetBuilder};
 use tape_protocol::Api;
+use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
 use tape_sdk::tapedrive::Tapedrive;
-use tape_sdk::write_options::WriteOptions;
 
 const TARGET_GROUPS: u64 = 5;
-const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
+const NODE_COUNT: usize = GROUP_SIZE;
 const OBJECT_NAME: &str = "resume/obj";
 // Simnet epochs auto-advance on wall-clock, so a multi-case run crosses several
 // boundaries; reserve well past the whole run so no tape expires mid-test.
@@ -101,10 +100,6 @@ async fn resume_flow_inner() {
 
     let scenario = harness.scenario();
     let sdk = scenario.sdk(harness.admin());
-    let resuming = scenario.sdk(harness.admin()).with_write_options(WriteOptions {
-        resume: true,
-        ..WriteOptions::default()
-    });
 
     let mut rng = StdRng::seed_from_u64(0x2E5_0000);
     let data = random_bytes(&mut rng, 128 * 1024);
@@ -117,7 +112,7 @@ async fn resume_flow_inner() {
     {
         let key = TapeKey::generate();
         sdk.reserve(&key, capacity, EPOCHS).await.expect("A reserve");
-        let track = resuming
+        let track = sdk
             .write_named(&key, OBJECT_NAME, ContentType::Unknown, &data, EPOCHS)
             .await
             .expect("A resume completes the write");
@@ -135,7 +130,7 @@ async fn resume_flow_inner() {
             .await
             .expect("B register");
         wait_track_state(&sdk, &key.address(), TrackWant::Registered, active_timeout).await;
-        let track = resuming
+        let track = sdk
             .write_named(&key, OBJECT_NAME, ContentType::Unknown, &data, EPOCHS)
             .await
             .expect("B resume finishes registered track");
@@ -155,7 +150,7 @@ async fn resume_flow_inner() {
             .expect("C register");
         sdk.upload(&written, &plan).await.expect("C upload");
         wait_track_state(&sdk, &key.address(), TrackWant::Registered, active_timeout).await;
-        let track = resuming
+        let track = sdk
             .write_named(&key, OBJECT_NAME, ContentType::Unknown, &data, EPOCHS)
             .await
             .expect("C resume certifies uploaded track");
@@ -209,7 +204,7 @@ async fn resume_flow_inner() {
         wait_track_state(&sdk, &key.address(), TrackWant::Certified, active_timeout).await;
         let used_before = sdk.get_tape(&key.address()).await.expect("D tape").used;
 
-        let again = resuming
+        let again = sdk
             .write_named(&key, OBJECT_NAME, ContentType::Unknown, &data, EPOCHS)
             .await
             .expect("D resume skips");
@@ -220,45 +215,22 @@ async fn resume_flow_inner() {
         wait_track_count(&sdk, &key.address(), 1, active_timeout).await;
     }
 
-    // Case D2: the same repeat without resume appends. The tape then holds the
-    // content twice, as two tracks with their own addresses, and each one reads.
+    // Case E: a tape key reused for different content is a conflict, never a
+    // silent overwrite of the original track.
     {
         let key = TapeKey::generate();
-        let first = sdk
-            .write_named(&key, OBJECT_NAME, ContentType::Unknown, &data, EPOCHS)
-            .await
-            .expect("D2 first write");
-        wait_track_state(&sdk, &key.address(), TrackWant::Certified, active_timeout).await;
-
-        let again = sdk
-            .write_named(&key, OBJECT_NAME, ContentType::Unknown, &data, EPOCHS)
-            .await
-            .expect("D2 repeat appends");
-        assert_ne!(again.track_number, first.track_number, "D2: a second track");
-        assert_ne!(again.address(), first.address(), "D2: its own address");
-        assert_eq!(again.content_address(), first.content_address(), "D2: one content");
-        assert!(again.is_certified(), "D2: second track certified");
-        wait_track_count(&sdk, &key.address(), 2, active_timeout).await;
-        assert_eq!(read_track(&sdk, &first, active_timeout).await, data, "D2: first copy reads");
-        assert_eq!(read_track(&sdk, &again, active_timeout).await, data, "D2: second copy reads");
-    }
-
-    // Case E: a tape key reused for different content gets a second track,
-    // resuming or otherwise, and the original stays as it was.
-    {
-        let key = TapeKey::generate();
-        let first = sdk
-            .write_named(&key, OBJECT_NAME, ContentType::Unknown, &data, EPOCHS)
+        sdk.write_named(&key, OBJECT_NAME, ContentType::Unknown, &data, EPOCHS)
             .await
             .expect("E first write");
         wait_track_state(&sdk, &key.address(), TrackWant::Certified, active_timeout).await;
-        let second = resuming
+        let err = sdk
             .write_named(&key, OBJECT_NAME, ContentType::Unknown, &other, EPOCHS)
             .await
-            .expect("E: different content appends");
-        assert_ne!(second.address(), first.address(), "E: another address");
-        assert_eq!(read_track(&sdk, &second, active_timeout).await, other, "E: new content reads");
-        wait_track_count(&sdk, &key.address(), 2, active_timeout).await;
+            .expect_err("E: different content must conflict");
+        assert!(
+            matches!(err, TapedriveError::WriteConflict { .. }),
+            "E: expected WriteConflict, got {err:?}"
+        );
         assert_eq!(read_track_by_number(&sdk, &key.address(), active_timeout).await, data, "E: original intact");
     }
 
@@ -274,7 +246,7 @@ async fn resume_flow_inner() {
             .expect("F inline write");
         assert!(inline.is_inline() && inline.is_certified(), "F: inline+certified");
         wait_track_state(&sdk, &key.address(), TrackWant::Certified, active_timeout).await;
-        let again = resuming
+        let again = sdk
             .write_named(&key, OBJECT_NAME, ContentType::Unknown, &small, EPOCHS)
             .await
             .expect("F inline resume skips");
@@ -283,9 +255,8 @@ async fn resume_flow_inner() {
     }
 
     // Case G: interrupted multi-track stream. Register only chunk 0 (uncertified),
-    // then the resuming stream write finds chunk 0 by its content and finishes
-    // it, writes the remaining chunk, and writes the manifest. A 3-track tape
-    // (two chunks + manifest) reads back.
+    // then the one-call stream write finishes chunk 0, writes the remaining chunk,
+    // and writes the manifest. A 3-track tape (two chunks + manifest) reads back.
     {
         let key = TapeKey::generate();
         let stream_data = random_bytes(&mut rng, MAX_TRACK_SIZE + 1024);
@@ -296,7 +267,7 @@ async fn resume_flow_inner() {
         sdk.write_blob(&key, first).await.expect("G register chunk 0");
         wait_track_state(&sdk, &key.address(), TrackWant::Registered, active_timeout).await;
 
-        let receipt = resuming
+        let receipt = sdk
             .write_named_bytes(&key, OBJECT_NAME, ContentType::Unknown, &stream_data)
             .await
             .expect("G resume stream");
@@ -305,8 +276,8 @@ async fn resume_flow_inner() {
         wait_track_count(&sdk, &key.address(), 3, active_timeout).await;
     }
 
-    // Case H: interrupted reader stream. Register chunk 0, then the resuming
-    // reader stream write reads chunk 0, finds its track, finishes it, and
+    // Case H: interrupted reader stream. Register chunk 0, then the one-call
+    // reader stream write peeks chunk 0, detects the resume, finishes it, and
     // reads the remaining chunk from the reader before writing the manifest.
     {
         let key = TapeKey::generate();
@@ -319,7 +290,7 @@ async fn resume_flow_inner() {
         wait_track_state(&sdk, &key.address(), TrackWant::Registered, active_timeout).await;
 
         let size = StorageUnits::from_bytes(stream_data.len() as u64);
-        let receipt = resuming
+        let receipt = sdk
             .write_named_stream(&key, OBJECT_NAME, ContentType::Unknown, size, stream_data.as_slice())
             .await
             .expect("H resume reader stream");
@@ -330,7 +301,7 @@ async fn resume_flow_inner() {
 
     // Case I: gateway single-track overwrite. A certified track re-put under the
     // same name with different content overwrites: a new track is written and the
-    // old one deleted, so the tape ends with exactly one live track.
+    // prior one reclaimed, so the tape ends with exactly one live track.
     {
         let key = TapeKey::generate();
         sdk.reserve(&key, capacity, EPOCHS).await.expect("I reserve");
@@ -345,7 +316,7 @@ async fn resume_flow_inner() {
                 OBJECT_NAME,
                 ContentType::Unknown,
                 &other,
-                Some(first.track.address()),
+                Some(track_pda(key.address(), first.track.track_number).0),
                 None,
             )
             .await
@@ -359,7 +330,7 @@ async fn resume_flow_inner() {
     }
 
     // Case J: gateway stream overwrite. A multi-track stream re-put under the same
-    // name writes a fresh stream, then deletes the old object whole: every
+    // name writes a fresh stream, then reclaims the prior manifest whole: every
     // old chunk and its manifest are deleted, returning the live count to the new
     // stream's three tracks with the new stream still readable.
     {
@@ -382,11 +353,11 @@ async fn resume_flow_inner() {
             .expect("J stream v2");
         wait_track_count(&sdk, &key.address(), 6, active_timeout).await;
 
-        sdk.delete_object_as(&key, first.manifest).await.expect("J delete old stream");
+        sdk.reclaim_object_as(&key, first.manifest).await.expect("J reclaim old stream");
         wait_track_count(&sdk, &key.address(), 3, active_timeout).await;
 
         let got = read_bytes_retry(&sdk, &second.manifest, active_timeout).await;
-        assert_eq!(got, stream_v2, "J: new stream intact after delete");
+        assert_eq!(got, stream_v2, "J: new stream intact after reclaim");
     }
 
     harness.stop_all().await.expect("stop runtimes");
@@ -465,7 +436,7 @@ async fn read_track<B: Rpc, C: Api>(
     track: &CompressedTrack,
     timeout: Duration,
 ) -> Vec<u8> {
-    let address = track.address();
+    let address = track_pda(track.tape, track.track_number).0;
     let start = Instant::now();
     loop {
         match sdk.read(&address).await {

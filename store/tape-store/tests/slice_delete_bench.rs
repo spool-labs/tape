@@ -46,7 +46,7 @@ fn populate<A: BenchArm>(store: &TapeStore<A>, spool: SpoolIndex, count: usize, 
 
 fn sweep<A: BenchArm>() {
     let spool = SpoolIndex(7);
-    let prefix = SliceKey::spool_prefix(spool).expect("spool key");
+    let prefix = SliceKey::spool_prefix(spool);
 
     println!(
         "{:>7}  {:>8}  {:>7}  {:>9}  {:>12}  {:>13}  {:>9}",

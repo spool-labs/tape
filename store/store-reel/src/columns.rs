@@ -16,7 +16,7 @@ use tape_store::columns::ALL_COLUMN_FAMILIES;
 /// Bytes a slice key occupies: the spool big endian, then the track address
 const SLICE_KEY_LEN: u16 = 34;
 
-/// Bytes a track address occupies
+/// Bytes a content address occupies
 const ADDRESS_LEN: u16 = 32;
 
 /// Bytes a snapshot artifact key occupies

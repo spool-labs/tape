@@ -17,7 +17,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 use ratatui::{Frame, Terminal};
-use tape_core::erasure::MAX_GROUP_SIZE;
+use tape_core::erasure::GROUP_SIZE;
 use tape_observe_api::ChallengeRow;
 
 use crate::action::{ActionHandle, ActionLog};
@@ -141,7 +141,7 @@ fn render_frame(
 
     let spool_inner_w = area.width.saturating_sub(2) as usize;
     let groups_per_row = ((spool_inner_w + 1) / (GROUP_COLS + 1)).max(1);
-    let group_count = view.spools.len().div_ceil(MAX_GROUP_SIZE).max(1);
+    let group_count = view.spools.len().div_ceil(GROUP_SIZE).max(1);
     let bands = group_count.div_ceil(groups_per_row);
     let spool_grid_height = (bands * (GROUP_ROWS + 1)) as u16 + 2;
     let capped_spool_h = spool_grid_height.min(area.height.saturating_sub(10)).max(5);
@@ -267,9 +267,7 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
     }
 
     let groups_per_row = ((inner.width as usize + 1) / (GROUP_COLS + 1)).max(1);
-    // Spools are indexed with a stride of MAX_GROUP_SIZE, and a group fills
-    // the first `group_size` of its positions.
-    let group_count = view.spools.len().div_ceil(MAX_GROUP_SIZE);
+    let group_count = view.spools.len().div_ceil(GROUP_SIZE);
     let bands = group_count.div_ceil(groups_per_row);
     let mut lines = Vec::new();
 
@@ -309,12 +307,12 @@ fn render_spool_grid(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
 
                 for cell in 0..GROUP_COLS {
                     let spool_in_group = row * GROUP_COLS + cell;
-                    if spool_in_group >= view.cluster.group_size {
+                    if spool_in_group >= GROUP_SIZE {
                         spans.push(Span::raw(" "));
                         continue;
                     }
 
-                    let spool_idx = group * MAX_GROUP_SIZE + spool_in_group;
+                    let spool_idx = group * GROUP_SIZE + spool_in_group;
                     let Some(spool) = view.spools.get(spool_idx) else {
                         spans.push(Span::raw(" "));
                         continue;

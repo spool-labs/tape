@@ -8,8 +8,8 @@ use tape_rpc_client::RpcClient;
 use rpc_litesvm::LiteSvmRpc;
 use tape_store_reel::ReelStore;
 use tape_store_api::Store;
-use tape_core::erasure::MAX_GROUP_SIZE;
-use tape_core::spooler::{GroupFold, GroupIndex};
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::spooler::GroupIndex;
 use tape_core::system::EpochPhase;
 use tape_crypto::Address;
 use tape_node::context::NodeContext;
@@ -309,16 +309,11 @@ async fn poll_once(
     let mut current_committee_size = 0;
     let mut next_committee_size = 0;
     let mut live_group_count = 0;
-    let mut group_size = 0u64;
     let mut spools = Vec::new();
     let mut group_bytes = Vec::new();
-    let mut fold = None;
 
     if let Some(system) = system {
         live_group_count = system.live_group_count;
-        fold = system.fold().ok();
-        // Spools a group holds on this chain's profile.
-        group_size = system.code().map(|profile| u64::from(profile.n())).unwrap_or(0);
 
         if let Ok(members) = state.rpc.get_committee(system.current_epoch).await {
             current_committee_size = members.len();
@@ -344,10 +339,9 @@ async fn poll_once(
             .map(|node| (node.ctx.node_address(), node.id))
             .collect();
 
-        // One entry per spool index, so a group spans MAX_GROUP_SIZE entries.
         let total_spools = usize::try_from(live_group_count)
             .ok()
-            .and_then(|groups| groups.checked_mul(MAX_GROUP_SIZE))
+            .and_then(|groups| groups.checked_mul(GROUP_SIZE))
             .unwrap_or(0);
         spools = vec![SpoolSnapshot::default(); total_spools];
         group_bytes = vec![0u64; usize::try_from(live_group_count).unwrap_or(0)];
@@ -382,14 +376,12 @@ async fn poll_once(
 
         if let Ok(local_spools) = tracked.ctx.store.iter_all_spools() {
             for (spool_id, spool_state) in local_spools {
-                // A retired group's spool shows under the live spool that carries it.
-                let live_spool = fold.map_or(spool_id, |fold: GroupFold| fold.live_spool(spool_id));
-                let index = live_spool.as_usize();
+                let index = spool_id.as_usize();
                 if let Some(spool) = spools.get_mut(index) {
                     if spool_state.is_active() {
                         spool.available = true;
                         if counted_spools.insert(spool_id) {
-                            let group = GroupIndex::containing(live_spool).0 as usize;
+                            let group = GroupIndex::containing(spool_id).0 as usize;
                             if let Some(bytes) = group_bytes.get_mut(group) {
                                 if let Ok(slices) =
                                     tracked.ctx.store.iter_slices_by_spool(spool_id)
@@ -411,7 +403,7 @@ async fn poll_once(
 
     let group_spool_bytes = group_bytes
         .into_iter()
-        .map(|bytes| bytes.checked_div(group_size).unwrap_or(0))
+        .map(|bytes| bytes / GROUP_SIZE as u64)
         .collect::<Vec<_>>();
 
     let mut total_sync_delta = 0u64;

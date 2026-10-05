@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::object::object_etag;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
@@ -49,11 +50,11 @@ pub async fn decode_track_bytes<
 
     let blob = coded_blob(state, track_addr, &track)?;
     let slices = fetch_decoding_slices(state, track_addr, track, blob).await?;
-    let profile = state.context.params().profile;
+    let profile = blob.profile;
     let start = std::time::Instant::now();
     let decoded = spawn_blocking(move || {
         let refs: Vec<(SpoolIndex, &[u8])> = slices.iter().map(|(position, data)| (*position, data.as_ref())).collect();
-        BlobDecoder::try_new(profile)?.decode(&refs)
+        BlobDecoder::with_profile(profile).decode(&refs)
     })
     .await
     .map_err(|error| RouteError::Internal(format!("decode task: {error}")))?;
@@ -88,8 +89,7 @@ pub fn coded_blob<Db: Store, Cluster: Api, Blockchain: Rpc>(
         crate::metrics::inc_decode_result("data_mismatch");
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };
-    let profile = state.context.params().profile;
-    if blob.get_hash() != track.value_hash || blob.commitment_root(profile) != Some(blob.commitment) {
+    if blob.get_hash() != track.value_hash || blob.commitment_root() != blob.commitment {
         crate::metrics::inc_decode_result("commitment_mismatch");
         return Err(RouteError::Internal("blob commitment mismatch".into()));
     }
@@ -138,7 +138,7 @@ async fn fetch_and_cache_inline<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track_addr: Address,
     track: CompressedTrack,
 ) -> Result<Vec<u8>, RouteError> {
-    let peers = state.context.state().group_peers_with_prev(track.group);
+    let peers = state.context.state().group_peers(track.group);
     let fetched =
         fetch_inline_from_peers(state.context.api.as_ref(), &peers, track_addr, track.value_hash).await;
     let payload = match fetched {
@@ -173,7 +173,10 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
     track: CompressedTrack,
     blob: BlobEncoding,
 ) -> Result<Vec<(SpoolIndex, Bytes)>, RouteError> {
-    let k = state.context.params().k();
+    let k = blob.profile.k() as usize;
+    if k == 0 || k > GROUP_SIZE {
+        return Err(RouteError::Internal("invalid blob encoding profile".into()));
+    }
 
     let peers = state.context.state().group_peers(track.group);
     if peers.is_empty() {

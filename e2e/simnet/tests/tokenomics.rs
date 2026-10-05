@@ -10,24 +10,24 @@ use spl_token::instruction::transfer_checked;
 use tape_chain_harness::{TEST_EPOCH_DURATION, TEST_MAX_EPOCH_DURATION};
 use tape_api::helpers::build_authority_with_tokens_ix;
 use tape_api::program::tapedrive::{
-    ARCHIVE_ATA, DEFAULT_SUBSIDY_DECAY_BPS, SUBSIDY_ATA, TrackAddress,
+    ARCHIVE_ATA, DEFAULT_SUBSIDY_DECAY_BPS, SUBSIDY_ATA, track_pda,
 };
 use tape_api::program::token::{MINT_ADDRESS, TOKEN_DECIMALS};
 use tape_api::utils::ata;
-use tape_core::spooler::TrackGroup;
+use tape_core::erasure::GROUP_SIZE;
+use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, NodePreferences};
 use tape_core::tape::{remaining_tape_epochs, tape_reservation_cost};
 use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
 use tape_crypto::Address;
 use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetHarness, SimnetScenario, TAPENET_GROUP_SIZE,
-    run_simnet_test,
+    NodeRuntimeMode, SimnetBuilder, SimnetHarness, SimnetScenario, run_simnet_test,
 };
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_store::ops::{ObjectInfoOps, TrackDataOps, TrackOps};
 
-const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
+const NODE_COUNT: usize = GROUP_SIZE;
 const TARGET_GROUPS: u64 = 1;
 const BURN_FEE_BPS: BasisPoints = BasisPoints(1_000);
 const SUBSIDY_DECAY_BPS: BasisPoints = DEFAULT_SUBSIDY_DECAY_BPS;
@@ -67,7 +67,6 @@ async fn run() {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
         .runtime_mode(NodeRuntimeMode::Full)
-        .base_port(0)
         .file_log(true)
         .build()
         .expect("build harness");
@@ -303,7 +302,6 @@ async fn run_extend_third_party() {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
         .runtime_mode(NodeRuntimeMode::Disabled)
-        .base_port(0)
         .build()
         .expect("build harness");
 
@@ -434,15 +432,14 @@ async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumbe
     );
 
     let expected = NodePreferences {
-        committee_size: TAPENET_GROUP_SIZE as u64,
+        committee_size: GROUP_SIZE as u64,
         spool_groups: TARGET_GROUPS,
         burn_fee_bps: BURN_FEE_BPS,
         subsidy_decay_bps: SUBSIDY_DECAY_BPS,
-        network_capacity: archive.storage_capacity,
+        storage_capacity: archive.storage_capacity,
         storage_price: archive.storage_price,
         access_threshold: TAPE(0),
         epoch_duration: TEST_EPOCH_DURATION,
-        node_capacity: StorageUnits::zero(),
     };
 
     assert_eq!(
@@ -470,11 +467,11 @@ async fn reserve_and_write(harness: &SimnetHarness) -> WrittenTrack {
         .write_raw(&tape_key, &data)
         .await
         .expect("write tokenomics track");
-    assert_eq!(track.group, TrackGroup(0), "unexpected raw track group");
+    assert_eq!(track.group, GroupIndex(0), "unexpected raw track group");
 
     WrittenTrack {
         authority: Address::from(tape_key.pubkey()),
-        track: track.address(),
+        track: track_pda(track.tape, track.track_number).0,
         size: track.size,
     }
 }

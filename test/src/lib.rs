@@ -92,45 +92,16 @@ pub fn empty(key: impl Into<Pubkey>) -> (Pubkey, Account) {
     (key, Account::default())
 }
 
-/// A zeroed System for a permissionless network on tapenet's profile.
-pub fn permissionless_system() -> System {
-    System {
-        profile: TAPENET_PROFILE.into(),
-        trust_model: TrustModel::Permissionless.into(),
-        ..System::zeroed()
-    }
-}
-
-/// A zeroed System for a trusted cluster on the given profile.
-pub fn trusted_system(profile: ErasureCode) -> System {
-    System {
-        profile: profile.into(),
-        trust_model: TrustModel::Trusted.into(),
-        ..System::zeroed()
-    }
-}
-
 /// Build a full group of spools with fresh BLS keys, returning the private
 /// keys alongside the group so tests can sign group vote messages.
 pub fn make_group(epoch: EpochNumber, group_id: GroupIndex) -> (Vec<BlsPrivateKey>, Group) {
-    make_group_of(epoch, group_id, TAPENET_PROFILE)
-}
-
-/// Build a group whose first n spools have fresh BLS keys, leaving the rest
-/// zeroed as a network on that profile does.
-pub fn make_group_of(
-    epoch: EpochNumber,
-    group_id: GroupIndex,
-    profile: ErasureCode,
-) -> (Vec<BlsPrivateKey>, Group) {
-    let width = usize::from(profile.n());
     let mut group = Group::zeroed();
     group.epoch = epoch;
     group.id = group_id;
     group.size = StorageUnits::mb(50);
 
-    let mut sks = Vec::with_capacity(width);
-    for i in 0..width {
+    let mut sks = Vec::with_capacity(GROUP_SIZE);
+    for i in 0..GROUP_SIZE {
         let sk = BlsPrivateKey::from_random();
         let pk = sk.public_key().expect("pubkey");
         let mut bytes = [0u8; 32];

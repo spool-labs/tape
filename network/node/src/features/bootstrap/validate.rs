@@ -177,10 +177,10 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 #[cfg(test)]
 mod tests {
     use tape_store_memory::MemoryStore;
-    use tape_api::program::tapedrive::TrackAddress;
-    use tape_core::spooler::TrackGroup;
+    use tape_api::program::tapedrive::track_pda;
+    use tape_core::spooler::GroupIndex;
     use tape_core::tape::{snapshot_tape_number, user_tape_number};
-    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
     use tape_core::types::{SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::{Address, Hash};
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
@@ -192,18 +192,22 @@ mod tests {
     }
 
     fn track_for(tape: Address, track_number: TrackNumber) -> (Address, CompressedTrack) {
-        let track = CompressedTrack {
-            tape,
-            track_number,
-            key: Hash::default(),
-            kind: TrackKind::Inline as u64,
-            state: TrackState::Certified as u64,
-            flags: TrackFlags::NONE,
-            size: StorageUnits(1),
-            group: TrackGroup::from(0),
-            value_hash: Hash::default(),
-        };
-        (track.address(), track)
+        let (track, _) = track_pda(tape, track_number);
+        let track = track;
+        (
+            track,
+            CompressedTrack {
+                tape,
+                track_number,
+                key: Hash::default(),
+                kind: TrackKind::Inline as u64,
+                state: TrackState::Certified as u64,
+                visibility: TrackVisibility::Public as u64,
+                size: StorageUnits(1),
+                group: GroupIndex::from(0),
+                value_hash: Hash::default(),
+            },
+        )
     }
 
     fn user_tape_info() -> TapeInfo {

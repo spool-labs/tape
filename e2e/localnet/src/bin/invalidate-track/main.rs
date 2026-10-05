@@ -7,9 +7,10 @@ use rand::RngCore;
 use tape_rpc_solana::RpcConfig;
 use tape_api::compute::INVALIDATE_TRACK_CU;
 use tape_api::instruction::build_invalidate_track_ix;
-use tape_api::program::tapedrive::TrackAddress;
+use tape_api::program::tapedrive::track_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::cert::track::TrackInvalidateMessage;
+use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{SpoolBitmap, StorageUnits};
 use tape_crypto::address::Address;
@@ -83,7 +84,7 @@ async fn main() -> Result<()> {
         .context("write track")?;
     ensure!(track.is_certified(), "track should certify");
 
-    let track_address = track.address();
+    let track_address = track_pda(track.tape, track.track_number).0;
     println!("track {track_address} certified in group {}", track.group.0);
 
     let proof = wait_track_proof(&sdk, &track_address, |_| true).await?;
@@ -98,16 +99,9 @@ async fn main() -> Result<()> {
 
     let system = sdk.rpc().get_system().await.context("get system")?;
     let epoch = system.current_epoch;
-    let profile = system
-        .code()
-        .map_err(|_| anyhow::anyhow!("System holds no valid encoding profile"))?;
-    // The members of the live group that carries the track sign for it.
-    let live_group = system
-        .live_group(proof.state.group)
-        .map_err(|_| anyhow::anyhow!("no spool group is live"))?;
     let group = sdk
         .rpc()
-        .get_group(epoch, live_group)
+        .get_group(epoch, proof.state.group)
         .await
         .context("get group")?;
 
@@ -140,7 +134,7 @@ async fn main() -> Result<()> {
         indices.push(spool_index);
     }
     ensure!(
-        indices.len() == usize::from(profile.n()),
+        indices.len() == GROUP_SIZE,
         "expected every group spool key locally, found {}",
         indices.len()
     );
@@ -150,14 +144,7 @@ async fn main() -> Result<()> {
         .map_err(|error| anyhow::anyhow!("aggregate: {error:?}"))?;
 
     let payer = sdk.payer().context("payer")?;
-    let ix = build_invalidate_track_ix(
-        payer.pubkey().into(),
-        proof,
-        epoch,
-        live_group,
-        bitmap,
-        signature,
-    );
+    let ix = build_invalidate_track_ix(payer.pubkey().into(), proof, epoch, bitmap, signature);
 
     println!("submitting invalidate with {} signers", indices.len());
     sdk.rpc()

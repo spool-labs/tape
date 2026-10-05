@@ -51,14 +51,14 @@ impl MemorySource {
 
     /// Write a track with its bytes, returning its address
     pub fn write(&mut self, tape: Address, track_number: TrackNumber, bytes: &[u8]) -> Address {
-        let address = self.address(tape, track_number).unwrap_or_else(Address::new_unique);
+        let address = self.address(tape, track_number);
         self.put(tape, track_number, Track::Written { address, bytes: bytes.to_vec() });
         address
     }
 
     /// Write a track whose bytes the reader does not hold, returning its address
     pub fn pend(&mut self, tape: Address, track_number: TrackNumber) -> Address {
-        let address = self.address(tape, track_number).unwrap_or_else(Address::new_unique);
+        let address = self.address(tape, track_number);
         self.put(tape, track_number, Track::Pending { address });
         address
     }
@@ -70,16 +70,18 @@ impl MemorySource {
 
     /// Delete or invalidate a track, returning the address it had
     pub fn remove(&mut self, tape: Address, track_number: TrackNumber) -> Option<Address> {
-        let address = self.address(tape, track_number);
+        let address = match self.tapes.get(&tape).and_then(|tracks| tracks.get(&track_number)) {
+            Some(Track::Pending { address } | Track::Written { address, .. }) => Some(*address),
+            Some(Track::Absent | Track::Opaque) | None => None,
+        };
         self.put(tape, track_number, Track::Absent);
         address
     }
 
-    /// The address of the present track at a number
-    fn address(&self, tape: Address, track_number: TrackNumber) -> Option<Address> {
+    fn address(&self, tape: Address, track_number: TrackNumber) -> Address {
         match self.tapes.get(&tape).and_then(|tracks| tracks.get(&track_number)) {
-            Some(Track::Pending { address } | Track::Written { address, .. }) => Some(*address),
-            Some(Track::Absent | Track::Opaque) | None => None,
+            Some(Track::Pending { address } | Track::Written { address, .. }) => *address,
+            Some(Track::Absent | Track::Opaque) | None => Address::new_unique(),
         }
     }
 

@@ -63,10 +63,7 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         return Err(TapeError::BadProof.into());
     }
 
-    // The payload is as wide as the widest group. A network reads the first n
-    // entries and ignores the rest, whose bytes the voted root already fixes.
-    let width = usize::from(system.code()?.n());
-    require_unique(&args.payload.member_indices[..width])?;
+    require_unique(&args.payload.member_indices)?;
 
     peer_set_info.is_peer_set()?;
     let (_, peers) = PeerSet::read(peer_set_info, &tapedrive::ID)?;
@@ -103,7 +100,7 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     group.epoch = target_epoch_id;
     group.size = args.payload.size;
 
-    for i in 0..width {
+    for i in 0..GROUP_SIZE {
         let member_index = usize::try_from(args.payload.member_indices[i])
             .map_err(|_| TapeError::BadMember)?;
 
@@ -151,7 +148,7 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         .payload
         .size
         .0
-        .checked_mul(width as u64)
+        .checked_mul(GROUP_SIZE as u64)
         .ok_or(TapeError::RewardsOverflow)?;
 
     target_epoch.total_assigned = StorageUnits(
@@ -176,9 +173,9 @@ pub fn process_finalize_group(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     Ok(())
 }
 
-fn require_unique(member_indices: &[u64]) -> ProgramResult {
-    for i in 0..member_indices.len() {
-        for j in (i + 1)..member_indices.len() {
+fn require_unique(member_indices: &[u64; GROUP_SIZE]) -> ProgramResult {
+    for i in 0..GROUP_SIZE {
+        for j in (i + 1)..GROUP_SIZE {
             if member_indices[i] == member_indices[j] {
                 return Err(TapeError::BadMember.into());
             }
@@ -191,26 +188,22 @@ fn require_unique(member_indices: &[u64]) -> ProgramResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::encoding::RSParams;
     use tape_core::system::Peer;
     use tape_crypto::merkle::{
         create_proof_from_leaf_hashes, root_from_leaf_hashes,
     };
     use tape_test::*;
 
-    // A payload seating members 0..n, with the padding entries left at zero.
     fn assignment_inputs(
         group_id: GroupIndex,
         size: StorageUnits,
-        blacklisted: [StorageUnits; MAX_GROUP_SIZE],
-        profile: ErasureCode,
+        blacklisted: [StorageUnits; GROUP_SIZE],
     ) -> (
         AssignmentGroupPayload,
         Hash,
         [Hash; ASSIGNMENT_TREE_HEIGHT],
     ) {
-        let width = usize::from(profile.n());
-        let member_indices = core::array::from_fn(|i| if i < width { i as u64 } else { 0 });
+        let member_indices = core::array::from_fn(|i| i as u64);
         let payload =
             AssignmentGroupPayload::new(group_id, member_indices, size, blacklisted);
         let leaf_hash = payload.hash();
@@ -227,12 +220,11 @@ mod tests {
         (payload, assignment_hash, proof)
     }
 
-    fn members_and_peers(profile: ErasureCode) -> (Vec<Member>, Vec<Peer>) {
-        let width = usize::from(profile.n());
-        let mut members = Vec::with_capacity(width);
-        let mut peers = Vec::with_capacity(width);
+    fn members_and_peers() -> (Vec<Member>, Vec<Peer>) {
+        let mut members = Vec::with_capacity(GROUP_SIZE);
+        let mut peers = Vec::with_capacity(GROUP_SIZE);
 
-        for i in 0..width {
+        for i in 0..GROUP_SIZE {
             let sk = BlsPrivateKey::from_random();
             let pk = sk.public_key().expect("pubkey");
             let mut bytes = [0u8; 32];
@@ -258,21 +250,6 @@ mod tests {
 
     #[test]
     fn finalize_group() {
-        finalize_case(permissionless_system());
-    }
-
-    // a 3-of-4 cluster seats four members, ignores the padding entries and
-    // counts four spools of bytes
-    #[test]
-    fn narrow_group() {
-        let narrow = trusted_system(ErasureCode::ReedSolomon(RSParams::new(3, 1)));
-
-        finalize_case(narrow);
-    }
-
-    fn finalize_case(base: System) {
-        let profile = base.code().unwrap();
-        let width = usize::from(profile.n());
         let fee_payer = Pubkey::new_unique();
 
         let current_epoch_id = EpochNumber(12);
@@ -280,9 +257,9 @@ mod tests {
 
         let group_id = GroupIndex(0);
         let size = StorageUnits::gb(2);
-        let blacklisted = [StorageUnits::zero(); MAX_GROUP_SIZE];
+        let blacklisted = [StorageUnits::zero(); GROUP_SIZE];
         let (payload, assignment_hash, proof) =
-            assignment_inputs(group_id, size, blacklisted, profile);
+            assignment_inputs(group_id, size, blacklisted);
 
         let (system_address, _) = system_pda();
         let (target_epoch_address, _) = epoch_pda(target_epoch_id);
@@ -293,7 +270,7 @@ mod tests {
         let system = System {
             current_epoch: current_epoch_id,
             target_group_count: 1,
-            ..base
+            ..System::zeroed()
         };
 
         let target_epoch = Epoch {
@@ -302,15 +279,15 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let (members, mut peers) = members_and_peers(profile);
+        let (members, mut peers) = members_and_peers();
         peers.reverse();
 
         let committee = Committee {
             epoch: target_epoch_id,
-            members: Tail::new(MAX_GROUP_SIZE as u64, members.len() as u64),
+            members: Tail::new(GROUP_SIZE as u64, members.len() as u64),
         };
         let peer_set = PeerSet {
-            peers: Tail::new(MAX_GROUP_SIZE as u64, peers.len() as u64),
+            peers: Tail::new(GROUP_SIZE as u64, peers.len() as u64),
         };
 
         let instruction =
@@ -332,7 +309,7 @@ mod tests {
             size,
             ..Group::zeroed()
         };
-        for i in 0..width {
+        for i in 0..GROUP_SIZE {
             let peer = peers
                 .iter()
                 .find(|peer| peer.node == members[i].node)
@@ -351,7 +328,7 @@ mod tests {
 
         let expected_target_epoch = Epoch {
             total_groups: 1,
-            total_assigned: StorageUnits(size.0 * width as u64),
+            total_assigned: StorageUnits(size.0 * GROUP_SIZE as u64),
             ..target_epoch
         };
 
@@ -373,7 +350,7 @@ mod tests {
                         Committee {
                             epoch: target_epoch_id,
                             members: Tail::new(
-                                MAX_GROUP_SIZE as u64,
+                                GROUP_SIZE as u64,
                                 expected_members.len() as u64,
                             ),
                         }
@@ -393,10 +370,10 @@ mod tests {
         let target_epoch_id = EpochNumber(13);
 
         let group_id = GroupIndex(0);
-        let size = StorageUnits((u64::MAX / MAX_GROUP_SIZE as u64) + 1);
-        let blacklisted = [StorageUnits::zero(); MAX_GROUP_SIZE];
+        let size = StorageUnits((u64::MAX / GROUP_SIZE as u64) + 1);
+        let blacklisted = [StorageUnits::zero(); GROUP_SIZE];
         let (payload, assignment_hash, proof) =
-            assignment_inputs(group_id, size, blacklisted, TAPENET_PROFILE);
+            assignment_inputs(group_id, size, blacklisted);
 
         let (system_address, _) = system_pda();
         let (target_epoch_address, _) = epoch_pda(target_epoch_id);
@@ -407,7 +384,7 @@ mod tests {
         let system = System {
             current_epoch: current_epoch_id,
             target_group_count: 1,
-            ..permissionless_system()
+            ..System::zeroed()
         };
 
         let target_epoch = Epoch {
@@ -416,14 +393,14 @@ mod tests {
             ..Epoch::zeroed()
         };
 
-        let (members, peers) = members_and_peers(TAPENET_PROFILE);
+        let (members, peers) = members_and_peers();
 
         let committee = Committee {
             epoch: target_epoch_id,
-            members: Tail::new(MAX_GROUP_SIZE as u64, members.len() as u64),
+            members: Tail::new(GROUP_SIZE as u64, members.len() as u64),
         };
         let peer_set = PeerSet {
-            peers: Tail::new(MAX_GROUP_SIZE as u64, peers.len() as u64),
+            peers: Tail::new(GROUP_SIZE as u64, peers.len() as u64),
         };
 
         let instruction =

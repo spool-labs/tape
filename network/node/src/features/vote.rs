@@ -1,13 +1,13 @@
 use tape_api::event::VoteRecorded;
 use tape_core::spooler::GroupIndex;
+use tape_core::types::SpoolIndex;
 use tape_crypto::Address;
 use tape_protocol::ProtocolState;
 
-/// The live groups a node votes in this epoch.
-pub fn member_groups(state: &ProtocolState, node: Address) -> Vec<GroupIndex> {
-    let mut groups = state
-        .member_live_spools(node)
-        .into_iter()
+pub fn member_groups(spools: &[SpoolIndex]) -> Vec<GroupIndex> {
+    let mut groups = spools
+        .iter()
+        .copied()
         .map(GroupIndex::containing)
         .collect::<Vec<_>>();
     groups.sort_by_key(|group| group.0);
@@ -21,7 +21,7 @@ pub fn group_peers_without(
     exclude: Address,
 ) -> Vec<Address> {
     state
-        .group_peers(group.into())
+        .group_peers(group)
         .into_iter()
         .map(|(_, id)| id)
         .filter(|id| *id != exclude)
@@ -33,7 +33,7 @@ pub fn bitmap_index_in_group(
     group: GroupIndex,
     node: Address,
 ) -> Option<u16> {
-    let (spool, _) = state.spool_for_node_in_group(group.into(), node)?;
+    let (spool, _) = state.spool_for_node_in_group(group, node)?;
     group.position_of(spool).map(|position| position as u16)
 }
 

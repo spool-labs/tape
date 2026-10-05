@@ -38,8 +38,6 @@ pub fn process_stage_genesis_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         return Err(TapeError::BadEpochState.into());
     }
 
-    let width = u64::from(system.code()?.n());
-
     let target = EpochNumber(1);
     let epoch = epoch_info
         .is_epoch(target)?
@@ -64,7 +62,7 @@ pub fn process_stage_genesis_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         system_program_info,
         fee_payer_info,
         target,
-        width,
+        GROUP_SIZE as u64,
     )?;
 
     peer_set_info
@@ -112,7 +110,7 @@ pub fn process_stage_genesis_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
     if committee_header.epoch != target {
         return Err(TapeError::BadEpochId.into());
     }
-    if committee_header.members.capacity != width {
+    if committee_header.members.capacity != GROUP_SIZE as u64 {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -125,7 +123,7 @@ pub fn process_stage_genesis_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
 
     let (peer_header, peers) =
         PeerSet::read_full_mut(peer_set_info, &tapedrive::ID)?;
-    if peer_header.peers.capacity < width {
+    if peer_header.peers.capacity < GROUP_SIZE as u64 {
         return Err(TapeError::ListFull.into());
     }
 
@@ -184,10 +182,7 @@ fn stage_genesis_member(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::encoding::RSParams;
     use tape_test::*;
-
-    const NARROW: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
 
     fn authority_node(stake: TAPE) -> (Pubkey, Address, Node, Member, Peer) {
         let authority = Pubkey::new_unique();
@@ -239,26 +234,6 @@ mod tests {
         committee_data: Vec<u8>,
         peer_set_data: Vec<u8>,
     ) -> Vec<(Pubkey, solana_account::Account)> {
-        stage_accounts_on(
-            permissionless_system(),
-            fee_payer,
-            authority,
-            node_address,
-            node,
-            committee_data,
-            peer_set_data,
-        )
-    }
-
-    fn stage_accounts_on(
-        system: System,
-        fee_payer: Pubkey,
-        authority: Pubkey,
-        node_address: Address,
-        node: Node,
-        committee_data: Vec<u8>,
-        peer_set_data: Vec<u8>,
-    ) -> Vec<(Pubkey, solana_account::Account)> {
         let target = EpochNumber(1);
         let (system_address, _) = system_pda();
         let (epoch_address, _) = epoch_pda(target);
@@ -267,7 +242,7 @@ mod tests {
 
         let system = System {
             current_epoch: EpochNumber(0),
-            ..system
+            ..System::zeroed()
         };
         let epoch = Epoch {
             id: target,
@@ -304,7 +279,7 @@ mod tests {
         }
         .pack_with(&[]);
         let peer_set_data = PeerSet {
-            peers: Tail::empty(MAX_GROUP_SIZE as u64),
+            peers: Tail::empty(GROUP_SIZE as u64),
         }
         .pack_with(&[]);
         let accounts = stage_accounts(
@@ -326,7 +301,7 @@ mod tests {
                     .data(
                         Committee {
                             epoch: target,
-                            members: Tail::new(MAX_GROUP_SIZE as u64, 1),
+                            members: Tail::new(GROUP_SIZE as u64, 1),
                         }
                         .pack_with(&[expected_member])
                         .as_ref(),
@@ -335,89 +310,13 @@ mod tests {
                 Check::account(&Pubkey::from(peer_set_address))
                     .data(
                         PeerSet {
-                            peers: Tail::new(MAX_GROUP_SIZE as u64, 1),
+                            peers: Tail::new(GROUP_SIZE as u64, 1),
                         }
                         .pack_with(&[expected_peer])
                         .as_ref(),
                     )
                     .build(),
             ],
-        );
-    }
-
-    // a 3-of-4 cluster sizes its genesis committee to four seats
-    #[test]
-    fn narrow_stage() {
-        let fee_payer = Pubkey::new_unique();
-        let target = EpochNumber(1);
-        let (committee_address, _) = committee_pda(target);
-        let (authority, node_address, node, expected_member, _) = authority_node(TAPE(1_000));
-
-        let instruction =
-            build_stage_genesis_node_ix(fee_payer.into(), authority.into(), node_address);
-        let committee_data = Committee { epoch: target, members: Tail::empty(0) }.pack_with(&[]);
-        let peer_set_data = PeerSet { peers: Tail::empty(MAX_GROUP_SIZE as u64) }.pack_with(&[]);
-        let accounts = stage_accounts_on(
-            trusted_system(NARROW),
-            fee_payer,
-            authority,
-            node_address,
-            node,
-            committee_data,
-            peer_set_data,
-        );
-
-        test_env().process_instruction(
-            &instruction,
-            &accounts,
-            &[
-                Check::success(),
-                Check::account(&Pubkey::from(committee_address))
-                    .data(
-                        Committee { epoch: target, members: Tail::new(4, 1) }
-                            .pack_with(&[expected_member])
-                            .as_ref(),
-                    )
-                    .build(),
-            ],
-        );
-    }
-
-    // a 3-of-4 cluster refuses a fifth distinct genesis node
-    #[test]
-    fn narrow_full() {
-        let fee_payer = Pubkey::new_unique();
-        let target = EpochNumber(1);
-        let (authority, node_address, node, _, _) = authority_node(TAPE(10_000));
-
-        let instruction =
-            build_stage_genesis_node_ix(fee_payer.into(), authority.into(), node_address);
-
-        let mut members = Vec::with_capacity(4);
-        for i in 0..4u8 {
-            let mut bytes = [0u8; 32];
-            bytes[0] = i + 1;
-            members.push(Member::new(Address::new(bytes), TAPE(u64::from(i) + 1)));
-        }
-        sort_members_for_committee(&mut members);
-
-        let committee_data = Committee { epoch: target, members: Tail::new(4, 4) }
-            .pack_with(&members);
-        let peer_set_data = PeerSet { peers: Tail::empty(MAX_GROUP_SIZE as u64) }.pack_with(&[]);
-        let accounts = stage_accounts_on(
-            trusted_system(NARROW),
-            fee_payer,
-            authority,
-            node_address,
-            node,
-            committee_data,
-            peer_set_data,
-        );
-
-        test_env().process_instruction(
-            &instruction,
-            &accounts,
-            &[Check::err(TapeError::ListFull.into())],
         );
     }
 
@@ -446,11 +345,11 @@ mod tests {
             build_stage_genesis_node_ix(fee_payer.into(), authority.into(), node_address);
         let committee_data = Committee {
             epoch: target,
-            members: Tail::new(MAX_GROUP_SIZE as u64, 1),
+            members: Tail::new(GROUP_SIZE as u64, 1),
         }
         .pack_with(&[old_member]);
         let peer_set_data = PeerSet {
-            peers: Tail::new(MAX_GROUP_SIZE as u64, 1),
+            peers: Tail::new(GROUP_SIZE as u64, 1),
         }
         .pack_with(&[old_peer]);
         let accounts = stage_accounts(
@@ -472,7 +371,7 @@ mod tests {
                     .data(
                         Committee {
                             epoch: target,
-                            members: Tail::new(MAX_GROUP_SIZE as u64, 1),
+                            members: Tail::new(GROUP_SIZE as u64, 1),
                         }
                         .pack_with(&[expected_member])
                         .as_ref(),
@@ -481,7 +380,7 @@ mod tests {
                 Check::account(&Pubkey::from(peer_set_address))
                     .data(
                         PeerSet {
-                            peers: Tail::new(MAX_GROUP_SIZE as u64, 1),
+                            peers: Tail::new(GROUP_SIZE as u64, 1),
                         }
                         .pack_with(&[expected_peer])
                         .as_ref(),
@@ -505,7 +404,7 @@ mod tests {
         }
         .pack_with(&[]);
         let peer_set_data = PeerSet {
-            peers: Tail::empty(MAX_GROUP_SIZE as u64),
+            peers: Tail::empty(GROUP_SIZE as u64),
         }
         .pack_with(&[]);
         let accounts = stage_accounts(
@@ -540,7 +439,7 @@ mod tests {
         }
         .pack_with(&[]);
         let peer_set_data = PeerSet {
-            peers: Tail::empty(MAX_GROUP_SIZE as u64),
+            peers: Tail::empty(GROUP_SIZE as u64),
         }
         .pack_with(&[]);
         let accounts = stage_accounts(
@@ -569,8 +468,8 @@ mod tests {
         let instruction =
             build_stage_genesis_node_ix(fee_payer.into(), authority.into(), node_address);
 
-        let mut members = Vec::with_capacity(MAX_GROUP_SIZE);
-        for i in 0..MAX_GROUP_SIZE {
+        let mut members = Vec::with_capacity(GROUP_SIZE);
+        for i in 0..GROUP_SIZE {
             let mut bytes = [0u8; 32];
             bytes[0] = (i as u8) + 1;
             members.push(Member::new(Address::new(bytes), TAPE(i as u64 + 1)));
@@ -579,11 +478,11 @@ mod tests {
 
         let committee_data = Committee {
             epoch: target,
-            members: Tail::new(MAX_GROUP_SIZE as u64, members.len() as u64),
+            members: Tail::new(GROUP_SIZE as u64, members.len() as u64),
         }
         .pack_with(&members);
         let peer_set_data = PeerSet {
-            peers: Tail::empty(MAX_GROUP_SIZE as u64),
+            peers: Tail::empty(GROUP_SIZE as u64),
         }
         .pack_with(&[]);
         let accounts = stage_accounts(
