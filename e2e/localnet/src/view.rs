@@ -11,6 +11,8 @@ pub struct ClusterView {
     pub phase_weight: Option<u64>,
     pub slot: u64,
     pub live_group_count: u64,
+    /// Spools a group holds on this chain's profile
+    pub group_size: usize,
     pub committee_prev_size: usize,
     pub committee_size: usize,
     pub committee_next_size: usize,

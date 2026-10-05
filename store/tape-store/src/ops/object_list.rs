@@ -1,7 +1,6 @@
 //! Per-bucket object listing index for S3-style `ListObjects`.
 
 use tape_store_api::{Column, Direction, Store};
-use tape_api::program::tapedrive::track_pda;
 use tape_crypto::address::Address;
 
 use crate::columns::ObjectListCol;
@@ -148,9 +147,8 @@ impl<S: Store> ObjectListOps for TapeStore<S> {
                     // yet servable, so listing it would return a key that 404s on
                     // GET. Skipped entries do not count against max_keys, so pages
                     // stay full of servable objects.
-                    let track = track_pda(entry.data_tape, entry.track_number).0;
                     let certified = self
-                        .get_object_info(track)?
+                        .get_object_info(entry.track)?
                         .is_some_and(|info| info.is_certified());
                     if !certified {
                         continue;
@@ -207,7 +205,6 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use tape_store_memory::MemoryStore;
-    use tape_api::program::tapedrive::track_pda;
     use tape_core::types::{ContentType, EpochNumber, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::Hash;
     use crate::types::ObjectInfo;
@@ -224,6 +221,7 @@ mod tests {
             slot: SlotNumber(n),
             data_tape: Address::new_unique(),
             track_number: TrackNumber(n),
+            track: Address::new_unique(),
             kind: 1,
             content_type: ContentType::Unknown,
         }
@@ -232,7 +230,7 @@ mod tests {
     // Mirror production: a listed object has both an entry and a certified
     // ObjectInfo. `put_object_entry` alone leaves it uncertified (hidden).
     fn put_certified(s: &TapeStore<MemoryStore>, bucket: Address, name: &[u8], e: ObjectListEntry) {
-        let track = track_pda(e.data_tape, e.track_number).0;
+        let track = e.track;
         s.put_object_info(
             track,
             ObjectInfo::Valid {

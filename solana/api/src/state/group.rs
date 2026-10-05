@@ -1,5 +1,5 @@
 use tape_solana::*;
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::erasure::MAX_GROUP_SIZE;
 use tape_core::spooler::GroupIndex;
 use tape_core::system::Spool;
 use tape_core::types::{EpochNumber, SpoolBitmap, StorageUnits};
@@ -20,8 +20,9 @@ pub struct Group {
     /// Bitmap of spools that are done syncing.
     pub synced: SpoolBitmap,
 
-    /// Owners and BLS keys for this group's 20 spools.
-    pub spools: [Spool; GROUP_SIZE],
+    /// Owners and BLS keys for this group's spools. A network with n spools
+    /// per group fills the first n and leaves the rest zeroed.
+    pub spools: [Spool; MAX_GROUP_SIZE],
 }
 
 unsafe impl Zeroable for Group {}

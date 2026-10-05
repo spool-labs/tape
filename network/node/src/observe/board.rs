@@ -7,12 +7,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tape_rpc::Rpc;
 use tape_store_api::{Column, Store, StoreVolume};
-use tape_core::bft::has_honest_signer;
 use tape_core::challenge::schedule::{
     PROOF_DEADLINE_SLOTS, SAMPLE_LOOKBACK_SLOTS, SETTLE_DEADLINE_SLOTS, SLOT_MS,
     attest_deadline_slots, round_width_slots,
 };
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::bitmap::BitmapRead;
 use tape_core::types::SpoolIndex;
 use tape_core::challenge::record::{
@@ -20,7 +18,6 @@ use tape_core::challenge::record::{
     RECENT_ROUNDS,
 };
 use tape_core::system::NodeStatus;
-use crate::features::challenge::certify::agreement_threshold;
 use tape_crypto::Address;
 use crate::features::challenge::trace::{MarkKind, RoundTrace as TracedRound, TraceClose};
 use tape_metrics::prometheus::proto::{Histogram, MetricFamily};
@@ -459,7 +456,7 @@ where
 
     NodeStats {
         version: crate::VERSION.to_string(),
-        owned_spools: context.my_spools().len() as u64,
+        owned_spools: owned_spool_count(context),
         tracks_stored: estimate(TrackCol::CF_NAME),
         slices_stored,
         slice_payload_bytes,
@@ -626,7 +623,7 @@ where
 
     let mut spools: Vec<NetworkSpool> = Vec::new();
     for group in &state.current.groups {
-        for (spool, owner) in state.group_peers(group.id) {
+        for (spool, owner) in state.group_peers(group.id.into()) {
             let owner = owner.to_string();
             let owner_index = idx.get(&owner).copied();
             spools.push(NetworkSpool { spool: spool.0, owner: Some(owner), owner_index });
@@ -685,7 +682,7 @@ where
 
     let (tip_slot, dispatched, lag_slots) = context.ingest.progress().tip_and_lag();
     let bootstrap = context.bootstrap.snapshot();
-    let owned_spool_count = context.my_spools().len() as u64;
+    let owned_spool_count = owned_spool_count(context);
 
     let current_epoch = super::current_epoch_progress(state.epoch().0, &gathered);
     let (slices_stored, _) = stored_slices(context);
@@ -818,16 +815,30 @@ where
     }
 }
 
+/// The spools the chain assigns this node. A spool that carries a retired
+/// group's data as well still counts once, as it does on chain.
+pub fn owned_spool_count<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> u64 {
+    context
+        .state()
+        .member_live_spools(context.node_address())
+        .len() as u64
+}
+
 /// Counts ready groups from the durable bitmaps because replay does not mirror
-/// `epoch.state.synced_count`.
+/// `epoch.state.synced_count`. A group is ready at the count the program uses,
+/// which is higher in the epoch after the group count drops.
 fn synced_groups(state: &ProtocolState) -> u64 {
+    let Ok(required) = state.system.synced_threshold() else {
+        return 0;
+    };
+
     state
         .current
         .groups
         .iter()
-        .filter(|group| {
-            has_honest_signer(group.synced.count_ones() as u64, GROUP_SIZE as u64)
-        })
+        .filter(|group| group.synced.count_ones() as u64 >= required)
         .count() as u64
 }
 
@@ -1095,7 +1106,7 @@ fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
             .as_ref()
             .map(|schedule| schedule.interval_slots * slot_ms)
             .unwrap_or_default(),
-        quorum: agreement_threshold(GROUP_SIZE) as u64,
+        quorum: context.params().thresholds.challenge,
         slot_ms,
         round_width_slots: round_width_slots(),
         cadence_slots: schedule.as_ref().map(|s| s.interval_slots).unwrap_or_default(),
@@ -1208,18 +1219,30 @@ mod tests {
         let ctx: TestContext = harness.ctx_for(0);
         let mut state = (*ctx.state()).clone();
 
+        let thresholds = ctx.params().thresholds;
+        let synced = thresholds.synced as usize;
+
         for group in &mut state.current.groups {
             group.synced = SpoolBitmap::from_indices(&[]);
         }
         assert_eq!(synced_groups(&state), 0);
 
-        // The gate is a quorum, so one position short of it is not a synced group.
-        for position in 0..7 {
+        // One position short of the program's synced count is not a synced group.
+        for position in 0..synced - 1 {
             state.current.groups[0].synced.set(position);
         }
         assert_eq!(synced_groups(&state), 0);
 
-        state.current.groups[0].synced.set(7);
+        state.current.groups[0].synced.set(synced - 1);
+        assert_eq!(synced_groups(&state), 1);
+
+        // In the epoch after the group count drops a group is ready at the certify count.
+        state.system.previous_group_count = state.system.live_group_count + 1;
+        assert_eq!(synced_groups(&state), 0);
+
+        for position in synced..thresholds.certify as usize {
+            state.current.groups[0].synced.set(position);
+        }
         assert_eq!(synced_groups(&state), 1);
     }
 

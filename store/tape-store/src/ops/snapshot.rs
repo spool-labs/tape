@@ -5,7 +5,7 @@
 //! tape can be finalized.
 
 use tape_store_api::{Column, Store};
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::types::{ChunkNumber, EpochNumber};
 
 use crate::columns::SnapshotArtifactCol;
@@ -17,7 +17,7 @@ pub trait SnapshotOps {
     fn put_snapshot_artifact(
         &self,
         epoch: EpochNumber,
-        group: GroupIndex,
+        group: TrackGroup,
         chunk: ChunkNumber,
         artifact: &SnapshotArtifact,
     ) -> Result<()>;
@@ -25,7 +25,7 @@ pub trait SnapshotOps {
     fn get_snapshot_artifact(
         &self,
         epoch: EpochNumber,
-        group: GroupIndex,
+        group: TrackGroup,
         chunk: ChunkNumber,
     ) -> Result<Option<SnapshotArtifact>>;
 
@@ -33,13 +33,13 @@ pub trait SnapshotOps {
     fn iter_snapshot_artifacts(
         &self,
         epoch: EpochNumber,
-        group: GroupIndex,
+        group: TrackGroup,
     ) -> Result<Vec<(ChunkNumber, SnapshotArtifact)>>;
 
     fn delete_snapshot_artifact(
         &self,
         epoch: EpochNumber,
-        group: GroupIndex,
+        group: TrackGroup,
         chunk: ChunkNumber,
     ) -> Result<()>;
 
@@ -54,7 +54,7 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
     fn put_snapshot_artifact(
         &self,
         epoch: EpochNumber,
-        group: GroupIndex,
+        group: TrackGroup,
         chunk: ChunkNumber,
         artifact: &SnapshotArtifact,
     ) -> Result<()> {
@@ -66,7 +66,7 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
     fn get_snapshot_artifact(
         &self,
         epoch: EpochNumber,
-        group: GroupIndex,
+        group: TrackGroup,
         chunk: ChunkNumber,
     ) -> Result<Option<SnapshotArtifact>> {
         let key = SnapshotArtifactKey::new(epoch.0, group.0, chunk.0);
@@ -76,7 +76,7 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
     fn iter_snapshot_artifacts(
         &self,
         epoch: EpochNumber,
-        group: GroupIndex,
+        group: TrackGroup,
     ) -> Result<Vec<(ChunkNumber, SnapshotArtifact)>> {
         let prefix = SnapshotArtifactKey::group_prefix(epoch.0, group.0);
         let iter = self
@@ -100,7 +100,7 @@ impl<S: Store> SnapshotOps for TapeStore<S> {
     fn delete_snapshot_artifact(
         &self,
         epoch: EpochNumber,
-        group: GroupIndex,
+        group: TrackGroup,
         chunk: ChunkNumber,
     ) -> Result<()> {
         let key = SnapshotArtifactKey::new(epoch.0, group.0, chunk.0);
@@ -158,8 +158,7 @@ mod tests {
     use super::*;
     use crate::types::SnapshotArtifact;
     use tape_store_memory::MemoryStore;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::types::{SpoolIndex, StorageUnits, StripeCount};
     use tape_crypto::Hash;
@@ -173,10 +172,9 @@ mod tests {
             blob: BlobEncoding {
                 size: StorageUnits::from_bytes(64),
                 commitment: Hash::from([tag; 32]),
-                profile: EncodingProfile::default(),
                 stripe_size: StorageUnits::from_bytes(64),
                 stripe_count: StripeCount(1),
-                leaves: [Hash::from([tag; 32]); GROUP_SIZE],
+                leaves: [Hash::from([tag; 32]); MAX_GROUP_SIZE],
             },
             spool_index: SpoolIndex(tag as u64),
             slice: vec![tag; 32],
@@ -187,7 +185,7 @@ mod tests {
     fn artifact_roundtrip() {
         let store = test_store();
         let epoch = EpochNumber(9);
-        let group = GroupIndex(2);
+        let group = TrackGroup(2);
         let chunk = ChunkNumber(4);
 
         assert!(
@@ -217,8 +215,8 @@ mod tests {
     fn artifacts_iter_by_chunk() {
         let store = test_store();
         let epoch = EpochNumber(9);
-        let group = GroupIndex(2);
-        let other_group = GroupIndex(3);
+        let group = TrackGroup(2);
+        let other_group = TrackGroup(3);
 
         store
             .put_snapshot_artifact(epoch, group, ChunkNumber(2), &artifact(0x22))
@@ -245,7 +243,7 @@ mod tests {
         let store = test_store();
         let epoch = EpochNumber(10);
         let other = EpochNumber(11);
-        let group = GroupIndex(0);
+        let group = TrackGroup(0);
         let chunk = ChunkNumber(0);
 
         store
@@ -275,7 +273,7 @@ mod tests {
     fn delete_snapshot_epochs_except_keeps_one() {
         let store = test_store();
         let keep = EpochNumber(20);
-        let group = GroupIndex(0);
+        let group = TrackGroup(0);
         let chunk = ChunkNumber(0);
 
         for e in [18u64, 19, 20, 21] {

@@ -7,7 +7,7 @@ use tape_core::types::TrackNumber;
 
 use crate::columns::{TrackCol, TrackLookupCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::{TrackLookupKey, UnitKey};
+use crate::types::TrackLookupKey;
 use crate::TapeStore;
 
 /// Operations for the compressed-track catalog.
@@ -26,6 +26,13 @@ pub trait TrackOps {
 
     /// Check if track metadata exists without loading data.
     fn has_track(&self, track_address: Address) -> Result<bool>;
+
+    /// Get the address of the track at one number on a tape.
+    fn track_address_by_number(
+        &self,
+        tape: Address,
+        track_number: TrackNumber,
+    ) -> Result<Option<Address>>;
 
     /// Count all tracks without loading data.
     fn count_tracks(&self) -> Result<usize>;
@@ -75,7 +82,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
     fn put_track(&self, track_address: Address, track: CompressedTrack) -> Result<()> {
         self.put::<TrackCol>(&track_address, &track.pack())?;
         let lookup = TrackLookupKey::new(track.tape, track.track_number, track.key);
-        self.put::<TrackLookupCol>(&lookup, &UnitKey)?;
+        self.put::<TrackLookupCol>(&lookup, &track_address)?;
         Ok(())
     }
 
@@ -90,6 +97,27 @@ impl<S: Store> TrackOps for TapeStore<S> {
 
     fn has_track(&self, track_address: Address) -> Result<bool> {
         Ok(self.contains::<TrackCol>(&track_address)?)
+    }
+
+    fn track_address_by_number(
+        &self,
+        tape: Address,
+        track_number: TrackNumber,
+    ) -> Result<Option<Address>> {
+        // The range covers this one track number, so a miss reads nothing past it.
+        let start = lookup_key_bytes(&TrackLookupKey::at_track_number(tape, track_number))?;
+        let end = lookup_key_bytes(&TrackLookupKey::after_track_number(tape, track_number))?;
+        let mut iter = self
+            .inner()
+            .inner()
+            .iter_range(TrackLookupCol::CF_NAME, &start, &end)?;
+
+        let Some((_, value_bytes)) = iter.next() else {
+            return Ok(None);
+        };
+        let address = wincode::deserialize(&value_bytes)
+            .map_err(|e| TapeStoreError::Serialization(format!("track lookup value: {}", e)))?;
+        Ok(Some(address))
     }
 
     fn count_tracks(&self) -> Result<usize> {
@@ -174,11 +202,10 @@ pub fn tape_track_addresses<S: Store>(
     after_track_number: Option<TrackNumber>,
     limit: usize,
 ) -> Result<Vec<Address>> {
-    let numbers = tape_track_numbers(tape_store, tape, after_track_number, limit)?;
-    Ok(numbers
-        .into_iter()
-        .map(|track_number| key::track_address(tape, track_number))
-        .collect())
+    let start = after_track_number
+        .map(|track_number| TrackLookupKey::after_track_number(tape, track_number));
+    let entries = lookup_entries(tape_store, tape, start, limit)?;
+    Ok(entries.into_iter().map(|(_, address)| address).collect())
 }
 
 /// Numbers of a tape's tracks in order, after an optional track number
@@ -188,10 +215,22 @@ pub fn tape_track_numbers<S: Store>(
     after_track_number: Option<TrackNumber>,
     limit: usize,
 ) -> Result<Vec<TrackNumber>> {
+    let start = after_track_number
+        .map(|track_number| TrackLookupKey::after_track_number(tape, track_number));
+    let entries = lookup_entries(tape_store, tape, start, limit)?;
+    Ok(entries.into_iter().map(|(number, _)| number).collect())
+}
+
+/// A tape's lookup entries in track-number order, from an optional start key
+fn lookup_entries<S: Store>(
+    tape_store: &TapeStore<S>,
+    tape: Address,
+    start: Option<TrackLookupKey>,
+    limit: usize,
+) -> Result<Vec<(TrackNumber, Address)>> {
     let prefix = TrackLookupKey::tape_prefix(tape);
-    let start_key = match after_track_number {
-        Some(track_number) => wincode::serialize(&TrackLookupKey::after_track_number(tape, track_number))
-            .map_err(|e| TapeStoreError::Serialization(format!("track lookup key: {}", e)))?,
+    let start_key = match start {
+        Some(start) => lookup_key_bytes(&start)?,
         None => prefix.to_vec(),
     };
 
@@ -200,40 +239,36 @@ pub fn tape_track_numbers<S: Store>(
         .inner()
         .iter_from(TrackLookupCol::CF_NAME, &start_key, tape_store_api::Direction::Asc)?;
 
-    let mut numbers = Vec::new();
-    for (key_bytes, _value_bytes) in iter {
+    let mut entries = Vec::new();
+    for (key_bytes, value_bytes) in iter {
         if key_bytes.len() < 32 || key_bytes[..32] != prefix {
             break;
         }
 
         let key: TrackLookupKey = wincode::deserialize(&key_bytes)
             .map_err(|e| TapeStoreError::Serialization(format!("track lookup key: {}", e)))?;
-        numbers.push(key.track_number);
-        if numbers.len() >= limit {
+        let address: Address = wincode::deserialize(&value_bytes)
+            .map_err(|e| TapeStoreError::Serialization(format!("track lookup value: {}", e)))?;
+        entries.push((key.track_number, address));
+        if entries.len() >= limit {
             break;
         }
     }
 
-    Ok(numbers)
+    Ok(entries)
 }
 
-mod key {
-    use tape_api::program::tapedrive::track_pda;
-    use tape_core::types::TrackNumber;
-    use tape_crypto::address::Address;
-
-    pub fn track_address(tape: Address, track_number: TrackNumber) -> Address {
-        track_pda(tape, track_number).0
-    }
+fn lookup_key_bytes(key: &TrackLookupKey) -> Result<Vec<u8>> {
+    wincode::serialize(key)
+        .map_err(|e| TapeStoreError::Serialization(format!("track lookup key: {}", e)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_api::program::tapedrive::track_pda;
-    use tape_core::track::types::TrackVisibility;
+    use tape_core::track::types::TrackFlags;
     use tape_core::types::StorageUnits;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_crypto::Hash;
     use tape_store_memory::MemoryStore;
 
@@ -248,9 +283,9 @@ mod tests {
             track_number: TrackNumber(0),
             kind: 0,
             state: 1,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits(1024 * 1024),
-            group: GroupIndex(3),
+            group: TrackGroup(3),
             value_hash: Hash::new_unique(),
         }
     }
@@ -356,19 +391,19 @@ mod tests {
         let mut track0 = make_track_info();
         track0.tape = tape_a;
         track0.track_number = TrackNumber(0);
-        let addr0 = track_pda(track0.tape, track0.track_number).0;
+        let addr0 = Address::new_unique();
         store.put_track(addr0, track0).unwrap();
 
         let mut track1 = make_track_info();
         track1.tape = tape_a;
         track1.track_number = TrackNumber(1);
-        let addr1 = track_pda(track1.tape, track1.track_number).0;
+        let addr1 = Address::new_unique();
         store.put_track(addr1, track1).unwrap();
 
         let mut other = make_track_info();
         other.tape = tape_b;
         other.track_number = TrackNumber(0);
-        let other_addr = track_pda(other.tape, other.track_number).0;
+        let other_addr = Address::new_unique();
         store.put_track(other_addr, other).unwrap();
 
         let first = store.iter_tracks_by_tape_from(tape_a, None, 1).unwrap();
@@ -380,5 +415,36 @@ mod tests {
             .unwrap();
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0].track_number, TrackNumber(1));
+    }
+
+    // a by-number read returns the address the track was stored under
+    #[test]
+    fn address_by_number() {
+        let store = test_store();
+        let tape = Address::new_unique();
+
+        let mut track0 = make_track_info();
+        track0.tape = tape;
+        track0.track_number = TrackNumber(0);
+        let addr0 = Address::new_unique();
+        store.put_track(addr0, track0).unwrap();
+
+        let mut track2 = make_track_info();
+        track2.tape = tape;
+        track2.track_number = TrackNumber(2);
+        let addr2 = Address::new_unique();
+        store.put_track(addr2, track2).unwrap();
+
+        assert_eq!(store.track_address_by_number(tape, TrackNumber(0)).unwrap(), Some(addr0));
+        assert_eq!(store.track_address_by_number(tape, TrackNumber(1)).unwrap(), None);
+        assert_eq!(store.track_address_by_number(tape, TrackNumber(2)).unwrap(), Some(addr2));
+        assert_eq!(store.track_address_by_number(tape, TrackNumber(3)).unwrap(), None);
+        assert_eq!(
+            store.track_address_by_number(Address::new_unique(), TrackNumber(0)).unwrap(),
+            None
+        );
+
+        store.delete_track(addr0).unwrap();
+        assert_eq!(store.track_address_by_number(tape, TrackNumber(0)).unwrap(), None);
     }
 }

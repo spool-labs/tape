@@ -201,7 +201,6 @@ pub fn merge(
             RawInstruction::TrackWrite {
                 authority,
                 key,
-                visibility,
                 object,
                 value,
             } => {
@@ -217,7 +216,6 @@ pub fn merge(
                     authority,
                     track: event.track,
                     key,
-                    visibility,
                     object,
                     value,
                     event,
@@ -518,13 +516,13 @@ mod tests {
         TrackWritten, VoteProposed, VoteRecorded,
     };
     use tape_core::bls::BlsPubkey;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::prelude::*;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::{GroupIndex, TrackGroup};
     use tape_core::staking::RateSpan;
     use tape_core::system::{EpochPhase, ExchangeRate, NodePreferences, VoteKind};
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::TrackVisibility;
+    use tape_core::track::types::TrackFlags;
     use tape_core::types::coin::TAPE;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::tls::NetworkTlsPubkey;
@@ -879,8 +877,9 @@ mod tests {
             epoch: EpochNumber(2),
             track: track1,
             tape: Address::new_unique(),
-            group: GroupIndex(0),
+            group: TrackGroup(0),
             track_number: TrackNumber(0),
+            flags: TrackFlags::NONE,
             track_hash: Hash::default(),
         };
 
@@ -894,17 +893,15 @@ mod tests {
         let instructions = vec![
             RawInstruction::AdvanceEpoch,
             RawInstruction::TrackWrite {
-                visibility: TrackVisibility::Public,
                 authority: owner,
                 key: Hash::default(),
                 object: None,
                 value: BlobData::Coded(BlobEncoding {
                     size: StorageUnits::mb(100),
                     commitment: Hash::default(),
-                    profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
                     stripe_count: StripeCount(1),
-                    leaves: [Hash::default(); GROUP_SIZE],
+                    leaves: [Hash::default(); MAX_GROUP_SIZE],
                 }),
             },
             RawInstruction::CertifyTrack { track: track2 },
@@ -955,17 +952,15 @@ mod tests {
     fn required_events_missing_cases() -> Vec<RawInstruction> {
         vec![
             RawInstruction::TrackWrite {
-                visibility: TrackVisibility::Public,
                 authority: Address::new_unique(),
                 key: Hash::default(),
                 object: None,
                 value: BlobData::Coded(BlobEncoding {
                     size: StorageUnits::mb(1_024),
                     commitment: Hash::default(),
-                    profile: EncodingProfile::default(),
                     stripe_size: StorageUnits::from_bytes(64),
                     stripe_count: StripeCount(1),
-                    leaves: [Hash::default(); GROUP_SIZE],
+                    leaves: [Hash::default(); MAX_GROUP_SIZE],
                 }),
             },
             RawInstruction::AdvanceShareNonce {
@@ -1021,25 +1016,24 @@ mod tests {
         vec![
             (
                 RawInstruction::TrackWrite {
-                    visibility: TrackVisibility::Public,
                     authority: Address::new_unique(),
                     key: Hash::default(),
                     object: None,
                     value: BlobData::Coded(BlobEncoding {
                         size: StorageUnits::mb(1_024),
                         commitment: Hash::default(),
-                        profile: EncodingProfile::default(),
                         stripe_size: StorageUnits::from_bytes(64),
                         stripe_count: StripeCount(1),
-                        leaves: [Hash::default(); GROUP_SIZE],
+                        leaves: [Hash::default(); MAX_GROUP_SIZE],
                     }),
                 },
                 TapedriveEvent::TrackWritten(TrackWritten {
                     epoch: EpochNumber(2),
                     track: register_track,
                     tape: register_tape,
-                    group: GroupIndex(0),
+                    group: TrackGroup(0),
                     track_number: TrackNumber(0),
+                    flags: TrackFlags::NONE,
                     track_hash: Hash::default(),
                 }),
             ),

@@ -3,135 +3,33 @@
 //! This module provides `BlobDecoder` which reconstructs original blobs
 //! from downloaded slices using erasure code decoding.
 
-use tape_core::encoding::{EncodingProfile, EncodingType};
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::encoding::ErasureCode;
 use tape_core::types::SpoolIndex;
-use tape_slicer::{
-    ClayCoder, ErasureCoder, ReedSolomonCoder, Slicer, SliceMetadata,
-};
+use tape_slicer::{ErasureCoder, Slicer, StripedCoder};
 
 use crate::error::DownloadError;
 
 /// Decodes slices back into the original blob.
 ///
-/// Supports multiple encoding types:
-/// - `Basic`: Single RS pass, for testing/debugging only
-/// - `Clay`: Clay erasure codes with rotation for fair load distribution (default)
-///
-/// Reconstructs the original data from any k (or more) valid slices,
-/// where k is determined from the slice metadata profile.
+/// Reconstructs the original data from any k (or more) valid slices, with
+/// the code and k taken from the network's profile.
 pub struct BlobDecoder {
-    profile: EncodingProfile,
-    basic: Option<ReedSolomonCoder>,
-    clay: Option<Slicer<ClayCoder>>,
-}
-
-impl Default for BlobDecoder {
-    fn default() -> Self {
-        Self::new()
-    }
+    profile: ErasureCode,
+    slicer: Slicer<StripedCoder>,
 }
 
 impl BlobDecoder {
-    /// Create a new decoder with default encoding profile (Clay).
-    pub fn new() -> Self {
-        Self::with_profile(EncodingProfile::clay_default())
-    }
+    /// Create the decoder for a network's profile.
+    pub fn try_new(profile: ErasureCode) -> Result<Self, DownloadError> {
+        let slicer = Slicer::try_from_profile(profile)
+            .map_err(|e| DownloadError::Decoding(e.to_string()))?;
 
-    /// Create a decoder with a specific encoding profile.
-    ///
-    /// # Arguments
-    /// * `profile` - The encoding profile (type + params)
-    pub fn with_profile(profile: EncodingProfile) -> Self {
-        let encoding_type = profile.encoding_type().unwrap_or(EncodingType::Unknown);
-
-        let mut decoder = Self {
-            profile,
-            basic: None,
-            clay: None,
-        };
-
-        match encoding_type {
-            EncodingType::Basic => {
-                let params = profile.rs_params();
-                decoder.basic = Some(ReedSolomonCoder::new(params.k() as usize, params.m() as usize));
-            }
-            EncodingType::Clay | EncodingType::Unknown => {
-                decoder.clay = Some(Slicer::with_profile(
-                    ClayCoder::from_params(profile.clay_params()),
-                    true, // rotated
-                    profile,
-                ));
-            }
-        }
-
-        decoder
-    }
-
-    /// Create a decoder with a specific encoding type (uses default params for that type).
-    ///
-    /// # Arguments
-    /// * `encoding_type` - The encoding algorithm used for the slices
-    pub fn with_encoding(encoding_type: EncodingType) -> Self {
-        let profile = match encoding_type {
-            EncodingType::Basic => EncodingProfile::basic_default(),
-            EncodingType::Clay | EncodingType::Unknown => EncodingProfile::clay_default(),
-        };
-        Self::with_profile(profile)
-    }
-
-    /// Get the encoding type used by this decoder.
-    pub fn encoding_type(&self) -> EncodingType {
-        self.profile.encoding_type().unwrap_or(EncodingType::Unknown)
+        Ok(Self { profile, slicer })
     }
 
     /// Get the encoding profile used by this decoder.
-    pub fn profile(&self) -> EncodingProfile {
+    pub fn profile(&self) -> ErasureCode {
         self.profile
-    }
-
-    /// Get minimum slices needed for decoding from slice metadata.
-    ///
-    /// For Clay encoding, peeks at the first available slice to read its profile.
-    /// For Basic encoding, uses profile.k().
-    ///
-    /// # Errors
-    /// Returns error if k cannot be determined (Unknown encoding or missing metadata).
-    fn min_slices_from_metadata(&self, slices: &[(SpoolIndex, &[u8])]) -> Result<usize, DownloadError> {
-        match self.encoding_type() {
-            EncodingType::Clay => {
-                slices.first()
-                    .and_then(|(_, data)| SliceMetadata::from_slice(data).ok())
-                    .map(|meta| meta.profile().clay_params().k() as usize)
-                    .ok_or_else(|| DownloadError::Decoding(
-                        "Cannot determine k: no valid slice metadata".to_string()
-                    ))
-            }
-            EncodingType::Basic => Ok(self.profile.rs_params().k() as usize),
-            EncodingType::Unknown => Err(DownloadError::Decoding(
-                "Cannot decode with Unknown encoding type".to_string()
-            )),
-        }
-    }
-
-    /// Internal decoding dispatch.
-    fn decode_internal(&self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DownloadError> {
-        match self.encoding_type() {
-            EncodingType::Basic => {
-                let result = self.basic.as_ref().unwrap()
-                    .decode(chunks)
-                    .map_err(|e| DownloadError::Decoding(e.to_string()))?;
-                // RS decode may have padding, but for Basic encoding we just return it
-                // The caller should know the original length
-                Ok(result)
-            }
-            EncodingType::Clay | EncodingType::Unknown => {
-                // Slicer::decode auto-reconfigures based on slice metadata
-                self.clay.as_ref().unwrap()
-                    .decode(chunks)
-                    .map_err(|e| DownloadError::Decoding(e.to_string()))
-            }
-        }
     }
 
     /// Decode slices back into the original blob.
@@ -149,12 +47,11 @@ impl BlobDecoder {
     /// The reconstructed original blob data.
     ///
     /// # Errors
-    /// - `InvalidSliceIndex` if any slice index >= GROUP_SIZE
-    /// - `InsufficientSlices` if fewer than k slices provided (k from metadata)
-    /// - `Decoding` if erasure code reconstruction fails or encoding type is Unknown
+    /// - `InvalidSliceIndex` if any slice index >= n
+    /// - `InsufficientSlices` if fewer than k slices provided
+    /// - `Decoding` if erasure code reconstruction fails
     pub fn decode(&self, slices: &[(SpoolIndex, &[u8])]) -> Result<Vec<u8>, DownloadError> {
-        // Peek at metadata to get k (minimum slices needed)
-        let min_slices = self.min_slices_from_metadata(slices)?;
+        let min_slices = usize::from(self.profile.k());
 
         // Check we have enough slices
         if slices.len() < min_slices {
@@ -165,8 +62,9 @@ impl BlobDecoder {
         }
 
         // Validate indices and build refs
+        let width = usize::from(self.profile.n());
         for &(idx, _) in slices {
-            if idx.as_usize() >= GROUP_SIZE {
+            if idx.as_usize() >= width {
                 return Err(DownloadError::InvalidSliceIndex(idx));
             }
         }
@@ -176,7 +74,9 @@ impl BlobDecoder {
             .map(|&(idx, data)| (idx.as_usize(), data))
             .collect();
 
-        self.decode_internal(&chunks)
+        self.slicer
+            .decode(&chunks)
+            .map_err(|e| DownloadError::Decoding(e.to_string()))
     }
 
 }
@@ -184,20 +84,23 @@ impl BlobDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::encoding::{RSParams, RepParams, TAPENET_PROFILE};
+
     use crate::codec::encoder::BlobEncoder;
+
+    /// A small Reed-Solomon profile: any 3 of 6 slices recover.
+    const SMALL: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 3));
 
     fn refs(slices: &[(SpoolIndex, Vec<u8>)]) -> Vec<(SpoolIndex, &[u8])> {
         slices.iter().map(|(idx, data)| (*idx, data.as_slice())).collect()
     }
 
-    /// Create test encoder using ReedSolomonCoder (supports blobs up to ~40 KB).
     fn test_encoder() -> BlobEncoder {
-        BlobEncoder::with_encoding(EncodingType::Basic)
+        BlobEncoder::try_new(SMALL).unwrap()
     }
 
-    /// Create test decoder using ReedSolomonCoder.
     fn test_decoder() -> BlobDecoder {
-        BlobDecoder::with_encoding(EncodingType::Basic)
+        BlobDecoder::try_new(SMALL).unwrap()
     }
 
     #[test]
@@ -210,8 +113,7 @@ mod tests {
         let decoder = test_decoder();
         let recovered = decoder.decode(&refs(&slices)).unwrap();
 
-        // For Basic encoding, we need to trim padding
-        assert_eq!(&recovered[..original.len()], &original);
+        assert_eq!(recovered, original);
     }
 
     #[test]
@@ -228,7 +130,7 @@ mod tests {
         let decoder = test_decoder();
         let recovered = decoder.decode(&refs(&data_only)).unwrap();
 
-        assert_eq!(&recovered[..original.len()], &original);
+        assert_eq!(recovered, original);
     }
 
     #[test]
@@ -245,7 +147,7 @@ mod tests {
         let decoder = test_decoder();
         let recovered = decoder.decode(&refs(&data_only)).unwrap();
 
-        assert_eq!(&recovered[..original.len()], &original);
+        assert_eq!(recovered, original);
     }
 
     #[test]
@@ -269,7 +171,7 @@ mod tests {
         let decoder = test_decoder();
         let recovered = decoder.decode(&refs(&scattered)).unwrap();
 
-        assert_eq!(&recovered[..original.len()], &original);
+        assert_eq!(recovered, original);
     }
 
     #[test]
@@ -298,7 +200,7 @@ mod tests {
         let mut encoder = test_encoder();
         let mut slices: Vec<_> = encoder.encode(original).unwrap();
 
-        // Replace one slice's index with an invalid one (>= GROUP_SIZE)
+        // Replace one slice's index with an invalid one (>= n)
         slices[0].0 = SpoolIndex::from(9999);
 
         let decoder = test_decoder();
@@ -307,6 +209,23 @@ mod tests {
         assert!(matches!(
             result,
             Err(DownloadError::InvalidSliceIndex(idx)) if idx == SpoolIndex::from(9999)
+        ));
+    }
+
+    // an index a wider network would accept is refused at this network's n
+    #[test]
+    fn index_past_width() {
+        let mut encoder = test_encoder();
+        let mut slices: Vec<_> = encoder.encode(vec![0x77; 10_000]).unwrap();
+        let width = u64::from(SMALL.n());
+
+        slices[0].0 = SpoolIndex::from(width);
+
+        let result = test_decoder().decode(&refs(&slices));
+
+        assert!(matches!(
+            result,
+            Err(DownloadError::InvalidSliceIndex(idx)) if idx == SpoolIndex::from(width)
         ));
     }
 
@@ -320,34 +239,27 @@ mod tests {
         let decoder = test_decoder();
         let recovered = decoder.decode(&refs(&slices)).unwrap();
 
-        // Empty encodes to k minimal slices, decodes to zeros
-        assert!(recovered.iter().all(|&b| b == 0));
+        assert_eq!(recovered, original);
     }
 
     #[test]
-    fn test_encoding_type_default() {
-        let decoder = BlobDecoder::new();
-        assert_eq!(decoder.encoding_type(), EncodingType::Clay);
+    fn profile_kept() {
+        assert_eq!(test_decoder().profile(), SMALL);
     }
 
+    // a profile no network can have builds no decoder
     #[test]
-    fn test_encoding_type_basic() {
-        let decoder = BlobDecoder::with_encoding(EncodingType::Basic);
-        assert_eq!(decoder.encoding_type(), EncodingType::Basic);
-    }
-
-    #[test]
-    fn test_encoding_type_clay() {
-        let decoder = BlobDecoder::with_encoding(EncodingType::Clay);
-        assert_eq!(decoder.encoding_type(), EncodingType::Clay);
+    fn bad_profile() {
+        let profile = ErasureCode::ReedSolomon(RSParams::new(0, 4));
+        assert!(BlobDecoder::try_new(profile).is_err());
     }
 
     #[test]
     fn test_clay_roundtrip() {
         let original = vec![0xAB; 10_000];
 
-        let mut encoder = BlobEncoder::with_encoding(EncodingType::Clay);
-        let decoder = BlobDecoder::with_encoding(EncodingType::Clay);
+        let mut encoder = BlobEncoder::try_new(TAPENET_PROFILE).unwrap();
+        let decoder = BlobDecoder::try_new(TAPENET_PROFILE).unwrap();
 
         let slices = encoder.encode(original.clone()).unwrap();
         let recovered = decoder.decode(&refs(&slices)).unwrap();
@@ -359,16 +271,31 @@ mod tests {
     fn test_clay_decode_with_missing_slices() {
         let original = vec![0xCD; 50_000];
 
-        let mut encoder = BlobEncoder::with_encoding(EncodingType::Clay);
-        let decoder = BlobDecoder::with_encoding(EncodingType::Clay);
+        let mut encoder = BlobEncoder::try_new(TAPENET_PROFILE).unwrap();
+        let decoder = BlobDecoder::try_new(TAPENET_PROFILE).unwrap();
 
         let slices = encoder.encode(original.clone()).unwrap();
 
-        // Keep only first k slices (k=7 for default Clay)
+        // Keep only first k slices (k=7 on tapenet)
         let k = encoder.profile().k() as usize;
         let partial: Vec<_> = slices.into_iter().take(k).collect();
 
         let recovered = decoder.decode(&refs(&partial)).unwrap();
         assert_eq!(original, recovered);
+    }
+
+    // one copy out of two recovers a mirrored blob
+    #[test]
+    fn mirror_one_copy() {
+        let profile = ErasureCode::Replication(RepParams::new(2));
+        let original = vec![0x3C; 10_000];
+
+        let mut encoder = BlobEncoder::try_new(profile).unwrap();
+        let decoder = BlobDecoder::try_new(profile).unwrap();
+
+        let slices = encoder.encode(original.clone()).unwrap();
+        let last: Vec<_> = slices.into_iter().skip(1).collect();
+
+        assert_eq!(decoder.decode(&refs(&last)).unwrap(), original);
     }
 }

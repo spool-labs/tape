@@ -1,8 +1,9 @@
 //! The check worker: runs due jobs through the gateway and the moderation API
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_crypto::address::Address;
 use tape_sdk::stream::manifest::ChunkManifest;
 use tokio::time::{interval, MissedTickBehavior};
@@ -278,7 +279,7 @@ impl Worker {
         let mut chunks = Vec::new();
         if record.size.to_bytes() <= MANIFEST_READ_BYTES {
             if let GatewayRead::Content(read) = self.gateway.read_track(track, MANIFEST_READ_BYTES).await? {
-                chunks = manifest_chunks(&read, record.tape);
+                chunks = manifest_chunks(&read);
             }
         }
         Ok(RemovalScope {
@@ -290,12 +291,12 @@ impl Worker {
     async fn list_tape(&self, tape: Address) -> Result<Vec<Address>, WorkerError> {
         let listed = self
             .gateway
-            .list_tracks(tape, self.config.tape_track_limit)
+            .list_tracks(tape, None, self.config.tape_track_limit)
             .await?;
         let mut tracks = Vec::new();
         for track in listed {
             if track.is_certified() {
-                tracks.push(track_pda(track.tape, track.track_number).0);
+                tracks.push(track.address());
             }
         }
         Ok(tracks)
@@ -350,17 +351,20 @@ fn to_request(prepared: PreparedInput) -> Result<(SentInput, ModerationInput), S
     }
 }
 
-/// Chunk tracks of a stream manifest; empty when the bytes are not a manifest
-fn manifest_chunks(read: &ContentRead, tape: Address) -> Vec<Address> {
+/// Addresses of a stream manifest's chunks, each once; empty when the bytes are not a manifest
+fn manifest_chunks(read: &ContentRead) -> Vec<Address> {
     if !read.is_complete() {
         return Vec::new();
     }
     let Ok(manifest) = ChunkManifest::from_bytes(&read.bytes) else {
         return Vec::new();
     };
+    let mut seen = HashSet::new();
     let mut chunks = Vec::new();
     for entry in &manifest.chunks {
-        chunks.push(track_pda(tape, entry.track_number).0);
+        if seen.insert(entry.track) {
+            chunks.push(entry.track);
+        }
     }
     chunks
 }
@@ -403,8 +407,9 @@ mod tests {
     use axum::Router;
     use rusqlite::Connection;
     use serde_json::{json, Value};
-    use tape_core::prelude::{GroupIndex, StorageUnits, TrackNumber};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::prelude::{TrackGroup, StorageUnits, TrackNumber};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
+    use tape_crypto::hash::hash;
     use tape_crypto::Hash;
     use tape_protocol::api::{
         ListTracksByTapeRequest, ListTracksByTapeResponse, TrackResponse, TAPE_TRACK_LIST_PATH,
@@ -613,12 +618,12 @@ mod tests {
         CompressedTrack {
             tape,
             track_number: TrackNumber(number),
-            key: Hash::default(),
+            key: hash(&number.to_le_bytes()),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits(size),
-            group: GroupIndex(0),
+            group: TrackGroup(0),
             value_hash: Hash::default(),
         }
     }
@@ -826,20 +831,23 @@ mod tests {
         let harness = Harness::new(config(), TapeRuleConfig::default()).await;
         let tape = address(60);
         let manifest_track = address(2);
+        let chunks = vec![record(tape, 3, 10), record(tape, 4, 10)];
+        let entry = |chunk: &CompressedTrack, offset: u64| ChunkEntry {
+            track: chunk.address(),
+            offset: StorageUnits(offset),
+            size: StorageUnits(10),
+        };
         let manifest = ChunkManifest {
             version: MANIFEST_VERSION,
             total_size: StorageUnits(20),
             chunk_count: TrackNumber(2),
             chunk_size: StorageUnits(10),
             key: Hash::default(),
-            chunks: vec![
-                ChunkEntry { track_number: TrackNumber(0), offset: StorageUnits(0), size: StorageUnits(10) },
-                ChunkEntry { track_number: TrackNumber(1), offset: StorageUnits(10), size: StorageUnits(10) },
-            ],
+            chunks: vec![entry(&chunks[0], 0), entry(&chunks[1], 10)],
         };
         let manifest_bytes = manifest.to_bytes().expect("manifest bytes");
         harness.object(manifest_track, Some("text/plain"), b"violent text");
-        harness.track_record(manifest_track, record(tape, 2, manifest_bytes.len() as u64), &manifest_bytes);
+        harness.track_record(manifest_track, record(tape, 5, manifest_bytes.len() as u64), &manifest_bytes);
         harness.flag(&[Category::Violence]);
         harness.report(Target::track(manifest_track), Timestamp(100)).await;
 
@@ -851,8 +859,8 @@ mod tests {
             removed,
             vec![
                 manifest_track.to_string(),
-                track_pda(tape, TrackNumber(0)).0.to_string(),
-                track_pda(tape, TrackNumber(1)).0.to_string(),
+                chunks[0].address().to_string(),
+                chunks[1].address().to_string(),
             ]
         );
         harness.stop().await;
@@ -1015,7 +1023,7 @@ mod tests {
         let harness = Harness::new(config(), TapeRuleConfig::default()).await;
         let tape = address(70);
         let listed = vec![record(tape, 0, 10), record(tape, 1, 10), record(tape, 2, 10)];
-        harness.gateway.listings.lock().expect("lock").insert(tape.to_string(), listed);
+        harness.gateway.listings.lock().expect("lock").insert(tape.to_string(), listed.clone());
         harness.report(Target::tape(tape), Timestamp(100)).await;
 
         let outcome = harness.run(Timestamp(100)).await;
@@ -1031,7 +1039,7 @@ mod tests {
             .collect();
         assert_eq!(
             queued,
-            vec![track_pda(tape, TrackNumber(0)).0.to_string(), track_pda(tape, TrackNumber(1)).0.to_string()]
+            vec![listed[0].address().to_string(), listed[1].address().to_string()]
         );
         assert_eq!(target_state(&harness.database(), Target::tape(tape)), "listed");
         harness.stop().await;
@@ -1048,7 +1056,7 @@ mod tests {
         let tape = address(80);
         let listed = vec![record(tape, 0, 10), record(tape, 1, 10)];
         for track in &listed {
-            let address = track_pda(tape, track.track_number).0;
+            let address = track.address();
             harness.object(address, Some("text/plain"), b"hateful words");
             harness.track_record(address, *track, b"hateful words");
         }

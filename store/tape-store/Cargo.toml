@@ -17,7 +17,6 @@ name = "read_replica"
 required-features = ["rocks"]
 
 [dependencies]
-tape-api = { workspace = true, features = ["wincode"] }
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
 tape-store-api.workspace = true

@@ -13,15 +13,34 @@
 use std::mem::MaybeUninit;
 
 use serde::{Deserialize, Serialize};
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::{GroupIndex, TrackGroup};
 use tape_core::system::{VoteCandidate, VoteKind};
 use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
+use wincode::error::write_length_encoding_overflow;
 use wincode::{
     io::{Reader, Writer},
     ReadResult, SchemaRead, SchemaWrite, WriteResult,
 };
+
+use crate::error::TapeStoreError;
+
+/// A spool's two key bytes, or nothing for an index two bytes can't hold.
+///
+/// Two bytes cover 3,276 groups of MAX_GROUP_SIZE spools. A spool past that
+/// would wrap onto another group's keys, so every key refuses it.
+fn spool_key(spool: SpoolIndex) -> Option<[u8; 2]> {
+    u16::try_from(spool.as_u64()).ok().map(u16::to_be_bytes)
+}
+
+fn encoded_spool(spool: SpoolIndex) -> WriteResult<[u8; 2]> {
+    spool_key(spool).ok_or(write_length_encoding_overflow("spool index past the two-byte key"))
+}
+
+fn spool_prefix_bytes(spool: SpoolIndex) -> Result<[u8; 2], TapeStoreError> {
+    spool_key(spool).ok_or(TapeStoreError::SpoolKeyOverflow(spool))
+}
 
 /// Key for epoch-indexed data (8 bytes)
 ///
@@ -115,8 +134,7 @@ impl SchemaWrite for SpoolIndexKey {
     }
 
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        let bytes = (src.0.as_u64() as u16).to_be_bytes();
-        writer.write_exact(&bytes)?;
+        writer.write_exact(&encoded_spool(src.0)?)?;
         Ok(())
     }
 }
@@ -151,11 +169,11 @@ impl ChallengeRoundKey {
     }
 
     /// Prefix covering every round recorded for one of a peer's spools.
-    pub fn spool_prefix(peer: Address, spool: SpoolIndex) -> [u8; 34] {
+    pub fn spool_prefix(peer: Address, spool: SpoolIndex) -> Result<[u8; 34], TapeStoreError> {
         let mut prefix = [0u8; 34];
         prefix[..32].copy_from_slice(&peer.to_bytes());
-        prefix[32..].copy_from_slice(&(spool.as_u64() as u16).to_be_bytes());
-        prefix
+        prefix[32..].copy_from_slice(&spool_prefix_bytes(spool)?);
+        Ok(prefix)
     }
 }
 
@@ -190,7 +208,7 @@ impl SchemaWrite for PeerRecordKey {
 
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
         writer.write_exact(src.peer.as_ref())?;
-        writer.write_exact(&(src.spool.as_u64() as u16).to_be_bytes())?;
+        writer.write_exact(&encoded_spool(src.spool)?)?;
         Ok(())
     }
 }
@@ -218,7 +236,7 @@ impl SchemaWrite for ChallengeRoundKey {
 
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
         writer.write_exact(src.peer.as_ref())?;
-        writer.write_exact(&(src.spool.as_u64() as u16).to_be_bytes())?;
+        writer.write_exact(&encoded_spool(src.spool)?)?;
         writer.write_exact(&src.epoch.0.to_be_bytes())?;
         writer.write_exact(&src.round.0.to_be_bytes())?;
         Ok(())
@@ -265,37 +283,40 @@ impl SliceKey {
     }
 
     /// Create prefix bytes for spool-based iteration
-    pub fn spool_prefix(spool_id: SpoolIndex) -> [u8; 2] {
-        (spool_id.as_u64() as u16).to_be_bytes()
+    pub fn spool_prefix(spool_id: SpoolIndex) -> Result<[u8; 2], TapeStoreError> {
+        spool_prefix_bytes(spool_id)
     }
 
     /// Byte range `[start, end)` covering every slice key for this spool, for a
     /// range delete or scan. `end` is `None` when the spool prefix is the maximum
     /// (`u16::MAX`) and so has no 2-byte exclusive successor.
-    pub fn spool_key_range(spool_id: SpoolIndex) -> ([u8; 2], Option<[u8; 2]>) {
-        let spool = spool_id.as_u64() as u16;
-        (spool.to_be_bytes(), spool.checked_add(1).map(u16::to_be_bytes))
+    pub fn spool_key_range(
+        spool_id: SpoolIndex,
+    ) -> Result<([u8; 2], Option<[u8; 2]>), TapeStoreError> {
+        let start = spool_prefix_bytes(spool_id)?;
+        let end = u16::from_be_bytes(start).checked_add(1).map(u16::to_be_bytes);
+        Ok((start, end))
     }
 }
 
-/// Key for the challenge sample set, by group then track.
+/// Key for the challenge sample set, by track group then track.
 ///
 /// Format: [group BE 8 bytes][track 32 bytes]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TrackSampleKey {
-    pub group: GroupIndex,
+    pub group: TrackGroup,
     pub track: Address,
 }
 
 impl TrackSampleKey {
     pub const SIZE: usize = 40;
 
-    pub fn new(group: GroupIndex, track: Address) -> Self {
+    pub fn new(group: TrackGroup, track: Address) -> Self {
         Self { group, track }
     }
 
-    /// Prefix covering every track assigned to one group.
-    pub fn group_prefix(group: GroupIndex) -> [u8; 8] {
+    /// Prefix covering every track written to one track group.
+    pub fn group_prefix(group: TrackGroup) -> [u8; 8] {
         group.as_u64().to_be_bytes()
     }
 }
@@ -321,7 +342,7 @@ impl<'de> SchemaRead<'de> for TrackSampleKey {
         let group: [u8; 8] = unsafe { reader.get_t()? };
         let track: [u8; 32] = unsafe { reader.get_t()? };
         dst.write(TrackSampleKey {
-            group: GroupIndex(u64::from_be_bytes(group)),
+            group: TrackGroup(u64::from_be_bytes(group)),
             track: Address::from(track),
         });
         Ok(())
@@ -366,6 +387,16 @@ impl TrackLookupKey {
             key: Hash([u8::MAX; 32]),
         }
     }
+
+    /// Create a start key that sorts before every entry for the given track
+    /// number under the tape.
+    pub fn at_track_number(tape: Address, track_number: TrackNumber) -> Self {
+        Self {
+            tape,
+            track_number,
+            key: Hash([0u8; 32]),
+        }
+    }
 }
 
 impl SchemaWrite for TrackLookupKey {
@@ -407,8 +438,7 @@ impl SchemaWrite for SliceKey {
     }
 
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        let spool_bytes = (src.spool_id.as_u64() as u16).to_be_bytes();
-        writer.write_exact(&spool_bytes)?;
+        writer.write_exact(&encoded_spool(src.spool_id)?)?;
         writer.write_exact(src.track_address.as_ref())?;
         Ok(())
     }
@@ -1159,6 +1189,29 @@ impl<'de> SchemaRead<'de> for MultipartPartChunkKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // a spool past the two-byte key is refused by every key that encodes it
+    #[test]
+    fn spool_key_overflow() {
+        let last = SpoolIndex(u64::from(u16::MAX));
+        let wide = SpoolIndex(u64::from(u16::MAX) + 1);
+        let peer = Address::new([7u8; 32]);
+
+        assert_eq!(SliceKey::spool_prefix(last).expect("prefix"), [0xFF, 0xFF]);
+        assert_eq!(SliceKey::spool_key_range(last).expect("range"), ([0xFF, 0xFF], None));
+        assert!(wincode::serialize(&SliceKey::new(last, peer)).is_ok());
+
+        assert!(SliceKey::spool_prefix(wide).is_err());
+        assert!(SliceKey::spool_key_range(wide).is_err());
+        assert!(ChallengeRoundKey::spool_prefix(peer, wide).is_err());
+        assert!(wincode::serialize(&SliceKey::new(wide, peer)).is_err());
+        assert!(wincode::serialize(&SpoolIndexKey::new(wide)).is_err());
+        assert!(wincode::serialize(&PeerRecordKey::new(peer, wide)).is_err());
+        assert!(
+            wincode::serialize(&ChallengeRoundKey::new(peer, wide, EpochNumber(1), RoundNumber(1)))
+                .is_err()
+        );
+    }
 
     // a reservation key round-trips at its fixed size
     #[test]

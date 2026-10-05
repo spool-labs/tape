@@ -3,7 +3,6 @@
 use std::fmt::Display;
 
 use tape_store_api::Store;
-use tape_api::program::tapedrive::track_pda;
 use tape_core::track::data::BlobData;
 use tape_core::types::{EpochNumber, TrackNumber};
 use tape_crypto::address::Address;
@@ -36,7 +35,13 @@ impl<Db: Store> TapeSource for StoreSource<'_, Db> {
     }
 
     fn track(&self, tape: Address, track_number: TrackNumber) -> Result<Track, NodeError> {
-        let address = track_pda(tape, track_number).0;
+        let Some(address) = self
+            .store
+            .track_address_by_number(tape, track_number)
+            .map_err(store_error)?
+        else {
+            return Ok(Track::Absent);
+        };
         let Some(track) = self.store.get_track(address).map_err(store_error)? else {
             return Ok(Track::Absent);
         };

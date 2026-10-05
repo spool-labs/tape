@@ -237,6 +237,12 @@ mod tests {
         source.write(tape, TrackNumber(number), &render(entries).expect("render batch"))
     }
 
+    /// Delete a track from the source and give the change a consumer reports for it
+    fn remove(source: &mut MemorySource, tape: Address, number: u64) -> Change {
+        let track = source.remove(tape, TrackNumber(number)).expect("written track");
+        Change::Removed { track }
+    }
+
     fn follow(subscriptions: Vec<Subscription>, source: &MemorySource) -> Blacklists {
         let mut blacklists = Blacklists::try_new(subscriptions).expect("subscriptions");
         infallible(blacklists.rebuild(source));
@@ -297,11 +303,29 @@ mod tests {
         batch(&mut source, tape, 1, &[Entry::remove(removed)]);
         let mut blacklists = follow(vec![subscription("a", root, BOTH)], &source);
 
-        let track = source.remove(tape, TrackNumber(1)).expect("written track");
-        let changes = apply(&mut blacklists, &[Change::Removed { track }], &source);
+        let changes = apply(&mut blacklists, &[remove(&mut source, tape, 1)], &source);
 
         assert_eq!(changes.allowed, vec![BlacklistEntry::track(removed)]);
         assert!(!blacklists.is_denied(&BlacklistEntry::track(removed)));
+    }
+
+    // a target denied by two tracks with the same bytes stays denied until both are deleted
+    #[test]
+    fn doubled_track() {
+        let (root, tape, removed) = (address(1), address(2), address(9));
+        let mut source = MemorySource::default();
+        rack(&mut source, root, &[tape]);
+        blacklist_tape(&mut source, tape);
+        let first = batch(&mut source, tape, 1, &[Entry::remove(removed)]);
+        let second = batch(&mut source, tape, 2, &[Entry::remove(removed)]);
+        let mut blacklists = follow(vec![subscription("a", root, BOTH)], &source);
+
+        let one_left = apply(&mut blacklists, &[remove(&mut source, tape, 2)], &source);
+        let none_left = apply(&mut blacklists, &[remove(&mut source, tape, 1)], &source);
+
+        assert_ne!(first, second);
+        assert_eq!(one_left, Changes::default());
+        assert_eq!(none_left.allowed, vec![BlacklistEntry::track(removed)]);
     }
 
     // a target two lists deny stays denied until both stop naming it
@@ -320,10 +344,8 @@ mod tests {
             &source,
         );
 
-        let track_a = source.remove(tape_a, TrackNumber(1)).expect("track a");
-        let first = apply(&mut blacklists, &[Change::Removed { track: track_a }], &source);
-        let track_b = source.remove(tape_b, TrackNumber(1)).expect("track b");
-        let second = apply(&mut blacklists, &[Change::Removed { track: track_b }], &source);
+        let first = apply(&mut blacklists, &[remove(&mut source, tape_a, 1)], &source);
+        let second = apply(&mut blacklists, &[remove(&mut source, tape_b, 1)], &source);
 
         assert_eq!(first, Changes::default());
         assert_eq!(second.allowed, vec![BlacklistEntry::track(removed)]);
@@ -464,10 +486,10 @@ mod tests {
         let mut header_lists = follow(vec![subscription("a", root, BOTH)], &header_source);
         let mut record_lists = follow(vec![subscription("a", root, BOTH)], &record_source);
 
-        let header = header_source.remove(tape, FIRST).expect("header");
-        let without_header = apply(&mut header_lists, &[Change::Removed { track: header }], &header_source);
-        let record = record_source.remove(root, TrackNumber(1)).expect("rack record");
-        let without_record = apply(&mut record_lists, &[Change::Removed { track: record }], &record_source);
+        let header = remove(&mut header_source, tape, FIRST.0);
+        let without_header = apply(&mut header_lists, &[header], &header_source);
+        let record = remove(&mut record_source, root, 1);
+        let without_record = apply(&mut record_lists, &[record], &record_source);
 
         assert_eq!(without_header.allowed, vec![BlacklistEntry::track(removed)]);
         assert_eq!(without_record.allowed, vec![BlacklistEntry::track(removed)]);

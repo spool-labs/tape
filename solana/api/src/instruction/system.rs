@@ -1,3 +1,4 @@
+use tape_core::encoding::EncodingProfile;
 use tape_core::spooler::GroupIndex;
 use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits};
 use tape_core::types::coin::{Coin, TAPE};
@@ -20,6 +21,12 @@ pub struct CreateSystem {
     pub spool_groups: u64,
     pub min_epoch_duration: EpochDuration,
     pub max_epoch_duration: EpochDuration,
+
+    /// Erasure code every track uses.
+    pub profile: EncodingProfile,
+
+    /// What the network assumes about its nodes (TrustModel as u64).
+    pub trust_model: u64,
 }
 
 #[repr(C)]
@@ -68,6 +75,8 @@ pub fn build_create_system_ix(
             spool_groups: config.spool_groups,
             min_epoch_duration: config.min_epoch_duration,
             max_epoch_duration: config.max_epoch_duration,
+            profile: config.profile.into(),
+            trust_model: config.trust_model.into(),
         }.to_bytes(),
     }
 }

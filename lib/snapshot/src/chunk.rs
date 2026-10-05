@@ -1,10 +1,11 @@
 //! Snapshot chunk format and outer erasure sizing.
 //!
-//! The inner Clay coder operates on a [`SnapshotChunkPayload`]; the outer RS
+//! The inner coder, the network's own code, operates on a
+//! [`SnapshotChunkPayload`]; the outer RS
 //! coder operates on length-prefixed segments. Both the chunk key derivation
 //! and the segment/outer sizing live here so the format is owned in one place.
 
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::types::{ChunkNumber, EpochNumber};
 use tape_crypto::hash::hashv;
 use tape_crypto::Hash;
@@ -17,7 +18,7 @@ pub const SNAPSHOT_KEY_V1: &[u8; 16] = b"SNAPSHOT_KEY_V1\0";
 /// Derive the track key for a snapshot chunk. A single group may contribute
 /// multiple chunks per epoch.
 #[inline]
-pub fn snapshot_chunk_key(epoch: EpochNumber, group: GroupIndex, chunk: ChunkNumber) -> Hash {
+pub fn snapshot_chunk_key(epoch: EpochNumber, group: TrackGroup, chunk: ChunkNumber) -> Hash {
     hashv(&[
         SNAPSHOT_KEY_V1,
         &epoch.pack(),
@@ -26,7 +27,7 @@ pub fn snapshot_chunk_key(epoch: EpochNumber, group: GroupIndex, chunk: ChunkNum
     ])
 }
 
-/// Wire payload fed into the inner Clay encoder for a single snapshot chunk.
+/// Wire payload fed into the inner encoder for a single snapshot chunk.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotChunkPayload {
     pub chunk: ChunkNumber,
@@ -115,10 +116,10 @@ mod tests {
 
     #[test]
     fn chunk_key_distinguishes_epoch_group_chunk() {
-        let base = snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(0));
-        assert_ne!(base, snapshot_chunk_key(EpochNumber(10), GroupIndex(3), ChunkNumber(0)));
-        assert_ne!(base, snapshot_chunk_key(EpochNumber(9), GroupIndex(4), ChunkNumber(0)));
-        assert_ne!(base, snapshot_chunk_key(EpochNumber(9), GroupIndex(3), ChunkNumber(1)));
+        let base = snapshot_chunk_key(EpochNumber(9), TrackGroup(3), ChunkNumber(0));
+        assert_ne!(base, snapshot_chunk_key(EpochNumber(10), TrackGroup(3), ChunkNumber(0)));
+        assert_ne!(base, snapshot_chunk_key(EpochNumber(9), TrackGroup(4), ChunkNumber(0)));
+        assert_ne!(base, snapshot_chunk_key(EpochNumber(9), TrackGroup(3), ChunkNumber(1)));
     }
 
     #[test]

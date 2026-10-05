@@ -1,12 +1,14 @@
 use std::time::Duration;
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::{BasisPoints, EpochNumber};
-use tape_e2e_simnet::{log::append_log, NodeRuntimeMode, SimnetBuilder, SimnetScenario, run_simnet_test};
+use tape_e2e_simnet::{
+    log::append_log, NodeRuntimeMode, SimnetBuilder, SimnetScenario, TAPENET_GROUP_SIZE,
+    run_simnet_test,
+};
 use tape_store::ops::{MetaOps, ObjectInfoOps, TrackOps};
 
-const INITIAL_NODES: usize = GROUP_SIZE;
+const INITIAL_NODES: usize = TAPENET_GROUP_SIZE;
 const COMMITTEE_SIZE: u64 = INITIAL_NODES as u64;
 const TARGET_GROUPS: u64 = 5;
 
@@ -21,7 +23,6 @@ async fn late_join_inner() {
         .node_count(INITIAL_NODES)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
-        .eviction(false)
         .build()
         .expect("build harness");
 
@@ -106,7 +107,7 @@ async fn late_join_inner() {
             .expect("epoch 5 active");
         assert_group_counts(&scenario, TARGET_GROUPS, TARGET_GROUPS).await;
         scenario
-            .wait_next_quorum(GROUP_SIZE, active_timeout)
+            .wait_next_quorum(TAPENET_GROUP_SIZE, active_timeout)
             .await
             .expect("epoch 6 committee account ready");
 

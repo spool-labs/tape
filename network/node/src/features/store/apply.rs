@@ -1,8 +1,9 @@
 use tape_store_api::Store;
-use tape_api::program::tapedrive::{blacklist_pda, history_pda, track_pda, SYSTEM_ADDRESS};
-use tape_core::erasure::GROUP_SIZE;
+use tape_api::program::tapedrive::{blacklist_pda, history_pda, TrackAddress, SYSTEM_ADDRESS};
+use tape_core::encoding::ErasureCode;
 use tape_core::object::object_etag;
 use tape_core::snapshot::replay::{ReplayTrack, ReplayableEvent};
+use tape_core::spooler::TrackGroup;
 use tape_core::tape::{
     blacklist_tape_number, history_tape_number, snapshot_tape_number, tape_index, tape_namespace,
     TapeFlags, TapeNamespace,
@@ -31,14 +32,17 @@ const DELETE_TAPE_BATCH_SIZE: usize = 100;
 /// A slice missing at certification waits this many slots before the repair path takes it
 const REPAIR_GRACE_SLOTS: SlotNumber = SlotNumber(12);
 
+/// Apply a slot's events. `profile` is the network's, which sizes a track's
+/// slices and says how many spools its group holds.
 pub fn apply_slot<Db: Store>(
     store: &TapeStore<Db>,
     slot: SlotNumber,
     block_time: Option<i64>,
     events: &[ReplayableEvent],
+    profile: ErasureCode,
 ) -> Result<(), NodeError> {
     for event in events {
-        apply_event(store, slot, block_time, event)?;
+        apply_event(store, slot, block_time, event, profile)?;
     }
 
     Ok(())
@@ -49,19 +53,20 @@ pub fn apply_event<Db: Store>(
     slot: SlotNumber,
     block_time: Option<i64>,
     event: &ReplayableEvent,
+    profile: ErasureCode,
 ) -> Result<(), NodeError> {
     match event {
         ReplayableEvent::Track(replay) => {
-            put_track_object(store, replay, slot, block_time)?;
+            put_track_object(store, replay, slot, block_time, profile)?;
         }
         ReplayableEvent::CertifyTrack { track, epoch } => {
-            set_certified(store, *track, *epoch, slot)?;
+            set_certified(store, *track, *epoch, slot, profile)?;
         }
         ReplayableEvent::DeleteTrack { track, .. } => {
-            delete_track_local(store, *track, slot)?;
+            delete_track_local(store, *track, slot, profile)?;
         }
         ReplayableEvent::InvalidateTrack { track, epoch } => {
-            invalidate_track(store, *track, *epoch, slot)?;
+            invalidate_track(store, *track, *epoch, slot, profile)?;
         }
         ReplayableEvent::ReserveTape {
             tape,
@@ -89,7 +94,7 @@ pub fn apply_event<Db: Store>(
         }
         // The deployed program can still close an expired tape
         ReplayableEvent::DestroyTape { tape, .. } => {
-            delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE, slot)?;
+            delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE, slot, profile)?;
         }
         ReplayableEvent::ExtendTape {
             tape,
@@ -200,11 +205,11 @@ fn put_track_object<Db: Store>(
     replay: &ReplayTrack,
     slot: SlotNumber,
     block_time: Option<i64>,
+    profile: ErasureCode,
 ) -> Result<(), NodeError> {
     validate_replay_track(replay)?;
 
-    let (track, _) = track_pda(replay.state.tape, replay.state.track_number);
-    let track = track;
+    let track = replay.state.address();
 
     store.put_track(track, replay.state)
         .map_err(store_error)?;
@@ -223,13 +228,14 @@ fn put_track_object<Db: Store>(
         &data,
         replay.state.value_hash,
         slot,
+        profile,
     )?;
 
     // We need to advance the track cursor so that merkle proofs for this tape don't break due to
     // using the wrong index when tracks are deleted.
     advance_track_cursor(
-        store, 
-        replay.state.tape, 
+        store,
+        replay.state.tape,
         replay.state.track_number
     )?;
 
@@ -319,6 +325,7 @@ fn put_named_object_entry<Db: Store>(
         slot,
         data_tape: replay.state.tape,
         track_number: replay.state.track_number,
+        track,
         kind: replay.state.kind,
         content_type: object.content_type,
     };
@@ -408,6 +415,7 @@ fn set_certified<Db: Store>(
     track: Address,
     epoch: EpochNumber,
     certified_slot: SlotNumber,
+    profile: ErasureCode,
 ) -> Result<(), NodeError> {
     // Both records or neither: object info stamped against a track never stored
     // leaves the pair disagreeing with nothing to repair it
@@ -439,7 +447,7 @@ fn set_certified<Db: Store>(
             )
             .map_err(store_error)?;
 
-        defer_certified_repairs(store, track, certified_slot)?;
+        defer_certified_repairs(store, track, track_info.group, certified_slot, profile)?;
     } else if let ObjectInfo::System {
         kind,
         track_address,
@@ -468,16 +476,13 @@ fn set_certified<Db: Store>(
 fn defer_certified_repairs<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
+    group: TrackGroup,
     certified_slot: SlotNumber,
+    profile: ErasureCode,
 ) -> Result<(), NodeError> {
-    let Some(track_info) = store.get_track(track).map_err(store_error)? else {
-        return Ok(());
-    };
-
-    let group = track_info.group;
     let ready_at = certified_slot.saturating_add(REPAIR_GRACE_SLOTS);
 
-    for slice in 0..GROUP_SIZE {
+    for slice in 0..usize::from(profile.n()) {
         let spool = group.spool_at(slice);
 
         let Some(state) = store.get_spool_state(spool).map_err(store_error)? else {
@@ -505,12 +510,13 @@ fn invalidate_track<Db: Store>(
     track: Address,
     epoch: EpochNumber,
     slot: SlotNumber,
+    profile: ErasureCode,
 ) -> Result<(), NodeError> {
     if let Some(mut info) = store.get_track(track).map_err(store_error)? {
         // Keep object_metadata across invalidation. Delete/GC still use it as
         // the track -> name reverse lookup when the track is eventually removed.
         remove_object_listing_for_track(store, track, &info)?;
-        let _ = cleanup_track_slices(store, track, info.group, slot)?;
+        let _ = cleanup_track_slices(store, track, info.group, slot, profile)?;
         info.state = TrackState::Invalidated as u64;
         store.put_track(track, info).map_err(store_error)?;
     }
@@ -529,15 +535,15 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 #[cfg(test)]
 mod tests {
     use tape_store_memory::MemoryStore;
-    use tape_api::program::tapedrive::track_pda;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_api::program::tapedrive::TrackAddress;
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::snapshot::replay::{ReplayTrack, ReplayTrackObject, ReplayableEvent};
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
         ContentType, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
@@ -554,12 +560,26 @@ mod tests {
     use tape_store::TapeStore;
     use tape_store_api::Store as _;
 
+    use crate::core::error::NodeError;
     use crate::features::spool::manager::has_pending_work;
 
     use super::{apply_slot, REPAIR_GRACE_SLOTS};
 
+    /// Spools in a tapenet group.
+    const WIDTH: usize = TAPENET_PROFILE.n() as usize;
+
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    /// Apply a slot's events on a tapenet node.
+    fn apply(
+        store: &TapeStore<MemoryStore>,
+        slot: SlotNumber,
+        block_time: Option<i64>,
+        events: &[ReplayableEvent],
+    ) -> Result<(), NodeError> {
+        apply_slot(store, slot, block_time, events, TAPENET_PROFILE)
     }
 
     /// Copy every row into a fresh store, the way a restart finds what it left behind
@@ -584,10 +604,9 @@ mod tests {
         let blob = BlobEncoding {
             size: StorageUnits::mb(2),
             commitment: Hash::new_unique(),
-            profile: EncodingProfile::default(),
             stripe_size: StorageUnits::from_bytes(128),
             stripe_count: StripeCount(3),
-            leaves: [Hash::default(); GROUP_SIZE],
+            leaves: [Hash::default(); MAX_GROUP_SIZE],
         };
 
         ReplayableEvent::Track(ReplayTrack {
@@ -597,9 +616,9 @@ mod tests {
                 track_number,
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Registered as u64,
-                visibility: TrackVisibility::Public as u64,
+                flags: TrackFlags::NONE,
                 size: blob.size,
-                group: GroupIndex::from(4),
+                group: TrackGroup::from(4),
                 value_hash: blob.get_hash(),
             },
             epoch,
@@ -616,15 +635,41 @@ mod tests {
                 track_number,
                 kind: TrackKind::Inline as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
+                flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(4 * 1024),
-                group: GroupIndex::from(5),
+                group: TrackGroup::from(5),
                 value_hash: Hash::new_unique(),
             },
             epoch,
             blob: None,
             object: None,
         })
+    }
+
+    fn track_address(event: &ReplayableEvent) -> Address {
+        match event {
+            ReplayableEvent::Track(replay) => replay.state.address(),
+            _ => panic!("expected track event"),
+        }
+    }
+
+    /// The same content written again at another track number
+    fn written_again(event: &ReplayableEvent, track_number: TrackNumber) -> ReplayableEvent {
+        match event {
+            ReplayableEvent::Track(replay) => {
+                let mut copy = replay.clone();
+                copy.state.track_number = track_number;
+                ReplayableEvent::Track(copy)
+            }
+            _ => panic!("expected track event"),
+        }
+    }
+
+    fn delete(track: Address) -> ReplayableEvent {
+        ReplayableEvent::DeleteTrack {
+            track,
+            epoch: EpochNumber(8),
+        }
     }
 
     fn certify(track: Address) -> ReplayableEvent {
@@ -638,7 +683,7 @@ mod tests {
         store: &TapeStore<MemoryStore>,
         track: Address,
         tape: Address,
-        group: GroupIndex,
+        group: TrackGroup,
         slot: SlotNumber,
     ) {
         store
@@ -657,14 +702,14 @@ mod tests {
             .expect("put object info");
     }
 
-    fn track_info(tape: Address, track_number: TrackNumber, group: GroupIndex) -> CompressedTrack {
+    fn track_info(tape: Address, track_number: TrackNumber, group: TrackGroup) -> CompressedTrack {
         CompressedTrack {
             tape,
             key: Hash::new_unique(),
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(1024),
             group,
             value_hash: Hash::new_unique(),
@@ -679,7 +724,8 @@ mod tests {
         let authority = Address::new_unique();
         let share_nonce = Hash::new_unique();
         let track_number = TrackNumber(9);
-        let (track, _) = track_pda(tape, track_number);
+        let track_event = make_blob_track(tape, track_number, EpochNumber(6));
+        let track = track_address(&track_event);
 
         let events = vec![
             ReplayableEvent::ReserveTape {
@@ -695,14 +741,14 @@ mod tests {
                 scheduled: TAPE(0),
                 share_nonce,
             },
-            make_blob_track(tape, track_number, EpochNumber(6)),
+            track_event,
             ReplayableEvent::CertifyTrack {
                 track,
                 epoch: EpochNumber(8),
             },
         ];
 
-        apply_slot(&store, slot, None, &events).unwrap();
+        apply(&store, slot, None, &events).unwrap();
 
         assert_eq!(
             store.get_tape(tape).unwrap(),
@@ -723,7 +769,7 @@ mod tests {
         assert_eq!(track_info.kind, TrackKind::Coded as u64);
         assert_eq!(track_info.state, TrackState::Certified as u64);
         assert_eq!(track_info.size, StorageUnits::mb(2));
-        assert_eq!(track_info.group, GroupIndex::from(4));
+        assert_eq!(track_info.group, TrackGroup::from(4));
         match &events[1] {
             ReplayableEvent::Track(replay) => {
                 assert_eq!(
@@ -753,7 +799,6 @@ mod tests {
         let block_time = Some(1_700_000_057);
         let tape = Address::new_unique();
         let track_number = TrackNumber(11);
-        let (track, _) = track_pda(tape, track_number);
         let name = b"photos/cat.jpg".to_vec();
 
         let mut track_event = make_blob_track(tape, track_number, EpochNumber(7));
@@ -772,6 +817,7 @@ mod tests {
             }
             _ => panic!("expected track event"),
         };
+        let track = track_address(&track_event);
 
         let events = vec![
             ReplayableEvent::ReserveTape {
@@ -790,7 +836,7 @@ mod tests {
             track_event,
         ];
 
-        apply_slot(&store, slot, block_time, &events).unwrap();
+        apply(&store, slot, block_time, &events).unwrap();
 
         let page = store
             .list_objects(tape, b"photos/", None, None, 100)
@@ -803,6 +849,7 @@ mod tests {
         assert_eq!(page.objects[0].1.slot, slot);
         assert_eq!(page.objects[0].1.data_tape, tape);
         assert_eq!(page.objects[0].1.track_number, track_number);
+        assert_eq!(page.objects[0].1.track, track);
         assert_eq!(page.objects[0].1.kind, TrackKind::Coded as u64);
         assert_eq!(page.objects[0].1.content_type, ContentType::ImageJpeg);
 
@@ -810,7 +857,7 @@ mod tests {
         assert_eq!(metadata.name, b"photos/cat.jpg".to_vec());
         assert_eq!(metadata.content_type, ContentType::ImageJpeg);
 
-        apply_slot(
+        apply(
             &store,
             SlotNumber(58),
             None,
@@ -831,15 +878,10 @@ mod tests {
         let slot = SlotNumber(56);
         let tape = Address::new_unique();
         let track_number = TrackNumber(10);
-        let (track, _) = track_pda(tape, track_number);
+        let track_event = make_raw_track(tape, track_number, EpochNumber(7));
+        let track = track_address(&track_event);
 
-        apply_slot(
-            &store,
-            slot,
-            None,
-            &[make_raw_track(tape, track_number, EpochNumber(7))],
-        )
-        .unwrap();
+        apply(&store, slot, None, &[track_event]).unwrap();
 
         let track_info = store.get_track(track).unwrap().unwrap();
         assert_eq!(track_info.tape, tape);
@@ -859,13 +901,48 @@ mod tests {
         );
     }
 
+    // the same content written twice is two tracks, each stored and deleted on its own
+    #[test]
+    fn same_content_twice() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let written = make_raw_track(tape, TrackNumber(3), EpochNumber(7));
+        let again = written_again(&written, TrackNumber(7));
+        let (first, second) = (track_address(&written), track_address(&again));
+        assert_ne!(first, second);
+
+        apply(&store, SlotNumber(50), None, &[written.clone(), again]).unwrap();
+
+        assert!(store.get_object_info(first).unwrap().is_some());
+        assert!(store.get_object_info(second).unwrap().is_some());
+
+        apply(&store, SlotNumber(51), None, &[delete(second)]).unwrap();
+
+        assert!(store.get_track(first).unwrap().is_some());
+        assert!(store.get_track(second).unwrap().is_none());
+        assert!(store.get_object_info(second).unwrap().is_none());
+
+        apply(&store, SlotNumber(52), None, &[delete(first)]).unwrap();
+
+        assert!(store.get_track(first).unwrap().is_none());
+
+        // The same content written after the deletes gets an address of its own.
+        let later = written_again(&written, TrackNumber(9));
+        let third = track_address(&later);
+        apply(&store, SlotNumber(53), None, &[later]).unwrap();
+
+        assert_ne!(third, first);
+        assert!(store.get_object_info(third).unwrap().is_some());
+        assert!(store.get_track(first).unwrap().is_none());
+    }
+
     #[test]
     fn deletes_track() {
         let store = test_store();
         let slot = SlotNumber(21);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(11);
+        let group = TrackGroup::from(11);
 
         store.put_track(track, track_info(tape, TrackNumber(0), group)).unwrap();
         store
@@ -879,13 +956,13 @@ mod tests {
                 },
             )
             .unwrap();
-        for slice_index in 0..GROUP_SIZE {
+        for slice_index in 0..WIDTH {
             store
                 .put_slice(group.spool_at(slice_index), track, vec![slice_index as u8])
                 .unwrap();
         }
 
-        apply_slot(
+        apply(
             &store,
             slot,
             None,
@@ -900,7 +977,7 @@ mod tests {
         assert!(store.get_object_info(track).unwrap().is_none());
         // The slices outlive the deletion: a round whose window opened before it
         // still asks about the track, and the sweep drops both together.
-        for slice_index in 0..GROUP_SIZE {
+        for slice_index in 0..WIDTH {
             assert!(
                 store
                     .get_slice(group.spool_at(slice_index), track)
@@ -916,7 +993,7 @@ mod tests {
         let slot = SlotNumber(34);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(23);
+        let group = TrackGroup::from(23);
 
         store.put_track(track, track_info(tape, TrackNumber(0), group)).unwrap();
         store
@@ -930,13 +1007,13 @@ mod tests {
                 },
             )
             .unwrap();
-        for slice_index in 0..GROUP_SIZE {
+        for slice_index in 0..WIDTH {
             store
                 .put_slice(group.spool_at(slice_index), track, vec![0xAB; 8])
                 .unwrap();
         }
 
-        apply_slot(
+        apply(
             &store,
             SlotNumber(55),
             None,
@@ -957,7 +1034,7 @@ mod tests {
         );
         // The slices outlive the deletion: a round whose window opened before it
         // still asks about the track, and the sweep drops both together.
-        for slice_index in 0..GROUP_SIZE {
+        for slice_index in 0..WIDTH {
             assert!(
                 store
                     .get_slice(group.spool_at(slice_index), track)
@@ -999,7 +1076,7 @@ mod tests {
             },
         ];
 
-        apply_slot(&store, SlotNumber(60), None, &events).expect("apply events");
+        apply(&store, SlotNumber(60), None, &events).expect("apply events");
 
         assert_eq!(
             store.get_tape(tape).expect("get tape"),
@@ -1021,7 +1098,7 @@ mod tests {
         let store = test_store();
         let tape = Address::new_unique();
 
-        let result = apply_slot(
+        let result = apply(
             &store,
             SlotNumber(61),
             None,
@@ -1046,7 +1123,7 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
         let spool_id = group.spool_at(0);
 
         store
@@ -1054,7 +1131,7 @@ mod tests {
             .expect("set spool state");
         stage_certify(&store, track, tape, group, slot);
 
-        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
+        apply(&store, slot, None, &[certify(track)]).expect("apply slot");
 
         assert!(store.has_pending_repair(spool_id, track).expect("has pending repair"));
         assert!(store
@@ -1074,7 +1151,7 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
         let spool_id = group.spool_at(0);
 
         store
@@ -1082,7 +1159,7 @@ mod tests {
             .expect("set spool state");
         stage_certify(&store, track, tape, group, slot);
 
-        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
+        apply(&store, slot, None, &[certify(track)]).expect("apply slot");
         store
             .put_slice(spool_id, track, vec![0xAB; 64])
             .expect("put slice");
@@ -1105,7 +1182,7 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
         let spool_id = group.spool_at(0);
 
         store
@@ -1113,7 +1190,7 @@ mod tests {
             .expect("set spool state");
         stage_certify(&store, track, tape, group, slot);
 
-        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
+        apply(&store, slot, None, &[certify(track)]).expect("apply slot");
         store
             .set_sync_cursor(slot.saturating_add(REPAIR_GRACE_SLOTS), None)
             .expect("set sync cursor");
@@ -1135,7 +1212,7 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
         let spool_id = group.spool_at(0);
 
         store
@@ -1143,7 +1220,7 @@ mod tests {
             .expect("set spool state");
         stage_certify(&store, track, tape, group, slot);
 
-        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
+        apply(&store, slot, None, &[certify(track)]).expect("apply slot");
 
         let restarted = reopen(&store);
         restarted
@@ -1163,7 +1240,7 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
         let spool_id = group.spool_at(0);
 
         store
@@ -1174,7 +1251,7 @@ mod tests {
             .put_slice(spool_id, track, vec![0xAB; 64])
             .expect("put slice");
 
-        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
+        apply(&store, slot, None, &[certify(track)]).expect("apply slot");
 
         assert!(!store.has_pending_repair(spool_id, track).expect("has pending repair"));
         assert_eq!(
@@ -1190,13 +1267,13 @@ mod tests {
         let slot = SlotNumber(10);
         let track = Address::new_unique();
         let tape = Address::new_unique();
-        let group = GroupIndex::from(7);
+        let group = TrackGroup::from(7);
 
         stage_certify(&store, track, tape, group, slot);
 
-        apply_slot(&store, slot, None, &[certify(track)]).expect("apply slot");
+        apply(&store, slot, None, &[certify(track)]).expect("apply slot");
 
-        for slice in 0..GROUP_SIZE {
+        for slice in 0..WIDTH {
             let spool = group.spool_at(slice);
             assert!(!store.has_pending_repair(spool, track).expect("has pending repair"));
         }

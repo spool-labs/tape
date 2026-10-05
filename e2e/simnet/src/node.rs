@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use tape_peer_http::{HttpApi, PeerTransfer};
 use tape_peer_manager::PeerManager;
 use tape_rpc_client::RpcClient;
@@ -215,6 +215,20 @@ impl TestNode {
         if let Some(runtime) = self.runtime.take() {
             runtime.abort();
         }
+    }
+
+    /// Swap the volume for an empty one, as if the drive was lost. The node keeps its keys.
+    pub fn wipe(&mut self) -> Result<()> {
+        if self.is_running() {
+            bail!("node {} is still running", self.id);
+        }
+
+        // The context holds the old store open, so it goes before the volume does.
+        self.runtime = None;
+        self.context = None;
+        self.store_dir = node_volume(&format!("node-{}", self.id))?;
+
+        Ok(())
     }
 
     async fn build_context(&self) -> Result<TestNodeContext> {

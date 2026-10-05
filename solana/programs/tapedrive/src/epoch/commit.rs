@@ -84,7 +84,8 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     if next_committee.epoch != next {
         return Err(TapeError::BadEpochId.into());
     }
-    if (next_committee.members.count as usize) < GROUP_SIZE {
+    // A node holds at most one spool per group, so a group needs n members.
+    if next_committee.members.count < u64::from(system.code()?.n()) {
         return Err(TapeError::InsufficientCommittee.into());
     }
 
@@ -94,8 +95,8 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let (_, peers) = 
         PeerSet::read(peer_set_info, &tapedrive::ID)?;
 
-    let preferences = 
-        aggregate_preferences(system, curr_members, peers)?;
+    let preferences =
+        aggregate_preferences(system, curr_epoch.preferences, curr_members, peers)?;
 
     snapshot_tape_info
         .is_snapshot_tape(prev)?;
@@ -118,22 +119,24 @@ pub fn process_commit_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
 
 fn aggregate_preferences(
     system: &System,
+    current: NodePreferences,
     members: &[Member],
     peers: &[Peer],
 ) -> Result<NodePreferences, ProgramError> {
 
     let bounds = NodePreferences {
-        storage_capacity: StorageUnits(MIN_STORAGE_CAPACITY as u64),
+        network_capacity: StorageUnits(MIN_STORAGE_CAPACITY as u64),
         storage_price: TAPE(MIN_STORAGE_PRICE as u64),
-        committee_size: MIN_COMMITTEE_SIZE as u64,
-        spool_groups: system.target_group_count,
+        committee_size: u64::from(system.code()?.n()),
+        spool_groups: 1,
         burn_fee_bps: BasisPoints(0),
         subsidy_decay_bps: BasisPoints(0),
         access_threshold: TAPE(0),
         epoch_duration: system.min_epoch_duration,
+        node_capacity: StorageUnits::zero(),
     };
 
-    aggregate_node_preferences(members, peers, bounds).map_err(|error| match error {
+    aggregate_node_preferences(members, peers, current, bounds).map_err(|error| match error {
         NodePreferenceAggregationError::MissingPeer { .. } => TapeError::BadMember.into(),
         NodePreferenceAggregationError::ZeroWeight => TapeError::UnexpectedState.into(),
     })
@@ -156,9 +159,10 @@ fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramErr
 mod tests {
     use super::*;
     use tape_api::state::{Committee, PeerSet};
+    use tape_core::encoding::RSParams;
     use tape_test::*;
 
-    const COMMITTEE_SIZE: u64 = GROUP_SIZE as u64;
+    const COMMITTEE_SIZE: u64 = MAX_GROUP_SIZE as u64;
     const SPOOL_GROUPS: u64 = 50;
 
     fn slot_hashes_account() -> (Pubkey, solana_account::Account) {
@@ -180,7 +184,7 @@ mod tests {
 
     fn test_preferences() -> NodePreferences {
         NodePreferences {
-            storage_capacity: StorageUnits::mb(2_048),
+            network_capacity: StorageUnits::mb(2_048),
             storage_price: TAPE(950),
             committee_size: 256,
             spool_groups: 75,
@@ -188,11 +192,12 @@ mod tests {
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
+            node_capacity: StorageUnits::zero(),
         }
     }
 
     fn members() -> Vec<Member> {
-        (0..GROUP_SIZE)
+        (0..MAX_GROUP_SIZE)
             .map(|i| {
                 let mut bytes = [0u8; 32];
                 bytes[0] = (i as u8) + 1;
@@ -214,7 +219,12 @@ mod tests {
     }
 
     fn peer_set() -> Vec<u8> {
-        let prefs = test_preferences();
+        peer_set_voting(test_preferences().spool_groups)
+    }
+
+    // every peer votes the same group count
+    fn peer_set_voting(spool_groups: u64) -> Vec<u8> {
+        let prefs = NodePreferences { spool_groups, ..test_preferences() };
         let peers: Vec<Peer> = members()
             .iter()
             .map(|m| Peer {
@@ -230,6 +240,20 @@ mod tests {
 
     #[test]
     fn commit() {
+        let spool_groups = test_preferences().spool_groups;
+
+        commit_groups(spool_groups, spool_groups);
+    }
+
+    // a unanimous vote moves the group count down as well as up
+    #[test]
+    fn group_count_moves() {
+        commit_groups(10, 5);
+        commit_groups(5, 10);
+    }
+
+    // commits an epoch whose count is `current` while every peer votes `voted`
+    fn commit_groups(current: u64, voted: u64) {
         let fee_payer = Pubkey::new_unique();
 
         let curr = EpochNumber(10);
@@ -249,18 +273,18 @@ mod tests {
 
         let system = System {
             current_epoch: curr,
-            target_group_count: SPOOL_GROUPS,
-            live_group_count: SPOOL_GROUPS,
+            target_group_count: current,
+            live_group_count: current,
             committee_size: COMMITTEE_SIZE,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..System::zeroed()
+            ..permissionless_system()
         };
 
         let curr_epoch = Epoch {
             id: curr,
             start_time: now - TEST_EPOCH_DURATION.0 as i64,
-            preferences: test_preferences(),
+            preferences: NodePreferences { spool_groups: current, ..test_preferences() },
             state: EpochState {
                 phase: EpochPhase::Active as u64,
                 ..EpochState::zeroed()
@@ -270,7 +294,7 @@ mod tests {
 
         let next_epoch = Epoch {
             id: next,
-            total_groups: SPOOL_GROUPS,
+            total_groups: current,
             state: EpochState::zeroed(), // phase = Unknown
             ..Epoch::zeroed()
         };
@@ -286,7 +310,7 @@ mod tests {
             pda(next_epoch_address, next_epoch.pack(), tapedrive::ID),
             pda(curr_committee_address, populated_committee(curr), tapedrive::ID),
             pda(next_committee_address, populated_committee(next), tapedrive::ID),
-            pda(peer_set_address, peer_set(), tapedrive::ID),
+            pda(peer_set_address, peer_set_voting(voted), tapedrive::ID),
             pda(snapshot_tape_address, snapshot_tape.pack(), tapedrive::ID),
             slot_hashes_account(),
         ];
@@ -298,7 +322,7 @@ mod tests {
 
         let mut expected_next = next_epoch;
         expected_next.nonce = expected_nonce;
-        expected_next.preferences = test_preferences();
+        expected_next.preferences = NodePreferences { spool_groups: voted, ..test_preferences() };
 
         env.process_instruction(
             &instruction,
@@ -322,6 +346,10 @@ mod tests {
     }
 
     fn commit_next_committee_case(next_committee: Vec<u8>, check: Check) {
+        commit_case_on(permissionless_system(), next_committee, check);
+    }
+
+    fn commit_case_on(base: System, next_committee: Vec<u8>, check: Check) {
         let fee_payer = Pubkey::new_unique();
         let curr = EpochNumber(10);
         let next = EpochNumber(11);
@@ -337,7 +365,7 @@ mod tests {
             committee_size: COMMITTEE_SIZE,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..System::zeroed()
+            ..base
         };
         let curr_epoch = Epoch {
             id: curr,
@@ -378,7 +406,7 @@ mod tests {
     #[test]
     fn partial_committee_commits() {
         commit_next_committee_case(
-            committee_with(EpochNumber(11), COMMITTEE_SIZE + 4, GROUP_SIZE),
+            committee_with(EpochNumber(11), COMMITTEE_SIZE + 4, MAX_GROUP_SIZE),
             Check::success(),
         );
     }
@@ -386,7 +414,20 @@ mod tests {
     #[test]
     fn undersized_committee_blocks() {
         commit_next_committee_case(
-            committee_with(EpochNumber(11), COMMITTEE_SIZE + 4, GROUP_SIZE - 1),
+            committee_with(EpochNumber(11), COMMITTEE_SIZE + 4, MAX_GROUP_SIZE - 1),
+            Check::err(TapeError::InsufficientCommittee.into()),
+        );
+    }
+
+    // a 3-of-4 cluster commits on four seated members and holds its epoch on three
+    #[test]
+    fn narrow_committee() {
+        let narrow = trusted_system(ErasureCode::ReedSolomon(RSParams::new(3, 1)));
+
+        commit_case_on(narrow, committee_with(EpochNumber(11), 4, 4), Check::success());
+        commit_case_on(
+            narrow,
+            committee_with(EpochNumber(11), 4, 3),
             Check::err(TapeError::InsufficientCommittee.into()),
         );
     }
@@ -434,7 +475,7 @@ mod tests {
             committee_size: COMMITTEE_SIZE,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
-            ..System::zeroed()
+            ..permissionless_system()
         };
 
         let curr_epoch = Epoch {

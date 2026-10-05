@@ -1,11 +1,16 @@
 use tape_solana::*;
 use tape_api::program::prelude::*;
+use tape_core::tape::TapeFlags;
 
 use crate::tape::helpers::{TapeSpec, collect_payment, create_tape_account, reserve_archive};
 use crate::track::helpers::slot_hash_seed;
 
 pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = ReserveTape::try_from_bytes(data)?;
+    if !TapeFlags::is_reservable(args.flags) {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
     let [
         fee_payer_info,
         authority_info,
@@ -73,7 +78,7 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
     let spec = TapeSpec {
         address: tape_address,
         authority: (*authority_info.key).into(),
-        flags: 0,
+        flags: args.flags,
         capacity: args.storage_units,
         active_epoch: args.activation_epoch,
         expiry_epoch: args.expiry_epoch,
@@ -140,6 +145,25 @@ mod tests {
 
     #[test]
     fn reserve_tape() {
+        reserve_case(TapeFlags::NONE, None);
+    }
+
+    // a tape keeps the hidden and immutable flags it was reserved with
+    #[test]
+    fn reserve_flagged() {
+        reserve_case(TapeFlags::HIDDEN | TapeFlags::IMMUTABLE, None);
+    }
+
+    // a user can't reserve a system tape or set a flag the program does not define
+    #[test]
+    fn reserve_bad_flags() {
+        let refused = Some(ProgramError::InvalidInstructionData);
+
+        reserve_case(TapeFlags::SYSTEM, refused.clone());
+        reserve_case(1 << 40, refused);
+    }
+
+    fn reserve_case(flags: u64, error: Option<ProgramError>) {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
@@ -148,7 +172,14 @@ mod tests {
         let end_epoch = EpochNumber(45);           // Two epochs duration
         let price_per_unit = TAPE::from("0.0001"); // 0.0001 TAPE per MB
 
-        let instruction = build_reserve_tape_ix(fee_payer.into(), authority.into(), storage_units, start_epoch, end_epoch);
+        let instruction = build_reserve_tape_ix(
+            fee_payer.into(),
+            authority.into(),
+            storage_units,
+            start_epoch,
+            end_epoch,
+            flags,
+        );
 
         let (system_address, _) = system_pda();
         let (archive_address, _) = archive_pda();
@@ -200,6 +231,11 @@ mod tests {
         ];
 
         let env = test_env();
+        if let Some(error) = error {
+            env.process_instruction(&instruction, &accounts, &[Check::err(error)]);
+            return;
+        }
+
         env.process_instruction(
             &instruction,
             &accounts,
@@ -208,6 +244,7 @@ mod tests {
                 Check::account(&Pubkey::from(tape_address)).data(
                     Tape {
                         id: TapeNumber(1),  // First tape
+                        flags,
                         authority: authority.into(),
                         capacity: storage_units,
                         used: StorageUnits::zero(),
@@ -285,9 +322,25 @@ mod tests {
     // reserving an expired tape's address fails, since that tape is still open
     #[test]
     fn reserve_expired() {
-        let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
-        let tape = expired_tape(authority);
+
+        reserve_again(authority, expired_tape(authority));
+    }
+
+    // a second reserve can't take an immutable tape's flags off
+    #[test]
+    fn flags_stay() {
+        let authority = Pubkey::new_unique();
+        let tape = Tape {
+            flags: TapeFlags::HIDDEN | TapeFlags::IMMUTABLE,
+            ..expired_tape(authority)
+        };
+
+        reserve_again(authority, tape);
+    }
+
+    fn reserve_again(authority: Pubkey, tape: Tape) {
+        let fee_payer = Pubkey::new_unique();
 
         let instruction = build_reserve_tape_ix(
             fee_payer.into(),
@@ -295,6 +348,7 @@ mod tests {
             StorageUnits::mb(100),
             EpochNumber(60),
             EpochNumber(62),
+            TapeFlags::NONE,
         );
 
         let (system_address, _) = system_pda();

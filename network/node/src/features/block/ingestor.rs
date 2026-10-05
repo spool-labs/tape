@@ -236,7 +236,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         let outcome = self.queue.append(Arc::clone(&block));
         match outcome {
             AppendOutcome::Appended => {
-                self.context.pending.apply_block(&block);
+                self.context.pending.apply_block(&block, self.context.params().profile);
             }
             AppendOutcome::Forked { dropped } => {
                 for entry in &dropped {
@@ -251,7 +251,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                 // candidate is voided before its successor opens.
                 self.rolled(dropped.iter().map(|entry| entry.blockhash).collect())
                     .await?;
-                self.context.pending.apply_block(&block);
+                self.context.pending.apply_block(&block, self.context.params().profile);
             }
             AppendOutcome::Diverged => {
                 error!(
@@ -274,7 +274,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                 );
                 // Queue is empty now; the next append skips the chain check.
                 let _ = self.queue.append(Arc::clone(&block));
-                self.context.pending.apply_block(&block);
+                self.context.pending.apply_block(&block, self.context.params().profile);
             }
         }
         self.context

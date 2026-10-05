@@ -4,6 +4,7 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use tokio::sync::Mutex;
 
 use tape_rpc::Rpc;
+use tape_core::encoding::ErasureCode;
 use tape_core::track::mirror::ArchiveMirror;
 use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::prelude::Address;
@@ -13,7 +14,7 @@ use tape_protocol::{Api, api::CertifyRes};
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::metrics::{Operation, Phase};
-use crate::stream::manifest::MAX_TRACK_SIZE;
+use crate::stream::manifest::max_track_size;
 use crate::stream::write::{ChunkCertification, append_to_mirror, certify_chunk_run};
 use crate::tapedrive::Tapedrive;
 use crate::track::write::{
@@ -158,7 +159,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         bucket: &impl TapeOperator,
         objects: Vec<ObjectBatchItem>,
     ) -> Result<Vec<ObjectBatchReceipt>, TapedriveError> {
-        validate_batch(&objects)?;
+        validate_batch(&objects, self.params().await?.profile)?;
         if objects.is_empty() {
             return Ok(Vec::new());
         }
@@ -193,7 +194,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         bucket: &impl TapeOperator,
         objects: Vec<ObjectBatchItem>,
     ) -> Result<StoredObjectBatch, TapedriveError> {
-        validate_batch(&objects)?;
+        validate_batch(&objects, self.params().await?.profile)?;
 
         let total_bytes = objects.iter().map(|object| object.data.len() as u64).sum();
         let timer = self
@@ -287,7 +288,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                         content_type,
                         StorageUnits::from_bytes(bytes_written),
                         &data,
-                        self.write_options.visibility,
+                        self.write_options.flags,
                     )?);
                     run.push(RunItem { index, name, bytes_written });
                 }
@@ -305,7 +306,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                         content_type,
                         StorageUnits::from_bytes(bytes_written),
                         *plan,
-                        self.write_options.visibility,
+                        self.write_options.flags,
                     )?);
                     run.push(RunItem { index, name, bytes_written });
                 }
@@ -522,7 +523,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 }
 
-fn validate_batch(objects: &[ObjectBatchItem]) -> Result<(), TapedriveError> {
+/// Check a batch before any write. Each object has to fit the profile's largest track.
+fn validate_batch(objects: &[ObjectBatchItem], profile: ErasureCode) -> Result<(), TapedriveError> {
+    let largest = max_track_size(profile);
     if objects.len() > MAX_OBJECT_BATCH_ITEMS {
         return Err(TapedriveError::InvalidArgument(format!(
             "object batch exceeds {MAX_OBJECT_BATCH_ITEMS} items"
@@ -536,7 +539,7 @@ fn validate_batch(objects: &[ObjectBatchItem]) -> Result<(), TapedriveError> {
                 "batch object name is empty or contains control characters".into(),
             ));
         }
-        if object.data.len() > MAX_TRACK_SIZE {
+        if object.data.len() > largest {
             return Err(TapedriveError::InvalidArgument(format!(
                 "batch object {} exceeds the single-track size limit",
                 object.name
@@ -563,6 +566,7 @@ fn validate_batch(objects: &[ObjectBatchItem]) -> Result<(), TapedriveError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::encoding::{RepParams, TAPENET_PROFILE};
 
     fn item(name: &str, bytes: usize) -> ObjectBatchItem {
         ObjectBatchItem {
@@ -575,13 +579,27 @@ mod tests {
 
     #[test]
     fn batch_validation_rejects_ambiguous_or_unbounded_inputs() {
-        assert!(validate_batch(&[item("asset.js", 1)]).is_ok());
-        assert!(validate_batch(&[item("", 1)]).is_err());
-        assert!(validate_batch(&[item("same.js", 1), item("same.js", 2)]).is_err());
-        assert!(validate_batch(&[item("huge.bin", MAX_TRACK_SIZE + 1)]).is_err());
+        let largest = max_track_size(TAPENET_PROFILE);
+
+        assert!(validate_batch(&[item("asset.js", 1)], TAPENET_PROFILE).is_ok());
+        assert!(validate_batch(&[item("", 1)], TAPENET_PROFILE).is_err());
+        assert!(
+            validate_batch(&[item("same.js", 1), item("same.js", 2)], TAPENET_PROFILE).is_err()
+        );
+        assert!(validate_batch(&[item("huge.bin", largest + 1)], TAPENET_PROFILE).is_err());
         let too_many = (0..=MAX_OBJECT_BATCH_ITEMS)
             .map(|index| item(&format!("{index}.js"), 1))
             .collect::<Vec<_>>();
-        assert!(validate_batch(&too_many).is_err());
+        assert!(validate_batch(&too_many, TAPENET_PROFILE).is_err());
+    }
+
+    // an object that fits one tapenet track is too big for a mirror's batch
+    #[test]
+    fn mirror_limit() {
+        let mirror = ErasureCode::Replication(RepParams::new(2));
+        let object = [item("wide.bin", max_track_size(mirror) + 1)];
+
+        assert!(validate_batch(&object, TAPENET_PROFILE).is_ok());
+        assert!(validate_batch(&object, mirror).is_err());
     }
 }

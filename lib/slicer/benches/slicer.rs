@@ -1,11 +1,15 @@
 //! Slicer benchmarks.
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use tape_core::encoding::ClayParams;
+use tape_core::encoding::TAPENET_CLAY;
 use tape_slicer::{ClayCoder, ReedSolomonCoder, Slicer, ErasureCoder};
 
 fn make_data(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i % 251) as u8).collect()
+}
+
+fn tapenet() -> Slicer<ClayCoder> {
+    Slicer::with_rotation(ClayCoder::from_params(TAPENET_CLAY))
 }
 
 fn clay_encode(c: &mut Criterion) {
@@ -15,7 +19,7 @@ fn clay_encode(c: &mut Criterion) {
         let data = make_data(size);
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_function(format!("{size}B"), |b| {
-            let mut coder = ClayCoder::from_params(ClayParams::default());
+            let mut coder = ClayCoder::from_params(TAPENET_CLAY);
             b.iter(|| {
                 black_box(coder.encode(black_box(&data)).unwrap())
             })
@@ -30,7 +34,7 @@ fn clay_decode(c: &mut Criterion) {
 
     for size in [10_000, 100_000, 1_000_000] {
         let data = make_data(size);
-        let mut coder = ClayCoder::from_params(ClayParams::default());
+        let mut coder = ClayCoder::from_params(TAPENET_CLAY);
         let chunks = coder.encode(&data).unwrap();
         let refs: Vec<(usize, &[u8])> = chunks.iter()
             .enumerate()
@@ -98,7 +102,7 @@ fn slicer_encode(c: &mut Criterion) {
         let data = make_data(size);
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_function(format!("{size}B"), |b| {
-            let mut slicer = Slicer::clay_default();
+            let mut slicer = tapenet();
             b.iter(|| {
                 black_box(slicer.encode(black_box(&data)).unwrap())
             })
@@ -113,7 +117,7 @@ fn slicer_decode(c: &mut Criterion) {
 
     for size in [100_000, 1_000_000, 10_000_000] {
         let data = make_data(size);
-        let mut slicer = Slicer::clay_default();
+        let mut slicer = tapenet();
         let chunks = slicer.encode(&data).unwrap();
         let refs: Vec<(usize, &[u8])> = chunks.iter()
             .enumerate()

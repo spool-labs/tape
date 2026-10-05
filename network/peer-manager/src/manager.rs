@@ -6,7 +6,7 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use tape_rpc::{Rpc, RpcError};
 use tape_rpc_client::RpcClient;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::types::SpoolIndex;
 use tape_core::types::coin::{Coin, TAPE};
 use tape_core::types::network::NetworkAddress;
@@ -263,11 +263,11 @@ impl PeerManager {
         }
     }
 
-    /// Return all healthy peers in a spool group.
+    /// Return all healthy peers that hold a track group.
     pub fn healthy_peers_for_group(
         &self,
         state: &ProtocolState,
-        group: GroupIndex,
+        group: TrackGroup,
     ) -> Vec<(SpoolIndex, Address)> {
         state
             .group_peers(group)
@@ -380,7 +380,7 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::state::Group;
     use tape_core::bls::BlsPubkey;
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::{Member, Peer, Spool};
     use tape_core::types::EpochNumber;
@@ -468,7 +468,7 @@ mod tests {
             id: GroupIndex(0),
             ..Group::zeroed()
         };
-        for i in 0..GROUP_SIZE {
+        for i in 0..MAX_GROUP_SIZE {
             group.spools[i] = Spool {
                 node: owner,
                 ..Spool::zeroed()
@@ -485,6 +485,7 @@ mod tests {
                 epoch: tape_api::state::Epoch {
                     id: epoch,
                     nonce: Hash::from([7; 32]),
+                    total_groups: 1,
                     ..Zeroable::zeroed()
                 },
                 committee,

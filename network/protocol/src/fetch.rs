@@ -203,23 +203,7 @@ pub async fn fetch_state_speculative<R: Rpc>(
         .get_epoch_batch_with_commitment(guess.epoch, guess.total_groups, commitment)
         .await?;
 
-    let current = batch.system.current_epoch;
-    if let Some(state) = assemble_speculative(batch, guess) {
-        return Ok(state);
-    }
-
-    // The guess missed, but the system row in that reply is authoritative, so
-    // the epoch is already known. Asking again from the true epoch costs one
-    // more round; falling back to the unscoped path would re-read the system
-    // row and cost two, leaving a miss worse off than never having guessed.
-    let retry = rpc
-        .get_epoch_batch_with_commitment(current, guess.total_groups, commitment)
-        .await?;
-    let corrected = EpochGuess {
-        epoch: current,
-        total_groups: retry.epoch.map(|epoch| epoch.total_groups).unwrap_or(guess.total_groups),
-    };
-    match assemble_speculative(retry, corrected) {
+    match assemble_speculative(batch, guess) {
         Some(state) => Ok(state),
         None => fetch_state_scoped(rpc, commitment, FetchScope::Current).await,
     }

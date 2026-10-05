@@ -44,7 +44,7 @@ pub struct NodePreferences {
     pub subsidy_decay_bps: BasisPoints,
 
     /// The preferred total archive size.
-    pub storage_capacity: StorageUnits,
+    pub network_capacity: StorageUnits,
 
     /// The preferred price per storage unit.
     pub storage_price: Coin<TAPE>,
@@ -55,6 +55,11 @@ pub struct NodePreferences {
     /// The preferred epoch duration in seconds.
     /// Reference targets: ~20s simnet, ~100s localnet, ~3_600s devnet, ~604_800s mainnet.
     pub epoch_duration: EpochDuration,
+
+    /// The most bytes this node can store; zero means no limit.
+    /// Spools count at twice their size against it, leaving room to grow.
+    /// Each node sets its own, and it is never aggregated.
+    pub node_capacity: StorageUnits,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +71,7 @@ pub enum NodePreferenceAggregationError {
 pub fn aggregate_node_preferences(
     members: &[Member],
     peers: &[Peer],
+    current: NodePreferences,
     bounds: NodePreferences,
 ) -> Result<NodePreferences, NodePreferenceAggregationError> {
     let mut total_weight: u64 = 0;
@@ -73,7 +79,7 @@ pub fn aggregate_node_preferences(
     let mut spool_group_counts: Vec<(u64, u64)> = Vec::new();
     let mut burn_fee_bps: Vec<(u64, u64)> = Vec::new();
     let mut subsidy_decay_bps: Vec<(u64, u64)> = Vec::new();
-    let mut storage_capacities: Vec<(u64, u64)> = Vec::new();
+    let mut network_capacities: Vec<(u64, u64)> = Vec::new();
     let mut storage_prices: Vec<(u64, u64)> = Vec::new();
     let mut access_thresholds: Vec<(u64, u64)> = Vec::new();
     let mut epoch_durations: Vec<(u64, u64)> = Vec::new();
@@ -89,7 +95,7 @@ pub fn aggregate_node_preferences(
         spool_group_counts.push((peer.preferences.spool_groups, weight));
         burn_fee_bps.push((peer.preferences.burn_fee_bps.0, weight));
         subsidy_decay_bps.push((peer.preferences.subsidy_decay_bps.0, weight));
-        storage_capacities.push((peer.preferences.storage_capacity.0, weight));
+        network_capacities.push((peer.preferences.network_capacity.0, weight));
         storage_prices.push((peer.preferences.storage_price.0, weight));
         access_thresholds.push((peer.preferences.access_threshold.0, weight));
         epoch_durations.push((peer.preferences.epoch_duration.0, weight));
@@ -104,7 +110,12 @@ pub fn aggregate_node_preferences(
     Ok(NodePreferences {
         committee_size: quorum_above(&committee_sizes, total_weight)
             .max(bounds.committee_size),
-        spool_groups: quorum_above(&spool_group_counts, total_weight)
+        // The group count moves only when two thirds voted past the current
+        // one: up to the highest count they all reach, down to the lowest.
+        spool_groups: current
+            .spool_groups
+            .max(quorum_above(&spool_group_counts, total_weight))
+            .min(quorum_below(&spool_group_counts, total_weight))
             .max(bounds.spool_groups),
         burn_fee_bps: BasisPoints(
             quorum_below(&burn_fee_bps, total_weight)
@@ -116,9 +127,9 @@ pub fn aggregate_node_preferences(
                 .min(BasisPoints::MAX)
                 .max(bounds.subsidy_decay_bps.0),
         ),
-        storage_capacity: StorageUnits(
-            quorum_above(&storage_capacities, total_weight)
-                .max(bounds.storage_capacity.0),
+        network_capacity: StorageUnits(
+            quorum_above(&network_capacities, total_weight)
+                .max(bounds.network_capacity.0),
         ),
         storage_price: TAPE(
             quorum_below(&storage_prices, total_weight)
@@ -132,5 +143,62 @@ pub fn aggregate_node_preferences(
             quorum_above(&epoch_durations, total_weight)
                 .max(bounds.epoch_duration.0),
         ),
+        node_capacity: StorageUnits::zero(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spool weight per voted group count, against a current count of 10
+    fn spool_groups(votes: &[(u64, u64)]) -> u64 {
+        let mut members = Vec::new();
+        let mut peers = Vec::new();
+
+        for (index, (count, weight)) in votes.iter().enumerate() {
+            let node = Address::from([index as u8 + 1; 32]);
+
+            members.push(Member { spools: *weight, ..Member::new(node, TAPE(1)) });
+            peers.push(Peer {
+                preferences: NodePreferences { spool_groups: *count, ..NodePreferences::zeroed() },
+                ..Peer::new(node)
+            });
+        }
+
+        let current = NodePreferences { spool_groups: 10, ..NodePreferences::zeroed() };
+        let bounds = NodePreferences { spool_groups: 1, ..NodePreferences::zeroed() };
+
+        aggregate_node_preferences(&members, &peers, current, bounds)
+            .expect("aggregate")
+            .spool_groups
+    }
+
+    // just over a third can't move the count either way
+    #[test]
+    fn minority_keeps_count() {
+        assert_eq!(spool_groups(&[(10, 66), (5, 34)]), 10);
+        assert_eq!(spool_groups(&[(10, 66), (20, 34)]), 10);
+    }
+
+    #[test]
+    fn two_thirds_lower() {
+        assert_eq!(spool_groups(&[(10, 30), (5, 70)]), 5);
+    }
+
+    // the count stops at the lowest value two thirds reach
+    #[test]
+    fn split_lower() {
+        assert_eq!(spool_groups(&[(10, 30), (7, 30), (5, 40)]), 7);
+    }
+
+    #[test]
+    fn two_thirds_higher() {
+        assert_eq!(spool_groups(&[(20, 70), (10, 30)]), 20);
+    }
+
+    #[test]
+    fn never_zero() {
+        assert_eq!(spool_groups(&[(0, 100)]), 1);
+    }
 }

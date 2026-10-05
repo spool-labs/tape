@@ -481,6 +481,7 @@ pub struct ObjectListItem {
     pub slot: SlotNumber,
     pub data_tape: Address,
     pub track_number: TrackNumber,
+    pub track: Address,
     pub kind: u64,
     pub content_type: ContentType,
 }
@@ -507,8 +508,7 @@ pub struct TrackProofResponse {
 mod tests {
     use super::*;
     use tape_core::bls::BlsPrivateKey;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{GROUP_SIZE, SUB_TREE_HEIGHT};
+    use tape_core::erasure::{MAX_GROUP_SIZE, SUB_TREE_HEIGHT};
     use tape_core::system::VoteKind;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::types::{StorageUnits, StripeCount};
@@ -868,10 +868,9 @@ mod tests {
             data: BlobData::Coded(BlobEncoding {
                 size: StorageUnits::from_bytes(2048),
                 commitment: Hash::from([0x55; 32]),
-                profile: EncodingProfile::basic_default(),
                 stripe_size: StorageUnits::from_bytes(256),
                 stripe_count: StripeCount(8),
-                leaves: [Hash::from([0x66; 32]); GROUP_SIZE],
+                leaves: [Hash::from([0x66; 32]); MAX_GROUP_SIZE],
             }),
         };
 

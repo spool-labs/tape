@@ -19,12 +19,17 @@ pub async fn submit_invalidate_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     signature: BlsSignature,
 ) -> Result<Txid, RpcError> {
     let fee_payer = ctx.pubkey().into();
-    let epoch = ctx.state().epoch();
+    let state = ctx.state();
+    let epoch = state.epoch();
+    let group = state
+        .live_group(track.state.group)
+        .ok_or_else(|| RpcError::Request("no spool group is live".into()))?;
 
     let ix = build_invalidate_track_ix(
         fee_payer,
         track,
         epoch,
+        group,
         bitmap,
         signature,
     );

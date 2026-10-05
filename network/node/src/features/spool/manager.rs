@@ -4,8 +4,7 @@ use std::time::Duration;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::erasure::GROUP_SIZE;
-use tape_core::prelude::{EpochNumber, GroupIndex, SpoolIndex, SpoolState, SpoolStatus};
+use tape_core::prelude::{EpochNumber, TrackGroup, SpoolIndex, SpoolState, SpoolStatus};
 use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps};
 use tokio::task::JoinSet;
@@ -544,11 +543,11 @@ fn make_sync_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
 ) -> SpoolState {
     let protocol = ctx.state();
-    let group = GroupIndex::containing(spool);
+    let group = TrackGroup::containing(spool);
     let mut state = SpoolState::new(SpoolStatus::Sync, epoch);
 
     state.prev_owner = protocol.spool_owner_prev(spool);
-    for slice in 0..GROUP_SIZE {
+    for slice in 0..ctx.params().n() {
         state.prev_helpers[slice] = protocol.spool_owner_prev(group.spool_at(slice));
     }
 
@@ -631,7 +630,8 @@ fn check_expiry(
 
 #[cfg(test)]
 mod tests {
-    use tape_core::erasure::GROUP_SIZE;
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::spooler::TrackGroup;
     use tape_core::system::{EpochPhase, SpoolState, SpoolStatus};
     use tape_core::types::{EpochNumber, SpoolIndex};
     use tape_crypto::address::Address;
@@ -647,6 +647,9 @@ mod tests {
 
     const EPOCH: EpochNumber = EpochNumber(2);
     const SPOOL: SpoolIndex = SpoolIndex(5);
+
+    /// Spools in a tapenet group.
+    const WIDTH: usize = TAPENET_PROFILE.n() as usize;
 
     async fn test_context() -> TestContext {
         NodeHarness::builder()
@@ -672,6 +675,117 @@ mod tests {
             .await
             .expect("build harness")
             .ctx_for(SPOOL.as_usize())
+    }
+
+    /// Forty nodes. Last epoch ran two groups, nodes 0 to 19 in group 0 and
+    /// 20 to 39 in group 1. This epoch runs one group on nodes 0 to 19.
+    async fn shrunk_harness() -> NodeHarness {
+        NodeHarness::builder()
+            .nodes(2 * WIDTH)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Sync)
+            .prev_committee_nodes(0..2 * WIDTH)
+            .prev_group_count(2)
+            .current_group_count(1)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+    }
+
+    /// The stored spool of the retired group that the node at `SPOOL` now carries.
+    fn absorbed_spool() -> SpoolIndex {
+        TrackGroup(1).spool_at(SPOOL.as_usize())
+    }
+
+    // after the group count drops, a node pulls the retired group's spool at
+    // its position from the node that held it, and keeps its own
+    #[tokio::test]
+    async fn absorbed_spool_syncs_from_old_holder() {
+        let harness = shrunk_harness().await;
+        let ctx = harness.ctx_for(SPOOL.as_usize());
+        let old_holder = harness.ctx_for(WIDTH + SPOOL.as_usize()).node_address();
+
+        let mut manager =
+            SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
+        manager.advance(EPOCH).unwrap();
+
+        let own = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
+        assert_eq!(own.prev_owner, Some(ctx.node_address()));
+
+        let absorbed = ctx.store.get_spool_state(absorbed_spool()).unwrap().unwrap();
+        assert_eq!(absorbed.status, SpoolStatus::Sync);
+        assert_eq!(absorbed.prev_owner, Some(old_holder));
+        assert_eq!(
+            absorbed.prev_helpers[0],
+            Some(harness.ctx_for(WIDTH).node_address()),
+        );
+    }
+
+    // the node that held a retired group's spool keeps it locked for the new holder to pull
+    #[tokio::test]
+    async fn old_holder_locks_retired_spool() {
+        let harness = shrunk_harness().await;
+        let ctx = harness.ctx_for(WIDTH + SPOOL.as_usize());
+        let track = Address::from([7; 32]);
+
+        ctx.store
+            .set_spool_state(absorbed_spool(), SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
+            .unwrap();
+        ctx.store.put_slice(absorbed_spool(), track, vec![1, 2, 3]).unwrap();
+
+        let mut manager =
+            SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
+        manager.advance(EPOCH).unwrap();
+
+        let state = ctx.store.get_spool_state(absorbed_spool()).unwrap().unwrap();
+        assert_eq!(state.status, SpoolStatus::LockedToMove);
+        assert!(ctx.store.has_slice(absorbed_spool(), track).unwrap());
+    }
+
+    // the epoch after the count dropped, a carried spool was this node's own
+    // last epoch too, so it keeps what it holds and syncs nothing
+    #[tokio::test]
+    async fn carried_spool_kept_next_epoch() {
+        let harness = NodeHarness::builder()
+            .nodes(2 * WIDTH)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Sync)
+            .prev_committee_nodes(0..WIDTH)
+            .prev_group_count(1)
+            .current_group_count(1)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(SPOOL.as_usize());
+
+        // Two groups were live once, so one track group is folded onto group 0
+        // in this epoch and the last.
+        let mut state = (*ctx.state()).clone();
+        state.current.epoch.track_groups = 2;
+        if let Some(previous) = state.previous.as_mut() {
+            previous.epoch.track_groups = 2;
+        }
+        ctx.set_state(state).expect("publish state");
+
+        let mut manager =
+            SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
+        manager.advance(EPOCH).unwrap();
+
+        for spool in [SPOOL, absorbed_spool()] {
+            ctx.store
+                .set_spool_state(spool, SpoolState::new(SpoolStatus::Active, EPOCH))
+                .unwrap();
+        }
+
+        manager.advance(EPOCH.next()).unwrap();
+
+        for spool in [SPOOL, absorbed_spool()] {
+            let state = ctx.store.get_spool_state(spool).unwrap().unwrap();
+            assert_eq!(state.status, SpoolStatus::Active, "spool {spool}");
+            assert_eq!(state.epoch, EPOCH.next());
+        }
     }
 
     #[tokio::test]
@@ -958,7 +1072,7 @@ mod tests {
     #[tokio::test]
     async fn kept_spool_active() {
         let next_epoch = EpochNumber(3);
-        let ctx = context_with_prev_owners((0..GROUP_SIZE).collect()).await;
+        let ctx = context_with_prev_owners((0..WIDTH).collect()).await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .expect("set spool state");
@@ -1000,7 +1114,7 @@ mod tests {
     // a queued repair puts the kept spool straight into Repair
     #[tokio::test]
     async fn kept_spool_repair() {
-        let ctx = context_with_prev_owners((0..GROUP_SIZE).collect()).await;
+        let ctx = context_with_prev_owners((0..WIDTH).collect()).await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .expect("set spool state");
@@ -1030,7 +1144,7 @@ mod tests {
     // a spool taken over from another node starts in Sync
     #[tokio::test]
     async fn moved_spool_syncs() {
-        let ctx = context_with_prev_owners((1..=GROUP_SIZE).collect()).await;
+        let ctx = context_with_prev_owners((1..=WIDTH).collect()).await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .expect("set spool state");
@@ -1058,7 +1172,7 @@ mod tests {
     // a spool the epoch turn interrupted mid-sync starts over
     #[tokio::test]
     async fn interrupted_sync_restarts() {
-        let ctx = context_with_prev_owners((0..GROUP_SIZE).collect()).await;
+        let ctx = context_with_prev_owners((0..WIDTH).collect()).await;
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Sync, EpochNumber(1)))
             .expect("set spool state");

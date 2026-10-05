@@ -1,5 +1,5 @@
 use tape_rpc::Rpc;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_core::prelude::CompressedTrack;
 use tape_crypto::hash::hash;
 use tape_crypto::prelude::Address;
@@ -59,7 +59,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         name: &str,
     ) -> Result<Address, TapedriveError> {
         let track = self.lookup_object(bucket, name).await?;
-        Ok(track_pda(track.tape, track.track_number).0)
+        Ok(track.address())
     }
 
     /// Resolve a name to its representing track (latest version) via `hash(name)`.

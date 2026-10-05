@@ -265,9 +265,9 @@ fn blacklist_track_is_before_cutoff<Db: Store>(
 #[cfg(test)]
 mod tests {
     use bytemuck::bytes_of;
-    use tape_api::program::tapedrive::track_pda;
-    use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
+    use tape_api::program::tapedrive::TrackAddress;
+    use tape_core::spooler::TrackGroup;
+    use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
     use tape_core::types::{TapeNumber, TrackNumber};
     use tape_store::ops::{TrackDataOps, TrackOps};
     use tape_store_memory::MemoryStore;
@@ -288,7 +288,18 @@ mod tests {
         entry: BlacklistEntry,
     ) -> Address {
         let blacklist = blacklist_pda(node).0;
-        let track_address = track_pda(blacklist, track_number).0;
+        let track = CompressedTrack {
+            tape: blacklist,
+            track_number,
+            key: entry.key(),
+            kind: TrackKind::Inline as u64,
+            state: TrackState::Certified as u64,
+            flags: TrackFlags::NONE,
+            size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
+            group: TrackGroup(0),
+            value_hash: entry.key(),
+        };
+        let track_address = track.address();
 
         store
             .put_tape(
@@ -303,20 +314,7 @@ mod tests {
             .expect("seed blacklist tape");
 
         store
-            .put_track(
-                track_address,
-                CompressedTrack {
-                    tape: blacklist,
-                    track_number,
-                    key: entry.key(),
-                    kind: TrackKind::Inline as u64,
-                    state: TrackState::Certified as u64,
-                    visibility: TrackVisibility::Public as u64,
-                    size: StorageUnits::from_bytes(size_of::<BlacklistEntry>() as u64),
-                    group: GroupIndex(0),
-                    value_hash: entry.key(),
-                },
-            )
+            .put_track(track_address, track)
             .expect("seed blacklist track");
 
         store

@@ -9,8 +9,9 @@ pub const DEFAULT_QUERY_FAN_OUT: usize = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadOptions {
     /// In-flight slice downloads per track read. Anything above `k` is a hedge
-    /// against a slow node; below `k` splits one wave into several.
-    pub slice_concurrency: usize,
+    /// against a slow node; below `k` splits one wave into several. Unset
+    /// reads k + 1 at once, with k from the network's profile.
+    pub slice_concurrency: Option<usize>,
 
     /// Peers a metadata query asks before widening. Tooling that wants the old
     /// full race can raise this past the committee size.
@@ -23,7 +24,7 @@ pub struct ReadOptions {
 impl Default for ReadOptions {
     fn default() -> Self {
         Self {
-            slice_concurrency: 8,
+            slice_concurrency: None,
             query_fan_out: DEFAULT_QUERY_FAN_OUT,
             share_token: None,
         }
@@ -37,7 +38,7 @@ mod tests {
     #[test]
     fn defaults() {
         let options = ReadOptions::default();
-        assert_eq!(options.slice_concurrency, 8);
+        assert!(options.slice_concurrency.is_none());
         assert_eq!(options.query_fan_out, DEFAULT_QUERY_FAN_OUT);
         assert!(options.share_token.is_none());
     }

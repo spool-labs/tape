@@ -208,7 +208,7 @@ mod tests {
     use super::*;
     use bytemuck::Zeroable;
     use tape_core::prelude::*;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::{GroupIndex, TrackGroup};
     use tape_core::system::{NodePreferences, VoteKind};
     use tape_core::types::{BasisPoints, EpochDuration, SpoolBitmap, TrackNumber};
     use tape_core::types::coin::TAPE;
@@ -252,7 +252,7 @@ mod tests {
             total_stake: TAPE(0),
             committee_count: 10,
             preferences: NodePreferences {
-                storage_capacity: StorageUnits::mb(1000),
+                network_capacity: StorageUnits::mb(1000),
                 storage_price: TAPE(0),
                 committee_size: 0,
                 spool_groups: 0,
@@ -260,6 +260,7 @@ mod tests {
                 subsidy_decay_bps: BasisPoints(0),
                 access_threshold: TAPE(0),
                 epoch_duration: EpochDuration(0),
+                node_capacity: StorageUnits::zero(),
             },
             nonce: Hash::default(),
             subsidy: TAPE(0),
@@ -307,8 +308,9 @@ mod tests {
             epoch: EpochNumber(3),
             track,
             tape,
-            group: GroupIndex(5),
+            group: TrackGroup(5),
             track_number: TrackNumber(7),
+            flags: 0b11,
             track_hash: Hash::default(),
         };
 
@@ -321,7 +323,8 @@ mod tests {
                 assert_eq!(e.tape, tape);
                 assert_eq!(e.epoch, EpochNumber(3));
                 assert_eq!(e.track_number, TrackNumber(7));
-                assert_eq!(e.group, GroupIndex(5));
+                assert_eq!(e.group, TrackGroup(5));
+                assert_eq!(e.flags, 0b11);
             }
             _ => panic!("Expected TrackWritten event"),
         }

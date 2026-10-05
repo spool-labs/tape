@@ -2,6 +2,7 @@ use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
+use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_store::ops::{TrackDataOps, TrackOps};
@@ -23,6 +24,20 @@ pub fn track_with_pending<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .get_track(track_addr)
         .map_err(store_error)?;
     Ok(state.context.pending.apply_to_track(track_addr, in_store))
+}
+
+/// Address of the track at one number on a tape, from the store or the pending overlay
+pub fn track_address_by_number<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    tape: Address,
+    track_number: TrackNumber,
+) -> Result<Option<Address>, RouteError> {
+    let stored = state
+        .context
+        .store
+        .track_address_by_number(tape, track_number)
+        .map_err(store_error)?;
+    Ok(stored.or_else(|| state.context.pending.track_address_by_number(tape, track_number)))
 }
 
 /// Refuse a track this gateway no longer serves: removed, or on an unlisted tape

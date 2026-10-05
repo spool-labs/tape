@@ -33,22 +33,31 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         retry_if(
             delete_retry_config(),
             None,
-            || async {
-                let payer = self.payer()?;
-                let tape_signer = operator.keypair();
-                let proof = query::query_track_proof(self, &track).await?;
-                let ix =
-                    build_delete_track_ix(payer.pubkey().into(), operator.pubkey().into(), proof);
-
-                self.rpc()
-                    .send_instructions_with_signers(payer, vec![ix], &[tape_signer])
-                    .await?;
-
-                Ok(())
-            },
+            || self.delete_once(operator, track),
             should_retry_delete,
         )
         .await
+    }
+
+    async fn delete_once(
+        &self,
+        operator: &impl TapeOperator,
+        track: Address,
+    ) -> Result<(), TapedriveError> {
+        let payer = self.payer()?;
+        let tape_signer = operator.keypair();
+        let proof = query::query_track_proof(self, &track).await?;
+        // The program refuses this delete, so no transaction is sent for it.
+        if proof.state.is_immutable() {
+            return Err(TapedriveError::Immutable);
+        }
+        let ix = build_delete_track_ix(payer.pubkey().into(), operator.pubkey().into(), proof);
+
+        self.rpc()
+            .send_instructions_with_signers(payer, vec![ix], &[tape_signer])
+            .await?;
+
+        Ok(())
     }
 }
 
@@ -87,5 +96,11 @@ mod tests {
             ApiError::StaleTrackProof
         )));
         assert!(!should_retry_delete(&TapedriveError::NotFound));
+    }
+
+    // a delete refused for an immutable track fails at once
+    #[test]
+    fn immutable_no_retry() {
+        assert!(!should_retry_delete(&TapedriveError::Immutable));
     }
 }

@@ -51,18 +51,20 @@ use solana_signer::Signer;
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::instruction::MAX_NAME_LEN;
-use tape_core::erasure::GROUP_SIZE;
+use tape_core::tape::TapeFlags;
 use tape_core::track::types::TrackKind;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_sdk::error::TapedriveError;
 use tape_e2e_simnet::{
-    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TestGateway, run_simnet_test,
+    NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, TestGateway,
+    run_simnet_test,
 };
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::object::{ListedObject, ListObjectsQuery};
+use tape_sdk::write_options::WriteOptions;
 
-const NODE_COUNT: usize = GROUP_SIZE;
+const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
 const TARGET_GROUPS: u64 = 1;
 const GATEWAY_STAKE: u64 = 2_000;
 const STORAGE_NODE_STAKE: u64 = 1_000;
@@ -112,6 +114,11 @@ const SERVER_PEPPER: &str = "s3-server-pepper";
 /// principal to write the bucket under default-deny.
 const POLICY_PRIORITY: u32 = 10;
 const POLICY_ID: u64 = 1;
+/// The allow rule for the bucket whose tape is reserved immutable
+const IMMUTABLE_POLICY_ID: u64 = 2;
+
+/// Object written to the immutable bucket with a signed PutObject that sets no option
+const IMMUTABLE_KEY: &str = "ledger/entry.bin";
 
 // anonymous S3 reads plus the fail-closed, admin-gated, delegate-signed write path
 #[test]
@@ -210,6 +217,8 @@ async fn read_write_inner() {
     let put_body = deterministic_bytes(OBJECT_SIZE_BYTES);
     let tape_key = TapeKey::generate();
     let bucket = tape_key.address();
+    let immutable_key = TapeKey::generate();
+    let immutable_bucket = immutable_key.address();
     let gateway_delegate = Address::from(gateway.authority());
     // The owner authority the issued credential acts on behalf of: the tape's
     // on-chain authority (the admin keypair that reserved it). This is the
@@ -244,6 +253,22 @@ async fn read_write_inner() {
             .await
             .expect("delegate bucket writes to the gateway keypair");
         eprintln!("s3_gateway: bucket delegated writes to gateway {gateway_delegate}");
+
+        // A second bucket whose tape is reserved immutable, delegated the same way.
+        writer
+            .reserve_with_flags(
+                &immutable_key,
+                StorageUnits::mb(1),
+                RESERVE_EPOCHS,
+                TapeFlags::IMMUTABLE,
+            )
+            .await
+            .expect("reserve immutable bucket tape");
+        writer
+            .set_tape_delegate(&immutable_key, gateway_delegate)
+            .await
+            .expect("delegate immutable bucket writes to the gateway keypair");
+        eprintln!("s3_gateway: immutable bucket tape {immutable_bucket} reserved and delegated");
     }
 
     // Register, stake, and boot the gateway with the S3 listener enabled. This is
@@ -358,8 +383,8 @@ async fn read_write_inner() {
 
     // (2) Issue a credential scoped to the bucket and a policy rule allowing the
     // principal to write it. After this the same signed request authorizes.
-    admin_issue_credential(&admin_base, OPERATOR_TOKEN, &principal_label, &bucket_label).await;
-    admin_create_policy_rule(&admin_base, OPERATOR_TOKEN, &principal_label, &bucket_label).await;
+    admin_issue_credential(&admin_base, OPERATOR_TOKEN, &principal_label, &[&bucket_label]).await;
+    admin_create_policy_rule(&admin_base, OPERATOR_TOKEN, &principal_label, &bucket_label, POLICY_ID).await;
     eprintln!("s3_gateway: credential issued + policy allow rule created via admin API");
 
     // ListBuckets is credential-scoped: a signed request lists exactly the bucket
@@ -503,8 +528,8 @@ async fn read_write_inner() {
     assert_s3_list_objects_v1(&s3_base, &bucket_label, mp_key).await;
     eprintln!("s3_gateway: ListObjects V1 listed the bucket (Marker shape) including {mp_key}");
 
-    // (2d) Overwrite reclaim: a PutObject over an existing key writes a new track
-    // and rebinds the name; the gateway then deletes the orphaned prior track. The
+    // (2d) Overwrite: a PutObject over an existing key writes a new track
+    // and rebinds the name; the gateway then deletes the orphaned old track. The
     // object's original track number becomes unresolvable while GET serves v2.
     let overwrite_key = "uploads/overwrite.bin";
     let v1 = deterministic_bytes(20 * 1024);
@@ -530,10 +555,10 @@ async fn read_write_inner() {
     );
     eprintln!("s3_gateway: HEAD after the overwrite reported v2 before the drain landed it");
 
-    wait_track_reclaimed(&harness, &bucket, v1_track, Duration::from_secs(180)).await;
+    wait_track_deleted(&harness, &bucket, v1_track, Duration::from_secs(180)).await;
     wait_s3_get_size(&s3_base, &bucket_label, overwrite_key, v2.len(), Duration::from_secs(180)).await;
     assert_s3_get_object(&s3_base, &bucket_label, overwrite_key, &v2, PUT_CONTENT_TYPE).await;
-    eprintln!("s3_gateway: overwrite reclaimed prior {v1_track} and served v2 ({} bytes)", v2.len());
+    eprintln!("s3_gateway: overwrite deleted old track {v1_track} and served v2 ({} bytes)", v2.len());
     // (2e) DeleteObjects removes both objects in one request and reports a missing key as deleted too.
     assert_s3_delete_objects(
         &s3_base,
@@ -548,6 +573,38 @@ async fn read_write_inner() {
     wait_s3_head_status(&s3_base, &bucket_label, mp_key, gone, Duration::from_secs(180)).await;
     eprintln!("s3_gateway: bulk-deleted objects gone from the S3 read surface");
 
+    // (2f) A bucket whose tape was reserved immutable: an object PUT with no
+    // option can't be deleted, alone or in a DeleteObjects, and stays readable.
+    let immutable_label = immutable_bucket.to_string();
+    admin_issue_credential(
+        &admin_base,
+        OPERATOR_TOKEN,
+        &principal_label,
+        &[&bucket_label, &immutable_label],
+    )
+    .await;
+    admin_create_policy_rule(
+        &admin_base,
+        OPERATOR_TOKEN,
+        &principal_label,
+        &immutable_label,
+        IMMUTABLE_POLICY_ID,
+    )
+    .await;
+    let entry = deterministic_bytes(24 * 1024);
+    assert_s3_signed_put(&s3_base, &host, &immutable_label, IMMUTABLE_KEY, &entry, PUT_CONTENT_TYPE)
+        .await;
+    wait_pending_drained(&admin_base, OPERATOR_TOKEN, Duration::from_secs(180)).await;
+    wait_s3_head_ok(&s3_base, &immutable_label, IMMUTABLE_KEY, Duration::from_secs(180)).await;
+
+    let refused = signed_delete_response(&s3_base, &host, &immutable_label, IMMUTABLE_KEY).await;
+    assert_access_denied(refused, "DeleteObject of an immutable object").await;
+    assert_s3_delete_objects_denied(&s3_base, &host, &immutable_label, IMMUTABLE_KEY).await;
+    // Neither request queued a delete, so the queue is empty and the object is still served.
+    wait_pending_drained(&admin_base, OPERATOR_TOKEN, Duration::from_secs(5)).await;
+    assert_s3_get_object(&s3_base, &immutable_label, IMMUTABLE_KEY, &entry, PUT_CONTENT_TYPE).await;
+    eprintln!("s3_gateway: immutable bucket refused DeleteObject and DeleteObjects (403) and kept the object");
+
     // (3) Revoke the credential; the same signed PutObject is now denied (the
     // credential resolves but is no longer usable — step 3 of the chokepoint).
     admin_revoke_credential(&admin_base, OPERATOR_TOKEN).await;
@@ -557,7 +614,7 @@ async fn read_write_inner() {
 
     // (4) Re-issue the credential (active again) and engage the global write kill
     // switch; a signed PutObject is denied by the kill switch alone (step 1).
-    admin_issue_credential(&admin_base, OPERATOR_TOKEN, &principal_label, &bucket_label).await;
+    admin_issue_credential(&admin_base, OPERATOR_TOKEN, &principal_label, &[&bucket_label]).await;
     admin_set_kill_switch(&admin_base, OPERATOR_TOKEN, true).await;
     let denied = signed_put_response(&s3_base, &host, &bucket_label, PUT_KEY, &put_body, PUT_CONTENT_TYPE).await;
     assert_access_denied(denied, "signed PutObject with kill switch engaged").await;
@@ -647,18 +704,23 @@ async fn wait_pending_drained(admin_base: &str, operator_token: &str, timeout: D
 }
 
 /// `POST /credentials` — issue (or re-issue) a credential keyed by the bootstrap
-/// access key id, scoped to exactly the bucket, with put+delete caps, acting on
+/// access key id, scoped to exactly these buckets, with put+delete caps, acting on
 /// behalf of `principal`. Asserts the admin API accepts it (`200`).
 async fn admin_issue_credential(
     admin_base: &str,
     operator_token: &str,
     principal: &str,
-    bucket: &str,
+    buckets: &[&str],
 ) {
     let url = format!("{admin_base}/credentials");
+    let buckets = buckets
+        .iter()
+        .map(|bucket| format!(r#""{bucket}""#))
+        .collect::<Vec<_>>()
+        .join(",");
     let body = format!(
         r#"{{"access_key_id":"{ACCESS_KEY_ID}","secret_access_key":"{SECRET_ACCESS_KEY}",
-        "principal":"{principal}","scope":{{"type":"buckets","buckets":["{bucket}"]}},
+        "principal":"{principal}","scope":{{"type":"buckets","buckets":[{buckets}]}},
         "caps":{{"can_put":true,"can_delete":true,"can_multipart":true}}}}"#
     );
     let response = admin_request(Method::POST, &url, operator_token, Some(body)).await;
@@ -676,10 +738,11 @@ async fn admin_create_policy_rule(
     operator_token: &str,
     principal: &str,
     bucket: &str,
+    id: u64,
 ) {
     let url = format!("{admin_base}/policy/rules");
     let body = format!(
-        r#"{{"priority":{POLICY_PRIORITY},"id":{POLICY_ID},"principal":"{principal}",
+        r#"{{"priority":{POLICY_PRIORITY},"id":{id},"principal":"{principal}",
         "bucket":"{bucket}","action":"any","effect":"allow",
         "reason":"allow test principal to write the test bucket"}}"#
     );
@@ -903,6 +966,26 @@ async fn signed_put_response(
         .send()
         .await
         .expect("signed put send")
+}
+
+/// Send a SigV4-signed `DELETE /{bucket}/{key}` and return the raw response.
+async fn signed_delete_response(base: &str, host: &str, bucket: &str, key: &str) -> reqwest::Response {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .expect("build s3 client");
+    let path = format!("/{bucket}/{key}");
+    let url = format!("{base}{path}");
+    let (authorization, amz_date, payload_hash) = sigv4_headers("DELETE", host, &path, b"");
+
+    client
+        .delete(&url)
+        .header("authorization", authorization)
+        .header("x-amz-date", amz_date)
+        .header("x-amz-content-sha256", payload_hash)
+        .send()
+        .await
+        .expect("signed delete send")
 }
 
 /// Send a SigV4-signed `PUT /{bucket}/{key}` carrying one conditional header. The
@@ -1389,9 +1472,9 @@ async fn sdk_object_track_number(
         .track_number
 }
 
-/// Wait until `track_number` on `bucket` is reclaimed (no longer resolvable),
-/// confirming an overwrite deleted the orphaned prior track on the storage nodes.
-async fn wait_track_reclaimed(
+/// Wait until `track_number` on `bucket` is deleted (no longer resolvable),
+/// confirming an overwrite deleted the orphaned old track on the storage nodes.
+async fn wait_track_deleted(
     harness: &SimnetHarness,
     bucket: &Address,
     track_number: TrackNumber,
@@ -1408,7 +1491,7 @@ async fn wait_track_reclaimed(
             return;
         }
         if start.elapsed() >= timeout {
-            panic!("track {track_number} on {bucket} was not reclaimed within {timeout:?}");
+            panic!("track {track_number} on {bucket} was not deleted within {timeout:?}");
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
@@ -1497,7 +1580,11 @@ async fn assert_resumed_manifest(harness: &SimnetHarness, name: &str, is_coded: 
     assert_eq!(stored.track.is_coded(), is_coded);
     assert_eq!(stored.track.is_certified(), !is_coded);
 
-    let receipt = sdk.write_named_bytes(&tape_key, name, ContentType::TextPlain, data)
+    let resuming = scenario.sdk(harness.admin()).with_write_options(WriteOptions {
+        resume: true,
+        ..WriteOptions::default()
+    });
+    let receipt = resuming.write_named_bytes(&tape_key, name, ContentType::TextPlain, data)
         .await
         .expect("resume stored stream");
     let listed = wait_sdk_object_listed(
@@ -1512,7 +1599,7 @@ async fn assert_resumed_manifest(harness: &SimnetHarness, name: &str, is_coded: 
     }
 
     // Repeating the reader write exercises resume of an already certified manifest.
-    let repeated = sdk.write_named_stream(
+    let repeated = resuming.write_named_stream(
         &tape_key, name, ContentType::TextPlain, size, data.as_slice(),
     ).await.expect("resume certified stream");
     assert_eq!(repeated.etag, receipt.etag);
@@ -1523,6 +1610,35 @@ async fn assert_resumed_manifest(harness: &SimnetHarness, name: &str, is_coded: 
 
 /// Send a signed DeleteObjects request and assert every key is reported deleted.
 async fn assert_s3_delete_objects(base: &str, host: &str, bucket: &str, keys: &[&str]) {
+    let body = delete_objects_body(base, host, bucket, keys).await;
+    assert!(
+        !body.contains("<Error>"),
+        "DeleteObjects reported a per-key error: {body}"
+    );
+    for key in keys {
+        assert!(
+            body.contains(&format!("<Deleted><Key>{key}</Key></Deleted>")),
+            "DeleteObjects result missing <Deleted> for {key}: {body}"
+        );
+    }
+}
+
+/// Send a signed DeleteObjects request for one immutable key and assert it is
+/// reported as an AccessDenied error with nothing deleted.
+async fn assert_s3_delete_objects_denied(base: &str, host: &str, bucket: &str, key: &str) {
+    let body = delete_objects_body(base, host, bucket, &[key]).await;
+    assert!(
+        !body.contains("<Deleted>"),
+        "DeleteObjects deleted an immutable object: {body}"
+    );
+    assert!(
+        body.contains(&format!("<Key>{key}</Key>")) && body.contains("<Code>AccessDenied</Code>"),
+        "DeleteObjects should report AccessDenied for {key}: {body}"
+    );
+}
+
+/// Send a signed DeleteObjects request, assert it answers 200, and return its body.
+async fn delete_objects_body(base: &str, host: &str, bucket: &str, keys: &[&str]) -> String {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .build()
@@ -1560,16 +1676,7 @@ async fn assert_s3_delete_objects(base: &str, host: &str, bucket: &str, keys: &[
         StatusCode::OK,
         "DeleteObjects should return 200, got {status}: {body}"
     );
-    assert!(
-        !body.contains("<Error>"),
-        "DeleteObjects reported a per-key error: {body}"
-    );
-    for key in keys {
-        assert!(
-            body.contains(&format!("<Deleted><Key>{key}</Key></Deleted>")),
-            "DeleteObjects result missing <Deleted> for {key}: {body}"
-        );
-    }
+    body
 }
 
 /// Poll `HEAD /{bucket}/{key}` until it returns `expected`.

@@ -8,9 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::join_all;
-use tape_core::bft::{max_faulty, min_correct};
-use tape_core::erasure::{GROUP_SIZE, spool_for_slice};
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
+use tape_core::thresholds::NetworkParams;
 use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -116,10 +115,11 @@ impl SliceWithProof {
 /// SpoolAssignment.
 pub struct DistributedUploader {
     track: Address,
-    group: GroupIndex,
+    group: TrackGroup,
     slices: Vec<SliceWithProof>,
     group_peers: Vec<(SpoolIndex, Address)>,
     group_member_count: usize,
+    params: NetworkParams,
     epoch: EpochNumber,
     concurrency_limit: Arc<Semaphore>,
     reputation: Option<Arc<Reputation>>,
@@ -176,14 +176,18 @@ impl DistributedUploader {
     /// Create a new uploader with group-aware spool-based routing.
     pub fn new(
         track: Address,
-        group: GroupIndex,
+        group: TrackGroup,
         slices: Vec<SliceWithProof>,
         state: &ProtocolState,
         concurrency: usize,
     ) -> Result<Self, UploadError> {
-        if slices.len() != GROUP_SIZE {
+        let params = state
+            .system
+            .params()
+            .map_err(|_| UploadError::NoNetworkParams)?;
+        if slices.len() != params.n() {
             return Err(UploadError::InvalidSliceCount {
-                expected: GROUP_SIZE,
+                expected: params.n(),
                 got: slices.len(),
             });
         }
@@ -197,6 +201,7 @@ impl DistributedUploader {
             slices,
             group_peers,
             group_member_count,
+            params,
             epoch: state.current.epoch.id,
             concurrency_limit: Arc::new(Semaphore::new(concurrency.max(1))),
             reputation: None,
@@ -266,7 +271,7 @@ impl DistributedUploader {
             .slices
             .iter()
             .map(|s| {
-                let global_spool = spool_for_slice(self.group, s.index.as_usize());
+                let global_spool = self.group.spool_at(s.index.as_usize());
                 (global_spool, s)
             })
             .collect();
@@ -280,8 +285,10 @@ impl DistributedUploader {
             .map(|slice| slice.data().len() as u64)
             .sum();
 
-        let required_members = min_correct(self.group_member_count as u64) as usize;
-        let required_slices = min_correct(GROUP_SIZE as u64) as usize;
+        // A group puts each spool on its own node, so the members and the
+        // slices that certify a track are the same count.
+        let required_members = self.params.thresholds.certify as usize;
+        let required_slices = self.params.thresholds.certify as usize;
 
         // Each owner uploads in its own task, so a quorum completes the call
         // while the owners behind it keep pushing.
@@ -404,10 +411,11 @@ impl DistributedUploader {
         // Nothing more will land for this call, so the pushes stop here.
         self.abort_stragglers();
 
-        // If more than f slices were rejected as NotResponsible, the epoch
-        // has changed. A Byzantine minority (at most f nodes) cannot fake this.
-        let f = max_faulty(GROUP_SIZE as u64) as usize;
-        if not_responsible_count > f {
+        // Certify can lose at most `spare` slices. More rejections than that
+        // as NotResponsible mean the epoch has changed, and on tapenet a
+        // Byzantine minority (at most `spare` nodes) cannot fake this.
+        let spare = self.params.n().saturating_sub(required_slices);
+        if not_responsible_count > spare {
             return Err(UploadError::EpochChanged {
                 not_responsible: not_responsible_count,
             });
@@ -708,7 +716,10 @@ mod tests {
     use peer_memory::MemoryApi;
     use tape_api::state::Group;
     use tape_core::bls::{BlsPubkey, BlsSignature};
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::spooler::GroupIndex;
     use tape_core::system::{Member, Spool};
+    use tape_core::thresholds::TrustModel;
     use tape_core::types::coin::TAPE;
     use tape_core::types::{EpochNumber, StorageUnits};
     use tape_protocol::api::{PeerReq, PeerRes, PutSliceRes};
@@ -716,6 +727,14 @@ mod tests {
     use tape_crypto::address::Address;
 
     use crate::bootstrap::{NetworkKey, PeerRecord, QUARANTINE_THRESHOLD};
+
+    /// Spools in a tapenet group.
+    const WIDTH: usize = TAPENET_PROFILE.n() as usize;
+
+    /// Signatures that certify a track on this state's network.
+    fn certify(state: &ProtocolState) -> usize {
+        state.system.params().expect("params").thresholds.certify as usize
+    }
 
     fn make_test_slices(count: usize) -> Vec<SliceWithProof> {
         (0..count)
@@ -733,7 +752,10 @@ mod tests {
 
     fn make_test_state(member_count: usize) -> ProtocolState {
         let mut state = ProtocolState::default();
+        state.system.profile = TAPENET_PROFILE.into();
+        state.system.trust_model = TrustModel::Permissionless.into();
         state.current.epoch.id = EpochNumber(1);
+        state.current.epoch.total_groups = 1;
         for i in 0..member_count {
             let mut bytes = [0u8; 32];
             bytes[0] = i as u8 + 1;
@@ -749,7 +771,7 @@ mod tests {
             size: StorageUnits::mb(1),
             ..Group::zeroed()
         };
-        for i in 0..GROUP_SIZE {
+        for i in 0..WIDTH {
             let owner = state.current.committee[i % member_count].node;
             group.spools[i] = Spool::new(owner, BlsPubkey::zeroed());
         }
@@ -768,8 +790,11 @@ mod tests {
     // a retry after a failed quorum pushes only the spools that never landed
     #[tokio::test]
     async fn missing_spools() {
-        let state = make_test_state(4);
-        let failing = [state.current.committee[0].node, state.current.committee[1].node];
+        let state = make_test_state(WIDTH);
+        let failing: Vec<Address> = state.current.committee[..WIDTH / 2]
+            .iter()
+            .map(|member| member.node)
+            .collect();
         let is_healed = Arc::new(AtomicBool::new(false));
         let pushes = Arc::new(AtomicUsize::new(0));
         let api = Arc::new(MemoryApi::new({
@@ -788,17 +813,17 @@ mod tests {
         }));
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
-            make_test_slices(GROUP_SIZE),
+            TrackGroup(0),
+            make_test_slices(WIDTH),
             &state,
-            GROUP_SIZE,
+            WIDTH,
         )
         .expect("uploader");
         let mut progress = UploadProgress::default();
 
         let first = uploader.upload_all(api.clone(), &mut progress).await;
         assert!(matches!(first, Err(UploadError::InsufficientQuorum { .. })));
-        assert_eq!(pushes.load(Ordering::SeqCst), GROUP_SIZE);
+        assert_eq!(pushes.load(Ordering::SeqCst), WIDTH);
 
         is_healed.store(true, Ordering::SeqCst);
         let receipts = uploader
@@ -808,25 +833,25 @@ mod tests {
 
         // Stragglers past the quorum finish in the background.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert_eq!(pushes.load(Ordering::SeqCst), GROUP_SIZE + GROUP_SIZE / 2);
-        assert!(receipts.len() >= min_correct(4) as usize);
+        assert_eq!(pushes.load(Ordering::SeqCst), WIDTH + WIDTH / 2);
+        assert!(receipts.len() >= certify(&state));
     }
 
         #[test]
     fn uploader_creation() {
-        let slices = make_test_slices(GROUP_SIZE);
+        let slices = make_test_slices(WIDTH);
         let state = make_test_state(2);
 
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
+            TrackGroup(0),
             slices,
             &state,
-            GROUP_SIZE,
+            WIDTH,
         )
         .unwrap();
 
-        assert_eq!(uploader.slice_count(), GROUP_SIZE);
+        assert_eq!(uploader.slice_count(), WIDTH);
     }
 
     // the wire body decodes back to the original slice
@@ -894,10 +919,10 @@ mod tests {
     fn uploader_for(state: &ProtocolState, reputation: Arc<Reputation>) -> DistributedUploader {
         DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
-            make_test_slices(GROUP_SIZE),
+            TrackGroup(0),
+            make_test_slices(WIDTH),
             state,
-            GROUP_SIZE,
+            WIDTH,
         )
         .expect("uploader built")
         .with_reputation(reputation)
@@ -906,7 +931,7 @@ mod tests {
     // an owner that answers not found and then accepts stores its slice at no reputation cost
     #[tokio::test(start_paused = true)]
     async fn straggler_accepts_late() {
-        let state = make_test_state(GROUP_SIZE);
+        let state = make_test_state(WIDTH);
         let straggler = state.current.committee[0].node;
         let (api, attempts) = api_with_straggler(straggler, move |attempt| match attempt < 5 {
             true => refused(ApiError::NotFound),
@@ -918,7 +943,7 @@ mod tests {
         let receipts = uploader.upload_all(api, &mut UploadProgress::default()).await.expect("quorum reached");
         sleep(STRAGGLER_LIMIT * 2).await;
 
-        assert!(receipts.len() >= min_correct(GROUP_SIZE as u64) as usize);
+        assert!(receipts.len() >= certify(&state));
         assert_eq!(attempts.load(Ordering::Relaxed), 5);
         let record = peer_record(&reputation, straggler).expect("straggler recorded");
         assert_eq!(record.consecutive_failures, 0);
@@ -927,7 +952,7 @@ mod tests {
     // an owner that answers not found once is pushed again a slot later and accepts
     #[tokio::test(start_paused = true)]
     async fn straggler_accepts_within_a_slot() {
-        let state = make_test_state(GROUP_SIZE);
+        let state = make_test_state(WIDTH);
         let straggler = state.current.committee[0].node;
         let (api, attempts) = api_with_straggler(straggler, move |attempt| match attempt < 2 {
             true => refused(ApiError::NotFound),
@@ -940,7 +965,7 @@ mod tests {
         let receipts = uploader.upload_all(api, &mut UploadProgress::default()).await.expect("quorum reached");
         sleep(STRAGGLER_STEP / 2).await;
 
-        assert!(receipts.len() >= min_correct(GROUP_SIZE as u64) as usize);
+        assert!(receipts.len() >= certify(&state));
         assert_eq!(attempts.load(Ordering::Relaxed), 2);
         assert!(started.elapsed() < STRAGGLER_STEP, "{:?}", started.elapsed());
         let record = peer_record(&reputation, straggler).expect("straggler recorded");
@@ -950,7 +975,7 @@ mod tests {
     // an owner that never ingests the register is left for recovery at no reputation cost
     #[tokio::test(start_paused = true)]
     async fn straggler_gives_up() {
-        let state = make_test_state(GROUP_SIZE);
+        let state = make_test_state(WIDTH);
         let straggler = state.current.committee[0].node;
         let (api, attempts) = api_with_straggler(straggler, |_| refused(ApiError::NotFound));
         let reputation = ephemeral_reputation();
@@ -978,7 +1003,7 @@ mod tests {
     // an owner that keeps refusing the connection spends its ladder and counts as a failure
     #[tokio::test(start_paused = true)]
     async fn transport_failure_counts() {
-        let state = make_test_state(GROUP_SIZE);
+        let state = make_test_state(WIDTH);
         let straggler = state.current.committee[0].node;
         let (api, attempts) =
             api_with_straggler(straggler, |_| refused(ApiError::ConnectionFailed("refused".into())));
@@ -996,7 +1021,7 @@ mod tests {
     // the owners still pushing outlive the call and the uploader, up to the straggler limit
     #[tokio::test(start_paused = true)]
     async fn quorum_keeps_pushing() {
-        let state = make_test_state(GROUP_SIZE);
+        let state = make_test_state(WIDTH);
         let straggler = state.current.committee[0].node;
         let (api, attempts) = api_with_straggler(straggler, |_| refused(ApiError::NotFound));
         let reputation = ephemeral_reputation();
@@ -1028,7 +1053,7 @@ mod tests {
     // a run that never reaches quorum gives up on the retry ladder
     #[tokio::test(start_paused = true)]
     async fn no_quorum_gives_up() {
-        let state = make_test_state(GROUP_SIZE);
+        let state = make_test_state(WIDTH);
         let api = Arc::new(MemoryApi::new(|_, _| refused(ApiError::NotFound)));
         let started = Instant::now();
         let bytes = small_slice_bytes();
@@ -1045,9 +1070,9 @@ mod tests {
         );
     }
 
-    /// Bytes `make_test_slices(GROUP_SIZE)` puts on the wire.
+    /// Bytes `make_test_slices(WIDTH)` puts on the wire.
     fn small_slice_bytes() -> u64 {
-        make_test_slices(GROUP_SIZE)
+        make_test_slices(WIDTH)
             .iter()
             .map(|slice| slice.data().len() as u64)
             .sum()
@@ -1059,7 +1084,7 @@ mod tests {
         let ladder = quorum_wait_limit(0);
         assert!(ladder >= Duration::from_secs(11) && ladder <= Duration::from_secs(13), "{ladder:?}");
 
-        // One 64 MiB chunk is GROUP_SIZE slices of about 9.1 MiB.
+        // One 64 MiB chunk is WIDTH slices of about 9.1 MiB.
         let chunk = 20 * 9_588_048u64;
         let wide = quorum_wait_limit(chunk);
         assert!(wide >= ladder + Duration::from_secs(145), "{wide:?}");
@@ -1068,9 +1093,9 @@ mod tests {
     // a push whose slices are still streaming is not cut off at the ladder
     #[tokio::test(start_paused = true)]
     async fn a_large_upload_waits_out_its_bytes() {
-        let state = make_test_state(GROUP_SIZE);
+        let state = make_test_state(WIDTH);
         let api = Arc::new(MemoryApi::new(|_, _| refused(ApiError::NotFound)));
-        let slices: Vec<_> = (0..GROUP_SIZE)
+        let slices: Vec<_> = (0..WIDTH)
             .map(|index| {
                 SliceWithProof::new(
                     SpoolIndex::from(index as u64),
@@ -1086,10 +1111,10 @@ mod tests {
 
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            GroupIndex(0),
+            TrackGroup(0),
             slices,
             &state,
-            GROUP_SIZE,
+            WIDTH,
         )
         .expect("uploader built")
         .with_reputation(ephemeral_reputation());
@@ -1109,8 +1134,10 @@ mod tests {
     // an owner whose spool moved off it still clears the failures it had
     #[tokio::test(start_paused = true)]
     async fn not_responsible_still_stored() {
-        let state = make_test_state(GROUP_SIZE / 2);
+        // The owner holds two spools here, so it answers twice.
+        let mut state = make_test_state(WIDTH);
         let straggler = state.current.committee[0].node;
+        state.current.groups[0].spools[1] = Spool::new(straggler, BlsPubkey::zeroed());
         let (api, _) = api_with_straggler(straggler, move |attempt| match attempt {
             1 => refused(ApiError::NotResponsible),
             _ => accepted(straggler),
@@ -1129,7 +1156,7 @@ mod tests {
     // a quarantined owner costs exactly one push
     #[tokio::test(start_paused = true)]
     async fn quarantined_pushed_once() {
-        let state = make_test_state(GROUP_SIZE);
+        let state = make_test_state(WIDTH);
         let down = state.current.committee[0].node;
         let (api, attempts) = api_with_straggler(down, |_| refused(ApiError::NotFound));
         let reputation = ephemeral_reputation();

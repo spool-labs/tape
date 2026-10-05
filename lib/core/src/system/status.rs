@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-use crate::erasure::GROUP_SIZE;
+use crate::erasure::MAX_GROUP_SIZE;
 use crate::types::EpochNumber;
 use tape_crypto::Address;
 
@@ -52,7 +52,7 @@ pub struct SpoolState {
     pub status: SpoolStatus,
     pub epoch: EpochNumber,
     pub prev_owner: Option<Address>,
-    pub prev_helpers: [Option<Address>; GROUP_SIZE],
+    pub prev_helpers: [Option<Address>; MAX_GROUP_SIZE],
 }
 
 impl SpoolState {
@@ -61,7 +61,7 @@ impl SpoolState {
             status,
             epoch,
             prev_owner: None,
-            prev_helpers: [None; GROUP_SIZE],
+            prev_helpers: [None; MAX_GROUP_SIZE],
         }
     }
 
@@ -101,14 +101,14 @@ mod tests {
                 status: SpoolStatus::Sync,
                 epoch: EpochNumber(5),
                 prev_owner: Some(owner),
-                prev_helpers: [Some(owner); GROUP_SIZE],
+                prev_helpers: [Some(owner); MAX_GROUP_SIZE],
             },
             SpoolState::new(SpoolStatus::Scan, EpochNumber(6)),
             SpoolState {
                 status: SpoolStatus::Recover,
                 epoch: EpochNumber(7),
                 prev_owner: Some(helper),
-                prev_helpers: [None; GROUP_SIZE],
+                prev_helpers: [None; MAX_GROUP_SIZE],
             },
         ];
 

@@ -1,7 +1,7 @@
 use bytemuck::bytes_of;
 use tape_api::program::prelude::*;
 use tape_core::track::data::TrackMeta;
-use tape_core::track::types::{TrackKind, TrackState, TrackVisibility};
+use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
 use tape_crypto::hash::hash;
 
 use crate::track::helpers::append_track;
@@ -66,7 +66,7 @@ pub fn process_add_to_blacklist(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         blacklist_address,
         args.entry.key(),
         meta,
-        TrackVisibility::Public,
+        TrackFlags::NONE,
     )?;
 
     Ok(())
@@ -107,7 +107,7 @@ mod tests {
         tape_id: TapeNumber,
         track_number: TrackNumber,
         groups: u64,
-    ) -> GroupIndex {
+    ) -> TrackGroup {
         let mixed_hash = hashv(&[
             seed.as_ref(),
             tape_address.as_ref(),
@@ -115,7 +115,7 @@ mod tests {
             &track_number.pack(),
         ]);
         let mixed = u64::from_le_bytes(mixed_hash.0[..8].try_into().unwrap());
-        GroupIndex(mixed % groups)
+        TrackGroup(mixed % groups)
     }
 
     #[test]
@@ -142,6 +142,7 @@ mod tests {
         let system = System {
             current_epoch: EpochNumber(2),
             live_group_count,
+            target_group_count: live_group_count,
             ..System::zeroed()
         };
         let node = Node {
@@ -163,7 +164,7 @@ mod tests {
             track_number,
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(entry_size),
             group,
             value_hash: hash(bytes_of(&entry)),

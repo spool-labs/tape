@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use rand::RngCore;
 use tape_rpc_solana::{RpcConfig, SolanaRpc};
 use tape_api::instruction::MAX_INLINE_WRITE;
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
 use tape_core::types::StorageUnits;
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
@@ -352,7 +352,7 @@ async fn run_upload(
         .context("write track")?;
     Ok(UploadResult {
         certified: track.is_certified(),
-        track: track_pda(track.tape, track.track_number).0,
+        track: track.address(),
     })
 }
 

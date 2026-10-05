@@ -212,10 +212,10 @@ impl<Db: Store> StagingStore<Db> {
         block_time: i64,
     ) -> Result<(), TapeStoreError> {
         let size = data.len() as u64;
-        let prior = self.landed_put_track(tape, key)?;
+        let old_track = self.landed_put_track(tape, key)?;
         let write = PendingWrite {
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
-            op: PendingOp::Put { content_type, etag, size, block_time, prior },
+            op: PendingOp::Put { content_type, etag, size, block_time, old_track },
             state: PendingState::Queued,
         };
         let replaced = self.counted(tape, key);
@@ -239,7 +239,7 @@ impl<Db: Store> StagingStore<Db> {
     ) -> Result<(), TapeStoreError> {
         let write = PendingWrite {
             seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
-            op: PendingOp::Put { content_type, etag, size, block_time, prior: None },
+            op: PendingOp::Put { content_type, etag, size, block_time, old_track: None },
             state: PendingState::Landed { track },
         };
         let replaced = self.counted(tape, key);
@@ -278,8 +278,8 @@ impl<Db: Store> StagingStore<Db> {
         match (entry.op, entry.state) {
             (PendingOp::Put { .. }, PendingState::Landed { track }) => Ok(Some(track)),
             // Still in flight, but it may carry the track of what it superseded.
-            (PendingOp::Put { prior, .. }, PendingState::Queued) => Ok(prior),
-            (PendingOp::Put { prior, .. }, PendingState::Failed { .. }) => Ok(prior),
+            (PendingOp::Put { old_track, .. }, PendingState::Queued) => Ok(old_track),
+            (PendingOp::Put { old_track, .. }, PendingState::Failed { .. }) => Ok(old_track),
             (PendingOp::Delete { track }, _) => Ok(track),
         }
     }
@@ -389,6 +389,7 @@ impl<Db: Store> StagingStore<Db> {
 #[cfg(test)]
 mod tests {
     use tape_store_memory::MemoryStore;
+    use tape_core::encoding::TAPENET_PROFILE;
     use tape_sdk::track::write::content_etag;
     use tape_store::types::PENDING_WRITE_CHUNK_BYTES;
 
@@ -458,7 +459,7 @@ mod tests {
     }
 
     async fn plan_for(size: usize) -> (Hash, UploadPlan) {
-        let computed = content_etag(pattern(size)).await.expect("etag");
+        let computed = content_etag(TAPENET_PROFILE, pattern(size)).await.expect("etag");
         (computed.etag, computed.plan.expect("coded plan"))
     }
 
@@ -581,7 +582,7 @@ mod tests {
         assert_eq!(entry.op, PendingOp::Delete { track: Some(track) });
     }
 
-    // a put queued while a put is in flight carries the landed track as its prior
+    // a put queued while a put is in flight carries the landed track as its old track
     #[tokio::test]
     async fn supersede_by_put() {
         let staging = staging();
@@ -597,7 +598,7 @@ mod tests {
 
         assert!(!is_applied, "the in-flight write was already superseded");
         let entry = staging.entry(tape, b"a.txt").expect("entry").expect("queued");
-        assert!(matches!(entry.op, PendingOp::Put { prior: Some(carried), .. } if carried == track));
+        assert!(matches!(entry.op, PendingOp::Put { old_track: Some(carried), .. } if carried == track));
         assert_eq!(staging.bytes(tape, b"a.txt").expect("bytes"), Some(b"two".to_vec()));
     }
 

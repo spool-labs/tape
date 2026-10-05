@@ -2,6 +2,7 @@
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
+use tape_core::encoding::ErasureCode;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_node::config::store::GcConfig;
 use tape_node::context::NodeContext;
@@ -45,8 +46,9 @@ impl ExpiredTapeSweep {
             (state.epoch(), state.current.epoch.start_slot)
         };
 
+        let profile = context.params().profile;
         let swept = self
-            .sweep(context.store.as_ref(), config, epoch, epoch_start_slot, at_tip)
+            .sweep(context.store.as_ref(), config, epoch, epoch_start_slot, at_tip, profile)
             .await;
         match swept {
             Ok(Some(stats)) => debug!(
@@ -68,6 +70,7 @@ impl ExpiredTapeSweep {
         epoch: EpochNumber,
         epoch_start_slot: SlotNumber,
         at_tip: bool,
+        profile: ErasureCode,
     ) -> Result<Option<GcSweepStats>, NodeError> {
         // Behind the tip the epoch stays unswept, so the next tick tries again.
         let is_swept = self.swept_epoch.is_some_and(|swept| swept >= epoch);
@@ -75,7 +78,8 @@ impl ExpiredTapeSweep {
             return Ok(None);
         }
 
-        let stats = sweep_expired_tapes(store, config, epoch, epoch_start_slot, at_tip).await?;
+        let stats =
+            sweep_expired_tapes(store, config, epoch, epoch_start_slot, at_tip, profile).await?;
         self.swept_epoch = Some(epoch);
         Ok(Some(stats))
     }
@@ -84,9 +88,10 @@ impl ExpiredTapeSweep {
 #[cfg(test)]
 mod tests {
     use tape_store_memory::MemoryStore;
-    use tape_api::program::tapedrive::track_pda;
-    use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_api::program::tapedrive::TrackAddress;
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::spooler::TrackGroup;
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -100,7 +105,18 @@ mod tests {
     /// A tape ending at `end_epoch` holding one track, returned as (tape, track)
     fn put_tape(store: &TapeStore<MemoryStore>, end_epoch: EpochNumber) -> (Address, Address) {
         let tape = Address::new_unique();
-        let track = track_pda(tape, TrackNumber(0)).0;
+        let info = CompressedTrack {
+            tape,
+            key: Hash::new_unique(),
+            track_number: TrackNumber(0),
+            kind: TrackKind::Coded as u64,
+            state: TrackState::Certified as u64,
+            flags: TrackFlags::NONE,
+            size: StorageUnits::from_bytes(1024),
+            group: TrackGroup(1),
+            value_hash: Hash::new_unique(),
+        };
+        let track = info.address();
 
         store
             .put_tape(
@@ -116,22 +132,7 @@ mod tests {
                 },
             )
             .expect("put tape");
-        store
-            .put_track(
-                track,
-                CompressedTrack {
-                    tape,
-                    key: Hash::new_unique(),
-                    track_number: TrackNumber(0),
-                    kind: TrackKind::Coded as u64,
-                    state: TrackState::Certified as u64,
-                    visibility: TrackVisibility::Public as u64,
-                    size: StorageUnits::from_bytes(1024),
-                    group: GroupIndex(1),
-                    value_hash: Hash::new_unique(),
-                },
-            )
-            .expect("put track");
+        store.put_track(track, info).expect("put track");
 
         (tape, track)
     }
@@ -146,14 +147,14 @@ mod tests {
         let mut sweep = ExpiredTapeSweep::default();
 
         let behind = sweep
-            .sweep(&store, &config, EpochNumber(3), SlotNumber(0), false)
+            .sweep(&store, &config, EpochNumber(3), SlotNumber(0), false, TAPENET_PROFILE)
             .await
             .expect("sweep behind tip");
         assert!(behind.is_none());
         assert!(store.get_tape(expired).expect("get tape").is_some());
 
         let stats = sweep
-            .sweep(&store, &config, EpochNumber(3), SlotNumber(0), true)
+            .sweep(&store, &config, EpochNumber(3), SlotNumber(0), true, TAPENET_PROFILE)
             .await
             .expect("sweep at tip")
             .expect("epoch swept");
@@ -172,20 +173,20 @@ mod tests {
         let config = GcConfig::default();
         let mut sweep = ExpiredTapeSweep::default();
         sweep
-            .sweep(&store, &config, EpochNumber(3), SlotNumber(0), true)
+            .sweep(&store, &config, EpochNumber(3), SlotNumber(0), true, TAPENET_PROFILE)
             .await
             .expect("first sweep");
         let (tape, _) = put_tape(&store, EpochNumber(2));
 
         let repeat = sweep
-            .sweep(&store, &config, EpochNumber(3), SlotNumber(0), true)
+            .sweep(&store, &config, EpochNumber(3), SlotNumber(0), true, TAPENET_PROFILE)
             .await
             .expect("repeat sweep");
         assert!(repeat.is_none());
         assert!(store.get_tape(tape).expect("get tape").is_some());
 
         sweep
-            .sweep(&store, &config, EpochNumber(4), SlotNumber(0), true)
+            .sweep(&store, &config, EpochNumber(4), SlotNumber(0), true, TAPENET_PROFILE)
             .await
             .expect("next epoch sweep");
         assert!(store.get_tape(tape).expect("get tape").is_none());

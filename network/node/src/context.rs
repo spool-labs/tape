@@ -21,8 +21,7 @@ use tape_store_rocks::SplitStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
 use tape_core::challenge::schedule::MAX_PENDING_ROUNDS;
-use tape_core::erasure::GROUP_SIZE;
-use tape_core::prelude::{EpochNumber, EpochPhase, NodeId, NodeStatus, SpoolIndex};
+use tape_core::prelude::{EpochNumber, EpochPhase, NetworkParams, NodeId, NodeStatus, SpoolIndex};
 use tape_core::types::coin::SOL;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::prelude::{Address, BLSError, Hash, Keypair, Signature};
@@ -92,6 +91,9 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
 
     node_id: NodeId,
     node_address: Address,
+    // Read from System once at startup. Genesis fixes it for the network's
+    // life, so it sits outside the swappable protocol state.
+    params: NetworkParams,
     keypair: Arc<Keypair>,
     bls_keypair: Arc<BlsPrivateKey>,
     write_signatures: WriteSignatures,
@@ -122,9 +124,6 @@ pub struct VerifyRequest {
 /// Certify worker threads; two clear a round inside one cadence
 const CERTIFY_WORKERS: usize = 2;
 
-/// Certify jobs the stage holds: one batch per peer for every settling round
-const CERTIFY_QUEUE: usize = GROUP_SIZE * MAX_PENDING_ROUNDS;
-
 /// Where a certify job went
 pub enum CertifySubmit {
     /// The stage took it
@@ -139,7 +138,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
     /// The certify stage's intake, its workers spawned on first use
     pub fn certify_stage(&self) -> &mpsc::SyncSender<CertifyJob> {
         self.certify_stage.get_or_init(|| {
-            let (tx, rx) = mpsc::sync_channel::<CertifyJob>(CERTIFY_QUEUE);
+            // The stage holds one batch per group peer for every settling round.
+            let queue = self.params.n() * MAX_PENDING_ROUNDS;
+            let (tx, rx) = mpsc::sync_channel::<CertifyJob>(queue);
             let rx = Arc::new(std::sync::Mutex::new(rx));
             for n in 0..CERTIFY_WORKERS {
                 let rx = rx.clone();
@@ -265,6 +266,11 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
 
     pub fn node_address(&self) -> Address {
         self.node_address
+    }
+
+    /// The network's profile, trust model and thresholds.
+    pub fn params(&self) -> &NetworkParams {
+        &self.params
     }
 
     pub fn pubkey(&self) -> Pubkey {
@@ -454,6 +460,18 @@ fn volume_below_threshold(volumes: &[DiskVolume], min_free: u64) -> bool {
         .any(|volume| volume.free_bytes.is_some_and(|free| free < min_free))
 }
 
+/// Read the profile, trust model and thresholds the chain was created with.
+pub async fn fetch_network_params<Blockchain: Rpc>(
+    rpc: &RpcClient<Blockchain>,
+) -> Result<NetworkParams, NodeError> {
+    let system = rpc.get_system().await?;
+    system.params().map_err(|_| {
+        NodeError::Config(
+            "the chain's system account holds no valid encoding profile and trust model".into(),
+        )
+    })
+}
+
 pub struct NodeContextBuilder<Db: Store, Cluster: Api, Blockchain: Rpc> {
     config: NodeConfig,
     keypair: Keypair,
@@ -509,6 +527,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         let schedules = Schedules::new(self.config.challenge_interval_slots())
             .map_err(|error| NodeError::Config(format!("challenge interval: {error:?}")))?;
         let node_id = Self::resolve_node_id(&self.rpc, &self.keypair).await?;
+        let params = fetch_network_params(&self.rpc).await?;
         let (node_address, _) = node_pda(self.keypair.address());
         let chain = self.rpc.rpc().chain_kind().await;
         let admitted = self.config.http.admission(chain);
@@ -529,6 +548,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         Ok(Arc::new(NodeContext {
             node_id,
             node_address,
+            params,
             config: Arc::new(self.config),
             keypair: Arc::new(self.keypair),
             bls_keypair: Arc::new(self.bls_keypair),

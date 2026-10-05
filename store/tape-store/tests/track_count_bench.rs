@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use tape_store_reel::{scaled, BenchArm, MetaBulkStore, ReelStore};
 use tape_store_api::{Column, Direction};
 use tape_store_rocks::SplitStore;
-use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
-use tape_core::types::{GroupIndex, StorageUnits, TrackNumber};
+use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
+use tape_core::types::{TrackGroup, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_store::columns::TrackCol;
@@ -36,9 +36,9 @@ fn sample_track() -> CompressedTrack {
         track_number: TrackNumber(0),
         kind: TrackKind::Coded as u64,
         state: TrackState::Certified as u64,
-        visibility: TrackVisibility::Public as u64,
+        flags: TrackFlags::NONE,
         size: StorageUnits::from_bytes(1024),
-        group: GroupIndex(3),
+        group: TrackGroup(3),
         value_hash: Hash::new_unique(),
     }
 }

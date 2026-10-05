@@ -5,15 +5,16 @@
 use std::time::Duration;
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::types::coin::TAPE;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::BasisPoints;
 use tape_crypto::address::Address;
-use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, TestGateway, run_simnet_test};
+use tape_e2e_simnet::{
+    NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE, TestGateway, run_simnet_test,
+};
 
-const NODE_COUNT: usize = GROUP_SIZE;
+const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
 const GATEWAY_STAKE: u64 = 2_000;
 const STORAGE_NODE_STAKE: u64 = 1_000;
 

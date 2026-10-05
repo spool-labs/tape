@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use tape_core::bls::BlsSignature;
 use tape_core::challenge::ProofOfAccess;
+use tape_core::thresholds::Thresholds;
 use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
@@ -128,12 +129,13 @@ impl RoundBuffer {
     }
 
     /// Claims a round once its answer and quorum are present.
-    pub fn claim_certificate(&self, key: RoundKey, threshold: usize) -> bool {
+    pub fn claim_certificate(&self, key: RoundKey, thresholds: &Thresholds) -> bool {
         let mut entries = self.entries.lock().expect("round buffer");
         let Some(entry) = entries.get_mut(&key) else {
             return false;
         };
-        if entry.certified || entry.answer.is_none() || entry.attestations.len() < threshold {
+        let has_quorum = entry.attestations.len() as u64 >= thresholds.challenge;
+        if entry.certified || entry.answer.is_none() || !has_quorum {
             return false;
         }
 
@@ -176,8 +178,14 @@ mod tests {
     use super::*;
     use tape_core::bls::BlsPrivateKey;
     use tape_core::challenge::proof::SampleProof;
+    use tape_core::thresholds::TrustModel;
     use tape_core::track::blob::SubLeafProof;
     use tape_core::types::GroupIndex;
+
+    /// A trusted 4 of 5 network, where a certificate needs four signers.
+    fn four_of_five() -> Thresholds {
+        Thresholds::try_new(TrustModel::Trusted, 5, 4).expect("4 of 5")
+    }
 
     fn key(round: u64, spool: u64) -> RoundKey {
         RoundKey {
@@ -282,15 +290,16 @@ mod tests {
         for _ in 0..3 {
             buffer.accept_attestation(key, Address::new_unique(), signature());
         }
-        assert!(!buffer.claim_certificate(key, 4), "certified under the threshold");
+        let thresholds = four_of_five();
+        assert!(!buffer.claim_certificate(key, &thresholds), "certified under the threshold");
 
         buffer.accept_attestation(key, Address::new_unique(), signature());
-        assert!(buffer.claim_certificate(key, 4));
+        assert!(buffer.claim_certificate(key, &thresholds));
         assert!(buffer.is_certified(key));
 
         // Attestations keep arriving after the threshold. The round is recorded once.
         buffer.accept_attestation(key, Address::new_unique(), signature());
-        assert!(!buffer.claim_certificate(key, 4));
+        assert!(!buffer.claim_certificate(key, &thresholds));
     }
 
     // attestations alone are not evidence, because they attest to an answer
@@ -303,7 +312,7 @@ mod tests {
         for _ in 0..8 {
             buffer.accept_attestation(key, Address::new_unique(), signature());
         }
-        assert!(!buffer.claim_certificate(key, 4));
+        assert!(!buffer.claim_certificate(key, &four_of_five()));
     }
 
     // retiring drops the rounds before the cutoff and keeps the rest
@@ -338,7 +347,7 @@ mod tests {
         for _ in 0..4 {
             buffer.accept_attestation(pending, Address::new_unique(), signature());
         }
-        assert!(buffer.claim_certificate(pending, 4));
+        assert!(buffer.claim_certificate(pending, &four_of_five()));
 
         // The oldest round still open is the pending one, so retiring behind it
         // keeps it even though another group has moved to the next epoch.
@@ -381,7 +390,7 @@ mod tests {
         for _ in 0..4 {
             buffer.accept_attestation(theirs, Address::new_unique(), signature());
         }
-        assert!(buffer.claim_certificate(theirs, 4));
+        assert!(buffer.claim_certificate(theirs, &four_of_five()));
 
         assert!(buffer.answer(mine).is_none());
         assert!(!buffer.is_certified(mine));
@@ -398,13 +407,14 @@ mod protocol_tests {
     use tape_core::challenge::certificate::CertificateRejection;
     use tape_core::challenge::schedule::Schedule;
     use tape_core::erasure::{
-        GROUP_SIZE, SUB_LEAF_BYTES, group_for_spool, leaf_position, prove_sub_leaf_windowed,
+        SUB_LEAF_BYTES, group_for_spool, leaf_position, prove_sub_leaf_windowed,
         sample_window, slice_sidecar, sub_leaf_count,
     };
     use tape_core::track::blob::SubLeafProof;
     use tape_core::track::data::BlobData;
     use tape_core::types::{
         EpochDuration, EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex, StorageUnits,
+        TrackGroup,
     };
     use tape_crypto::Address;
     use tape_crypto::hash::{Hash, hash};
@@ -417,10 +427,9 @@ mod protocol_tests {
 
     use crate::features::challenge::fold::holds_spool;
     use crate::features::challenge::audit::{
-        Round, accept_answer, admits_round, attest_message, expected_sample,
+        Round, accept_answer, admits_round, attest_message, build_answer, expected_sample,
     };
     use crate::features::challenge::refusal::RefusalReason;
-    use crate::features::challenge::certify::agreement_threshold;
     use crate::harness::{NodeHarness, TestContext, coded_track};
 
     const PAYLOAD_BYTES: usize = 300_000;
@@ -454,7 +463,7 @@ mod protocol_tests {
         // slot zero saturates to zero and holds nothing.
         state.current.epoch.start_slot = SlotNumber(10_000);
         let mine = state
-            .member_spools(ctx.node_address())
+            .member_live_spools(ctx.node_address())
             .first()
             .copied()
             .expect("this node holds a spool");
@@ -516,7 +525,7 @@ mod protocol_tests {
     ) {
         ctx.store
             .put_track_sample(
-                group,
+                group.into(),
                 track,
                 TrackSample {
                     kind: EntryKind::Coded {
@@ -539,7 +548,7 @@ mod protocol_tests {
 
     fn group_spools(state: &ProtocolState, group: GroupIndex) -> Vec<SpoolIndex> {
         state
-            .spools_in_group(group)
+            .spools_in_group(group.into())
             .map(|spools| spools.map(|(spool, _)| spool).collect())
             .unwrap_or_default()
     }
@@ -640,6 +649,129 @@ mod protocol_tests {
             !holds_spool(&aged, owner, spool),
             "a spool handed on two epochs ago still judged its old owner"
         );
+    }
+
+    // a group that carries a retired group draws from both groups' tracks, in one track order
+    #[tokio::test]
+    async fn merged_sample_set() {
+        let fixture = fixture().await;
+        let round = fixture.round();
+        let retired = TrackGroup(1);
+
+        // Two groups were live once, so track group 1 is folded onto the live one.
+        let mut state = fixture.state.clone();
+        state.current.epoch.track_groups = 2;
+        fixture.ctx.set_state(state).expect("publish state");
+
+        let mut tracks: Vec<Address> = (0..6).map(|_| Address::new_unique()).collect();
+        for (index, track) in tracks.iter().enumerate() {
+            let group = if index % 2 == 0 { retired } else { fixture.group.into() };
+            fixture
+                .ctx
+                .store
+                .put_track_sample(
+                    group,
+                    *track,
+                    TrackSample {
+                        kind: EntryKind::Coded { slice_len: StorageUnits::from_bytes(4_096) },
+                        value_hash: Hash::from([0u8; 32]),
+                        registered_slot: SlotNumber(0),
+                        deleted_slot: None,
+                    },
+                )
+                .expect("sample row");
+        }
+        bump_cursor(&fixture.ctx);
+        tracks.sort_unstable();
+
+        // Every spool's draw lands inside the merged set, and across the group
+        // the draws reach tracks of both groups.
+        let mut drawn = Vec::new();
+        for spool in group_spools(&fixture.state, fixture.group) {
+            let (asked, _) = expected_sample(&fixture.ctx, &round, spool).expect("a sample");
+            drawn.push(asked.track);
+        }
+
+        let from_retired = fixture
+            .ctx
+            .store
+            .iter_track_samples_by_group(retired)
+            .expect("rows")
+            .into_iter()
+            .map(|(track, _)| track)
+            .collect::<Vec<_>>();
+        assert_eq!(from_retired.len(), 3);
+        assert!(drawn.iter().any(|track| from_retired.contains(track)));
+        assert!(drawn.iter().any(|track| !from_retired.contains(track)));
+    }
+
+    // a sample that lands on a retired group's track is answered from the
+    // slice kept under that group, for the live spool that carries it
+    #[tokio::test]
+    async fn retired_track_answered_from_its_group() {
+        let fixture = fixture().await;
+        let round = fixture.round();
+        let retired = TrackGroup(1);
+
+        let mut state = fixture.state.clone();
+        state.current.epoch.track_groups = 2;
+        fixture.ctx.set_state(state).expect("publish state");
+
+        // The set holds one track of the retired group and nothing else, so
+        // the draw is bound to land on it.
+        for (held, _) in fixture
+            .ctx
+            .store
+            .iter_track_samples_by_group(fixture.group.into())
+            .expect("rows")
+        {
+            fixture
+                .ctx
+                .store
+                .mark_track_sample_deleted(fixture.group.into(), held, SlotNumber(0))
+                .expect("clear the live group's rows");
+        }
+
+        let (slices, encoding) = coded_track(PAYLOAD_BYTES, 0x0BAD_CAFE_0BAD_CAFE);
+        let track = Address::new_unique();
+        let position = leaf_position(fixture.mine).as_usize();
+        let stored = retired.spool_at(position);
+        fixture
+            .ctx
+            .store
+            .put_track_data(track, BlobData::Coded(encoding))
+            .expect("track data");
+        fixture
+            .ctx
+            .store
+            .put_slice(stored, track, slices[position].clone())
+            .expect("put slice");
+        fixture
+            .ctx
+            .store
+            .put_track_sample(
+                retired,
+                track,
+                TrackSample {
+                    kind: EntryKind::Coded {
+                        slice_len: StorageUnits::from_bytes(slices[0].len() as u64),
+                    },
+                    value_hash: Hash::from([0u8; 32]),
+                    registered_slot: SlotNumber(0),
+                    deleted_slot: None,
+                },
+            )
+            .expect("sample row");
+        bump_cursor(&fixture.ctx);
+
+        let (asked, _) = expected_sample(&fixture.ctx, &round, fixture.mine).expect("a sample");
+        assert_eq!(asked.track, track);
+        assert!(!fixture.ctx.store.has_slice(fixture.mine, track).expect("has slice"));
+
+        let answer = build_answer(&fixture.ctx, &round, fixture.mine).expect("an answer");
+        assert_eq!(answer.track, track);
+        assert_eq!(answer.spool, fixture.mine);
+        assert_eq!(answer.group, fixture.group);
     }
 
     // a round opened before the boundary is still answerable after it: the question
@@ -776,9 +908,15 @@ mod protocol_tests {
 
         fn check(&self, target: SpoolIndex, certificate: &SuccessCertificate) -> Result<(), CertificateRejection> {
             let owner = self.state.spool_owner(target).expect("owner");
-            certificate.verify(agreement_threshold(GROUP_SIZE), owner, &self.members(), |signer| {
+            let thresholds = &self.ctx.params().thresholds;
+            certificate.verify(thresholds, owner, &self.members(), |signer| {
                 self.state.peer(signer).map(|peer| peer.bls_pubkey)
             })
+        }
+
+        /// Signers a certificate needs on this network.
+        fn quorum(&self) -> usize {
+            self.ctx.params().thresholds.challenge as usize
         }
 
         /// A spool in this group that is not ours.
@@ -804,7 +942,7 @@ mod protocol_tests {
             Ok(())
         );
 
-        let signed = fixture.attestations(target, agreement_threshold(GROUP_SIZE));
+        let signed = fixture.attestations(target, fixture.quorum());
         let certificate = fixture.certify(target, signed);
         assert_eq!(fixture.check(target, &certificate), Ok(()));
     }
@@ -824,7 +962,7 @@ mod protocol_tests {
             .map(|(sample, _)| asked_leaf(&sample))
             .collect();
 
-        assert_eq!(leaves.len(), GROUP_SIZE);
+        assert_eq!(leaves.len(), fixture.ctx.params().n());
         let distinct: std::collections::HashSet<usize> = leaves.iter().copied().collect();
         assert!(distinct.len() > 1, "every spool drew the same leaf: {leaves:?}");
     }
@@ -947,7 +1085,7 @@ mod protocol_tests {
         fixture
             .ctx
             .store
-            .mark_track_sample_deleted(fixture.group, extra, cutoff)
+            .mark_track_sample_deleted(fixture.group.into(), extra, cutoff)
             .expect("delete at the cut");
 
         let (after, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
@@ -960,7 +1098,7 @@ mod protocol_tests {
         fixture
             .ctx
             .store
-            .mark_track_sample_deleted(fixture.group, extra, SlotNumber(cutoff.as_u64() - 1))
+            .mark_track_sample_deleted(fixture.group.into(), extra, SlotNumber(cutoff.as_u64() - 1))
             .expect("delete before the cut");
         let (out, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
             .expect("a sample");
@@ -986,20 +1124,20 @@ mod protocol_tests {
         for (held, _) in fixture
             .ctx
             .store
-            .iter_track_samples_by_group(fixture.group)
+            .iter_track_samples_by_group(fixture.group.into())
             .expect("rows")
         {
             fixture
                 .ctx
                 .store
-                .mark_track_sample_deleted(fixture.group, held, SlotNumber(0))
+                .mark_track_sample_deleted(fixture.group.into(), held, SlotNumber(0))
                 .expect("clear the coded rows");
         }
         fixture
             .ctx
             .store
             .put_track_sample(
-                fixture.group,
+                fixture.group.into(),
                 track,
                 TrackSample {
                     kind: EntryKind::Inline,
@@ -1106,7 +1244,7 @@ mod protocol_tests {
         let fixture = fixture().await;
         let target = fixture.other();
 
-        let short = fixture.attestations(target, agreement_threshold(GROUP_SIZE) - 1);
+        let short = fixture.attestations(target, fixture.quorum() - 1);
         let certificate = fixture.certify(target, short);
         assert_eq!(
             fixture.check(target, &certificate),
@@ -1123,7 +1261,7 @@ mod protocol_tests {
         let target = fixture.other();
         let owner = fixture.state.spool_owner(target).expect("owner");
 
-        let short = fixture.attestations(target, agreement_threshold(GROUP_SIZE) - 1);
+        let short = fixture.attestations(target, fixture.quorum() - 1);
         let certificate = fixture.certify(target, short.clone());
         assert_eq!(
             fixture.check(target, &certificate),
@@ -1150,7 +1288,7 @@ mod protocol_tests {
         let fixture = fixture().await;
         let target = fixture.other();
 
-        let threshold = agreement_threshold(GROUP_SIZE);
+        let threshold = fixture.quorum();
         let mut signed = fixture.attestations(target, threshold - 1);
 
         let other_branch = Round {
@@ -1208,7 +1346,7 @@ mod protocol_tests {
             Ok(())
         );
 
-        let signed = fixture.attestations(target, agreement_threshold(GROUP_SIZE));
+        let signed = fixture.attestations(target, fixture.quorum());
         let certificate = fixture.certify(target, signed);
         assert_eq!(fixture.check(target, &certificate), Ok(()));
     }

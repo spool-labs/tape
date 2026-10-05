@@ -6,7 +6,7 @@ use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::types::SpoolIndex;
 use tape_core::types::StorageUnits;
 use tape_core::track::blob::BlobEncoding;
@@ -379,11 +379,19 @@ fn track_data_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     spool: SpoolIndex,
 ) -> Vec<Address> {
-    let group = GroupIndex::containing(spool);
+    let group = TrackGroup::containing(spool);
+    let state = ctx.state();
     let mut peers = Vec::new();
 
-    for (peer_spool, node_id) in ctx.state().group_peers(group) {
-        if peer_spool == spool || node_id == ctx.node_address() || peers.contains(&node_id) {
+    // Last epoch's holders come first. After the group count drops they are
+    // the only nodes that hold a retired group's inline payloads.
+    let holders = state
+        .group_peers_prev(group)
+        .into_iter()
+        .chain(state.group_peers(group));
+
+    for (_, node_id) in holders {
+        if node_id == ctx.node_address() || peers.contains(&node_id) {
             continue;
         }
         peers.push(node_id);
@@ -421,17 +429,17 @@ async fn fetch_track_data_from_group<Db: Store, Cluster: Api + 'static, Blockcha
 #[cfg(test)]
 mod tests {
     use peer_memory::MemoryApi;
-    use tape_core::encoding::EncodingProfile;
+    use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::erasure::{SLICE_TREE_HEIGHT, slice_root};
-    use tape_core::spooler::GroupIndex;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::spooler::TrackGroup;
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_protocol::api::ops::{PeerReq, PeerRes, SyncSlicesRes};
     use tape_protocol::api::types::SyncSliceEntry;
-    use tape_slicer::{ClayCoder, ErasureCoder, SliceMetadata, Slicer};
+    use tape_slicer::{ErasureCoder, SliceMetadata, Slicer};
     use tape_core::system::{SpoolState, SpoolStatus};
 
     use super::*;
@@ -476,17 +484,12 @@ mod tests {
     }
 
     fn clay_slices(fill: u8, size: usize) -> Vec<Vec<u8>> {
-        let profile = EncodingProfile::clay_default();
-        let mut slicer = Slicer::with_profile(
-            ClayCoder::from_params(profile.clay_params()),
-            true,
-            profile,
-        );
+        let mut slicer = Slicer::try_from_profile(TAPENET_PROFILE).unwrap();
         slicer.encode(&vec![fill; size]).unwrap()
     }
 
     fn clay_blob(size: u64, slices: &[Vec<u8>]) -> BlobEncoding {
-        let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
+        let metadata = SliceMetadata::parse(&slices[0]).unwrap();
         let stripe_size = metadata.stripe_size() as u64;
         let leaves = core::array::from_fn(|index| slice_root(&slices[index]).expect("slice within capacity"));
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
@@ -494,7 +497,6 @@ mod tests {
         BlobEncoding {
             size: StorageUnits::from_bytes(size),
             commitment,
-            profile: EncodingProfile::clay_default(),
             stripe_size: StorageUnits::from_bytes(stripe_size),
             stripe_count: StripeCount(size.div_ceil(stripe_size)),
             leaves,
@@ -502,11 +504,7 @@ mod tests {
     }
 
     fn clay_track(size: u64, slices: &[Vec<u8>]) -> CompressedTrack {
-        let profile = EncodingProfile::clay_default();
-        let metadata = SliceMetadata::from_slice(&slices[0]).unwrap();
-        let _stripe_size = metadata.stripe_size() as u64;
         let blob = clay_blob(size, slices);
-        let _ = profile;
 
         CompressedTrack {
             tape: Address::from([0; 32]),
@@ -514,9 +512,9 @@ mod tests {
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size),
-            group: GroupIndex::containing(SPOOL),
+            group: TrackGroup::containing(SPOOL),
             value_hash: blob.get_hash(),
         }
     }

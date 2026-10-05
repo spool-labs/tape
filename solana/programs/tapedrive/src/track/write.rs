@@ -1,5 +1,6 @@
 use tape_api::program::prelude::*;
 use tape_core::track::data::track_key;
+use tape_core::track::types::TrackFlags;
 
 use crate::error::TapeError;
 use crate::tape::helpers::{authorize_tape_operator, verified_tape_address};
@@ -7,7 +8,11 @@ use crate::track::helpers::append_track;
 
 pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let (header, blob) = parse_track_write(data)?;
-    let visibility = header.visibility()?;
+    let flags = header.flags();
+    if !TrackFlags::is_known(flags) {
+        return Err(ProgramError::InvalidInstructionData);
+    }
+
     let [
         fee_payer_info,
         authority_info,
@@ -17,11 +22,6 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     ] = accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
-
-    let meta = blob
-        .data
-        .meta()
-        .ok_or(TapeError::InvalidCommitment)?;
 
     fee_payer_info
         .is_signer()?
@@ -33,6 +33,13 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
     let system = system_info
         .is_system()?
         .as_account::<System>(&tapedrive::ID)?;
+
+    // A coded blob commits to one leaf per slice, so the root covers the
+    // network's n leaves and every leaf past them has to be zero.
+    let meta = blob
+        .data
+        .meta(system.code()?)
+        .ok_or(TapeError::InvalidCommitment)?;
 
     let key = track_key(blob.name(), &blob.data);
 
@@ -54,7 +61,7 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
         tape_address,
         key,
         meta,
-        visibility,
+        flags,
     )?;
 
     Ok(())
@@ -64,11 +71,13 @@ pub fn process_track_write(accounts: &[AccountInfo<'_>], data: &[u8]) -> Program
 mod tests {
     use super::*;
     use solana_account::Account;
-    use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::encoding::RSParams;
+    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
+    use tape_core::tape::TapeFlags;
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::{BlobData, BlobInfo};
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::types::ContentType;
     use tape_crypto::hash::{hash, hashv};
@@ -87,29 +96,120 @@ mod tests {
         })
     }
 
-    #[test]
-    fn register_track() {
-        use tape_core::encoding::EncodingProfile;
+    const NARROW: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
 
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-        let delegate = Pubkey::new_unique();
-        let storage_units = StorageUnits::mb(100);
+    // A blob whose first `set` leaves are filled, committed over the profile's n leaves.
+    fn blob_of(set: usize, profile: ErasureCode) -> BlobEncoding {
+        let mut leaves = [Hash::default(); MAX_GROUP_SIZE];
+        leaves[..set].fill(Hash::from([0x11; 32]));
 
-        let name = b"photos/cat.jpg".to_vec();
-        let key = hash(&name);
-        let profile = EncodingProfile::clay_default();
-
-        let leaves = [Hash::default(); GROUP_SIZE];
-        let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
-        let blob = BlobEncoding {
-            size: storage_units,
-            commitment,
-            profile,
+        BlobEncoding {
+            size: StorageUnits::mb(100),
+            commitment: root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves[..usize::from(profile.n())]),
             stripe_size: StorageUnits::from_bytes(1024),
             stripe_count: StripeCount(1),
             leaves,
+        }
+    }
+
+    #[test]
+    fn register_track() {
+        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), TrackFlags::NONE, None);
+    }
+
+    // a hidden write lands with the hidden flag on its leaf
+    #[test]
+    fn hidden_track() {
+        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), TrackFlags::HIDDEN, None);
+    }
+
+    // an immutable write lands with the immutable flag on its leaf
+    #[test]
+    fn immutable_track() {
+        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), TrackFlags::IMMUTABLE, None);
+    }
+
+    // a plain write to a hidden, immutable tape lands with both flags on its leaf
+    #[test]
+    fn tape_flags() {
+        let tape_flags = TapeFlags::HIDDEN | TapeFlags::IMMUTABLE;
+
+        tape_write_case(
+            fifty_groups(permissionless_system()),
+            blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE),
+            tape_flags,
+            TrackFlags::NONE,
+            None,
+        );
+    }
+
+    // a write lands in a group that stays live after the count drops
+    #[test]
+    fn shrinking_target() {
+        let shrinking = System {
+            live_group_count: 50,
+            target_group_count: 2,
+            ..permissionless_system()
         };
+
+        tape_write_case(
+            shrinking,
+            blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE),
+            TapeFlags::NONE,
+            TrackFlags::NONE,
+            None,
+        );
+    }
+
+    fn fifty_groups(base: System) -> System {
+        System {
+            live_group_count: 50,
+            target_group_count: 50,
+            ..base
+        }
+    }
+
+    // a flag the program does not define is refused
+    #[test]
+    fn unknown_flag() {
+        let refused = Some(ProgramError::InvalidInstructionData);
+
+        write_case(permissionless_system(), blob_of(MAX_GROUP_SIZE, TAPENET_PROFILE), 1 << 40, refused);
+    }
+
+    // a 3-of-4 cluster registers a blob committed over its four live leaves
+    #[test]
+    fn narrow_commitment() {
+        write_case(trusted_system(NARROW), blob_of(4, NARROW), TrackFlags::NONE, None);
+    }
+
+    // a leaf set past the profile's n, or a root over the full array, is no commitment
+    #[test]
+    fn padded_commitment() {
+        let refused = Some(TapeError::InvalidCommitment.into());
+
+        write_case(trusted_system(NARROW), blob_of(5, NARROW), TrackFlags::NONE, refused.clone());
+        write_case(trusted_system(NARROW), blob_of(4, TAPENET_PROFILE), TrackFlags::NONE, refused);
+    }
+
+    fn write_case(base: System, blob: BlobEncoding, flags: u64, error: Option<ProgramError>) {
+        tape_write_case(fifty_groups(base), blob, TapeFlags::NONE, flags, error);
+    }
+
+    fn tape_write_case(
+        base: System,
+        blob: BlobEncoding,
+        tape_flags: u64,
+        flags: u64,
+        error: Option<ProgramError>,
+    ) {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let delegate = Pubkey::new_unique();
+        let storage_units = blob.size;
+
+        let name = b"photos/cat.jpg".to_vec();
+        let key = hash(&name);
 
         let (system_address, _) = system_pda();
         let (tape_address, _) = tape_pda(authority.into());
@@ -126,17 +226,17 @@ mod tests {
                 }),
                 data: BlobData::Coded(blob),
             },
-            TrackVisibility::Public,
+            flags,
         )
         .expect("valid blob write instruction");
 
         let system = System {
             current_epoch: EpochNumber(0),
-            live_group_count: 50,
-            ..System::zeroed()
+            ..base
         };
         let tape = Tape {
             id: TapeNumber(1),
+            flags: tape_flags,
             authority: authority.into(),
             delegate: delegate.into(),
             capacity: StorageUnits::mb(1000),
@@ -168,8 +268,9 @@ mod tests {
             &track_number.pack(),
         ]);
 
-        let group = GroupIndex(
-            u64::from_le_bytes(mixed_hash.0[..8].try_into().unwrap()) % system.live_group_count,
+        let writable = system.live_group_count.min(system.target_group_count);
+        let group = TrackGroup(
+            u64::from_le_bytes(mixed_hash.0[..8].try_into().unwrap()) % writable,
         );
 
         let track = CompressedTrack {
@@ -178,7 +279,7 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: flags | TapeFlags::track_flags(tape_flags),
             size: storage_units,
             group,
             value_hash: blob.get_hash(),
@@ -187,6 +288,11 @@ mod tests {
         expected_tree.add_leaf_hash(track_hash).unwrap();
 
         let env = test_env();
+        if let Some(error) = error {
+            env.process_instruction(&instruction, &accounts, &[Check::err(error)]);
+            return;
+        }
+
         env.process_instruction(
             &instruction,
             &accounts,

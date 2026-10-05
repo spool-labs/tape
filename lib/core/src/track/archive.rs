@@ -71,10 +71,12 @@ impl TrackArchive {
     ) -> Result<(), MerkleError> {
         self.tree.ensure_initialized();
 
-        if updated_track.track_number != proof.state.track_number
-            || updated_track.tape != proof.state.tape
-            || updated_track.key != proof.state.key
-        {
+        // An update may change `state` and nothing else, so a track keeps its address.
+        let unchanged = CompressedTrack {
+            state: proof.state.state,
+            ..*updated_track
+        };
+        if unchanged != proof.state {
             return Err(MerkleError::InvalidIndex);
         }
 
@@ -100,5 +102,56 @@ impl TrackArchive {
             .ok_or(MerkleError::InvalidIndex)?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tape_crypto::address::Address;
+
+    use crate::spooler::TrackGroup;
+    use crate::types::StorageUnits;
+
+    use super::*;
+
+    fn proof() -> CompressedTrackProof {
+        CompressedTrackProof {
+            state: CompressedTrack {
+                tape: Address::new([1u8; 32]),
+                track_number: TrackNumber(0),
+                key: Hash([2u8; 32]),
+                kind: 1,
+                state: 0,
+                flags: 0,
+                size: StorageUnits(1024),
+                group: TrackGroup(3),
+                value_hash: Hash([4u8; 32]),
+            },
+            proof: [Hash::default(); TRACK_TREE_HEIGHT],
+        }
+    }
+
+    // an update may change state and nothing else
+    #[test]
+    fn update_keeps_fixed_fields() {
+        let proof = proof();
+        let track = proof.state;
+
+        let changed = [
+            CompressedTrack { tape: Address::new([7u8; 32]), ..track },
+            CompressedTrack { track_number: TrackNumber(1), ..track },
+            CompressedTrack { key: Hash([7u8; 32]), ..track },
+            CompressedTrack { kind: 0, ..track },
+            CompressedTrack { flags: 1, ..track },
+            CompressedTrack { size: StorageUnits(1025), ..track },
+            CompressedTrack { group: TrackGroup(4), ..track },
+            CompressedTrack { value_hash: Hash([7u8; 32]), ..track },
+        ];
+
+        for updated in changed {
+            let mut archive = TrackArchive::zeroed();
+            let result = archive.update(&proof, &updated);
+            assert!(matches!(result, Err(MerkleError::InvalidIndex)));
+        }
     }
 }

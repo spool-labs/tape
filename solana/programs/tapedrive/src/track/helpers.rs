@@ -1,8 +1,9 @@
 use tape_api::program::prelude::*;
 use tape_api::event::{TrackDeleted, TrackWritten};
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
+use tape_core::tape::TapeFlags;
 use tape_core::track::data::TrackMeta;
-use tape_core::track::types::{CompressedTrack, CompressedTrackProof, TrackVisibility};
+use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::hash::hashv;
 use tape_crypto::Hash;
 
@@ -13,14 +14,16 @@ pub fn append_track(
     tape_address: Address,
     key: Hash,
     meta: TrackMeta,
-    visibility: TrackVisibility,
+    flags: u64,
 ) -> ProgramResult {
     let curr = current_epoch(system);
     if curr < tape.active_epoch || tape.expiry_epoch <= curr {
         return Err(TapeError::TapeExpired.into());
     }
 
-    if system.live_group_count == 0 {
+    // A group that retires next epoch takes no new tracks.
+    let spool_groups = system.writable_group_count();
+    if spool_groups == 0 {
         return Err(TapeError::UnexpectedState.into());
     }
 
@@ -30,8 +33,11 @@ pub fn append_track(
         tape.id,
         track_number,
         slot_hash_seed(slot_hashes_info)?,
-        system.live_group_count,
+        spool_groups,
     )?;
+
+    // A hidden or immutable tape makes every track written to it the same.
+    let flags = flags | TapeFlags::track_flags(tape.flags);
 
     let track = CompressedTrack {
         tape: tape_address,
@@ -39,13 +45,13 @@ pub fn append_track(
         key,
         kind: meta.kind as u64,
         state: meta.state as u64,
-        visibility: visibility as u64,
+        flags,
         size: meta.size,
         group,
         value_hash: meta.value_hash,
     };
 
-    let track_address = track_pda(track.tape, track.track_number).0;
+    let track_address = track.address();
     let track_hash = track.get_hash();
 
     tape.write_track(&track)?;
@@ -56,6 +62,7 @@ pub fn append_track(
         tape: tape_address,
         group,
         track_number,
+        flags,
         track_hash,
     }
     .log();
@@ -68,7 +75,7 @@ pub fn delete_track(
     tape_address: Address,
     proof: CompressedTrackProof,
 ) -> ProgramResult {
-    let track_address = track_pda(proof.state.tape, proof.state.track_number).0;
+    let track_address = proof.state.address();
     let size = proof.state.size;
     let key = proof.state.key;
 
@@ -92,7 +99,7 @@ fn select_group(
     track_number: TrackNumber,
     seed: Hash,
     spool_groups: u64,
-) -> Result<GroupIndex, ProgramError> {
+) -> Result<TrackGroup, ProgramError> {
     let mixed_hash = hashv(&[
         seed.as_ref(),
         tape_address.as_ref(),
@@ -105,7 +112,7 @@ fn select_group(
             .map_err(|_| ProgramError::InvalidInstructionData)?,
     );
 
-    Ok(GroupIndex(mixed % spool_groups))
+    Ok(TrackGroup(mixed % spool_groups))
 }
 
 pub fn slot_hash_seed(slot_hashes_info: &AccountInfo<'_>) -> Result<Hash, ProgramError> {

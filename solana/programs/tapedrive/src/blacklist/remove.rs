@@ -57,9 +57,9 @@ mod tests {
     use tape_core::track::types::{
         CompressedTrack,
         CompressedTrackProof,
+        TrackFlags,
         TrackKind,
         TrackState,
-        TrackVisibility,
     };
     use tape_crypto::hash::hash;
     use tape_crypto::merkle::{MerkleTree, create_proof_from_leaf_hashes};
@@ -81,9 +81,9 @@ mod tests {
             track_number,
             kind: TrackKind::Inline as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(entry_size),
-            group: GroupIndex(7),
+            group: TrackGroup(7),
             value_hash: hash(bytemuck::bytes_of(&entry)),
         };
         let track_hash = track.get_hash();

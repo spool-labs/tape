@@ -18,11 +18,12 @@ use tape_crypto::address::Address;
 use tape_crypto::hash::{hashv, Hash};
 use tape_crypto::merkle::{MerkleError, MerkleTree};
 
-use crate::spooler::GroupIndex;
+use crate::spooler::TrackGroup;
 use crate::types::{StorageUnits, TrackNumber};
 use super::archive::TRACK_TREE_HEIGHT;
 
-pub const TRACK_LEAF_V1: &[u8; 8] = b"TRACK_V1";
+pub const TRACK_LEAF: &[u8; 8] = b"TRACK\0\0\0";
+pub const TRACK_CONTENT: &[u8; 8] = b"CONTENT\0";
 
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
@@ -39,11 +40,29 @@ pub enum TrackState {
     Invalidated,
 }
 
-#[repr(u64)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
-pub enum TrackVisibility {
-    Public = 0,
-    Hidden,
+pub struct TrackFlags;
+
+impl TrackFlags {
+    pub const NONE: u64 = 0;
+    pub const HIDDEN: u64 = 1;
+    pub const IMMUTABLE: u64 = 1 << 1;
+
+    const KNOWN: u64 = Self::HIDDEN | Self::IMMUTABLE;
+
+    #[inline(always)]
+    pub fn is_known(flags: u64) -> bool {
+        flags & !Self::KNOWN == 0
+    }
+
+    #[inline(always)]
+    pub fn is_hidden(flags: u64) -> bool {
+        flags & Self::HIDDEN != 0
+    }
+
+    #[inline(always)]
+    pub fn is_immutable(flags: u64) -> bool {
+        flags & Self::IMMUTABLE != 0
+    }
 }
 
 #[repr(C)]
@@ -55,9 +74,9 @@ pub struct CompressedTrack {
     pub key: Hash,
     pub kind: u64,
     pub state: u64,
-    pub visibility: u64,
+    pub flags: u64,
     pub size: StorageUnits,
-    pub group: GroupIndex,
+    pub group: TrackGroup,
     pub value_hash: Hash,
 }
 
@@ -70,11 +89,6 @@ impl CompressedTrack {
     #[inline(always)]
     pub fn state_enum(&self) -> Option<TrackState> {
         TrackState::try_from(self.state).ok()
-    }
-
-    #[inline(always)]
-    pub fn visibility_enum(&self) -> Option<TrackVisibility> {
-        TrackVisibility::try_from(self.visibility).ok()
     }
 
     #[inline(always)]
@@ -102,25 +116,36 @@ impl CompressedTrack {
         matches!(self.state_enum(), Some(TrackState::Invalidated))
     }
 
-    /// Anything this binary cannot read as Public is treated as hidden, so an
-    /// unrecognized visibility withholds bytes.
     #[inline(always)]
     pub fn is_hidden(&self) -> bool {
-        !matches!(self.visibility_enum(), Some(TrackVisibility::Public))
+        TrackFlags::is_hidden(self.flags)
+    }
+
+    #[inline(always)]
+    pub fn is_immutable(&self) -> bool {
+        TrackFlags::is_immutable(self.flags)
     }
 
     #[inline(always)]
     pub fn get_hash(&self) -> Hash {
         hashv(&[
-            TRACK_LEAF_V1,
-            &self.tape.to_bytes(),
+            TRACK_LEAF,
+            &self.content_address().to_bytes(),
             &self.track_number.pack(),
+            &self.state.to_le_bytes(),
+            &self.group.pack(),
+        ])
+    }
+
+    #[inline(always)]
+    pub fn content_address(&self) -> Hash {
+        hashv(&[
+            TRACK_CONTENT,
+            &self.tape.to_bytes(),
             &self.key.to_bytes(),
             &self.kind.to_le_bytes(),
-            &self.state.to_le_bytes(),
-            &self.visibility.to_le_bytes(),
+            &self.flags.to_le_bytes(),
             &self.size.pack(),
-            &self.group.pack(),
             &self.value_hash.to_bytes(),
         ])
     }
@@ -217,9 +242,9 @@ mod tests {
             key: Hash::new_unique(),
             kind: TrackKind::Coded as u64,
             state: TrackState::Registered as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(4096),
-            group: GroupIndex(3),
+            group: TrackGroup(3),
             value_hash: Hash::new_unique(),
         }
     }
@@ -229,26 +254,93 @@ mod tests {
     fn zeroed_is_public() {
         let track = CompressedTrack::zeroed();
 
-        assert_eq!(track.visibility_enum(), Some(TrackVisibility::Public));
+        assert_eq!(track.flags, TrackFlags::NONE);
         assert!(!track.is_hidden());
     }
 
-    // visibility is committed by the leaf hash
+    // flags are committed by the leaf hash
     #[test]
-    fn visibility_in_hash() {
+    fn flags_in_hash() {
         let public = public_track();
         let mut hidden = public;
-        hidden.visibility = TrackVisibility::Hidden as u64;
+        hidden.flags = TrackFlags::HIDDEN;
 
         assert_ne!(public.get_hash(), hidden.get_hash());
         assert!(hidden.is_hidden());
+    }
+
+    // a certify signs the leaf hash, so two tracks with the same content differ in it
+    #[test]
+    fn number_in_hash() {
+        let track = public_track();
+        let rewritten = CompressedTrack { track_number: TrackNumber(4), ..track };
+
+        assert_eq!(track.content_address(), rewritten.content_address());
+        assert_ne!(track.get_hash(), rewritten.get_hash());
+    }
+
+    // only the hidden flag hides a track
+    #[test]
+    fn unknown_flag_stays_public() {
+        let mut track = public_track();
+        track.flags = 1 << 40;
+
+        assert!(!TrackFlags::is_known(track.flags));
+        assert!(!track.is_hidden());
+        assert!(!track.is_immutable());
+    }
+
+    // the two flags are known bits and each one sets only itself
+    #[test]
+    fn immutable_flag() {
+        let mut track = public_track();
+        track.flags = TrackFlags::IMMUTABLE;
+
+        assert!(TrackFlags::is_known(TrackFlags::HIDDEN | TrackFlags::IMMUTABLE));
+        assert!(track.is_immutable());
+        assert!(!track.is_hidden());
+        assert!(!public_track().is_immutable());
+    }
+
+    // where a track sits and how far it got leave its content address alone
+    #[test]
+    fn content_address_ignores_position() {
+        let track = public_track();
+
+        let certified = CompressedTrack { state: TrackState::Certified as u64, ..track };
+        let moved = CompressedTrack { group: TrackGroup(9), ..track };
+        let rewritten = CompressedTrack { track_number: TrackNumber(4), ..track };
+
+        assert_eq!(track.content_address(), certified.content_address());
+        assert_eq!(track.content_address(), moved.content_address());
+        assert_eq!(track.content_address(), rewritten.content_address());
+    }
+
+    // every field that says what a track holds moves its content address
+    #[test]
+    fn content_address_covers_content() {
+        let track = public_track();
+
+        let changed = [
+            CompressedTrack { tape: Address::new_unique(), ..track },
+            CompressedTrack { key: Hash::new_unique(), ..track },
+            CompressedTrack { kind: TrackKind::Inline as u64, ..track },
+            CompressedTrack { flags: TrackFlags::HIDDEN, ..track },
+            CompressedTrack { flags: TrackFlags::IMMUTABLE, ..track },
+            CompressedTrack { size: StorageUnits::from_bytes(4097), ..track },
+            CompressedTrack { value_hash: Hash::new_unique(), ..track },
+        ];
+
+        for other in changed {
+            assert_ne!(track.content_address(), other.content_address());
+        }
     }
 
     // packing round-trips every field
     #[test]
     fn pack_roundtrip() {
         let mut track = public_track();
-        track.visibility = TrackVisibility::Hidden as u64;
+        track.flags = TrackFlags::HIDDEN;
 
         let restored = CompressedTrack::unpack(track.pack());
 

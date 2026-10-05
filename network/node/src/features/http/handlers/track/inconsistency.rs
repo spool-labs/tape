@@ -7,13 +7,10 @@ use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::bft::is_supermajority;
 use tape_core::cert::track::TrackInvalidateMessage;
-use tape_core::erasure::GROUP_SIZE;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BitmapRead, EpochNumber};
-use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{
     BINARY_CONTENT, BlsInconsistencyResponse, InconsistencyProof, InconsistencyRequest,
@@ -22,6 +19,7 @@ use tape_store::ops::{TrackDataOps, TrackOps};
 
 use crate::features::http::auth::ActivePeer;
 use crate::features::http::error::RouteError;
+use crate::features::http::handlers::track::parse_track;
 use crate::features::http::state::{AppState, current_epoch};
 
 pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
@@ -35,11 +33,7 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(|error| RouteError::BadRequest(format!("inconsistency request: {error}")))?;
 
     let epoch = current_epoch(&state)?;
-    let track: Address = track_id
-        .parse()
-        .map_err(|error| RouteError::BadRequest(format!("invalid track id: {error}")))?;
-
-    let track_key = track;
+    let track_key = parse_track(&track_id)?;
 
     let track_info = state
         .context
@@ -61,7 +55,8 @@ pub async fn invalidate<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Err(RouteError::BadRequest("track data is not blob metadata".into()));
     };
 
-    if blob.commitment_root() == request.proof.observed_root {
+    let profile = state.context.params().profile;
+    if blob.commitment_root(profile) == Some(request.proof.observed_root) {
         return Err(RouteError::BadRequest("roots match, no inconsistency".into()));
     }
 
@@ -99,6 +94,7 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     proof: &InconsistencyProof,
 ) -> Result<(), RouteError> {
 
+    let params = state.context.params();
     let protocol = state.context.state();
     if protocol.epoch() != epoch || protocol.current.committee.is_empty() {
         return Err(RouteError::BadRequest("committee missing".into()));
@@ -112,23 +108,24 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     let mut signer_pubkeys = Vec::with_capacity(signer_indices.len());
+    // The members of the live group that carries the track sign for it.
     let group = protocol
-        .current
-        .groups
-        .iter()
-        .find(|group| group.id == track_info.group)
+        .live_group(track_info.group)
+        .and_then(|live| protocol.group(live))
         .ok_or_else(|| RouteError::BadRequest("track group missing".into()))?;
 
     for signer_index in signer_indices {
+        // A bit at or past n is an empty spool, as the program's check has it.
         let spool = group
             .spools
             .get(signer_index)
+            .filter(|_| signer_index < params.n())
             .ok_or_else(|| RouteError::BadRequest("unknown signer in bitmap".into()))?;
 
         signer_pubkeys.push(spool.bls_pubkey);
     }
 
-    if !is_supermajority(signer_pubkeys.len() as u64, GROUP_SIZE as u64) {
+    if (signer_pubkeys.len() as u64) < params.thresholds.invalidate {
         return Err(RouteError::BadRequest(
             "inconsistency proof lacks quorum for spool group".into(),
         ));
@@ -156,19 +153,19 @@ mod tests {
     use axum::extract::{Path, State};
     use bytemuck::Zeroable;
 
-    use tape_api::program::tapedrive::{snapshot_tape_pda, track_pda};
+    use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress};
     use tape_core::bls::BlsSignature;
-    use tape_core::encoding::EncodingProfile;
-    use tape_core::erasure::{SLICE_TREE_HEIGHT, GROUP_SIZE};
+    use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_snapshot::snapshot_chunk_key;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::TrackGroup;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
-    use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
         ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
     };
     use tape_crypto::Hash;
+    use tape_crypto::address::Address;
     use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_protocol::api::{InconsistencyProof, InconsistencyRequest};
     use tape_store::ops::{ObjectInfoOps, TapeOps};
@@ -192,12 +189,11 @@ mod tests {
     async fn matching_root_rejected() {
         let ctx = test_context().await;
 
-        let leaves = [Hash::from([0x44; 32]); GROUP_SIZE];
+        let leaves = [Hash::from([0x44; 32]); MAX_GROUP_SIZE];
         let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
         let blob = BlobEncoding {
             size: StorageUnits::from_bytes(1_537),
             commitment,
-            profile: EncodingProfile::basic_default(),
             stripe_size: StorageUnits::from_bytes(512),
             stripe_count: StripeCount(4),
             leaves,
@@ -205,10 +201,9 @@ mod tests {
 
         let epoch = EpochNumber(5);
 
-        let group = GroupIndex(2);
+        let group = TrackGroup(2);
         let track_number = TrackNumber(9);
         let (snapshot_tape, _) = snapshot_tape_pda(epoch);
-        let track_address = track_pda(snapshot_tape, track_number).0;
 
         ctx.store
             .put_tape(
@@ -230,11 +225,12 @@ mod tests {
             track_number,
             kind: TrackKind::Coded as u64,
             state: TrackState::Certified as u64,
-            visibility: TrackVisibility::Public as u64,
+            flags: TrackFlags::NONE,
             size: blob.size,
             group,
             value_hash: blob.get_hash(),
         };
+        let track_address = track.address();
 
         ctx.store
             .put_track(track_address, track)
@@ -261,7 +257,7 @@ mod tests {
 
         let request = InconsistencyRequest {
             proof: InconsistencyProof {
-                observed_root: blob.commitment_root(),
+                observed_root: blob.commitment_root(ctx.params().profile).expect("root"),
                 spool_bitmap: tape_core::types::SpoolBitmap::zeroed(),
                 signature: BlsSignature::zeroed(),
             },

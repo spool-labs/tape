@@ -1,9 +1,13 @@
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
+use tape_core::challenge::schedule::SLOT_MS;
 use tape_core::challenge::EvictionPolicy;
+use tape_core::encoding::ErasureCode;
+use tape_core::thresholds::TrustModel;
 use tape_node::config::challenge::ChallengeConfig;
 use tokio::task::JoinHandle;
 
@@ -32,8 +36,20 @@ impl SimnetBuilder {
         self
     }
 
+    /// Create the chain on this profile and trust model; tapenet's by default.
+    pub fn network(mut self, profile: ErasureCode, trust_model: TrustModel) -> Self {
+        self.config.profile = profile;
+        self.config.trust_model = trust_model;
+        self
+    }
+
     pub fn runtime_mode(mut self, mode: NodeRuntimeMode) -> Self {
         self.config.runtime_mode = mode;
+        self
+    }
+
+    pub fn base_port(mut self, base_port: u16) -> Self {
+        self.config.base_port = base_port;
         self
     }
 
@@ -47,7 +63,7 @@ impl SimnetBuilder {
         self
     }
 
-    /// Whether nodes propose and sign evictions, on by default.
+    /// Whether nodes propose and sign evictions, off by default.
     pub fn eviction(mut self, enabled: bool) -> Self {
         self.config.eviction.enabled = enabled;
         self
@@ -82,6 +98,9 @@ impl SimnetBuilder {
         if self.config.node_count == 0 {
             return Err(anyhow!("node_count must be > 0"));
         }
+        self.config
+            .genesis()
+            .map_err(|error| anyhow!("simnet profile: {error}"))?;
 
         if self.config.file_log {
             log::init_log();
@@ -120,8 +139,11 @@ impl Default for SimnetBuilder {
     }
 }
 
-/// One block every slot, and each slot moves the chain clock by the same wall time
-const SLOT_TIME: Duration = Duration::from_millis(300);
+/// Wall time between blocks, which is the harness running slower than a cluster.
+const BLOCK_PRODUCTION_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Chain time one slot costs.
+const SLOT_TIME: Duration = Duration::from_millis(SLOT_MS);
 
 /// In-memory multi-node simulation harness.
 pub struct SimnetHarness {
@@ -204,6 +226,18 @@ impl SimnetHarness {
         Ok(())
     }
 
+    /// Give each stopped node an empty store, as if its drive was lost
+    pub fn wipe_nodes(&mut self, indices: &[usize]) -> Result<()> {
+        for &i in indices {
+            let node = self
+                .nodes
+                .get_mut(i)
+                .ok_or_else(|| anyhow!("node {i} out of range"))?;
+            node.wipe()?;
+        }
+        Ok(())
+    }
+
     pub async fn start_nodes(&mut self, indices: &[usize]) -> Result<()> {
         for &i in indices {
             let node = self
@@ -268,13 +302,20 @@ impl SimnetHarness {
     fn ensure_block_producer(&mut self) {
         if self.block_producer.is_none() {
             self.block_producer = Some(
-                self.chain.rpc().start_block_producer(SLOT_TIME, SLOT_TIME),
+                self.chain.rpc().start_block_producer(BLOCK_PRODUCTION_INTERVAL, SLOT_TIME),
             );
         }
     }
 }
 
 fn make_node(config: &SimnetConfig, chain: &ChainFixture, id: usize) -> Result<TestNode> {
-    let bind_addr = tls::pick_bind()?;
+    let bind_addr = if config.base_port == 0 {
+        tls::pick_bind()?
+    } else {
+        let port = config
+            .base_port
+            .saturating_add(id.try_into().unwrap_or(u16::MAX));
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+    };
     TestNode::new(id, chain.rpc().clone(), bind_addr, config)
 }

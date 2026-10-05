@@ -1,12 +1,14 @@
 //! Encode an epoch's `SnapshotLog` into erasure-coded chunk tracks. Inverse of
 //! `decode`. Pure: no transport, no consensus, no store, no on-chain types — the
-//! caller supplies the snapshot tape address and the active group count.
+//! caller supplies the snapshot tape address, the active group count and the
+//! network's profile.
 
-use tape_core::erasure::{GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
+use tape_core::encoding::ErasureCode;
+use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
 use tape_core::snapshot::replay::SnapshotLog;
-use tape_core::spooler::GroupIndex;
+use tape_core::spooler::TrackGroup;
 use tape_core::track::blob::BlobEncoding;
-use tape_core::track::types::{CompressedTrack, TrackKind, TrackState, TrackVisibility};
+use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
 use tape_core::types::{ChunkNumber, EpochNumber, StorageUnits, StripeCount, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
@@ -19,13 +21,14 @@ use crate::chunk::{
 };
 use crate::SnapshotError;
 
-/// One Clay-encoded outer symbol: its derived blob and the GROUP_SIZE slices.
+/// One inner-encoded outer symbol: its derived blob and one slice per spool of
+/// its group.
 #[derive(Debug, Clone)]
 pub struct BuiltChunk {
-    pub group: GroupIndex,
+    pub group: TrackGroup,
     pub chunk: ChunkNumber,
     pub blob: BlobEncoding,
-    pub slices: [Vec<u8>; GROUP_SIZE],
+    pub slices: Vec<Vec<u8>>,
 }
 
 /// One encoded snapshot chunk: the committed track metadata plus its blob and
@@ -33,19 +36,22 @@ pub struct BuiltChunk {
 /// can keep them all.
 #[derive(Debug, Clone)]
 pub struct SnapshotChunk {
-    pub group: GroupIndex,
+    pub group: TrackGroup,
     pub chunk: ChunkNumber,
     pub track: CompressedTrack,
     pub blob: BlobEncoding,
-    pub slices: [Vec<u8>; GROUP_SIZE],
+    pub slices: Vec<Vec<u8>>,
 }
 
 /// Encode `log` into `epoch`'s chunk-track set and hand each chunk to `visit` in track order, one chunk of slices live at a time
+///
+/// Every node has to produce the same bytes, so `profile` is the network's.
 pub fn encode_snapshot_streaming<Error, Visit>(
     snapshot_tape: Address,
     epoch: EpochNumber,
     log: &SnapshotLog,
     total_groups: usize,
+    profile: ErasureCode,
     mut visit: Visit,
 ) -> Result<(), Error>
 where
@@ -83,8 +89,8 @@ where
         let chunk = ChunkNumber(chunk_index as u64);
 
         for (group_index, symbol) in symbols.iter().enumerate() {
-            let group = GroupIndex(group_index as u64);
-            let built = encode_chunk(epoch, group, chunk, symbol)?;
+            let group = TrackGroup(group_index as u64);
+            let built = encode_chunk(epoch, group, chunk, symbol, profile)?;
             let track_number = TrackNumber((chunk_index as u64) * (total_groups as u64) + group.0);
 
             let track = CompressedTrack {
@@ -93,7 +99,7 @@ where
                 key: snapshot_chunk_key(epoch, group, chunk),
                 kind: TrackKind::Coded as u64,
                 state: TrackState::Certified as u64,
-                visibility: TrackVisibility::Public as u64,
+                flags: TrackFlags::NONE,
                 size: built.blob.size,
                 group,
                 value_hash: built.blob.get_hash(),
@@ -118,6 +124,7 @@ pub fn encode_snapshot(
     epoch: EpochNumber,
     log: &SnapshotLog,
     total_groups: usize,
+    profile: ErasureCode,
 ) -> Result<Vec<SnapshotChunk>, SnapshotError> {
     let mut chunks = Vec::new();
 
@@ -126,6 +133,7 @@ pub fn encode_snapshot(
         epoch,
         log,
         total_groups,
+        profile,
         |chunk| -> Result<(), SnapshotError> {
             chunks.push(chunk);
             Ok(())
@@ -135,12 +143,13 @@ pub fn encode_snapshot(
     Ok(chunks)
 }
 
-/// Clay-encode one outer symbol into its GROUP_SIZE slices and derive its blob.
+/// Inner-encode one outer symbol into one slice per spool and derive its blob.
 pub fn encode_chunk(
     epoch: EpochNumber,
-    group: GroupIndex,
+    group: TrackGroup,
     chunk: ChunkNumber,
     symbol: &[u8],
+    profile: ErasureCode,
 ) -> Result<BuiltChunk, SnapshotError> {
     let payload = SnapshotChunkPayload {
         chunk,
@@ -150,24 +159,20 @@ pub fn encode_chunk(
 
     let context = format!("epoch={} group={group} chunk={chunk}", epoch.0);
 
-    let mut slicer = Slicer::clay_default();
+    let mut slicer = Slicer::try_from_profile(profile)
+        .map_err(|e| SnapshotError::InnerEncode(format!("{context}: {e}")))?;
     let slices = slicer
         .encode(&packed)
-        .map_err(|e| SnapshotError::ClayEncode(format!("{context}: {e}")))?;
+        .map_err(|e| SnapshotError::InnerEncode(format!("{context}: {e}")))?;
 
-    let slices: [Vec<u8>; GROUP_SIZE] =
-        slices.try_into().map_err(|v: Vec<Vec<u8>>| SnapshotError::ClayEncodeArity {
-            got: v.len(),
-            expected: GROUP_SIZE,
-        })?;
-
-    let mut leaves = [Hash::default(); GROUP_SIZE];
+    // The commitment covers one leaf per slice; the leaves past them stay zero.
+    let mut leaves = [Hash::default(); MAX_GROUP_SIZE];
     for (leaf, slice) in leaves.iter_mut().zip(slices.iter()) {
         *leaf = slice_root(slice).ok_or_else(|| {
-            SnapshotError::ClayEncode(format!("{context}: slice exceeds sub-leaf tree capacity"))
+            SnapshotError::InnerEncode(format!("{context}: slice exceeds sub-leaf tree capacity"))
         })?;
     }
-    let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves);
+    let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves[..slices.len()]);
 
     let stripe_size = slicer.stripe_size();
     let stripe_count = num_stripes(symbol.len(), stripe_size);
@@ -175,7 +180,6 @@ pub fn encode_chunk(
     let blob = BlobEncoding {
         size: StorageUnits::from_bytes(symbol.len() as u64),
         commitment,
-        profile: slicer.profile(),
         stripe_size: StorageUnits::from_bytes(stripe_size as u64),
         stripe_count: StripeCount(stripe_count as u64),
         leaves,
@@ -202,10 +206,15 @@ mod tests {
     use tape_core::types::SlotNumber;
     use tape_crypto::tx::Txid;
 
+    use tape_core::encoding::{ClayParams, RSParams, RepParams, TAPENET_PROFILE};
+
     use super::*;
-    use crate::{assemble_snapshot_log, decode_chunk_payload, K_INNER};
+    use crate::{assemble_snapshot_log, decode_chunk_payload};
 
     const TEST_GROUP_COUNT: usize = 20;
+
+    /// Inner slices tapenet's profile needs to decode a chunk.
+    const K_INNER: usize = TAPENET_PROFILE.k() as usize;
 
     /// Slice bytes the visitor holds, counted as the encoder hands each chunk over
     #[derive(Debug, Default)]
@@ -294,7 +303,7 @@ mod tests {
         let tape = Address::from([1u8; 32]);
         let log = sample_log(epoch);
 
-        let chunks = encode_snapshot(tape, epoch, &log, TEST_GROUP_COUNT).unwrap();
+        let chunks = encode_snapshot(tape, epoch, &log, TEST_GROUP_COUNT, TAPENET_PROFILE).unwrap();
         assert!(!chunks.is_empty());
 
         let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> = BTreeMap::new();
@@ -306,7 +315,7 @@ mod tests {
                 .take(K_INNER)
                 .map(|(i, s)| (i, s.as_slice()))
                 .collect();
-            let (chunk, symbol) = decode_chunk_payload(&inner).unwrap();
+            let (chunk, symbol) = decode_chunk_payload(&inner, TAPENET_PROFILE).unwrap();
             assert_eq!(chunk, c.chunk);
             symbols_by_segment
                 .entry(chunk)
@@ -332,7 +341,8 @@ mod tests {
     fn chunk_tracks_are_contiguous() {
         let epoch = EpochNumber(7);
         let tape = Address::from([1u8; 32]);
-        let chunks = encode_snapshot(tape, epoch, &sample_log(epoch), TEST_GROUP_COUNT).unwrap();
+        let chunks =
+            encode_snapshot(tape, epoch, &sample_log(epoch), TEST_GROUP_COUNT, TAPENET_PROFILE).unwrap();
 
         for (index, c) in chunks.iter().enumerate() {
             assert_eq!(c.track.track_number, TrackNumber(index as u64));
@@ -355,22 +365,22 @@ mod tests {
     #[test]
     fn decode_fails_below_k_inner() {
         let epoch = EpochNumber(6);
+        let tape = Address::from([2u8; 32]);
         let chunks =
-            encode_snapshot(Address::from([2u8; 32]), epoch, &sample_log(epoch), TEST_GROUP_COUNT)
-                .unwrap();
-        assert!(decode_chunk_payload(&inner_slices(&chunks[0], K_INNER - 1)).is_err());
+            encode_snapshot(tape, epoch, &sample_log(epoch), TEST_GROUP_COUNT, TAPENET_PROFILE).unwrap();
+        assert!(decode_chunk_payload(&inner_slices(&chunks[0], K_INNER - 1), TAPENET_PROFILE).is_err());
     }
 
     #[test]
     fn one_group_round_trip() {
         let epoch = EpochNumber(22);
-        let chunks =
-            encode_snapshot(Address::from([3u8; 32]), epoch, &sample_log(epoch), 1).unwrap();
+        let tape = Address::from([3u8; 32]);
+        let chunks = encode_snapshot(tape, epoch, &sample_log(epoch), 1, TAPENET_PROFILE).unwrap();
         assert!(!chunks.is_empty());
 
         let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> = BTreeMap::new();
         for c in &chunks {
-            let (chunk, symbol) = decode_chunk_payload(&inner_slices(c, K_INNER)).unwrap();
+            let (chunk, symbol) = decode_chunk_payload(&inner_slices(c, K_INNER), TAPENET_PROFILE).unwrap();
             symbols_by_segment
                 .entry(chunk)
                 .or_default()
@@ -385,9 +395,9 @@ mod tests {
     #[test]
     fn assemble_rejects_insufficient_groups() {
         let epoch = EpochNumber(30);
+        let tape = Address::from([4u8; 32]);
         let chunks =
-            encode_snapshot(Address::from([4u8; 32]), epoch, &sample_log(epoch), TEST_GROUP_COUNT)
-                .unwrap();
+            encode_snapshot(tape, epoch, &sample_log(epoch), TEST_GROUP_COUNT, TAPENET_PROFILE).unwrap();
         let outer_k = crate::snapshot_outer_k(TEST_GROUP_COUNT);
 
         // Give segment 0 only outer_k - 1 symbols.
@@ -397,7 +407,7 @@ mod tests {
             .filter(|c| c.chunk == ChunkNumber(0))
             .take(outer_k - 1)
         {
-            let (chunk, symbol) = decode_chunk_payload(&inner_slices(c, K_INNER)).unwrap();
+            let (chunk, symbol) = decode_chunk_payload(&inner_slices(c, K_INNER), TAPENET_PROFILE).unwrap();
             symbols_by_segment
                 .entry(chunk)
                 .or_default()
@@ -408,13 +418,52 @@ mod tests {
         assert!(format!("{err}").contains("groups decoded"));
     }
 
+    // a custom cluster's snapshot round-trips from k inner slices of each
+    // group, and commits each chunk over its own n leaves
+    #[test]
+    fn custom_profiles() {
+        let profiles = [
+            ErasureCode::ReedSolomon(RSParams::new(3, 1)),
+            ErasureCode::ReedSolomon(RSParams::new(4, 2)),
+            ErasureCode::Clay(ClayParams::new(4, 2, 3)),
+            ErasureCode::Replication(RepParams::new(2)),
+        ];
+        let epoch = EpochNumber(31);
+        let tape = Address::from([7u8; 32]);
+        let total_groups = 3;
+
+        for profile in profiles {
+            let n = profile.n() as usize;
+            let k = profile.k() as usize;
+            let chunks =
+                encode_snapshot(tape, epoch, &sample_log(epoch), total_groups, profile).unwrap();
+
+            let mut symbols_by_segment: BTreeMap<ChunkNumber, Vec<(usize, Vec<u8>)>> =
+                BTreeMap::new();
+            for c in &chunks {
+                assert_eq!(c.slices.len(), n, "{profile:?}");
+                assert_eq!(c.blob.commitment_root(profile), Some(c.blob.commitment), "{profile:?}");
+
+                let (chunk, symbol) =
+                    decode_chunk_payload(&inner_slices(c, k), profile).unwrap();
+                symbols_by_segment
+                    .entry(chunk)
+                    .or_default()
+                    .push((c.group.0 as usize, symbol));
+            }
+
+            let log = assemble_snapshot_log(&symbols_by_segment, epoch, total_groups).unwrap();
+            assert_eq!(log.entries.len(), 2, "{profile:?}");
+        }
+    }
+
     // the streamed encode gives the same track root, rows, blobs, and slices
     #[test]
     fn streamed_matches_full() {
         let epoch = EpochNumber(13);
         let tape = Address::from([5u8; 32]);
         let log = sample_log(epoch);
-        let full = encode_snapshot(tape, epoch, &log, TEST_GROUP_COUNT).expect("full encode");
+        let full = encode_snapshot(tape, epoch, &log, TEST_GROUP_COUNT, TAPENET_PROFILE).expect("full encode");
 
         let mut streamed: Vec<SnapshotChunk> = Vec::new();
         encode_snapshot_streaming(
@@ -422,6 +471,7 @@ mod tests {
             epoch,
             &log,
             TEST_GROUP_COUNT,
+            TAPENET_PROFILE,
             |chunk| -> Result<(), SnapshotError> {
                 streamed.push(chunk);
                 Ok(())
@@ -453,6 +503,7 @@ mod tests {
             epoch,
             &log,
             TEST_GROUP_COUNT,
+            TAPENET_PROFILE,
             |chunk| -> Result<(), SnapshotError> {
                 counter.visit(chunk);
                 Ok(())
@@ -460,7 +511,7 @@ mod tests {
         )
         .expect("streamed encode");
 
-        let full = encode_snapshot(tape, epoch, &log, TEST_GROUP_COUNT).expect("full encode");
+        let full = encode_snapshot(tape, epoch, &log, TEST_GROUP_COUNT, TAPENET_PROFILE).expect("full encode");
         let full_bytes: usize = full.iter().map(slice_bytes).sum();
         let largest_chunk = full.iter().map(slice_bytes).max().expect("a chunk");
 
@@ -481,6 +532,7 @@ mod tests {
             epoch,
             &log,
             TEST_GROUP_COUNT,
+            TAPENET_PROFILE,
             |_| -> Result<(), SnapshotError> {
                 stopped_at += 1;
                 Err(SnapshotError::NoGroups { epoch: epoch.0 })

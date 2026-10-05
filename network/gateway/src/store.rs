@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
+use tape_core::encoding::ErasureCode;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_node::core::types::ChannelName;
@@ -76,7 +77,8 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
                         };
                     };
 
-                    persist_batch(self.context.store.as_ref(), &batch)?;
+                    let profile = self.context.params().profile;
+                    persist_batch(self.context.store.as_ref(), &batch, profile)?;
                     self.follow.apply_block(&batch, &self.cancel).await?;
 
                     self.context.pending.drop_slot(batch.slot);
@@ -96,14 +98,16 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
 pub fn persist_batch<Db: Store>(
     store: &TapeStore<Db>,
     batch: &ReplayBatch,
+    profile: ErasureCode,
 ) -> Result<(), NodeError> {
-    persist_batch_with(store, batch, RawTrackPolicy::All)
+    persist_batch_with(store, batch, RawTrackPolicy::All, profile)
 }
 
 #[cfg(test)]
 mod tests {
     use tape_store_memory::MemoryStore;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::spooler::TrackGroup;
     use tape_core::track::data::BlobData;
     use tape_core::types::SlotNumber;
     use tape_crypto::address::Address;
@@ -132,18 +136,18 @@ mod tests {
             raw_tracks: vec![
                 RawTrack {
                     track: first,
-                    group: GroupIndex::from(0),
+                    group: TrackGroup::from(0),
                     data: vec![1, 2, 3],
                 },
                 RawTrack {
                     track: second,
-                    group: GroupIndex::from(19),
+                    group: TrackGroup::from(19),
                     data: vec![4, 5, 6],
                 },
             ],
         };
 
-        persist_batch(&store, &batch).expect("persist batch");
+        persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");
 
         assert_eq!(store.get_sync_cursor().expect("sync cursor"), Some(SlotNumber(42)));
         assert_eq!(

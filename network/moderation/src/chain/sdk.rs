@@ -3,10 +3,10 @@
 use tape_peer_http::HttpApi;
 use tape_rpc::RpcError;
 use tape_rpc_solana::{RpcConfig, SolanaRpc};
-use tape_api::program::tapedrive::track_pda;
+use tape_api::program::tapedrive::TrackAddress;
+use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
-use tape_crypto::Hash;
 use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::helpers::load_ed25519_keypair;
 use tape_sdk::keys::tape_key::TapeKey;
@@ -108,7 +108,7 @@ impl TrackWriter for SdkChain {
         let key = load_key(&tape.key_path, tape.address).await?;
         let track = self.client.write_raw(&key, bytes).await.map_err(sdk_error)?;
         Ok(WrittenTrack {
-            track: track_pda(track.tape, track.track_number).0,
+            track: track.address(),
             track_number: track.track_number,
         })
     }
@@ -122,9 +122,13 @@ impl TrackWriter for SdkChain {
         }
     }
 
-    async fn landed_key(&self, tape: Address, track_number: TrackNumber) -> Result<Option<Hash>, ChainError> {
+    async fn landed_track(
+        &self,
+        tape: Address,
+        track_number: TrackNumber,
+    ) -> Result<Option<CompressedTrack>, ChainError> {
         match self.client.get_track_by_number(&tape, track_number).await {
-            Ok(track) => Ok(Some(track.key)),
+            Ok(track) => Ok(Some(track)),
             Err(TapedriveError::NotFound) => Ok(None),
             Err(error) => Err(sdk_error(error)),
         }

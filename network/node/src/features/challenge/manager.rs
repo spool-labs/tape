@@ -10,12 +10,13 @@ use tape_core::challenge::schedule::{
     MAX_PENDING_ROUNDS, SETTLE_DEADLINE_SLOTS, SLOT_MS, Schedule, round_width_slots,
 };
 use tape_core::erasure::group_for_spool;
-use tape_core::system::EpochPhase;
+use tape_core::system::{EpochPhase, SpoolStatus};
 use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 use tape_protocol::api::ProofOfAccessReq;
 use tape_protocol::{Api, ProtocolState};
+use tape_store::ops::SpoolOps;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -168,8 +169,9 @@ where
             return Ok(());
         };
 
+        // Rounds are asked of live spools, one per group position.
         let epoch = chain.epoch;
-        let mine = state.member_spools(self.context.node_address());
+        let mine = state.member_live_spools(self.context.node_address());
         if mine.is_empty() {
             return Ok(());
         }
@@ -236,8 +238,7 @@ where
                     .into_iter()
                     .filter_map(|spool| {
                         let owner = state.spool_owner(spool)?;
-                        let handed = state.spool_owner_prev(spool) != Some(owner);
-                        Some(Asked { spool, owner, handed })
+                        Some(Asked { spool, owner, handed: was_handed(&state, spool, owner) })
                     })
                     .collect(),
                 opened_slot: block.slot,
@@ -257,6 +258,19 @@ where
                 block.slot,
                 block.blockhash,
             );
+
+            // A first certificate ends a spool's grace. One earned on data the
+            // node already held would end it while the data it was handed is
+            // still arriving, so the answer waits for all of it.
+            let first = self.first_round.get(&epoch).copied().unwrap_or(number);
+            let grace = first.as_u64() + self.context.config.challenge_handover_grace_rounds();
+            let is_fetching = number.as_u64() < grace
+                && was_handed(&state, spool, self.context.node_address())
+                && !self.has_arrived(&state, spool);
+            if is_fetching {
+                debug!(spool = %spool, round = number.0, "challenge: handed data still arriving, no answer yet");
+                continue;
+            }
 
             self.answer_and_broadcast(&state, &round, spool).await;
         }
@@ -293,6 +307,20 @@ where
         };
         let first = schedule.round_from(SlotNumber(turned_at.as_u64() + 1));
         self.first_round.insert(epoch, first);
+    }
+
+    /// Whether every stored spool under one of this node's live spools has
+    /// finished its first sync.
+    fn has_arrived(&self, state: &ProtocolState, spool: SpoolIndex) -> bool {
+        state.carried_spools(spool).into_iter().all(|stored| {
+            match self.context.store.get_spool_state(stored) {
+                Ok(Some(held)) => matches!(
+                    held.status,
+                    SpoolStatus::Active | SpoolStatus::Repair | SpoolStatus::Recover
+                ),
+                Ok(None) | Err(_) => false,
+            }
+        })
     }
 
     /// Whether this node reached a round's opening in time to take part in it.
@@ -663,17 +691,27 @@ where
     }
 }
 
+/// The live spools of a group.
 pub fn group_spools(state: &ProtocolState, group: GroupIndex) -> Vec<SpoolIndex> {
     state
-        .spools_in_group(group)
+        .spools_in_group(group.into())
         .map(|spools| spools.map(|(spool, _)| spool).collect())
         .unwrap_or_default()
+}
+
+/// Whether a live spool's owner was handed data this epoch: some track group
+/// it carries had another holder at this position last epoch.
+fn was_handed(state: &ProtocolState, spool: SpoolIndex, owner: Address) -> bool {
+    state
+        .carried_spools(spool)
+        .into_iter()
+        .any(|stored| state.spool_owner_prev(stored) != Some(owner))
 }
 
 pub fn group_mates(state: &ProtocolState, me: Address) -> Vec<Address> {
     let mut mates = Vec::new();
 
-    for mine in state.member_spools(me) {
+    for mine in state.member_live_spools(me) {
         for owner in group_members(state, group_for_spool(mine)) {
             if owner != me && !mates.contains(&owner) {
                 mates.push(owner);
@@ -689,7 +727,9 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::event::{EpochCommitted, SnapshotFinalized};
     use tape_blocks::ParsedInstruction;
-    use tape_core::erasure::GROUP_SIZE;
+
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::system::SpoolState;
 
     use super::*;
     use crate::core::ingest::IngestState;
@@ -789,6 +829,56 @@ mod tests {
     fn manager_for(ctx: &TestContext) -> TestManager {
         let (_tx, rx) = mpsc::channel(4);
         ChallengeManager::new(ctx.clone(), rx, CancellationToken::new())
+    }
+
+    // a spool that took in a retired group's data counts as handed, and it is
+    // ready to answer only once that data has synced beside its own
+    #[tokio::test]
+    async fn absorbed_data_holds_the_answer() {
+        let width = usize::from(TAPENET_PROFILE.n());
+        let harness = NodeHarness::builder()
+            .nodes(2 * width)
+            .prev_committee_nodes(0..2 * width)
+            .prev_group_count(2)
+            .current_group_count(1)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let ctx: TestContext = harness.ctx_for(0);
+        let state = ctx.state();
+        let me = ctx.node_address();
+        let mine = state.member_live_spools(me)[0];
+        let carried = state.carried_spools(mine);
+        let manager = manager_for(&ctx);
+
+        assert_eq!(carried.len(), 2);
+        assert!(was_handed(&state, mine, me));
+        assert!(!manager.has_arrived(&state, mine));
+
+        let status = |spool: SpoolIndex, status: SpoolStatus| {
+            ctx.store
+                .set_spool_state(spool, SpoolState::new(status, state.epoch()))
+                .expect("spool state");
+        };
+
+        status(carried[0], SpoolStatus::Active);
+        status(carried[1], SpoolStatus::Sync);
+        assert!(!manager.has_arrived(&state, mine));
+
+        status(carried[1], SpoolStatus::Repair);
+        assert!(manager.has_arrived(&state, mine));
+    }
+
+    // a spool whose holder stayed put, with no retired group under it, was handed nothing
+    #[tokio::test]
+    async fn unmoved_spool_not_handed() {
+        let ctx = ready_context().await;
+        let state = ctx.state();
+        let me = ctx.node_address();
+        let mine = state.member_live_spools(me)[0];
+
+        assert!(!was_handed(&state, mine, me));
     }
 
     /// The only round one manager holds open.
@@ -1282,7 +1372,7 @@ mod tests {
         seat(&ctx);
         let mut groups: Vec<GroupIndex> = ctx
             .state()
-            .member_spools(ctx.node_address())
+            .member_live_spools(ctx.node_address())
             .into_iter()
             .map(group_for_spool)
             .collect();
@@ -1352,7 +1442,7 @@ mod tests {
         let me = ctx.node_address();
         let mates = group_mates(&ctx.state(), me);
 
-        assert_eq!(mates.len(), GROUP_SIZE - 1);
+        assert_eq!(mates.len(), ctx.params().n() - 1);
         assert!(!mates.contains(&me), "a node cannot challenge itself");
 
         let mut sorted = mates.clone();
@@ -1376,7 +1466,7 @@ mod tests {
         let state = ctx.state();
 
         let mut groups: Vec<GroupIndex> = state
-            .member_spools(ctx.node_address())
+            .member_live_spools(ctx.node_address())
             .into_iter()
             .map(group_for_spool)
             .collect();
@@ -1387,7 +1477,7 @@ mod tests {
         assert_eq!(groups.len(), spread, "two spools in one group");
         assert!(spread > 1, "the harness seated this node in one group only");
         for group in groups {
-            assert_eq!(group_spools(&state, group).len(), GROUP_SIZE);
+            assert_eq!(group_spools(&state, group).len(), ctx.params().n());
         }
     }
 
