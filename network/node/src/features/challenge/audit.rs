@@ -573,7 +573,10 @@ pub fn round_of(answer: &ProofOfAccess) -> Round {
 }
 
 pub fn group_members(state: &ProtocolState, group: GroupIndex) -> Vec<Address> {
-    owners_of(state.group_peers(group.into()))
+    state
+        .virtual_group(group)
+        .map(|own| owners_of(state.group_peers(own)))
+        .unwrap_or_default()
 }
 
 /// The group's roster in the round's epoch, or nothing once the state no longer holds it
@@ -582,7 +585,9 @@ pub fn group_members_at(
     epoch: EpochNumber,
     group: GroupIndex,
 ) -> Option<Vec<Address>> {
-    state.group_peers_at(epoch, group.into()).map(owners_of)
+    let own = state.virtual_group_at(epoch, group)?;
+
+    state.group_peers_at(epoch, own).map(owners_of)
 }
 
 fn owners_of(peers: Vec<(SpoolIndex, Address)>) -> Vec<Address> {
@@ -632,7 +637,11 @@ mod tests {
             deleted_slot: None,
         };
         ctx.store
-            .put_track_sample(group.into(), Address::new_unique(), row)
+            .put_track_sample(
+                state.virtual_group(group).expect("a live group"),
+                Address::new_unique(),
+                row,
+            )
             .expect("sample row");
 
         let round = Round {

@@ -44,6 +44,13 @@ impl GroupFold {
         GroupIndex(id)
     }
 
+    /// A live group carries the virtual group with its own id. None for a
+    /// group that isn't live under this fold.
+    #[inline]
+    pub fn virtual_group(&self, group: GroupIndex) -> Option<VirtualGroup> {
+        (group.0 < self.live).then_some(VirtualGroup(group.0))
+    }
+
     /// The live spool that carries a stored spool.
     #[inline]
     pub fn live_spool(&self, spool: SpoolIndex) -> SpoolIndex {
@@ -74,7 +81,7 @@ impl GroupFold {
             return None;
         }
         if index == 0 {
-            return Some(VirtualGroup::from(group));
+            return self.virtual_group(group);
         }
 
         // The bits under the folded child count up one length at a time: one
@@ -224,7 +231,8 @@ mod tests {
                     let after = fold(to).live_group(VirtualGroup(id));
 
                     assert!(after == before || after.0 >= from);
-                    assert_eq!(fold(from).live_group(VirtualGroup::from(after)), before);
+                    let own = fold(to).virtual_group(after).expect("live at the higher count");
+                    assert_eq!(fold(from).live_group(own), before);
                 }
             }
         }
@@ -293,6 +301,17 @@ mod tests {
         assert_eq!(fold.carried_at(GroupIndex(1), count), None);
         assert_eq!(fold.carried_count(GroupIndex(5)), 0);
         assert_eq!(fold.carried_at(GroupIndex(5), 0), None);
+    }
+
+    // only a live group has a virtual group of its own
+    #[test]
+    fn virtual_group_bounds() {
+        let fold = fold(5);
+
+        assert_eq!(fold.virtual_group(GroupIndex(0)), Some(VirtualGroup(0)));
+        assert_eq!(fold.virtual_group(GroupIndex(4)), Some(VirtualGroup(4)));
+        assert_eq!(fold.virtual_group(GroupIndex(5)), None);
+        assert_eq!(fold.virtual_group(GroupIndex(VIRTUAL_GROUP_COUNT)), None);
     }
 
     // at a power of two every live group carries the same number

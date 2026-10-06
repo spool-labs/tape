@@ -20,8 +20,12 @@ pub fn group_peers_without(
     group: GroupIndex,
     exclude: Address,
 ) -> Vec<Address> {
+    let Some(own) = state.virtual_group(group) else {
+        return Vec::new();
+    };
+
     state
-        .group_peers(group.into())
+        .group_peers(own)
         .into_iter()
         .map(|(_, id)| id)
         .filter(|id| *id != exclude)
@@ -33,7 +37,7 @@ pub fn bitmap_index_in_group(
     group: GroupIndex,
     node: Address,
 ) -> Option<u16> {
-    let (spool, _) = state.spool_for_node_in_group(group.into(), node)?;
+    let (spool, _) = state.spool_for_node_in_group(state.virtual_group(group)?, node)?;
     group.position_of(spool).map(|position| position as u16)
 }
 

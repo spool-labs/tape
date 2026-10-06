@@ -6,6 +6,7 @@ use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::instruction::MAX_INLINE_WRITE;
 use tape_api::program::tapedrive::TrackAddress;
 use tape_core::encoding::TAPENET_PROFILE;
+use tape_core::spooler::VIRTUAL_GROUP_COUNT;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits};
 use tape_e2e_simnet::{
@@ -112,8 +113,8 @@ async fn upload_flow_inner() {
     assert!(raw_track.is_certified(), "raw track should be certified");
     assert_eq!(raw_track.tape, tape_address, "raw track tape mismatch");
     assert!(
-        raw_track.group.0 < TARGET_GROUPS,
-        "raw track assigned outside live groups"
+        raw_track.group.0 < VIRTUAL_GROUP_COUNT,
+        "raw track stamped outside the virtual groups"
     );
 
     let blob_track = sdk
@@ -127,8 +128,8 @@ async fn upload_flow_inner() {
     );
     assert_eq!(blob_track.tape, tape_address, "blob track tape mismatch");
     assert!(
-        blob_track.group.0 < TARGET_GROUPS,
-        "blob track assigned outside live groups"
+        blob_track.group.0 < VIRTUAL_GROUP_COUNT,
+        "blob track stamped outside the virtual groups"
     );
 
     // A caller that already encoded these bytes to decide whether to write at
@@ -231,8 +232,8 @@ async fn upload_flow_inner() {
     for track in tracks.iter().filter(|track| track.is_coded()) {
         assert!(track.is_certified(), "blob track should be certified");
         assert!(
-            track.group.0 < TARGET_GROUPS,
-            "blob track assigned outside live groups"
+            track.group.0 < VIRTUAL_GROUP_COUNT,
+            "blob track stamped outside the virtual groups"
         );
 
         let track_address = track.address();

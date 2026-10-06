@@ -356,7 +356,7 @@ mod tests {
             state: TrackState::Registered as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
-            group: VirtualGroup::from(group_id),
+            group: VirtualGroup(group_id.0),
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();

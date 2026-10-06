@@ -29,7 +29,6 @@ async fn run() {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
         .runtime_mode(NodeRuntimeMode::Full)
-        .base_port(0)
         .file_log(true)
         .build()
         .expect("build harness");

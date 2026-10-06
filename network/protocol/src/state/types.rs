@@ -221,6 +221,17 @@ impl ProtocolState {
         self.current_groups()?.live_group(group)
     }
 
+    /// A live group's own virtual group, or nothing for a group that isn't
+    /// live in the current epoch.
+    pub fn virtual_group(&self, group: GroupIndex) -> Option<VirtualGroup> {
+        self.fold()?.virtual_group(group)
+    }
+
+    /// A live group's own virtual group as of `epoch`, current or previous
+    pub fn virtual_group_at(&self, epoch: EpochNumber, group: GroupIndex) -> Option<VirtualGroup> {
+        self.fold_at(epoch)?.virtual_group(group)
+    }
+
     /// List the stored spools a live spool carries in the current epoch, its own first.
     pub fn carried_spools(&self, spool: SpoolIndex) -> Vec<SpoolIndex> {
         self.fold()
@@ -371,10 +382,15 @@ impl ProtocolState {
         assigned_node(self.groups_at(epoch)?.spool(spool)?.node)
     }
 
-    /// Whether a node held a spool of a virtual group as of `epoch`
-    pub fn is_member_at(&self, epoch: EpochNumber, group: VirtualGroup, node: Address) -> bool {
-        self.groups_at(epoch)
-            .is_some_and(|groups| groups.spool_for_node_in_group(group, node).is_some())
+    /// Whether a node held a position in a live group as of `epoch`. A group
+    /// that wasn't live then has no members.
+    pub fn is_member_at(&self, epoch: EpochNumber, group: GroupIndex, node: Address) -> bool {
+        self.groups_at(epoch).is_some_and(|groups| {
+            groups
+                .fold
+                .virtual_group(group)
+                .is_some_and(|own| groups.spool_for_node_in_group(own, node).is_some())
+        })
     }
 
     fn current_groups(&self) -> Option<EpochGroups<'_>> {
@@ -664,9 +680,16 @@ mod tests {
         assert_eq!(state.spool_owner_at(EpochNumber(4), spool), Some(address(207)));
         assert_eq!(state.spool_owner_at(EpochNumber(5), spool), Some(address(103)));
         assert_eq!(state.group_peers_prev(retired)[0], (retired.spool_at(0), address(207)));
-        assert!(state.is_member_at(EpochNumber(4), retired, address(207)));
-        assert!(state.is_member_at(EpochNumber(5), retired, address(103)));
-        assert!(!state.is_member_at(EpochNumber(5), retired, address(207)));
+
+        // Group 7 was live last epoch and is gone now, so it has members only then.
+        let gone = GroupIndex(7);
+        assert!(state.is_member_at(EpochNumber(4), gone, address(207)));
+        assert!(!state.is_member_at(EpochNumber(5), gone, address(103)));
+        assert!(state.is_member_at(EpochNumber(5), GroupIndex(3), address(103)));
+        assert!(!state.is_member_at(EpochNumber(5), GroupIndex(3), address(207)));
+        assert_eq!(state.virtual_group_at(EpochNumber(4), gone), Some(retired));
+        assert_eq!(state.virtual_group_at(EpochNumber(5), gone), None);
+        assert_eq!(state.virtual_group(GroupIndex(3)), Some(VirtualGroup(3)));
 
         // A reader asks today's holders first, then the ones that held it last epoch.
         let holders = state.group_peers_with_prev(retired);

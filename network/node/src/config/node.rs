@@ -135,15 +135,14 @@ impl GenesisPreset {
     ///
     /// Mainnet plans at 200 ms, where it is heading from 250 today. A slower
     /// live rate only stretches each round, so a span converted here lasts at
-    /// least as long as stated. The simnet producer ticks once a wall second,
-    /// while its chain clock counts `SLOT_MS` a slot. `SLOT_MS` is the fallback
-    /// before ingest measures a live rate, and no cluster preset plans slower.
+    /// least as long as stated. The simnet producer closes a block every 300 ms
+    /// of wall time. `SLOT_MS` is the fallback before ingest measures a live rate.
     pub fn slot_ms(self) -> u64 {
         match self {
             Self::Mainnet => 200,
             Self::Devnet | Self::Custom => 166,
             Self::Localnet => 400,
-            Self::Simnet => 1_000,
+            Self::Simnet => 300,
         }
     }
 
@@ -157,7 +156,7 @@ impl GenesisPreset {
             Self::Mainnet => 480,
             Self::Devnet | Self::Custom => 225,
             Self::Localnet => 80,
-            Self::Simnet => 80,
+            Self::Simnet => 75,
         }
     }
 
@@ -170,7 +169,7 @@ impl GenesisPreset {
             Self::Mainnet => 180,
             Self::Devnet | Self::Custom => 75,
             Self::Localnet => 30,
-            Self::Simnet => 30,
+            Self::Simnet => 29,
         }
     }
 
@@ -1005,7 +1004,7 @@ eviction:
             ("mainnet", 300, 200, 8, 3),
             ("devnet", 180, 166, 8, 3),
             ("localnet", 25, 400, 8, 3),
-            ("simnet", 10, 1_000, 8, 3),
+            ("simnet", 33, 300, 8, 3),
             ("custom", 180, 166, 8, 3),
         ];
 
@@ -1107,7 +1106,7 @@ challenge:
             ("mainnet", 300),
             ("devnet", 180),
             ("localnet", 25),
-            ("simnet", 10),
+            ("simnet", 33),
             ("custom", 180),
         ];
 

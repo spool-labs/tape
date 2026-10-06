@@ -622,8 +622,8 @@ where
         committee.iter().map(|m| (m.address.clone(), m.index)).collect();
 
     let mut spools: Vec<NetworkSpool> = Vec::new();
-    for group in &state.current.groups {
-        for (spool, owner) in state.group_peers(group.id.into()) {
+    for own in state.current.groups.iter().filter_map(|group| state.virtual_group(group.id)) {
+        for (spool, owner) in state.group_peers(own) {
             let owner = owner.to_string();
             let owner_index = idx.get(&owner).copied();
             spools.push(NetworkSpool { spool: spool.0, owner: Some(owner), owner_index });

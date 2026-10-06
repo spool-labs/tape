@@ -694,7 +694,8 @@ where
 /// The live spools of a group.
 pub fn group_spools(state: &ProtocolState, group: GroupIndex) -> Vec<SpoolIndex> {
     state
-        .spools_in_group(group.into())
+        .virtual_group(group)
+        .and_then(|own| state.spools_in_group(own))
         .map(|spools| spools.map(|(spool, _)| spool).collect())
         .unwrap_or_default()
 }

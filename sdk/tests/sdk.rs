@@ -580,7 +580,7 @@ async fn reads_from_last_epochs_holder() {
     pipe(&fixture.rpc, group_pda(EpochNumber(1), retired).0, &group.pack());
 
     let (mut track, data) = make_raw_track(tape_address, hash::hash(b"retired-track"), 0, raw);
-    track.group = VirtualGroup::from(retired);
+    track.group = VirtualGroup(retired.0);
     let address = fixture.insert_track(track, data);
     *fixture.data_holder.lock().unwrap() = Some(old_holder);
 

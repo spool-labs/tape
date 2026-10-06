@@ -4,8 +4,6 @@ use crate::erasure::MAX_GROUP_SIZE;
 use crate::types::SpoolIndex;
 use bytemuck::{Pod, Zeroable};
 
-use super::GroupIndex;
-
 /// Bits in a virtual group number.
 pub const VIRTUAL_GROUP_BITS: u32 = 11;
 
@@ -102,14 +100,6 @@ impl From<VirtualGroup> for u64 {
     #[inline]
     fn from(g: VirtualGroup) -> u64 {
         g.0
-    }
-}
-
-/// A live group always carries the virtual group with its own id.
-impl From<GroupIndex> for VirtualGroup {
-    #[inline]
-    fn from(g: GroupIndex) -> Self {
-        Self(g.0)
     }
 }
 

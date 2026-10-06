@@ -525,7 +525,7 @@ mod protocol_tests {
     ) {
         ctx.store
             .put_track_sample(
-                group.into(),
+                ctx.state().virtual_group(group).expect("a live group"),
                 track,
                 TrackSample {
                     kind: EntryKind::Coded {
@@ -548,7 +548,8 @@ mod protocol_tests {
 
     fn group_spools(state: &ProtocolState, group: GroupIndex) -> Vec<SpoolIndex> {
         state
-            .spools_in_group(group.into())
+            .virtual_group(group)
+            .and_then(|own| state.spools_in_group(own))
             .map(|spools| spools.map(|(spool, _)| spool).collect())
             .unwrap_or_default()
     }
@@ -661,7 +662,7 @@ mod protocol_tests {
 
         let mut tracks: Vec<Address> = (0..6).map(|_| Address::new_unique()).collect();
         for (index, track) in tracks.iter().enumerate() {
-            let group = if index % 2 == 0 { retired } else { fixture.group.into() };
+            let group = if index % 2 == 0 { retired } else { fixture.own_group() };
             fixture
                 .ctx
                 .store
@@ -714,13 +715,13 @@ mod protocol_tests {
         for (held, _) in fixture
             .ctx
             .store
-            .iter_track_samples_by_group(fixture.group.into())
+            .iter_track_samples_by_group(fixture.own_group())
             .expect("rows")
         {
             fixture
                 .ctx
                 .store
-                .mark_track_sample_deleted(fixture.group.into(), held, SlotNumber(0))
+                .mark_track_sample_deleted(fixture.own_group(), held, SlotNumber(0))
                 .expect("clear the live group's rows");
         }
 
@@ -802,6 +803,11 @@ mod protocol_tests {
                 round: ROUND,
                 block: BLOCK,
             }
+        }
+
+        /// The fixture group's own virtual group.
+        fn own_group(&self) -> VirtualGroup {
+            self.state.virtual_group(self.group).expect("the fixture's group is live")
         }
 
         /// Build the answer one spool owes this round, signed by its own key.
@@ -1077,7 +1083,7 @@ mod protocol_tests {
         fixture
             .ctx
             .store
-            .mark_track_sample_deleted(fixture.group.into(), extra, cutoff)
+            .mark_track_sample_deleted(fixture.own_group(), extra, cutoff)
             .expect("delete at the cut");
 
         let (after, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
@@ -1090,7 +1096,7 @@ mod protocol_tests {
         fixture
             .ctx
             .store
-            .mark_track_sample_deleted(fixture.group.into(), extra, SlotNumber(cutoff.as_u64() - 1))
+            .mark_track_sample_deleted(fixture.own_group(), extra, SlotNumber(cutoff.as_u64() - 1))
             .expect("delete before the cut");
         let (out, _) = expected_sample(&fixture.ctx, &round, fixture.mine)
             .expect("a sample");
@@ -1116,20 +1122,20 @@ mod protocol_tests {
         for (held, _) in fixture
             .ctx
             .store
-            .iter_track_samples_by_group(fixture.group.into())
+            .iter_track_samples_by_group(fixture.own_group())
             .expect("rows")
         {
             fixture
                 .ctx
                 .store
-                .mark_track_sample_deleted(fixture.group.into(), held, SlotNumber(0))
+                .mark_track_sample_deleted(fixture.own_group(), held, SlotNumber(0))
                 .expect("clear the coded rows");
         }
         fixture
             .ctx
             .store
             .put_track_sample(
-                fixture.group.into(),
+                fixture.own_group(),
                 track,
                 TrackSample {
                     kind: EntryKind::Inline,

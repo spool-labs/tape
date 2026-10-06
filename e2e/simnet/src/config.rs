@@ -51,8 +51,6 @@ pub struct SimnetConfig {
     pub node_count: usize,
     /// Runtime mode for each node.
     pub runtime_mode: NodeRuntimeMode,
-    /// First TCP port used for node bind/public addresses.
-    pub base_port: u16,
     /// Shutdown timeout for runtime tasks.
     pub stop_timeout: Duration,
     /// Deterministic slot advancement after each successful transaction.
@@ -90,7 +88,6 @@ impl Default for SimnetConfig {
             trust_model: TrustModel::Permissionless,
             node_count: usize::from(TAPENET_PROFILE.n()),
             runtime_mode: NodeRuntimeMode::Disabled,
-            base_port: 19_000,
             stop_timeout: Duration::from_secs(5),
             slot_advance_per_tx: 1,
             file_log: false,

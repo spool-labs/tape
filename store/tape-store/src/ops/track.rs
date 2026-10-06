@@ -44,11 +44,7 @@ pub trait TrackOps {
         limit: usize,
     ) -> Result<Vec<(Address, CompressedTrack)>>;
 
-    /// One page of tracks in no promised order, resumed by an opaque mark.
-    ///
-    /// What a maintenance pass wants: complete, resumable coverage without the
-    /// key order it never reads. The mark is the backend's, so hand back whatever
-    /// the last page answered and nothing to start.
+    /// Unordered track iteration, returning the next cursor for resume.
     fn sweep_tracks(
         &self,
         from: Option<&[u8]>,

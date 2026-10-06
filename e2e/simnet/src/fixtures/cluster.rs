@@ -161,7 +161,7 @@ impl SimnetHarness {
             return Ok(());
         }
         bail!(
-            "{what}: all {} node runtimes have exited; check target/sim-e2e/sim.log for \
+            "{what}: all {} node runtimes have exited; check this test's log in target/sim-e2e/ for \
              service failures or shutdown signals",
             self.nodes().len()
         );
