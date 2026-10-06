@@ -126,7 +126,7 @@ mod tests {
     use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress, SYSTEM_ADDRESS};
     use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::snapshot::replay::SnapshotLog;
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::VirtualGroup;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
@@ -171,7 +171,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: blob.size,
-            group: TrackGroup::from(0),
+            group: VirtualGroup::from(0),
             value_hash: blob.get_hash(),
         };
         let track_address = track.address();

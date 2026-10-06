@@ -45,7 +45,7 @@ pub fn verify_snapshot_track_set(
 mod tests {
     use super::*;
 
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::VirtualGroup;
     use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
     use tape_core::types::{StorageUnits, TrackNumber};
     use tape_crypto::address::Address;
@@ -60,7 +60,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(64),
-            group: TrackGroup(n),
+            group: VirtualGroup(n),
             value_hash: Hash::default(),
         }
     }

@@ -6,7 +6,7 @@ use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::VirtualGroup;
 use tape_core::types::SpoolIndex;
 use tape_core::types::StorageUnits;
 use tape_core::track::blob::BlobEncoding;
@@ -379,7 +379,7 @@ fn track_data_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     spool: SpoolIndex,
 ) -> Vec<Address> {
-    let group = TrackGroup::containing(spool);
+    let group = VirtualGroup::containing(spool);
     let state = ctx.state();
     let mut peers = Vec::new();
 
@@ -431,7 +431,7 @@ mod tests {
     use peer_memory::MemoryApi;
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::erasure::{SLICE_TREE_HEIGHT, slice_root};
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::VirtualGroup;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
     use tape_crypto::address::Address;
@@ -514,7 +514,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size),
-            group: TrackGroup::containing(SPOOL),
+            group: VirtualGroup::containing(SPOOL),
             value_hash: blob.get_hash(),
         }
     }

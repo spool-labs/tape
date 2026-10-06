@@ -26,7 +26,7 @@ use tape_core::prelude::{
 use tape_core::track::data::{
     track_key, BlobData, BlobDataSlice, BlobInfo, TrackMeta, TrackObjectInfo,
 };
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::VirtualGroup;
 use tape_core::tape::TapeFlags;
 use tape_core::track::archive::{TrackArchive, TRACK_TREE_HEIGHT};
 use tape_core::track::mirror::ArchiveMirror;
@@ -1736,7 +1736,7 @@ fn content_address(tape: Address, key: Hash, meta: &TrackMeta, flags: u64) -> Ha
         state: meta.state as u64,
         flags,
         size: meta.size,
-        group: TrackGroup(0),
+        group: VirtualGroup(0),
         value_hash: meta.value_hash,
     }
     .content_address()

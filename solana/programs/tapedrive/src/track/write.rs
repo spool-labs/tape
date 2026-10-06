@@ -80,9 +80,11 @@ mod tests {
     use tape_core::track::types::{CompressedTrack, TrackKind, TrackState};
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::types::ContentType;
-    use tape_crypto::hash::{hash, hashv};
+    use tape_crypto::hash::hash;
     use tape_crypto::merkle::{root_from_leaf_hashes, MerkleTree};
     use tape_test::*;
+
+    use crate::track::helpers::select_group;
 
     fn slot_hashes_account() -> (Pubkey, Account) {
         let mut data = vec![0u8; 48];
@@ -261,17 +263,11 @@ mod tests {
 
         let mut expected_tree = MerkleTree::<TRACK_TREE_HEIGHT>::new();
         let track_number = TrackNumber(0);
-        let mixed_hash = hashv(&[
-            Hash::default().as_ref(),
-            tape_address.as_ref(),
-            &tape.id.pack(),
-            &track_number.pack(),
-        ]);
+        let group = select_group(&system, tape_address, tape.id, track_number, Hash::default())
+            .expect("a virtual group");
 
-        let writable = system.live_group_count.min(system.target_group_count);
-        let group = TrackGroup(
-            u64::from_le_bytes(mixed_hash.0[..8].try_into().unwrap()) % writable,
-        );
+        // The stamp belongs to a live group that stays live next epoch.
+        assert!(system.live_group(group).unwrap().0 < system.writable_group_count());
 
         let track = CompressedTrack {
             tape: tape_address,

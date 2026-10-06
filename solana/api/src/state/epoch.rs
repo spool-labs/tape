@@ -32,9 +32,6 @@ pub struct Epoch {
     /// Number of spool groups created in this epoch so far.
     pub total_groups: u64,
 
-    /// Number of track groups as of this epoch: the most spool groups ever live up to it.
-    pub track_groups: u64,
-
     /// Sum of spool storage assigned to nodes at the end of the last epoch.
     pub total_assigned: StorageUnits,
 

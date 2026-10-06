@@ -102,8 +102,8 @@ pub struct SetNetworkCapacity {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SetNodeCapacity {
-    pub capacity: StorageUnits,
+pub struct SetSpoolSize {
+    pub spool_size: StorageUnits,
 }
 
 #[repr(C)]
@@ -404,11 +404,11 @@ pub fn build_set_network_capacity_ix(
     }
 }
 
-pub fn build_set_node_capacity_ix(
+pub fn build_set_spool_size_ix(
     fee_payer: Address,
     authority: Address,
     node_address: Address,
-    capacity: StorageUnits,
+    spool_size: StorageUnits,
 ) -> Instruction {
     Instruction {
         program_id: tapedrive::ID,
@@ -417,8 +417,8 @@ pub fn build_set_node_capacity_ix(
             AccountMeta::new_readonly(authority.into(), true),
             AccountMeta::new(node_address.into(), false),
         ],
-        data: SetNodeCapacity {
-            capacity,
+        data: SetSpoolSize {
+            spool_size,
         }.to_bytes(),
     }
 }

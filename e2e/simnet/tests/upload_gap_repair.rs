@@ -3,12 +3,13 @@
 use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::spooler::{GroupIndex, VirtualGroup};
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{
     NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, run_simnet_test,
 };
-use tape_store::ops::{SliceOps, SpoolOps};
+use tape_store::ops::SliceOps;
 
 // One group, one spool each, so stopping a node is guaranteed to strand a
 // slice rather than landing on a spool somebody else also holds.
@@ -80,7 +81,7 @@ async fn upload_gap_repair_inner() {
         .await
         .expect("all nodes active at the steady epoch");
 
-    let spool = node_spool(&harness, VICTIM);
+    let live_spool = node_spool(&harness, VICTIM);
 
     harness
         .stop_nodes(&[VICTIM])
@@ -101,11 +102,12 @@ async fn upload_gap_repair_inner() {
     );
 
     // Read the gap from the store, not through a node that answers for a peer.
+    let spool = stored_spool(live_spool, written.group);
     assert!(
         node_slice(&harness, VICTIM, spool, track).is_none(),
         "the stopped owner should hold nothing for a track written while it was down"
     );
-    let holders = slice_holders(&harness, track);
+    let holders = slice_holders(&harness, track, written.group);
     let witness_node = harness.node(0).expect("node 0");
     let certify = witness_node.context().params().thresholds.certify;
     assert!(
@@ -125,7 +127,7 @@ async fn upload_gap_repair_inner() {
 
     assert_eq!(
         node_spool(&harness, VICTIM),
-        spool,
+        live_spool,
         "the victim came back on a different spool, so the repair is not the thing measured"
     );
 
@@ -175,20 +177,35 @@ async fn wait_slice(
     }
 }
 
+/// The one live spool a node is assigned.
 fn node_spool(harness: &SimnetHarness, index: usize) -> SpoolIndex {
-    let node = harness.node(index).expect("node");
-    let spools = node.context().store.iter_all_spools().expect("iter spools");
-    spools.first().copied().map(|(spool, _)| spool).expect("node owns a spool")
+    let context = harness.node(index).expect("node").context();
+    let spools = context.state().member_live_spools(context.node_address());
+    spools.first().copied().expect("node owns a spool")
+}
+
+/// The stored spool a node keeps a track's slice under: the track's virtual
+/// group, at the node's position in its live group.
+fn stored_spool(live_spool: SpoolIndex, group: VirtualGroup) -> SpoolIndex {
+    let position = GroupIndex::containing(live_spool)
+        .position_of(live_spool)
+        .expect("a position in its group");
+    group.spool_at(position)
 }
 
 /// Owners holding a slice for this track, with the slice each holds.
 ///
 /// Scans every owner rather than naming one: which owners land inside the
 /// certifying quorum is not fixed, so a named one is a coin flip.
-fn slice_holders(harness: &SimnetHarness, track: Address) -> Vec<(usize, Vec<u8>)> {
+fn slice_holders(
+    harness: &SimnetHarness,
+    track: Address,
+    group: VirtualGroup,
+) -> Vec<(usize, Vec<u8>)> {
     (0..NODE_COUNT)
         .filter_map(|index| {
-            let slice = node_slice(harness, index, node_spool(harness, index), track)?;
+            let spool = stored_spool(node_spool(harness, index), group);
+            let slice = node_slice(harness, index, spool, track)?;
             Some((index, slice))
         })
         .collect()

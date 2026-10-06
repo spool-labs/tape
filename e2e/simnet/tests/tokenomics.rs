@@ -14,7 +14,6 @@ use tape_api::program::tapedrive::{
 };
 use tape_api::program::token::{MINT_ADDRESS, TOKEN_DECIMALS};
 use tape_api::utils::ata;
-use tape_core::spooler::TrackGroup;
 use tape_core::system::{Member, NodePreferences};
 use tape_core::tape::{remaining_tape_epochs, tape_reservation_cost};
 use tape_core::types::coin::TAPE;
@@ -442,7 +441,7 @@ async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumbe
         storage_price: archive.storage_price,
         access_threshold: TAPE(0),
         epoch_duration: TEST_EPOCH_DURATION,
-        node_capacity: StorageUnits::zero(),
+        spool_size: StorageUnits::zero(),
     };
 
     assert_eq!(
@@ -470,7 +469,6 @@ async fn reserve_and_write(harness: &SimnetHarness) -> WrittenTrack {
         .write_raw(&tape_key, &data)
         .await
         .expect("write tokenomics track");
-    assert_eq!(track.group, TrackGroup(0), "unexpected raw track group");
 
     WrittenTrack {
         authority: Address::from(tape_key.pubkey()),

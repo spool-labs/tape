@@ -22,7 +22,7 @@ pub mod prelude {
     pub use crate::encoding::{EncodingProfile, ErasureCode, TAPENET_PROFILE};
     pub use crate::thresholds::{validate_profile, NetworkParams, Thresholds, TrustModel};
     pub use crate::object::object_etag;
-    pub use crate::types::{GroupIndex, SpoolIndex, TrackGroup};
+    pub use crate::types::{GroupIndex, SpoolIndex, VirtualGroup};
     pub use crate::system::{
         EpochPhase, EpochState, NodeStatus, SpoolState, SpoolStatus, VoteKind,
     };

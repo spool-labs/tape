@@ -114,7 +114,7 @@ mod tests {
     use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
     use tape_core::prelude::{SpoolState, SpoolStatus};
     use tape_snapshot::snapshot_chunk_key;
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::VirtualGroup;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
@@ -153,7 +153,7 @@ mod tests {
         // Build a real Clay-encoded snapshot chunk: 20 slices, each carrying
         // the per-slice metadata suffix that the repair extractor parses.
         let chunk = vec![0xCDu8; 2048];
-        let group = TrackGroup(2);
+        let group = VirtualGroup(2);
         let mut slicer = Slicer::try_from_profile(TAPENET_PROFILE).expect("tapenet slicer");
         slicer.set_chunk_index(ChunkNumber(group.0));
 

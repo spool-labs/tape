@@ -18,7 +18,7 @@ use tape_crypto::address::Address;
 use tape_crypto::hash::{hashv, Hash};
 use tape_crypto::merkle::{MerkleError, MerkleTree};
 
-use crate::spooler::TrackGroup;
+use crate::spooler::VirtualGroup;
 use crate::types::{StorageUnits, TrackNumber};
 use super::archive::TRACK_TREE_HEIGHT;
 
@@ -76,7 +76,7 @@ pub struct CompressedTrack {
     pub state: u64,
     pub flags: u64,
     pub size: StorageUnits,
-    pub group: TrackGroup,
+    pub group: VirtualGroup,
     pub value_hash: Hash,
 }
 
@@ -244,7 +244,7 @@ mod tests {
             state: TrackState::Registered as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(4096),
-            group: TrackGroup(3),
+            group: VirtualGroup(3),
             value_hash: Hash::new_unique(),
         }
     }
@@ -308,7 +308,7 @@ mod tests {
         let track = public_track();
 
         let certified = CompressedTrack { state: TrackState::Certified as u64, ..track };
-        let moved = CompressedTrack { group: TrackGroup(9), ..track };
+        let moved = CompressedTrack { group: VirtualGroup(9), ..track };
         let rewritten = CompressedTrack { track_number: TrackNumber(4), ..track };
 
         assert_eq!(track.content_address(), certified.content_address());

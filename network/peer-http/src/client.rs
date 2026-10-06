@@ -953,7 +953,7 @@ mod tests {
             subsidy_decay_bps: BasisPoints(0),
             epoch_duration: EpochDuration(0),
             access_threshold: TAPE(0),
-            node_capacity: StorageUnits::zero(),
+            spool_size: StorageUnits::zero(),
         }
     }
 

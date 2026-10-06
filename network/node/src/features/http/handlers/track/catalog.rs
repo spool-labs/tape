@@ -442,7 +442,7 @@ fn store_error(error: impl core::fmt::Display) -> RouteError {
 mod tests {
     use bytemuck::Zeroable;
     use tape_peer_manager::PeerNode;
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::VirtualGroup;
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
@@ -488,7 +488,7 @@ mod tests {
 
         ctx.store
             .set_spool_state(
-                TrackGroup(0).spool_at(3),
+                VirtualGroup(0).spool_at(3),
                 SpoolState::new(SpoolStatus::LockedToMove, EpochNumber(1)),
             )
             .expect("spool state");
@@ -546,7 +546,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(64),
-            group: TrackGroup(0),
+            group: VirtualGroup(0),
             value_hash: Hash::from([2u8; 32]),
         };
         let track_addr = track.address();
@@ -621,7 +621,7 @@ mod tests {
                 state: TrackState::Certified as u64,
                 flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(64),
-                group: TrackGroup(0),
+                group: VirtualGroup(0),
                 value_hash: Hash::from([2u8; 32]),
             };
             ctx.store.put_track(track.address(), track).expect("put track");
@@ -666,7 +666,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(64),
-            group: TrackGroup(0),
+            group: VirtualGroup(0),
             value_hash: Hash::from([2u8; 32]),
         };
         let track_addr = track.address();

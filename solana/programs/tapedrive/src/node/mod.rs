@@ -12,8 +12,8 @@ pub mod set_name;
 pub mod set_network_address;
 pub mod set_network_capacity;
 pub mod set_network_tls;
-pub mod set_node_capacity;
 pub mod set_spool_groups;
+pub mod set_spool_size;
 pub mod set_storage_price;
 pub mod set_subsidy_decay_bps;
 
@@ -31,7 +31,7 @@ pub use set_name::*;
 pub use set_network_address::*;
 pub use set_network_capacity::*;
 pub use set_network_tls::*;
-pub use set_node_capacity::*;
 pub use set_spool_groups::*;
+pub use set_spool_size::*;
 pub use set_storage_price::*;
 pub use set_subsidy_decay_bps::*;

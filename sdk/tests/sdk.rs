@@ -11,7 +11,7 @@ use tape_api::program::tapedrive::{self, group_pda, tape_pda, TrackAddress};
 use tape_api::state::{Group, Tape};
 use tape_core::bls::BlsPubkey;
 use tape_core::encoding::TAPENET_PROFILE;
-use tape_core::spooler::{GroupIndex, TrackGroup};
+use tape_core::spooler::{GroupIndex, VirtualGroup};
 use tape_core::system::{Member, NodePreferences, Spool};
 use tape_core::thresholds::TrustModel;
 use tape_core::track::data::BlobData;
@@ -398,7 +398,7 @@ fn make_raw_track(
         state: TrackState::Certified as u64,
         flags: TrackFlags::NONE,
         size: StorageUnits::from_bytes(bytes.len() as u64),
-        group: TrackGroup(0),
+        group: VirtualGroup(0),
         value_hash: hash::hash(&bytes),
     };
     (track, BlobData::Inline(bytes))
@@ -559,15 +559,13 @@ async fn reads_from_last_epochs_holder() {
     let old_holder = address(2);
     let retired = GroupIndex(1);
 
-    // Last epoch ran two groups and this one runs one, so track group 1 is
+    // Last epoch ran two groups and this one runs one, so virtual group 1 is
     // carried by group 0.
     let mut state = (**fixture.client.state()).clone();
     state.system.current_epoch = EpochNumber(2);
     state.system.live_group_count = 1;
     state.system.previous_group_count = 2;
-    state.system.track_group_count = 2;
     state.current.epoch.id = EpochNumber(2);
-    state.current.epoch.track_groups = 2;
     state.touch();
     fixture.client.store_state(state);
 
@@ -582,7 +580,7 @@ async fn reads_from_last_epochs_holder() {
     pipe(&fixture.rpc, group_pda(EpochNumber(1), retired).0, &group.pack());
 
     let (mut track, data) = make_raw_track(tape_address, hash::hash(b"retired-track"), 0, raw);
-    track.group = TrackGroup::from(retired);
+    track.group = VirtualGroup::from(retired);
     let address = fixture.insert_track(track, data);
     *fixture.data_holder.lock().unwrap() = Some(old_holder);
 

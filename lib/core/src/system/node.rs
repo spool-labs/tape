@@ -56,10 +56,10 @@ pub struct NodePreferences {
     /// Reference targets: ~20s simnet, ~100s localnet, ~3_600s devnet, ~604_800s mainnet.
     pub epoch_duration: EpochDuration,
 
-    /// The most bytes this node can store; zero means no limit.
-    /// Spools count at twice their size against it, leaving room to grow.
-    /// Each node sets its own, and it is never aggregated.
-    pub node_capacity: StorageUnits,
+    /// The largest spool this node wants to hold; zero means no preference.
+    /// Operators compare the voted value with the real spool sizes to see
+    /// when the group count should go up. No instruction reads it.
+    pub spool_size: StorageUnits,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +83,7 @@ pub fn aggregate_node_preferences(
     let mut storage_prices: Vec<(u64, u64)> = Vec::new();
     let mut access_thresholds: Vec<(u64, u64)> = Vec::new();
     let mut epoch_durations: Vec<(u64, u64)> = Vec::new();
+    let mut spool_sizes: Vec<(u64, u64)> = Vec::new();
 
     for member in members.iter() {
         let peer = peers
@@ -99,6 +100,7 @@ pub fn aggregate_node_preferences(
         storage_prices.push((peer.preferences.storage_price.0, weight));
         access_thresholds.push((peer.preferences.access_threshold.0, weight));
         epoch_durations.push((peer.preferences.epoch_duration.0, weight));
+        spool_sizes.push((peer.preferences.spool_size.0, weight));
 
         total_weight = total_weight.saturating_add(weight);
     }
@@ -143,7 +145,8 @@ pub fn aggregate_node_preferences(
             quorum_above(&epoch_durations, total_weight)
                 .max(bounds.epoch_duration.0),
         ),
-        node_capacity: StorageUnits::zero(),
+        // The largest spool two thirds of the weight are willing to hold.
+        spool_size: StorageUnits(quorum_above(&spool_sizes, total_weight)),
     })
 }
 
@@ -200,5 +203,48 @@ mod tests {
     #[test]
     fn never_zero() {
         assert_eq!(spool_groups(&[(0, 100)]), 1);
+    }
+
+    // spool weight per voted spool size, in bytes
+    fn spool_size(votes: &[(u64, u64)]) -> StorageUnits {
+        let mut members = Vec::new();
+        let mut peers = Vec::new();
+
+        for (index, (size, weight)) in votes.iter().enumerate() {
+            let node = Address::from([index as u8 + 1; 32]);
+
+            members.push(Member { spools: *weight, ..Member::new(node, TAPE(1)) });
+            peers.push(Peer {
+                preferences: NodePreferences {
+                    spool_size: StorageUnits(*size),
+                    ..NodePreferences::zeroed()
+                },
+                ..Peer::new(node)
+            });
+        }
+
+        let current = NodePreferences { spool_groups: 1, ..NodePreferences::zeroed() };
+        let bounds = NodePreferences { spool_groups: 1, ..NodePreferences::zeroed() };
+
+        aggregate_node_preferences(&members, &peers, current, bounds)
+            .expect("aggregate")
+            .spool_size
+    }
+
+    // the voted size is the largest one two thirds of the weight reach
+    #[test]
+    fn spool_size_two_thirds() {
+        assert_eq!(spool_size(&[(500, 100)]), StorageUnits(500));
+        assert_eq!(spool_size(&[(1_000, 67), (500, 33)]), StorageUnits(1_000));
+        assert_eq!(spool_size(&[(1_000, 66), (500, 34)]), StorageUnits(500));
+        assert_eq!(spool_size(&[(1_000, 40), (700, 30), (500, 30)]), StorageUnits(700));
+    }
+
+    // more than a third with no preference leaves the network with none
+    #[test]
+    fn spool_size_unset() {
+        assert_eq!(spool_size(&[(0, 100)]), StorageUnits(0));
+        assert_eq!(spool_size(&[(1_000, 66), (0, 34)]), StorageUnits(0));
+        assert_eq!(spool_size(&[(1_000, 67), (0, 33)]), StorageUnits(1_000));
     }
 }

@@ -1,15 +1,15 @@
 use tape_store_api::Store;
 use tape_core::encoding::ErasureCode;
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::VirtualGroup;
 use tape_store::ops::SpoolOps;
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
 
-/// Whether this node holds any of the track group's n spools.
+/// Whether this node holds any of the virtual group's n spools.
 pub fn is_responsible_for_group<Db: Store>(
     store: &TapeStore<Db>,
-    group: TrackGroup,
+    group: VirtualGroup,
     profile: ErasureCode,
 ) -> Result<bool, NodeError> {
     for slice in 0..usize::from(profile.n()) {

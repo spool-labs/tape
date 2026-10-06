@@ -107,7 +107,7 @@ pub fn persist_batch<Db: Store>(
 mod tests {
     use tape_store_memory::MemoryStore;
     use tape_core::encoding::TAPENET_PROFILE;
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::VirtualGroup;
     use tape_core::track::data::BlobData;
     use tape_core::types::SlotNumber;
     use tape_crypto::address::Address;
@@ -136,12 +136,12 @@ mod tests {
             raw_tracks: vec![
                 RawTrack {
                     track: first,
-                    group: TrackGroup::from(0),
+                    group: VirtualGroup::from(0),
                     data: vec![1, 2, 3],
                 },
                 RawTrack {
                     track: second,
-                    group: TrackGroup::from(19),
+                    group: VirtualGroup::from(19),
                     data: vec![4, 5, 6],
                 },
             ],

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tape_store_api::{Column, Store};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::challenge::EvictionPolicy;
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::{GroupIndex, VirtualGroup};
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{
@@ -13,7 +13,7 @@ use tape_e2e_simnet::{
 };
 use tape_store::columns::SliceCol;
 use tape_core::track::data::BlobData;
-use tape_store::ops::{SampleOps, SliceOps, SpoolOps, TrackDataOps};
+use tape_store::ops::{SampleOps, SliceOps, TrackDataOps};
 use tape_store::types::SliceKey;
 
 // This scenario needs eviction within its test budget. The runtime uses this
@@ -102,7 +102,7 @@ async fn corruption_eviction_inner() {
     // One coded track to check the healing against. The run crosses many
     // epochs, so the lease has to outlive any plausible arc.
     let payload: Vec<u8> = (0..256 * 1024).map(|i| (i % 251) as u8).collect();
-    let (_, track, _) = harness
+    let (_, track, written) = harness
         .scenario()
         .upload(harness.admin(), &payload, 32)
         .await
@@ -112,7 +112,10 @@ async fn corruption_eviction_inner() {
     // the middle of an already-live challenge cadence.
     advance_to_epoch(&harness, EpochNumber(STEADY_EPOCH), epoch_timeout).await;
 
-    let spool = node_spool(&harness, VICTIM);
+    // The victim keeps the track's slice under the track's own virtual group,
+    // at its position in the live group.
+    let live_spool = node_spool(&harness, VICTIM);
+    let spool = stored_spool(live_spool, written.group);
     let original = node_slice(&harness, VICTIM, spool, track).expect("victim holds its slice");
 
     // Rot every slice the spool holds, not just the uploaded track's. The
@@ -120,7 +123,7 @@ async fn corruption_eviction_inner() {
     // proportion to its share of the bytes and detection follows 1/p. This
     // test is about a node serving rotten data being caught, not about how
     // long a small p takes, so it puts p at 1.
-    assert!(rot_spool(&harness, spool) > 0, "the victim holds nothing to rot");
+    assert!(rot_spool(&harness, live_spool) > 0, "the victim holds nothing to rot");
     assert_ne!(
         node_slice(&harness, VICTIM, spool, track).expect("slice still present"),
         original,
@@ -129,7 +132,7 @@ async fn corruption_eviction_inner() {
 
     // From here nothing touches the victim. Its own runtime keeps its seat,
     // answers every round with rotten proofs, and collects the misses.
-    let suspended = wait_eviction(&harness, spool, EVICT_TIMEOUT).await;
+    let suspended = wait_eviction(&harness, live_spool, EVICT_TIMEOUT).await;
     assert_ne!(
         suspended,
         EpochNumber(0),
@@ -205,12 +208,12 @@ async fn advance_to_epoch(harness: &SimnetHarness, target: EpochNumber, epoch_ti
 /// Poll for suspension while keeping newly written snapshot slices corrupt.
 async fn wait_eviction(
     harness: &SimnetHarness,
-    spool: SpoolIndex,
+    live_spool: SpoolIndex,
     timeout: Duration,
 ) -> EpochNumber {
     let start = Instant::now();
     loop {
-        rot_spool(harness, spool);
+        rot_spool(harness, live_spool);
 
         let suspended = harness
             .scenario()
@@ -229,10 +232,20 @@ async fn wait_eviction(
     }
 }
 
+/// The one live spool a node is assigned.
 fn node_spool(harness: &SimnetHarness, index: usize) -> SpoolIndex {
-    let node = harness.node(index).expect("node");
-    let spools = node.context().store.iter_all_spools().expect("iter spools");
-    spools.first().copied().map(|(spool, _)| spool).expect("node owns a spool")
+    let context = harness.node(index).expect("node").context();
+    let spools = context.state().member_live_spools(context.node_address());
+    spools.first().copied().expect("node owns a spool")
+}
+
+/// The stored spool a node keeps a track's slice under: the track's virtual
+/// group, at the node's position in its live group.
+fn stored_spool(live_spool: SpoolIndex, group: VirtualGroup) -> SpoolIndex {
+    let position = GroupIndex::containing(live_spool)
+        .position_of(live_spool)
+        .expect("a position in its group");
+    group.spool_at(position)
 }
 
 fn node_slice(
@@ -267,28 +280,44 @@ fn spool_successor(
     })
 }
 
-fn rot_spool(harness: &SimnetHarness, spool: SpoolIndex) -> usize {
-    let node = harness.node(VICTIM).expect("victim node");
-    let store = node.context().store.clone();
+/// Rot everything the victim answers a round on its live spool with.
+///
+/// The slices of a live spool sit under many stored spools: a snapshot chunk
+/// under the live spool's own index, and every other track under its own
+/// virtual group at the same position. The group's sample set lists them.
+fn rot_spool(harness: &SimnetHarness, live_spool: SpoolIndex) -> usize {
+    let context = harness.node(VICTIM).expect("victim node").context();
+    let store = context.store.clone();
+    let fold = context.state().fold().expect("a live group");
+    let group = GroupIndex::containing(live_spool);
+    let position = group.position_of(live_spool).expect("a position in its group");
     let mut rotted = 0usize;
 
-    for (track, _) in store.iter_slice_sizes_by_spool(spool).expect("iter slices") {
-        rot_slice(&store, spool, track);
+    for (track, _) in store.iter_slice_sizes_by_spool(live_spool).expect("iter slices") {
+        rot_slice(&store, live_spool, track);
         rotted += 1;
     }
 
-    // Inline tracks answer from the payload rather than a slice, and a group's
-    // set holds plenty of them, so leaving them intact lets the victim answer
-    // honestly whenever the draw lands on one and the run of misses never builds.
-    for (track, _) in store
-        .iter_track_samples_by_group(TrackGroup::containing(spool))
-        .expect("iter sample rows")
-    {
-        if let Ok(Some(BlobData::Inline(payload))) = store.get_track_data(track) {
-            store
-                .put_track_data(track, BlobData::Inline(vec![0x5A; payload.len().max(1)]))
-                .expect("rot inline");
-            rotted += 1;
+    for groups in fold.carried_ranges(group) {
+        for (virtual_group, track, _) in
+            store.iter_track_samples_in(groups).expect("iter sample rows")
+        {
+            let stored = virtual_group.spool_at(position);
+            if stored != live_spool && store.has_slice(stored, track).expect("has slice") {
+                rot_slice(&store, stored, track);
+                rotted += 1;
+            }
+
+            // Inline tracks answer from the payload rather than a slice, and a
+            // group's set holds plenty of them, so leaving them intact lets the
+            // victim answer honestly whenever the draw lands on one and the run
+            // of misses never builds.
+            if let Ok(Some(BlobData::Inline(payload))) = store.get_track_data(track) {
+                store
+                    .put_track_data(track, BlobData::Inline(vec![0x5A; payload.len().max(1)]))
+                    .expect("rot inline");
+                rotted += 1;
+            }
         }
     }
     rotted

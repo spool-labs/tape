@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::future::join_all;
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::VirtualGroup;
 use tape_core::thresholds::NetworkParams;
 use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
@@ -115,7 +115,7 @@ impl SliceWithProof {
 /// SpoolAssignment.
 pub struct DistributedUploader {
     track: Address,
-    group: TrackGroup,
+    group: VirtualGroup,
     slices: Vec<SliceWithProof>,
     group_peers: Vec<(SpoolIndex, Address)>,
     group_member_count: usize,
@@ -176,7 +176,7 @@ impl DistributedUploader {
     /// Create a new uploader with group-aware spool-based routing.
     pub fn new(
         track: Address,
-        group: TrackGroup,
+        group: VirtualGroup,
         slices: Vec<SliceWithProof>,
         state: &ProtocolState,
         concurrency: usize,
@@ -813,7 +813,7 @@ mod tests {
         }));
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            TrackGroup(0),
+            VirtualGroup(0),
             make_test_slices(WIDTH),
             &state,
             WIDTH,
@@ -844,7 +844,7 @@ mod tests {
 
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            TrackGroup(0),
+            VirtualGroup(0),
             slices,
             &state,
             WIDTH,
@@ -919,7 +919,7 @@ mod tests {
     fn uploader_for(state: &ProtocolState, reputation: Arc<Reputation>) -> DistributedUploader {
         DistributedUploader::new(
             Address::new_unique(),
-            TrackGroup(0),
+            VirtualGroup(0),
             make_test_slices(WIDTH),
             state,
             WIDTH,
@@ -1111,7 +1111,7 @@ mod tests {
 
         let uploader = DistributedUploader::new(
             Address::new_unique(),
-            TrackGroup(0),
+            VirtualGroup(0),
             slices,
             &state,
             WIDTH,

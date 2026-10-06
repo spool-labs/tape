@@ -1,5 +1,6 @@
 use tape_solana::*;
 use tape_api::program::prelude::*;
+use tape_core::spooler::MAX_LIVE_GROUPS;
 
 pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = CreateSystem::try_from_bytes(data)?;
@@ -44,7 +45,7 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     if committee_size < u64::from(code.n()) {
         return Err(TapeError::InsufficientCommittee.into());
     }
-    if spool_groups == 0 {
+    if spool_groups == 0 || spool_groups > MAX_LIVE_GROUPS {
         return Err(ProgramError::InvalidArgument);
     }
     if min_epoch_duration.0 == 0 || min_epoch_duration > max_epoch_duration {
@@ -66,7 +67,6 @@ pub fn process_create_system(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.target_group_count = spool_groups;
     system.live_group_count = 0;
     system.previous_group_count = 0;
-    system.track_group_count = 0;
     system.min_epoch_duration = min_epoch_duration;
     system.max_epoch_duration = max_epoch_duration;
     system.profile = args.profile;
@@ -218,5 +218,18 @@ mod tests {
             CreateSystem { committee_size: 19, ..simnet },
             Check::err(TapeError::InsufficientCommittee.into()),
         );
+    }
+
+    // the group count at genesis is between one and half the virtual groups
+    #[test]
+    fn group_count_bounds() {
+        let simnet = args_of(&GenesisConfig::simnet());
+
+        for spool_groups in [0, MAX_LIVE_GROUPS + 1] {
+            create_case(
+                CreateSystem { spool_groups, ..simnet },
+                Check::err(ProgramError::InvalidArgument),
+            );
+        }
     }
 }

@@ -222,7 +222,7 @@ mod tests {
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
-            node_capacity: StorageUnits::zero(),
+            spool_size: StorageUnits::zero(),
         };
         let node = Node {
             authority: authority.into(),
@@ -586,7 +586,7 @@ mod tests {
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
-            node_capacity: StorageUnits::zero(),
+            spool_size: StorageUnits::zero(),
         };
         // Suspension expired below the target epoch: next > suspended_until.
         let node = Node {

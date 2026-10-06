@@ -18,7 +18,7 @@ use thiserror::Error;
 
 use tape_api::instruction::build_certify_track_ix;
 use tape_core::bls::BlsSignature;
-use tape_core::spooler::{GroupIndex, TrackGroup};
+use tape_core::spooler::{GroupIndex, VirtualGroup};
 use tape_core::thresholds::{NetworkParams, Thresholds};
 use tape_core::track::types::CompressedTrackProof;
 use tape_core::types::{BitmapRead, EpochNumber, SpoolBitmap};
@@ -188,7 +188,7 @@ impl CertificationCollector {
         &self,
         peer_client: &P,
         track_address: &Address,
-        group: TrackGroup,
+        group: VirtualGroup,
         state: &ProtocolState,
         banked: &[CertifyRes],
     ) -> Result<CollectedSignatures, CertificationError> {
@@ -411,7 +411,7 @@ struct SignatureRequest {
 }
 
 fn collect_signature_requests(
-    group: TrackGroup,
+    group: VirtualGroup,
     state: &ProtocolState,
 ) -> Result<Vec<SignatureRequest>, CertificationError> {
     let spools = state

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::VirtualGroup;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
 use tape_core::types::{StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
@@ -21,7 +21,7 @@ fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
         state: TrackState::Certified as u64,
         flags: TrackFlags::NONE,
         size: StorageUnits::from_bytes(1024),
-        group: TrackGroup(3),
+        group: VirtualGroup(3),
         value_hash: Hash::new_unique(),
     }
 }

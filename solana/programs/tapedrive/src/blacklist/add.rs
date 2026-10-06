@@ -80,9 +80,10 @@ mod tests {
     use tape_core::track::TRACK_TREE_HEIGHT;
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::types::CompressedTrack;
-    use tape_crypto::hash::hashv;
     use tape_crypto::merkle::MerkleTree;
     use tape_test::*;
+
+    use crate::track::helpers::select_group;
 
     fn slot_hashes_account(seed: Hash) -> (Pubkey, Account) {
         let mut data = vec![0u8; 48];
@@ -99,23 +100,6 @@ mod tests {
                 rent_epoch: 0,
             },
         )
-    }
-
-    fn selected_group(
-        seed: Hash,
-        tape_address: Address,
-        tape_id: TapeNumber,
-        track_number: TrackNumber,
-        groups: u64,
-    ) -> TrackGroup {
-        let mixed_hash = hashv(&[
-            seed.as_ref(),
-            tape_address.as_ref(),
-            &tape_id.pack(),
-            &track_number.pack(),
-        ]);
-        let mixed = u64::from_le_bytes(mixed_hash.0[..8].try_into().unwrap());
-        TrackGroup(mixed % groups)
     }
 
     #[test]
@@ -157,7 +141,8 @@ mod tests {
             tree: MerkleTree::<TRACK_TREE_HEIGHT>::new(),
         };
 
-        let group = selected_group(seed, blacklist_address, tape.id, track_number, live_group_count);
+        let group = select_group(&system, blacklist_address, tape.id, track_number, seed)
+            .expect("a virtual group");
         let track = CompressedTrack {
             tape: blacklist_address,
             key: entry.key(),

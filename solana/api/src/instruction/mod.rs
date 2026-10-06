@@ -100,7 +100,7 @@ pub enum TapeInstruction {
     SetCommitteeSize,
     SetSpoolGroups,
     SetEpochDuration,
-    SetNodeCapacity,
+    SetSpoolSize,
     ClaimCommission,
 
     // Blacklist
@@ -197,7 +197,7 @@ tape_solana::instruction!(TapeInstruction, SetAccessThreshold);
 tape_solana::instruction!(TapeInstruction, SetCommitteeSize);
 tape_solana::instruction!(TapeInstruction, SetSpoolGroups);
 tape_solana::instruction!(TapeInstruction, SetEpochDuration);
-tape_solana::instruction!(TapeInstruction, SetNodeCapacity);
+tape_solana::instruction!(TapeInstruction, SetSpoolSize);
 
 tape_solana::instruction!(TapeInstruction, AddToBlacklist);
 tape_solana::instruction!(TapeInstruction, RemoveFromBlacklist);

@@ -7,11 +7,11 @@
 
 mod fold;
 mod group;
-mod track_group;
+mod virtual_group;
 
 pub use fold::*;
 pub use group::*;
-pub use track_group::*;
+pub use virtual_group::*;
 
 // The spool relationships are:
 //
@@ -23,17 +23,17 @@ pub use track_group::*;
 //   passing spool, group, AND lost is redundant; any one of these plus spool is computable from
 //   the other.
 //
-// A track's leaf carries a TrackGroup, and slices are stored under that group's spools for
-// life. A GroupIndex is a live group, the one with a `Group` account. GroupFold maps a
-// track group to the live group that carries it, so a stored spool and the live spool
-// that holds it differ once the group count has dropped.
+// A track's leaf carries a VirtualGroup, one of VIRTUAL_GROUP_COUNT, and slices are stored
+// under that group's spools for life. A GroupIndex is a live group, the one with a `Group`
+// account. GroupFold maps a virtual group to the live group that carries it, so a live spool
+// holds the stored spools of every virtual group folded onto its group.
 
-/// Errors from spool assignment.
+/// Errors used across spool allocation and migration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpoolerError {
-    LengthMismatch,
+    CountMismatch,
+    TotalMismatch,
     InsufficientNodes,
-    DuplicateNode,
-    Overflow,
+    SpoolCapExceeded,
     Infeasible,
 }

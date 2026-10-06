@@ -15,7 +15,7 @@ use tape_api::state::Tape;
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::tape::{snapshot_tape_number, TapeFlags};
 use tape_core::prelude::SpoolIndex;
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::VirtualGroup;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
@@ -47,7 +47,7 @@ pub struct SnapshotCandidate {
 
 #[derive(Debug, Clone)]
 pub struct SnapshotTrack {
-    pub group: TrackGroup,
+    pub group: VirtualGroup,
     pub chunk: ChunkNumber,
     pub track: CompressedTrack,
     pub blob: BlobEncoding,
@@ -190,7 +190,7 @@ where
 }
 
 /// The stored spool this node holds in `group`, with its position in the group.
-fn owned_position(our_spools: &[SpoolIndex], group: TrackGroup) -> Option<(SpoolIndex, usize)> {
+fn owned_position(our_spools: &[SpoolIndex], group: VirtualGroup) -> Option<(SpoolIndex, usize)> {
     for &spool in our_spools {
         match group.position_of(spool) {
             Some(bitmap_index) => return Some((spool, bitmap_index)),
@@ -317,12 +317,14 @@ mod tests {
             .expect("build harness");
 
         let ctx = harness.ctx_for(OWNER_INDEX);
-        let our_spools = harness.owned_spools(OWNER_INDEX);
         ctx.store
             .append_record(EPOCH, EVENT_SLOT, None, &record())
             .expect("append record");
 
+        // A chunk is stamped with its live group's own number, so the slices
+        // this node keeps sit under its live spools.
         let state = ctx.state();
+        let our_spools = state.member_live_spools(ctx.node_address());
         let candidate = build_snapshot_blocking(&ctx, &state, EPOCH)
             .expect("build snapshot")
             .expect("snapshot candidate");
@@ -361,14 +363,14 @@ mod tests {
         for group_number in 0..GROUP_COUNT {
             stored += ctx
                 .store
-                .iter_snapshot_artifacts(EPOCH, TrackGroup(group_number))
+                .iter_snapshot_artifacts(EPOCH, VirtualGroup(group_number))
                 .expect("iter artifacts")
                 .len();
         }
         assert_eq!(stored, OWNED_SPOOL_COUNT);
 
         for &spool in &our_spools {
-            let group = TrackGroup::containing(spool);
+            let group = VirtualGroup::containing(spool);
             let position = group.position_of(spool).expect("group position");
             let artifact = ctx
                 .store

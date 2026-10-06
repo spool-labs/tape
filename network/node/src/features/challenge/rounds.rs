@@ -414,7 +414,7 @@ mod protocol_tests {
     use tape_core::track::data::BlobData;
     use tape_core::types::{
         EpochDuration, EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex, StorageUnits,
-        TrackGroup,
+        VirtualGroup,
     };
     use tape_crypto::Address;
     use tape_crypto::hash::{Hash, hash};
@@ -656,12 +656,8 @@ mod protocol_tests {
     async fn merged_sample_set() {
         let fixture = fixture().await;
         let round = fixture.round();
-        let retired = TrackGroup(1);
-
-        // Two groups were live once, so track group 1 is folded onto the live one.
-        let mut state = fixture.state.clone();
-        state.current.epoch.track_groups = 2;
-        fixture.ctx.set_state(state).expect("publish state");
+        // One group is live, so virtual group 1 is folded onto it.
+        let retired = VirtualGroup(1);
 
         let mut tracks: Vec<Address> = (0..6).map(|_| Address::new_unique()).collect();
         for (index, track) in tracks.iter().enumerate() {
@@ -711,11 +707,7 @@ mod protocol_tests {
     async fn retired_track_answered_from_its_group() {
         let fixture = fixture().await;
         let round = fixture.round();
-        let retired = TrackGroup(1);
-
-        let mut state = fixture.state.clone();
-        state.current.epoch.track_groups = 2;
-        fixture.ctx.set_state(state).expect("publish state");
+        let retired = VirtualGroup(1);
 
         // The set holds one track of the retired group and nothing else, so
         // the draw is bound to land on it.

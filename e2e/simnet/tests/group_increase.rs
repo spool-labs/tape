@@ -1,6 +1,20 @@
+//! The spool group count rising from one to TARGET_GROUPS with a blob in place.
+//!
+//! A track keeps the virtual group it was stamped with. At the higher count
+//! that virtual group belongs to one of the new groups, and a new group with
+//! data starts on the nodes that already hold that data, position by
+//! position. So the blob's holders are the same before and after, each has
+//! its slice the moment the count comes live, and nothing is fetched.
+//!
+//! The blob has to land in the first epoch. A group's size takes the tracks
+//! certified before the epoch that votes it, and a new group that counts as
+//! empty gets a fresh fill, whose nodes would then pull the blob from the old
+//! holders.
+
 use std::time::Duration;
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::spooler::VirtualGroup;
 use tape_core::types::BasisPoints;
 use tape_crypto::Address;
 use tape_e2e_simnet::{
@@ -8,6 +22,9 @@ use tape_e2e_simnet::{
 };
 
 const TARGET_GROUPS: u64 = 20;
+
+/// Blob lifetime, in epochs. The test runs five.
+const BLOB_EPOCHS: u64 = 16;
 
 #[test]
 fn group_increase() {
@@ -60,6 +77,19 @@ async fn group_increase_inner() {
         .expect("all nodes active");
     assert_group_counts(&scenario, 1, 1).await;
 
+    let data: Vec<u8> = (0..64 * 1024).map(|i| (i % 251) as u8).collect();
+    let (_tape_key, track_address, track) = scenario
+        .upload(harness.admin(), &data, BLOB_EPOCHS)
+        .await
+        .expect("upload blob");
+    assert!(track.is_certified(), "uploaded blob track should be certified");
+    assert_eq!(
+        scenario.read_system().await.expect("read system").current_epoch.0,
+        1,
+        "the blob has to land in the first epoch to count before the grown layout is voted"
+    );
+    let holders_before = group_holders(&scenario, track.group).await;
+
     let epoch2 = scenario
         .self_advance_epoch(epoch_timeout)
         .await
@@ -79,6 +109,19 @@ async fn group_increase_inner() {
 
         assert_eq!(epoch, expected_epoch, "unexpected epoch after advance");
 
+        // The blob's holders stayed put through the growth and hold their
+        // slices with nothing to fetch.
+        let held = scenario
+            .count_current_owner_slices(&track_address, track.group)
+            .await
+            .expect("count current owner slices");
+        assert_eq!(held, TAPENET_GROUP_SIZE, "a holder is missing its slice at epoch {epoch}");
+        assert_eq!(
+            group_holders(&scenario, track.group).await,
+            holders_before,
+            "the blob's group sits on the nodes that held the blob before, position by position"
+        );
+
         scenario
             .wait_nodes_active(&all, active_timeout)
             .await
@@ -86,7 +129,25 @@ async fn group_increase_inner() {
         assert_group_counts(&scenario, TARGET_GROUPS, TARGET_GROUPS).await;
     }
 
+    let reread = scenario
+        .download(harness.admin(), &track_address)
+        .await
+        .expect("download blob after growth");
+    assert_eq!(reread, data, "download after growth should match upload");
+
     harness.stop_all().await.expect("stop runtimes");
+}
+
+/// The nodes of the live group that carries a virtual group, by position.
+async fn group_holders(scenario: &SimnetScenario<'_>, group: VirtualGroup) -> Vec<Address> {
+    let system = scenario.read_system().await.expect("read system");
+    let live_group = system.live_group(group).expect("live group");
+    let account = scenario
+        .read_group(system.current_epoch, live_group)
+        .await
+        .expect("read group");
+
+    account.spools.iter().map(|spool| spool.node).collect()
 }
 
 async fn assert_group_counts(

@@ -133,7 +133,7 @@ fn aggregate_preferences(
         subsidy_decay_bps: BasisPoints(0),
         access_threshold: TAPE(0),
         epoch_duration: system.min_epoch_duration,
-        node_capacity: StorageUnits::zero(),
+        spool_size: StorageUnits::zero(),
     };
 
     aggregate_node_preferences(members, peers, current, bounds).map_err(|error| match error {
@@ -192,7 +192,7 @@ mod tests {
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
-            node_capacity: StorageUnits::zero(),
+            spool_size: StorageUnits::zero(),
         }
     }
 
@@ -219,12 +219,11 @@ mod tests {
     }
 
     fn peer_set() -> Vec<u8> {
-        peer_set_voting(test_preferences().spool_groups)
+        peer_set_voting(test_preferences())
     }
 
-    // every peer votes the same group count
-    fn peer_set_voting(spool_groups: u64) -> Vec<u8> {
-        let prefs = NodePreferences { spool_groups, ..test_preferences() };
+    // every peer votes the same preferences
+    fn peer_set_voting(prefs: NodePreferences) -> Vec<u8> {
         let peers: Vec<Peer> = members()
             .iter()
             .map(|m| Peer {
@@ -252,8 +251,21 @@ mod tests {
         commit_groups(5, 10);
     }
 
+    // the spool size every peer wants lands on the next epoch
+    #[test]
+    fn spool_size_voted() {
+        let voted = NodePreferences { spool_size: StorageUnits::tb(1), ..test_preferences() };
+
+        commit_case(voted.spool_groups, voted);
+    }
+
     // commits an epoch whose count is `current` while every peer votes `voted`
     fn commit_groups(current: u64, voted: u64) {
+        commit_case(current, NodePreferences { spool_groups: voted, ..test_preferences() });
+    }
+
+    // commits an epoch whose count is `current` while every peer votes `voted`
+    fn commit_case(current: u64, voted: NodePreferences) {
         let fee_payer = Pubkey::new_unique();
 
         let curr = EpochNumber(10);
@@ -322,7 +334,7 @@ mod tests {
 
         let mut expected_next = next_epoch;
         expected_next.nonce = expected_nonce;
-        expected_next.preferences = NodePreferences { spool_groups: voted, ..test_preferences() };
+        expected_next.preferences = voted;
 
         env.process_instruction(
             &instruction,

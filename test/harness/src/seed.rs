@@ -122,7 +122,6 @@ pub fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         target_group_count: spec.next_group_count,
         live_group_count: spec.current_group_count,
         previous_group_count: spec.prev_group_count,
-        track_group_count: spec.current_group_count.max(spec.prev_group_count),
         min_epoch_duration: TEST_MIN_EPOCH_DURATION,
         max_epoch_duration: TEST_MAX_EPOCH_DURATION,
         profile: spec.profile.into(),
@@ -135,20 +134,16 @@ pub fn build_seeded_world(spec: &HarnessSpec) -> Result<SeededWorld> {
         state: spec.epoch_state(),
         nonce: Hash::default(),
         total_groups: spec.current_group_count,
-        track_groups: system.track_group_count,
         total_assigned: total_assigned(&current.groups, spec.profile),
         preferences: current_preferences(spec),
         ..Epoch::zeroed()
     };
 
-    // The seeded history starts at the previous epoch, so it has seen no more
-    // groups than it ran.
     let prev_epoch_account = Epoch {
         id: prev_epoch,
         state: epoch_state(EpochPhase::Completed),
         nonce: Hash::default(),
         total_groups: spec.prev_group_count,
-        track_groups: spec.prev_group_count,
         total_assigned: total_assigned(&prev.groups, spec.profile),
         ..Epoch::zeroed()
     };
@@ -486,7 +481,7 @@ fn committed_preferences(
         subsidy_decay_bps: BasisPoints(0),
         access_threshold: TAPE(0),
         epoch_duration: TEST_MIN_EPOCH_DURATION,
-        node_capacity: StorageUnits::zero(),
+        spool_size: StorageUnits::zero(),
     };
 
     aggregate_node_preferences(members, peers, current_preferences(spec), bounds)
@@ -515,7 +510,7 @@ fn node_preferences(
         subsidy_decay_bps: spec.subsidy_decay_bps,
         access_threshold: TAPE(0),
         epoch_duration: TEST_EPOCH_DURATION,
-        node_capacity: StorageUnits::zero(),
+        spool_size: StorageUnits::zero(),
     }
 }
 

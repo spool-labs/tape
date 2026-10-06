@@ -1,6 +1,6 @@
 use tape_solana::*;
 use tape_core::encoding::{EncodingProfile, ErasureCode};
-use tape_core::spooler::{GroupFold, GroupIndex, TrackGroup};
+use tape_core::spooler::{GroupFold, GroupIndex, VirtualGroup};
 use tape_core::thresholds::{NetworkParams, Thresholds, TrustModel};
 use tape_core::types::{BitmapRead, EpochDuration, EpochNumber, SpoolBitmap};
 use super::AccountType;
@@ -26,9 +26,6 @@ pub struct System {
 
     /// Number of spool groups live in the previous epoch.
     pub previous_group_count: u64,
-
-    /// Number of track groups: the most spool groups ever live. A leaf's group is below it.
-    pub track_group_count: u64,
 
     /// Lower bound on aggregated NodePreferences::epoch_duration.
     pub min_epoch_duration: EpochDuration,
@@ -72,14 +69,14 @@ impl System {
             .map_err(|_| TapeError::UnexpectedState.into())
     }
 
-    /// Where each track group lives in the current epoch.
+    /// Where each virtual group lives in the current epoch.
     pub fn fold(&self) -> Result<GroupFold, ProgramError> {
-        GroupFold::new(self.live_group_count, self.track_group_count)
+        GroupFold::new(self.live_group_count)
             .ok_or_else(|| TapeError::UnexpectedState.into())
     }
 
-    /// The live group that carries a track group.
-    pub fn live_group(&self, group: TrackGroup) -> Result<GroupIndex, ProgramError> {
+    /// The live group that carries a virtual group.
+    pub fn live_group(&self, group: VirtualGroup) -> Result<GroupIndex, ProgramError> {
         Ok(self.fold()?.live_group(group))
     }
 
@@ -182,20 +179,19 @@ mod tests {
         assert!(system.thresholds().is_err());
     }
 
-    // a retired track group certifies under the live group that carries it
+    // a virtual group past the live count certifies under the live group that carries it
     #[test]
     fn live_group() {
         let system = System {
             target_group_count: 5,
             live_group_count: 5,
-            track_group_count: 10,
             ..System::zeroed()
         };
 
-        assert_eq!(system.live_group(TrackGroup(3)), Ok(GroupIndex(3)));
-        assert_eq!(system.live_group(TrackGroup(7)), Ok(GroupIndex(3)));
-        assert_eq!(system.live_group(TrackGroup(8)), Ok(GroupIndex(0)));
-        assert!(System::zeroed().live_group(TrackGroup(0)).is_err());
+        assert_eq!(system.live_group(VirtualGroup(3)), Ok(GroupIndex(3)));
+        assert_eq!(system.live_group(VirtualGroup(7)), Ok(GroupIndex(3)));
+        assert_eq!(system.live_group(VirtualGroup(8)), Ok(GroupIndex(0)));
+        assert!(System::zeroed().live_group(VirtualGroup(0)).is_err());
     }
 
     // a group about to retire takes no new tracks

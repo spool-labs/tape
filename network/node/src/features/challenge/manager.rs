@@ -699,7 +699,7 @@ pub fn group_spools(state: &ProtocolState, group: GroupIndex) -> Vec<SpoolIndex>
         .unwrap_or_default()
 }
 
-/// Whether a live spool's owner was handed data this epoch: some track group
+/// Whether a live spool's owner was handed data this epoch: some virtual group
 /// it carries had another holder at this position last epoch.
 fn was_handed(state: &ProtocolState, spool: SpoolIndex, owner: Address) -> bool {
     state
@@ -729,6 +729,7 @@ mod tests {
     use tape_blocks::ParsedInstruction;
 
     use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::spooler::VIRTUAL_GROUP_COUNT;
     use tape_core::system::SpoolState;
 
     use super::*;
@@ -852,7 +853,8 @@ mod tests {
         let carried = state.carried_spools(mine);
         let manager = manager_for(&ctx);
 
-        assert_eq!(carried.len(), 2);
+        // The one live group carries every virtual group at this position.
+        assert_eq!(carried.len() as u64, VIRTUAL_GROUP_COUNT);
         assert!(was_handed(&state, mine, me));
         assert!(!manager.has_arrived(&state, mine));
 
@@ -862,7 +864,9 @@ mod tests {
                 .expect("spool state");
         };
 
-        status(carried[0], SpoolStatus::Active);
+        for spool in &carried {
+            status(*spool, SpoolStatus::Active);
+        }
         status(carried[1], SpoolStatus::Sync);
         assert!(!manager.has_arrived(&state, mine));
 

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use tape_store_api::{Column, Store};
 use tape_core::challenge::{EvictionPolicy, PeerRecord};
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::{GroupIndex, VirtualGroup};
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{
@@ -13,7 +13,7 @@ use tape_e2e_simnet::{
 };
 use tape_store::columns::SliceCol;
 use tape_core::track::data::BlobData;
-use tape_store::ops::{ChallengeOps, SampleOps, SliceOps, SpoolOps, TrackDataOps};
+use tape_store::ops::{ChallengeOps, SampleOps, SliceOps, TrackDataOps};
 use tape_store::types::SliceKey;
 
 // This scenario needs eviction within its test budget. The runtime uses this
@@ -106,14 +106,17 @@ async fn challenge_reprieve_inner() {
     // One track big enough to dominate the byte-weighted draw, so every round
     // lands on it and the record moves at the round cadence.
     let payload: Vec<u8> = (0..256 * 1024).map(|i| (i % 251) as u8).collect();
-    let (_, track, _) = harness
+    let (_, track, written) = harness
         .scenario()
         .upload(harness.admin(), &payload, 32)
         .await
         .expect("upload coded track");
 
+    // Records and rounds go by the victim's live spool. Its slice of the track
+    // sits under the track's own virtual group, at the same position.
     let victim = node_address(&harness, VICTIM);
     let spool = node_spool(&harness, VICTIM);
+    let track_spool = stored_spool(spool, written.group);
 
     // Bank successes first. Without them the run and the rate fire together and
     // the probe is never consulted, which is the case corruption_eviction covers.
@@ -145,8 +148,8 @@ async fn challenge_reprieve_inner() {
     // Mutation stays in raw space, since writing a decoded value back through
     // the column kills the node. `served` is the decoded slice of the uploaded
     // track, kept only to check the rot took and then undid.
-    let served = node_slice(&harness, VICTIM, spool, track).expect("victim holds its slice");
-    let mut stored: HashMap<Address, Vec<u8>> = HashMap::new();
+    let served = node_slice(&harness, VICTIM, track_spool, track).expect("victim holds its slice");
+    let mut stored: HashMap<(SpoolIndex, Address), Vec<u8>> = HashMap::new();
 
     let mut inline: HashMap<Address, Vec<u8>> = HashMap::new();
     let start = Instant::now();
@@ -155,7 +158,7 @@ async fn challenge_reprieve_inner() {
             if stored.contains_key(&held) {
                 continue;
             }
-            write_raw_slice(&harness, spool, held, &rotted(&bytes));
+            write_raw_slice(&harness, held.0, held.1, &rotted(&bytes));
             stored.insert(held, bytes);
         }
         // Inline tracks answer from the payload, not a slice, and the group's
@@ -193,20 +196,20 @@ async fn challenge_reprieve_inner() {
 
     assert!(stored.len() > 1, "expected the spool to hold more than one track");
     assert_ne!(
-        node_slice(&harness, VICTIM, spool, track).expect("slice still present"),
+        node_slice(&harness, VICTIM, track_spool, track).expect("slice still present"),
         served,
         "the corruption did not take"
     );
 
     // Put the bytes back before the misses can carry the rate through the floor.
     for (held, bytes) in &stored {
-        write_raw_slice(&harness, spool, *held, bytes);
+        write_raw_slice(&harness, held.0, held.1, bytes);
     }
     for (track, payload) in &inline {
         write_inline(&harness, *track, payload);
     }
     assert_eq!(
-        node_slice(&harness, VICTIM, spool, track).expect("slice still present"),
+        node_slice(&harness, VICTIM, track_spool, track).expect("slice still present"),
         served,
         "the slice did not come back"
     );
@@ -296,10 +299,41 @@ fn observer_records(harness: &SimnetHarness, victim: Address, spool: SpoolIndex)
         .collect()
 }
 
+/// The one live spool a node is assigned.
 fn node_spool(harness: &SimnetHarness, index: usize) -> SpoolIndex {
-    let node = harness.node(index).expect("node");
-    let spools = node.context().store.iter_all_spools().expect("iter spools");
-    spools.first().copied().map(|(spool, _)| spool).expect("node owns a spool")
+    let context = harness.node(index).expect("node").context();
+    let spools = context.state().member_live_spools(context.node_address());
+    spools.first().copied().expect("node owns a spool")
+}
+
+/// The stored spool a node keeps a track's slice under: the track's virtual
+/// group, at the node's position in its live group.
+fn stored_spool(live_spool: SpoolIndex, group: VirtualGroup) -> SpoolIndex {
+    let position = GroupIndex::containing(live_spool)
+        .position_of(live_spool)
+        .expect("a position in its group");
+    group.spool_at(position)
+}
+
+/// The tracks in the sample set of the victim's live spool, each with the
+/// stored spool the victim keeps its slice under.
+fn sampled_tracks(harness: &SimnetHarness, live_spool: SpoolIndex) -> Vec<(SpoolIndex, Address)> {
+    let context = harness.node(VICTIM).expect("victim node").context();
+    let fold = context.state().fold().expect("a live group");
+    let group = GroupIndex::containing(live_spool);
+    let position = group.position_of(live_spool).expect("a position in its group");
+
+    let mut tracks = Vec::new();
+    for groups in fold.carried_ranges(group) {
+        for (virtual_group, track, _) in context
+            .store
+            .iter_track_samples_in(groups)
+            .expect("iter sample rows")
+        {
+            tracks.push((virtual_group.spool_at(position), track));
+        }
+    }
+    tracks
 }
 
 fn node_slice(
@@ -328,15 +362,13 @@ fn rotted(slice: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn inline_payloads(harness: &SimnetHarness, spool: SpoolIndex) -> Vec<(Address, Vec<u8>)> {
+fn inline_payloads(harness: &SimnetHarness, live_spool: SpoolIndex) -> Vec<(Address, Vec<u8>)> {
     let node = harness.node(VICTIM).expect("victim node");
     let store = node.context().store.clone();
 
-    store
-        .iter_track_samples_by_group(TrackGroup::containing(spool))
-        .expect("iter sample rows")
+    sampled_tracks(harness, live_spool)
         .into_iter()
-        .filter_map(|(track, _)| match store.get_track_data(track) {
+        .filter_map(|(_, track)| match store.get_track_data(track) {
             Ok(Some(BlobData::Inline(payload))) => Some((track, payload)),
             _ => None,
         })
@@ -351,19 +383,32 @@ fn write_inline(harness: &SimnetHarness, track: Address, payload: &[u8]) {
         .expect("write inline");
 }
 
-fn raw_spool(harness: &SimnetHarness, spool: SpoolIndex) -> Vec<(Address, Vec<u8>)> {
+/// Every slice the victim answers a round on its live spool with, raw.
+///
+/// A snapshot chunk sits under the live spool's own index, and every other
+/// track under its own virtual group at the same position.
+fn raw_spool(harness: &SimnetHarness, live_spool: SpoolIndex) -> Vec<((SpoolIndex, Address), Vec<u8>)> {
     let node = harness.node(VICTIM).expect("victim node");
     let store = node.context().store.clone();
     let raw = store.inner().inner();
 
-    store
-        .iter_slice_sizes_by_spool(spool)
+    let mut held: Vec<(SpoolIndex, Address)> = store
+        .iter_slice_sizes_by_spool(live_spool)
         .expect("iter slice sizes")
         .into_iter()
-        .filter_map(|(track, _)| {
-            let key = wincode::serialize(&SliceKey::new(spool, track)).expect("slice key");
+        .map(|(track, _)| (live_spool, track))
+        .collect();
+    for (stored, track) in sampled_tracks(harness, live_spool) {
+        if stored != live_spool {
+            held.push((stored, track));
+        }
+    }
+
+    held.into_iter()
+        .filter_map(|(stored, track)| {
+            let key = wincode::serialize(&SliceKey::new(stored, track)).expect("slice key");
             let bytes = raw.get(SliceCol::CF_NAME, &key).expect("raw get")?;
-            Some((track, bytes.into_vec()))
+            Some(((stored, track), bytes.into_vec()))
         })
         .collect()
 }

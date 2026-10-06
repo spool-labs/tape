@@ -1535,7 +1535,7 @@ mod tests {
     use tape_core::encoding::{RSParams, TAPENET_PROFILE};
     use tape_core::thresholds::TrustModel;
     use tape_crypto::ed25519::Keypair;
-    use tape_core::spooler::{GroupIndex, TrackGroup};
+    use tape_core::spooler::{GroupIndex, VirtualGroup};
     use tape_core::types::bitmap::SpoolBitmap;
     use tape_core::track::archive::TrackArchive;
     use tape_core::system::Member;
@@ -1833,7 +1833,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: tape_flags,
             size: metadata.size,
-            group: TrackGroup(0),
+            group: VirtualGroup(0),
             value_hash: metadata.value_hash,
         };
         let client = manifest_client(track);

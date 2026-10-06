@@ -136,7 +136,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(core::mem::size_of::<RateSpan>() as u64),
-            group: TrackGroup(0),
+            group: VirtualGroup(0),
             value_hash: span.value_hash(),
         };
         let leaf_hash = track.get_hash();

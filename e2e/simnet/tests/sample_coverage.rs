@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::VirtualGroup;
 use tape_core::track::data::BlobData;
 use tape_core::types::{BasisPoints, EpochNumber};
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
@@ -81,7 +81,7 @@ async fn sample_coverage_inner() {
         let store = node.context().store.clone();
 
         for (spool, _) in store.iter_all_spools().expect("iter spools") {
-            let group = TrackGroup::containing(spool);
+            let group = VirtualGroup::containing(spool);
             for (track, _) in store.iter_slice_sizes_by_spool(spool).expect("iter slices") {
                 let coded = matches!(
                     store.get_track_data(track).expect("track data"),

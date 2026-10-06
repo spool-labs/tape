@@ -138,7 +138,7 @@ mod tests {
         kind: TrackKind,
         state: TrackState,
         size: StorageUnits,
-        track_group: TrackGroup,
+        virtual_group: VirtualGroup,
     }
 
     impl Case {
@@ -148,7 +148,7 @@ mod tests {
                 kind: TrackKind::Coded,
                 state: TrackState::Certified,
                 size: StorageUnits::mb(250),
-                track_group: TrackGroup(0),
+                virtual_group: VirtualGroup(0),
             }
         }
 
@@ -157,11 +157,10 @@ mod tests {
         }
     }
 
-    // a network with one live group and none retired
+    // a network with one live group
     fn one_group(base: System) -> System {
         System {
             live_group_count: 1,
-            track_group_count: 1,
             ..base
         }
     }
@@ -177,7 +176,7 @@ mod tests {
 
     // invalidation of one seeded track by the given signer bits
     fn invalidate_case(case: Case, signed: &[usize], error: Option<ProgramError>) {
-        let Case { base, kind, state, size, track_group } = case;
+        let Case { base, kind, state, size, virtual_group } = case;
         let profile = base.code().unwrap();
 
         let fee_payer = Pubkey::new_unique();
@@ -187,7 +186,7 @@ mod tests {
 
         let (tape_address, _) = tape_pda(authority.into());
         let (system_address, _) = system_pda();
-        let group_id = base.live_group(track_group).unwrap();
+        let group_id = base.live_group(virtual_group).unwrap();
         let (group_address, _) = group_pda(curr, group_id);
 
         let (sks, group) = make_group_of(curr, group_id, profile);
@@ -207,7 +206,7 @@ mod tests {
             state: state as u64,
             flags: TrackFlags::NONE,
             size,
-            group: track_group,
+            group: virtual_group,
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();
@@ -321,17 +320,16 @@ mod tests {
         );
     }
 
-    // a track written to a retired group is invalidated by the live group that carries it
+    // a track stamped past the live count is invalidated by the live group that carries it
     #[test]
-    fn retired_group() {
+    fn folded_group() {
         let base = System {
             live_group_count: 5,
-            track_group_count: 10,
             ..permissionless_system()
         };
 
         invalidate_case(
-            Case { base, track_group: TrackGroup(7), ..Case::permissionless() },
+            Case { base, virtual_group: VirtualGroup(7), ..Case::permissionless() },
             &signers(14),
             None,
         );
@@ -386,7 +384,7 @@ mod tests {
             state: TrackState::Invalidated as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
-            group: TrackGroup::from(group_id),
+            group: VirtualGroup::from(group_id),
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();
@@ -480,7 +478,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
-            group: TrackGroup::from(group_id),
+            group: VirtualGroup::from(group_id),
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();

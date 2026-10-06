@@ -267,7 +267,7 @@ mod tests {
     use solana_message::MessageHeader;
     use solana_pubkey::Pubkey;
     use solana_signer::Signer;
-    use tape_core::spooler::{GroupIndex, TrackGroup};
+    use tape_core::spooler::{GroupIndex, VirtualGroup};
     use tape_core::system::{EpochPhase, NodePreferences};
     use bytemuck::Zeroable;
     use solana_transaction_status::{
@@ -386,7 +386,7 @@ mod tests {
             epoch: 2.into(),
             track: tx2_track,
             tape: Address::new_unique(),
-            group: TrackGroup(0),
+            group: VirtualGroup(0),
             track_number: 0u64.into(),
             flags: TrackFlags::NONE,
             track_hash: Hash::default(),
@@ -612,7 +612,7 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
-                            group: TrackGroup(1),
+                            group: VirtualGroup(1),
                             track_number: 7u64.into(),
                             flags: TrackFlags::NONE,
                             track_hash: Hash::new_unique(),
@@ -627,7 +627,7 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
-                            group: TrackGroup(2),
+                            group: VirtualGroup(2),
                             track_number: 8u64.into(),
                             flags: TrackFlags::NONE,
                             track_hash: Hash::new_unique(),
@@ -766,7 +766,7 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
-                            group: TrackGroup(1),
+                            group: VirtualGroup(1),
                             track_number: 21u64.into(),
                             flags: TrackFlags::NONE,
                             track_hash: Hash::new_unique(),

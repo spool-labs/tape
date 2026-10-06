@@ -523,8 +523,8 @@ mod tests {
 
         assert_eq!(spec.current_committee_nodes.len(), 4);
         assert_eq!(state.system.params().expect("params").thresholds.certify, 3);
-        assert_eq!(state.group_peers(tape_core::spooler::TrackGroup(0)).len(), 4);
-        assert_eq!(state.member_spools(seeded.nodes[0].node_address.into()).len(), 1);
+        assert_eq!(state.group_peers(tape_core::spooler::VirtualGroup(0)).len(), 4);
+        assert_eq!(state.member_live_spools(seeded.nodes[0].node_address.into()).len(), 1);
     }
 
     #[test]
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(
             seeded
                 .protocol_state
-                .member_spools(seeded.nodes[7].node_address.into())
+                .member_live_spools(seeded.nodes[7].node_address.into())
                 .len(),
             1
         );

@@ -744,7 +744,7 @@ async fn assert_gateway_head_advertises_ranges(
 async fn assert_direct_slice_forbidden(
     harness: &tape_e2e_simnet::SimnetHarness,
     track: &Address,
-    group: tape_core::spooler::TrackGroup,
+    group: tape_core::spooler::VirtualGroup,
 ) -> anyhow::Result<()> {
     let scenario = harness.scenario();
     let system = scenario.read_system().await?;
@@ -795,7 +795,7 @@ async fn assert_direct_slice_forbidden(
 async fn wait_current_owner_slices(
     scenario: &SimnetScenario<'_>,
     track: &Address,
-    group: tape_core::spooler::TrackGroup,
+    group: tape_core::spooler::VirtualGroup,
     expected: usize,
     timeout: Duration,
 ) -> anyhow::Result<()> {

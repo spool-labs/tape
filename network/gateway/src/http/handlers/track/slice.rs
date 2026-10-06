@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, Method, StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::VirtualGroup;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::data::BlobData;
 use tape_core::types::SpoolIndex;
@@ -79,7 +79,7 @@ pub async fn read_resolved_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
 pub struct SliceOrigin {
     pub track_addr: Address,
     pub tape: Address,
-    pub group: TrackGroup,
+    pub group: VirtualGroup,
     pub blob: BlobEncoding,
 }
 
@@ -126,7 +126,7 @@ async fn fetch_verified_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let position = origin
         .group
         .position_of(spool_id)
-        .ok_or_else(|| RouteError::BadRequest("spool is not in track group".into()))?;
+        .ok_or_else(|| RouteError::BadRequest("spool is not in the track's group".into()))?;
 
     let fetched = fetch_slice_from(state, origin, spool_id, owner).await;
     let data = match (fetched, previous_holder(state, spool_id, owner)) {

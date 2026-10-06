@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use bytemuck::{Zeroable, bytes_of};
 use tape_api::state::{Epoch, Group, System};
 use tape_core::bls::BlsPubkey;
-use tape_core::spooler::{GroupFold, GroupIndex, TrackGroup};
+use tape_core::spooler::{GroupFold, GroupIndex, VirtualGroup, VIRTUAL_GROUP_COUNT};
 use tape_core::system::{EpochPhase, Member, Peer, Spool};
 use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::Address;
@@ -139,9 +139,6 @@ impl ProtocolState {
         bytes.extend_from_slice(&self.current.epoch.preferences.epoch_duration.0.to_le_bytes());
         bytes.extend_from_slice(&self.current.epoch.total_groups.to_le_bytes());
 
-        // Which track groups each live spool carries.
-        bytes.extend_from_slice(&self.current.epoch.track_groups.to_le_bytes());
-
         bytes.extend_from_slice(&(self.current.committee.len() as u64).to_le_bytes());
         for member in &self.current.committee {
             bytes.extend_from_slice(member.node.as_ref());
@@ -199,28 +196,28 @@ impl ProtocolState {
             || self.find_member_next(node).is_some()
     }
 
-    /// Where each track group lives in the current epoch, once a group is live.
+    /// Where each virtual group lives in the current epoch, once a group is live.
     pub fn fold(&self) -> Option<GroupFold> {
         self.current.fold()
     }
 
-    /// Where each track group lived in the previous epoch.
+    /// Where each virtual group lived in the previous epoch.
     pub fn fold_prev(&self) -> Option<GroupFold> {
         self.previous.as_ref()?.fold()
     }
 
-    /// Where each track group lived as of `epoch`, current or previous
+    /// Where each virtual group lived as of `epoch`, current or previous
     pub fn fold_at(&self, epoch: EpochNumber) -> Option<GroupFold> {
         Some(self.groups_at(epoch)?.fold)
     }
 
-    /// Where each track group will live at the next epoch's group count.
+    /// Where each virtual group will live at the next epoch's group count.
     pub fn fold_next(&self) -> Option<GroupFold> {
-        GroupFold::new(self.system.target_group_count, self.current.epoch.track_groups)
+        GroupFold::new(self.system.target_group_count)
     }
 
-    /// The live group that carries a track group in the current epoch.
-    pub fn live_group(&self, group: TrackGroup) -> Option<GroupIndex> {
+    /// The live group that carries a virtual group in the current epoch.
+    pub fn live_group(&self, group: VirtualGroup) -> Option<GroupIndex> {
         self.current_groups()?.live_group(group)
     }
 
@@ -251,35 +248,35 @@ impl ProtocolState {
         self.previous_groups()?.spool(spool)
     }
 
-    /// Iterate a track group's stored spools with their current-epoch assignments.
+    /// Iterate a virtual group's stored spools with their current-epoch assignments.
     pub fn spools_in_group(
         &self,
-        group: TrackGroup,
+        group: VirtualGroup,
     ) -> Option<impl Iterator<Item = (SpoolIndex, &Spool)> + '_> {
         self.current_groups()?.spools_in_group(group)
     }
 
-    /// Iterate a track group's stored spools with their previous-epoch assignments.
+    /// Iterate a virtual group's stored spools with their previous-epoch assignments.
     pub fn spools_in_group_prev(
         &self,
-        group: TrackGroup,
+        group: VirtualGroup,
     ) -> Option<impl Iterator<Item = (SpoolIndex, &Spool)> + '_> {
         self.previous_groups()?.spools_in_group(group)
     }
 
-    /// Find the stored spool of a track group that a node holds in the current epoch.
+    /// Find the stored spool of a virtual group that a node holds in the current epoch.
     pub fn spool_for_node_in_group(
         &self,
-        group: TrackGroup,
+        group: VirtualGroup,
         node: Address,
     ) -> Option<(SpoolIndex, &Spool)> {
         self.current_groups()?.spool_for_node_in_group(group, node)
     }
 
-    /// Find the stored spool of a track group that a node held in the previous epoch.
+    /// Find the stored spool of a virtual group that a node held in the previous epoch.
     pub fn spool_for_node_in_group_prev(
         &self,
-        group: TrackGroup,
+        group: VirtualGroup,
         node: Address,
     ) -> Option<(SpoolIndex, &Spool)> {
         self.previous_groups()?.spool_for_node_in_group(group, node)
@@ -319,22 +316,22 @@ impl ProtocolState {
             .unwrap_or_default()
     }
 
-    /// Map each stored spool of a track group to the node that holds it.
-    pub fn group_peers(&self, group: TrackGroup) -> Vec<(SpoolIndex, Address)> {
+    /// Map each stored spool of a virtual group to the node that holds it.
+    pub fn group_peers(&self, group: VirtualGroup) -> Vec<(SpoolIndex, Address)> {
         group_peers_inner(self.spools_in_group(group))
     }
 
-    /// Map each stored spool of a track group to the node that held it in the previous epoch.
-    pub fn group_peers_prev(&self, group: TrackGroup) -> Vec<(SpoolIndex, Address)> {
+    /// Map each stored spool of a virtual group to the node that held it in the previous epoch.
+    pub fn group_peers_prev(&self, group: VirtualGroup) -> Vec<(SpoolIndex, Address)> {
         group_peers_inner(self.spools_in_group_prev(group))
     }
 
-    /// Every node that may hold a track group's data: this epoch's holders,
+    /// Every node that may hold a virtual group's data: this epoch's holders,
     /// then last epoch's.
     ///
     /// A node that held the group last epoch keeps serving it for one more,
     /// which covers a reader while the new holders pull.
-    pub fn group_peers_with_prev(&self, group: TrackGroup) -> Vec<(SpoolIndex, Address)> {
+    pub fn group_peers_with_prev(&self, group: VirtualGroup) -> Vec<(SpoolIndex, Address)> {
         let mut peers = self.group_peers(group);
         for peer in self.group_peers_prev(group) {
             if !peers.contains(&peer) {
@@ -344,28 +341,28 @@ impl ProtocolState {
         peers
     }
 
-    /// Count unique nodes that hold a track group in the current epoch.
-    pub fn group_member_count(&self, group: TrackGroup) -> usize {
+    /// Count unique nodes that hold a virtual group in the current epoch.
+    pub fn group_member_count(&self, group: VirtualGroup) -> usize {
         self.current_groups()
             .map(|groups| groups.member_count(group))
             .unwrap_or_default()
     }
 
-    /// Count unique nodes that held a track group in the previous epoch.
-    pub fn group_member_count_prev(&self, group: TrackGroup) -> usize {
+    /// Count unique nodes that held a virtual group in the previous epoch.
+    pub fn group_member_count_prev(&self, group: VirtualGroup) -> usize {
         self.previous_groups()
             .map(|groups| groups.member_count(group))
             .unwrap_or_default()
     }
 
-    /// Each stored spool of a track group with its holder as of `epoch`, current or previous
-    pub fn group_peers_at(&self, epoch: EpochNumber, group: TrackGroup) -> Option<Vec<(SpoolIndex, Address)>> {
+    /// Each stored spool of a virtual group with its holder as of `epoch`, current or previous
+    pub fn group_peers_at(&self, epoch: EpochNumber, group: VirtualGroup) -> Option<Vec<(SpoolIndex, Address)>> {
         let groups = self.groups_at(epoch)?;
         Some(group_peers_inner(groups.spools_in_group(group)))
     }
 
-    /// Unique nodes that held a track group as of `epoch`, current or previous
-    pub fn group_member_count_at(&self, epoch: EpochNumber, group: TrackGroup) -> Option<usize> {
+    /// Unique nodes that held a virtual group as of `epoch`, current or previous
+    pub fn group_member_count_at(&self, epoch: EpochNumber, group: VirtualGroup) -> Option<usize> {
         Some(self.groups_at(epoch)?.member_count(group))
     }
 
@@ -374,8 +371,8 @@ impl ProtocolState {
         assigned_node(self.groups_at(epoch)?.spool(spool)?.node)
     }
 
-    /// Whether a node held a spool of a track group as of `epoch`
-    pub fn is_member_at(&self, epoch: EpochNumber, group: TrackGroup, node: Address) -> bool {
+    /// Whether a node held a spool of a virtual group as of `epoch`
+    pub fn is_member_at(&self, epoch: EpochNumber, group: VirtualGroup, node: Address) -> bool {
         self.groups_at(epoch)
             .is_some_and(|groups| groups.spool_for_node_in_group(group, node).is_some())
     }
@@ -401,16 +398,15 @@ impl ProtocolState {
 }
 
 impl EpochBundle {
-    /// Where each track group lives in this epoch, once a group is live.
+    /// Where each virtual group lives in this epoch, once a group is live.
     ///
-    /// The epoch's own two counts decide it: how many groups it runs, and how
-    /// many track groups existed by then.
+    /// The epoch's own group count decides it.
     pub fn fold(&self) -> Option<GroupFold> {
-        GroupFold::new(self.epoch.total_groups, self.epoch.track_groups)
+        GroupFold::new(self.epoch.total_groups)
     }
 }
 
-/// One epoch's group accounts with the fold that routes a track group to them
+/// One epoch's group accounts with the fold that routes a virtual group to them
 #[derive(Clone, Copy)]
 struct EpochGroups<'a> {
     groups: &'a [Group],
@@ -425,16 +421,16 @@ impl<'a> EpochGroups<'a> {
         })
     }
 
-    // A track group that did not exist in this epoch had no holder in it.
-    fn live_group(&self, group: TrackGroup) -> Option<GroupIndex> {
-        self.fold.contains(group).then(|| self.fold.live_group(group))
+    // No leaf carries a virtual group past the range, so nobody holds one.
+    fn live_group(&self, group: VirtualGroup) -> Option<GroupIndex> {
+        (group.0 < VIRTUAL_GROUP_COUNT).then(|| self.fold.live_group(group))
     }
 
     // A group's array is as wide as the widest group. A network with n spools per
     // group assigns the first n and leaves the rest zeroed, so skipping unassigned
     // positions stops every walk at n.
     fn spool(&self, spool: SpoolIndex) -> Option<&'a Spool> {
-        let group = TrackGroup::containing(spool);
+        let group = VirtualGroup::containing(spool);
         let position = group.position_of(spool)?;
         group_inner(self.groups, self.live_group(group)?)?
             .spools
@@ -442,10 +438,10 @@ impl<'a> EpochGroups<'a> {
             .filter(|spool| assigned_node(spool.node).is_some())
     }
 
-    // The live group's assignments, each under the track group's own spool index.
+    // The live group's assignments, each under the virtual group's own spool index.
     fn spools_in_group(
         &self,
-        group: TrackGroup,
+        group: VirtualGroup,
     ) -> Option<impl Iterator<Item = (SpoolIndex, &'a Spool)> + 'a> {
         Some(
             group_inner(self.groups, self.live_group(group)?)?
@@ -459,7 +455,7 @@ impl<'a> EpochGroups<'a> {
 
     fn spool_for_node_in_group(
         &self,
-        group: TrackGroup,
+        group: VirtualGroup,
         node: Address,
     ) -> Option<(SpoolIndex, &'a Spool)> {
         assigned_node(node)?;
@@ -493,7 +489,7 @@ impl<'a> EpochGroups<'a> {
             .collect()
     }
 
-    fn member_count(&self, group: TrackGroup) -> usize {
+    fn member_count(&self, group: VirtualGroup) -> usize {
         self.live_group(group)
             .and_then(|live| group_inner(self.groups, live))
             .map(|group| {
@@ -604,14 +600,13 @@ mod tests {
         }
     }
 
-    /// An epoch of `count` groups out of ten track groups, where group g is
-    /// held by the one node `address(base + g)`.
+    /// An epoch of `count` groups, where group g is held by the one node
+    /// `address(base + g)`.
     fn bundle_of(epoch: EpochNumber, count: u64, base: u8) -> EpochBundle {
         EpochBundle {
             epoch: Epoch {
                 id: epoch,
                 total_groups: count,
-                track_groups: 10,
                 ..Epoch::zeroed()
             },
             committee: Vec::new(),
@@ -627,7 +622,6 @@ mod tests {
             system: System {
                 live_group_count: 5,
                 previous_group_count: 10,
-                track_group_count: 10,
                 ..System::zeroed()
             },
             current: bundle_of(EpochNumber(5), 5, 100),
@@ -636,13 +630,14 @@ mod tests {
         }
     }
 
-    // a retired track group is held by the live group that carries it, under its own spools
+    // a virtual group past the live count is held by the live group that carries it, under its own spools
     #[test]
     fn retired_group_peers() {
         let state = shrunk_state();
-        let retired = TrackGroup(7);
+        let retired = VirtualGroup(7);
 
         assert_eq!(state.live_group(retired), Some(GroupIndex(3)));
+        assert_eq!(state.live_group(VirtualGroup(VIRTUAL_GROUP_COUNT)), None);
 
         let peers = state.group_peers(retired);
         assert_eq!(peers.len(), MAX_GROUP_SIZE);
@@ -662,7 +657,7 @@ mod tests {
     #[test]
     fn previous_epoch_folds_at_its_count() {
         let state = shrunk_state();
-        let retired = TrackGroup(7);
+        let retired = VirtualGroup(7);
         let spool = retired.spool_at(4);
 
         assert_eq!(state.spool_owner_prev(spool), Some(address(207)));
@@ -686,10 +681,10 @@ mod tests {
         let mut state = shrunk_state();
         state.previous = Some(bundle_of(EpochNumber(4), 5, 100));
 
-        assert_eq!(state.group_peers_with_prev(TrackGroup(2)).len(), MAX_GROUP_SIZE);
+        assert_eq!(state.group_peers_with_prev(VirtualGroup(2)).len(), MAX_GROUP_SIZE);
     }
 
-    // a node stores every track group folded onto the spools it is assigned
+    // a node stores every virtual group folded onto the spools it is assigned
     #[test]
     fn member_spools_carry_retired_groups() {
         let state = shrunk_state();
@@ -699,33 +694,34 @@ mod tests {
         assert_eq!(live.len(), MAX_GROUP_SIZE);
         assert!(live.iter().all(|spool| GroupIndex(3).contains(*spool)));
 
+        // Group 3 carries 512 of the virtual groups while five groups are live.
         let stored = state.member_spools(node);
-        assert_eq!(stored.len(), 2 * MAX_GROUP_SIZE);
-        assert!(stored.contains(&TrackGroup(3).spool_at(6)));
-        assert!(stored.contains(&TrackGroup(7).spool_at(6)));
+        assert_eq!(stored.len(), 512 * MAX_GROUP_SIZE);
+        assert!(stored.contains(&VirtualGroup(3).spool_at(6)));
+        assert!(stored.contains(&VirtualGroup(7).spool_at(6)));
+        assert!(!stored.contains(&VirtualGroup(6).spool_at(6)));
 
-        assert_eq!(
-            state.carried_spools(GroupIndex(3).spool_at(6)),
-            vec![TrackGroup(3).spool_at(6), TrackGroup(7).spool_at(6)],
-        );
-        assert_eq!(state.member_spools_prev(address(207)).len(), MAX_GROUP_SIZE);
+        let carried = state.carried_spools(GroupIndex(3).spool_at(6));
+        assert_eq!(carried.len(), 512);
+        assert_eq!(carried[..2], [VirtualGroup(3).spool_at(6), VirtualGroup(7).spool_at(6)]);
+
+        // Group 7 carried 256 of them while ten were live.
+        assert_eq!(state.member_spools_prev(address(207)).len(), 256 * MAX_GROUP_SIZE);
     }
 
-    // a group that was never live before had no holder last epoch
+    // a group that is new this epoch was carried last epoch, by a node of its carrier
     #[test]
-    fn new_group_has_no_previous_holder() {
+    fn new_group_was_carried() {
         let mut state = shrunk_state();
         state.current = bundle_of(EpochNumber(5), 10, 100);
-        let mut previous = bundle_of(EpochNumber(4), 5, 200);
-        previous.epoch.track_groups = 5;
-        state.previous = Some(previous);
+        state.previous = Some(bundle_of(EpochNumber(4), 5, 200));
 
-        let fresh = TrackGroup(7);
-        assert_eq!(state.spool_owner(fresh.spool_at(0)), Some(address(107)));
-        assert_eq!(state.spool_owner_prev(fresh.spool_at(0)), None);
-        assert!(state.group_peers_prev(fresh).is_empty());
-        assert_eq!(state.group_peers_with_prev(fresh).len(), MAX_GROUP_SIZE);
-        assert!(state.member_spools_prev(address(203)).iter().all(|spool| !fresh.contains(*spool)));
+        let split = VirtualGroup(7);
+        assert_eq!(state.spool_owner(split.spool_at(0)), Some(address(107)));
+        assert_eq!(state.spool_owner_prev(split.spool_at(0)), Some(address(203)));
+        assert_eq!(state.group_peers_prev(split)[0], (split.spool_at(0), address(203)));
+        assert_eq!(state.group_peers_with_prev(split).len(), 2 * MAX_GROUP_SIZE);
+        assert!(state.member_spools_prev(address(203)).contains(&split.spool_at(0)));
     }
 
     // a group that returns is routed to itself again
@@ -735,9 +731,10 @@ mod tests {
         state.current = bundle_of(EpochNumber(5), 10, 100);
         state.system.live_group_count = 10;
 
-        assert_eq!(state.live_group(TrackGroup(7)), Some(GroupIndex(7)));
-        assert_eq!(state.spool_owner(TrackGroup(7).spool_at(4)), Some(address(107)));
-        assert_eq!(state.member_spools(address(103)).len(), MAX_GROUP_SIZE);
+        assert_eq!(state.live_group(VirtualGroup(7)), Some(GroupIndex(7)));
+        assert_eq!(state.spool_owner(VirtualGroup(7).spool_at(4)), Some(address(107)));
+        assert_eq!(state.member_spools(address(103)).len(), 256 * MAX_GROUP_SIZE);
+        assert!(!state.member_spools(address(103)).contains(&VirtualGroup(7).spool_at(4)));
     }
 
     // a state missing some of the epoch's groups finds no holder for them
@@ -746,15 +743,16 @@ mod tests {
         let mut state = shrunk_state();
         state.current.groups.truncate(3);
 
-        assert!(state.group_peers(TrackGroup(7)).is_empty());
-        assert!(state.spool_owner(TrackGroup(4).spool_at(0)).is_none());
-        assert_eq!(state.spool_owner(TrackGroup(6).spool_at(0)), Some(address(101)));
+        assert!(state.group_peers(VirtualGroup(7)).is_empty());
+        assert!(state.spool_owner(VirtualGroup(4).spool_at(0)).is_none());
+        assert_eq!(state.spool_owner(VirtualGroup(6).spool_at(0)), Some(address(101)));
     }
 
+    // the group count decides which virtual groups each live spool carries
     #[test]
-    fn digest_tracks_the_track_groups() {
+    fn digest_tracks_the_group_count() {
         let mut state = state_with_groups();
-        state.current.epoch.track_groups = 4;
+        state.current.epoch.total_groups = 4;
 
         assert_ne!(state.view_digest(), state_with_groups().view_digest());
     }
@@ -775,7 +773,7 @@ mod tests {
     #[test]
     fn group_peers_all_spools() {
         let state = state_with_groups();
-        let peers = state.group_peers(TrackGroup(0));
+        let peers = state.group_peers(VirtualGroup(0));
         assert_eq!(peers.len(), MAX_GROUP_SIZE);
         assert_eq!(peers[0], (SpoolIndex(0), address(1)));
         assert_eq!(peers[1], (SpoolIndex(1), address(2)));
@@ -786,7 +784,7 @@ mod tests {
     fn narrow_group() {
         let epoch = EpochNumber(5);
         let owners = [address(1), address(2), address(3), address(4)];
-        let second = TrackGroup(1);
+        let second = VirtualGroup(1);
         let state = ProtocolState {
             current: EpochBundle {
                 epoch: Epoch { id: epoch, total_groups: 2, ..Epoch::zeroed() },
@@ -808,7 +806,9 @@ mod tests {
         assert_eq!(spools, vec![SpoolIndex(20), SpoolIndex(21), SpoolIndex(22), SpoolIndex(23)]);
         assert_eq!(state.group_peers(second).len(), 4);
         assert_eq!(state.group_member_count(second), 4);
-        assert_eq!(state.member_spools(address(1)), vec![SpoolIndex(0), SpoolIndex(20)]);
+        assert_eq!(state.member_live_spools(address(1)), vec![SpoolIndex(0), SpoolIndex(20)]);
+        // One position in each of the two live groups, which carry every virtual group between them.
+        assert_eq!(state.member_spools(address(1)).len() as u64, VIRTUAL_GROUP_COUNT);
         assert_eq!(state.spool_owner(SpoolIndex(23)), Some(address(4)));
         assert!(state.spool(SpoolIndex(24)).is_none());
         assert!(state.spool_owner(SpoolIndex(24)).is_none());
@@ -817,24 +817,28 @@ mod tests {
     #[test]
     fn member_spools_uses_group_ownership() {
         let state = state_with_groups();
-        assert_eq!(
-            state.member_spools(address(1)),
-            vec![
-                SpoolIndex(0),
-                SpoolIndex(3),
-                SpoolIndex(6),
-                SpoolIndex(9),
-                SpoolIndex(12),
-                SpoolIndex(15),
-                SpoolIndex(18),
-            ]
-        );
+        let live = vec![
+            SpoolIndex(0),
+            SpoolIndex(3),
+            SpoolIndex(6),
+            SpoolIndex(9),
+            SpoolIndex(12),
+            SpoolIndex(15),
+            SpoolIndex(18),
+        ];
+        assert_eq!(state.member_live_spools(address(1)), live);
+
+        // The one live group carries every virtual group, at each of those positions.
+        let stored = state.member_spools(address(1));
+        assert_eq!(stored.len() as u64, live.len() as u64 * VIRTUAL_GROUP_COUNT);
+        assert!(stored.contains(&VirtualGroup(1_000).spool_at(3)));
+        assert!(!stored.contains(&VirtualGroup(1_000).spool_at(4)));
     }
 
     #[test]
     fn group_member_count_counts_unique_addresses() {
         let state = state_with_groups();
-        assert_eq!(state.group_member_count(TrackGroup(0)), 3);
+        assert_eq!(state.group_member_count(VirtualGroup(0)), 3);
     }
 
     #[test]
@@ -860,8 +864,8 @@ mod tests {
         assert!(state.spool_owner(SpoolIndex(0)).is_none());
         assert!(state.member_spools(Address::default()).is_empty());
         assert!(state.member_live_spools(Address::default()).is_empty());
-        assert!(state.group_peers(TrackGroup(0)).is_empty());
-        assert_eq!(state.group_member_count(TrackGroup(0)), 0);
+        assert!(state.group_peers(VirtualGroup(0)).is_empty());
+        assert_eq!(state.group_member_count(VirtualGroup(0)), 0);
     }
 
     #[test]
@@ -880,7 +884,7 @@ mod tests {
         });
 
         assert_eq!(state.spool_owner_prev(SpoolIndex(0)), Some(prev_owner));
-        assert_eq!(state.group_member_count_prev(TrackGroup(0)), 1);
+        assert_eq!(state.group_member_count_prev(VirtualGroup(0)), 1);
     }
 
     // a spool that changed hands answers with whoever held it in the round's epoch

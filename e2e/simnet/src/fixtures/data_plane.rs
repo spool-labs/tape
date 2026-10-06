@@ -5,7 +5,7 @@ use tape_peer_http::HttpApi;
 use rpc_litesvm::LiteSvmRpc;
 use solana_keypair::Keypair;
 use tape_api::program::tapedrive::TrackAddress;
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::VirtualGroup;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
@@ -60,7 +60,7 @@ impl SimnetScenario<'_> {
     }
 
     /// Count slices stored across all nodes for a track's group.
-    pub fn count_slices(&self, track: &Address, group: TrackGroup) -> Result<usize> {
+    pub fn count_slices(&self, track: &Address, group: VirtualGroup) -> Result<usize> {
         let track_store_key = *track;
         let mut count = 0usize;
 
@@ -102,7 +102,7 @@ impl SimnetScenario<'_> {
     pub async fn count_current_owner_slices(
         &self,
         track: &Address,
-        group: TrackGroup,
+        group: VirtualGroup,
     ) -> Result<usize> {
         let system = self.read_system().await?;
         let live_group = system

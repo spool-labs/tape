@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bytes::Bytes;
 
 use tape_rpc::Rpc;
-use tape_core::prelude::{SpoolIndex, BlobData, TrackGroup};
+use tape_core::prelude::{SpoolIndex, BlobData, VirtualGroup};
 use tape_core::spooler::GroupFold;
 use tape_core::track::types::CompressedTrack;
 use tape_crypto::prelude::{Address, Hash};
@@ -58,7 +58,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     }
 }
 
-pub fn localize_slices(group: TrackGroup, slices: &[(SpoolIndex, Bytes)]) -> Vec<(SpoolIndex, &[u8])> {
+pub fn localize_slices(group: VirtualGroup, slices: &[(SpoolIndex, Bytes)]) -> Vec<(SpoolIndex, &[u8])> {
     let base = group.base_spool();
     slices
         .iter()
@@ -230,22 +230,22 @@ async fn download_slices<Blockchain: Rpc, Cluster: Api>(
     .await
 }
 
-/// The nodes that held a track group last epoch, by the group's stored spools
+/// The nodes that held a virtual group last epoch, by the group's stored spools
 ///
 /// Read from the chain only when this epoch's holders fall short, so a read
-/// that succeeds pays nothing for it. After the group count drops, the nodes
-/// that held a retired group keep serving it while the new holders pull.
+/// that succeeds pays nothing for it. After the group count changes, the nodes
+/// that held a group's data keep serving it while any new holders pull.
 async fn previous_group_peers<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     state: &ProtocolState,
-    group: TrackGroup,
+    group: VirtualGroup,
 ) -> Option<Vec<(SpoolIndex, Address)>> {
     if state.epoch().is_zero() {
         return None;
     }
 
     let system = &state.system;
-    let previous = GroupFold::new(system.previous_group_count, system.track_group_count)?;
+    let previous = GroupFold::new(system.previous_group_count)?;
     let account = client
         .rpc()
         .get_group(state.epoch().prev(), previous.live_group(group))
@@ -268,7 +268,7 @@ async fn previous_group_peers<Blockchain: Rpc, Cluster: Api>(
 async fn fetch_track_data<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track: Address,
-    group: TrackGroup,
+    group: VirtualGroup,
     operation: Operation,
 ) -> Result<BlobData, TapedriveError> {
     let state = bootstrap_network_state(client, Some(operation)).await?;

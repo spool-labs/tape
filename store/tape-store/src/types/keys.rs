@@ -13,7 +13,7 @@
 use std::mem::MaybeUninit;
 
 use serde::{Deserialize, Serialize};
-use tape_core::spooler::{GroupIndex, TrackGroup};
+use tape_core::spooler::{GroupIndex, VirtualGroup};
 use tape_core::system::{VoteCandidate, VoteKind};
 use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex, TrackNumber};
 use tape_crypto::address::Address;
@@ -299,24 +299,24 @@ impl SliceKey {
     }
 }
 
-/// Key for the challenge sample set, by track group then track.
+/// Key for the challenge sample set, by virtual group then track.
 ///
 /// Format: [group BE 8 bytes][track 32 bytes]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TrackSampleKey {
-    pub group: TrackGroup,
+    pub group: VirtualGroup,
     pub track: Address,
 }
 
 impl TrackSampleKey {
     pub const SIZE: usize = 40;
 
-    pub fn new(group: TrackGroup, track: Address) -> Self {
+    pub fn new(group: VirtualGroup, track: Address) -> Self {
         Self { group, track }
     }
 
-    /// Prefix covering every track written to one track group.
-    pub fn group_prefix(group: TrackGroup) -> [u8; 8] {
+    /// Prefix covering every track stamped with one virtual group.
+    pub fn group_prefix(group: VirtualGroup) -> [u8; 8] {
         group.as_u64().to_be_bytes()
     }
 }
@@ -342,7 +342,7 @@ impl<'de> SchemaRead<'de> for TrackSampleKey {
         let group: [u8; 8] = unsafe { reader.get_t()? };
         let track: [u8; 32] = unsafe { reader.get_t()? };
         dst.write(TrackSampleKey {
-            group: TrackGroup(u64::from_be_bytes(group)),
+            group: VirtualGroup(u64::from_be_bytes(group)),
             track: Address::from(track),
         });
         Ok(())

@@ -178,7 +178,7 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 mod tests {
     use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::TrackAddress;
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::VirtualGroup;
     use tape_core::tape::{snapshot_tape_number, user_tape_number};
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{SlotNumber, StorageUnits, TrackNumber};
@@ -200,7 +200,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits(1),
-            group: TrackGroup::from(0),
+            group: VirtualGroup::from(0),
             value_hash: Hash::default(),
         };
         (track.address(), track)

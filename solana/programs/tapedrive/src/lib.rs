@@ -49,8 +49,8 @@ use crate::node::{
     process_set_network_address,
     process_set_network_capacity,
     process_set_network_tls,
-    process_set_node_capacity,
     process_set_spool_groups,
+    process_set_spool_size,
     process_set_storage_price,
     process_set_subsidy_decay_bps,
 };
@@ -142,7 +142,7 @@ pub fn process_instruction(
         TapeInstruction::SetCommitteeSize => process_set_committee_size(accounts, data)?,
         TapeInstruction::SetSpoolGroups => process_set_spool_groups(accounts, data)?,
         TapeInstruction::SetEpochDuration => process_set_epoch_duration(accounts, data)?,
-        TapeInstruction::SetNodeCapacity => process_set_node_capacity(accounts, data)?,
+        TapeInstruction::SetSpoolSize => process_set_spool_size(accounts, data)?,
         TapeInstruction::ClaimCommission => process_claim_commission(accounts, data)?,
         TapeInstruction::AddToBlacklist => process_add_to_blacklist(accounts, data)?,
         TapeInstruction::RemoveFromBlacklist => process_remove_from_blacklist(accounts, data)?,

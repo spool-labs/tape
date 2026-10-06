@@ -1,4 +1,4 @@
-/// A track is written to one group and its leaf keeps that group for life. `GroupFold` gives the live group that carries it.
+/// A track's leaf is stamped with one virtual group and keeps it for life. `GroupFold` gives the live group that carries it.
 
 use crate::erasure::MAX_GROUP_SIZE;
 use crate::types::SpoolIndex;
@@ -6,32 +6,43 @@ use bytemuck::{Pod, Zeroable};
 
 use super::GroupIndex;
 
+/// Bits in a virtual group number.
+pub const VIRTUAL_GROUP_BITS: u32 = 11;
+
+/// How many virtual groups a leaf can be stamped with, on every network.
+/// The store's two-byte spool key has room for this many and no more.
+pub const VIRTUAL_GROUP_COUNT: u64 = 1 << VIRTUAL_GROUP_BITS;
+
+/// The most spool groups that can be live. A live group can split only while
+/// it carries at least two virtual groups.
+pub const MAX_LIVE_GROUPS: u64 = VIRTUAL_GROUP_COUNT / 2;
+
 #[repr(transparent)]
 #[cfg_attr(feature = "wincode", derive(wincode_derive::SchemaRead, wincode_derive::SchemaWrite))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Pod, Zeroable, serde::Serialize, serde::Deserialize)]
-pub struct TrackGroup(pub u64);
+pub struct VirtualGroup(pub u64);
 
-impl TrackGroup {
-    /// Get the track group a stored spool belongs to.
+impl VirtualGroup {
+    /// Get the virtual group a stored spool belongs to.
     #[inline]
     pub fn containing(spool: SpoolIndex) -> Self {
         Self(spool.as_u64() / MAX_GROUP_SIZE as u64)
     }
 
-    /// First stored spool of this track group.
+    /// First stored spool of this virtual group.
     #[inline]
     pub fn base_spool(&self) -> SpoolIndex {
         SpoolIndex::from(self.0 * MAX_GROUP_SIZE as u64)
     }
 
-    /// Stored spool for a position within this track group.
+    /// Stored spool for a position within this virtual group.
     #[inline]
     pub fn spool_at(&self, position: usize) -> SpoolIndex {
         assert!(position < MAX_GROUP_SIZE);
         SpoolIndex::from(self.0 * MAX_GROUP_SIZE as u64 + position as u64)
     }
 
-    /// Position within this track group for a stored spool, if the spool belongs to it.
+    /// Position within this virtual group for a stored spool, if the spool belongs to it.
     #[inline]
     pub fn position_of(&self, spool: SpoolIndex) -> Option<usize> {
         let spool = spool.as_usize();
@@ -43,10 +54,10 @@ impl TrackGroup {
         Some(spool % MAX_GROUP_SIZE)
     }
 
-    /// Check if a stored spool belongs to this track group.
+    /// Check if a stored spool belongs to this virtual group.
     #[inline]
     pub fn contains(&self, spool: SpoolIndex) -> bool {
-        TrackGroup::containing(spool) == *self
+        VirtualGroup::containing(spool) == *self
     }
 
     /// Unpack from little-endian bytes.
@@ -80,35 +91,35 @@ impl TrackGroup {
     }
 }
 
-impl From<u64> for TrackGroup {
+impl From<u64> for VirtualGroup {
     #[inline]
     fn from(v: u64) -> Self {
         Self(v)
     }
 }
 
-impl From<TrackGroup> for u64 {
+impl From<VirtualGroup> for u64 {
     #[inline]
-    fn from(g: TrackGroup) -> u64 {
+    fn from(g: VirtualGroup) -> u64 {
         g.0
     }
 }
 
-/// A live group always carries the track group with its own id.
-impl From<GroupIndex> for TrackGroup {
+/// A live group always carries the virtual group with its own id.
+impl From<GroupIndex> for VirtualGroup {
     #[inline]
     fn from(g: GroupIndex) -> Self {
         Self(g.0)
     }
 }
 
-impl std::fmt::Debug for TrackGroup {
+impl std::fmt::Debug for VirtualGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "track-group:{}", self.0)
+        write!(f, "virtual-group:{}", self.0)
     }
 }
 
-impl std::fmt::Display for TrackGroup {
+impl std::fmt::Display for VirtualGroup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }

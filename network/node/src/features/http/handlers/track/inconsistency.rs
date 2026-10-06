@@ -112,7 +112,7 @@ fn verify_inconsistency_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let group = protocol
         .live_group(track_info.group)
         .and_then(|live| protocol.group(live))
-        .ok_or_else(|| RouteError::BadRequest("track group missing".into()))?;
+        .ok_or_else(|| RouteError::BadRequest("track's group missing".into()))?;
 
     for signer_index in signer_indices {
         // A bit at or past n is an empty spool, as the program's check has it.
@@ -157,7 +157,7 @@ mod tests {
     use tape_core::bls::BlsSignature;
     use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
     use tape_snapshot::snapshot_chunk_key;
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::VirtualGroup;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
@@ -201,7 +201,7 @@ mod tests {
 
         let epoch = EpochNumber(5);
 
-        let group = TrackGroup(2);
+        let group = VirtualGroup(2);
         let track_number = TrackNumber(9);
         let (snapshot_tape, _) = snapshot_tape_pda(epoch);
 

@@ -177,7 +177,7 @@ async fn fetch_decoding_slices<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let peers = state.context.state().group_peers(track.group);
     if peers.is_empty() {
-        return Err(RouteError::BadGateway("no peers for track group".into()));
+        return Err(RouteError::BadGateway("no peers for the track's group".into()));
     }
 
     let origin = SliceOrigin {
@@ -265,7 +265,7 @@ async fn fetch_decoding_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     };
     let Some(position) = origin.group.position_of(spool_id) else {
-        warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice outside track group");
+        warn!(spool = %spool_id, track = %track_addr, "gateway skipped slice outside the track's group");
         return Err(SliceFailure::Group);
     };
 

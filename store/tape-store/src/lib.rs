@@ -227,7 +227,7 @@ mod tests {
     use crate::types::{ObjectInfo, TapeInfo};
     use tape_store_memory::MemoryStore;
     use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::types::{EpochNumber, SlotNumber, TrackGroup, SpoolIndex, TapeNumber, TrackNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, VirtualGroup, SpoolIndex, TapeNumber, TrackNumber};
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
     use tape_crypto::address::Address;
@@ -246,7 +246,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(1024 * 1024),
-            group: TrackGroup(3),
+            group: VirtualGroup(3),
             value_hash: Hash::new_unique(),
         };
 
@@ -387,7 +387,7 @@ mod tests {
                 state: TrackState::Certified as u64,
                 flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(1024),
-                group: TrackGroup(3),
+                group: VirtualGroup(3),
                 value_hash: Hash::new_unique(),
             };
             store.put_track(track, info).unwrap();
@@ -427,7 +427,7 @@ mod tests {
                 state: TrackState::Certified as u64,
                 flags: TrackFlags::NONE,
                 size: StorageUnits::from_bytes(512),
-                group: TrackGroup(0),
+                group: VirtualGroup(0),
                 value_hash: Hash::new_unique(),
             };
             store.put_track(track, info).unwrap();
@@ -459,7 +459,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(1024),
-            group: TrackGroup(3),
+            group: VirtualGroup(3),
             value_hash: Hash::new_unique(),
         }
     }

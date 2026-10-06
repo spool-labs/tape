@@ -407,7 +407,7 @@ mod tests {
     use axum::Router;
     use rusqlite::Connection;
     use serde_json::{json, Value};
-    use tape_core::prelude::{TrackGroup, StorageUnits, TrackNumber};
+    use tape_core::prelude::{VirtualGroup, StorageUnits, TrackNumber};
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_crypto::hash::hash;
     use tape_crypto::Hash;
@@ -623,7 +623,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits(size),
-            group: TrackGroup(0),
+            group: VirtualGroup(0),
             value_hash: Hash::default(),
         }
     }

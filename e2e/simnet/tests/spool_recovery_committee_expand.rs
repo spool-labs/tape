@@ -29,7 +29,7 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::VirtualGroup;
 use tape_core::types::BasisPoints;
 use tape_crypto::Address;
 use tape_e2e_simnet::{
@@ -166,7 +166,7 @@ async fn inner() {
         .expect("spool owners migrated off the incumbents");
     assert!(
         includes_late_owner(&scenario, &late_nodes, &after),
-        "expected at least one late node to own the track group"
+        "expected at least one late node to own the track's group"
     );
 
     wait_current_owner_slices(&scenario, &track_address, track.group, recovery_timeout)
@@ -191,7 +191,7 @@ async fn inner() {
 /// migrated.
 async fn wait_migrated_owners(
     scenario: &SimnetScenario<'_>,
-    group: TrackGroup,
+    group: VirtualGroup,
     before: &[Address],
     timeout: Duration,
 ) -> Result<Vec<Address>> {
@@ -229,7 +229,7 @@ fn migrated_owner_count(before: &[Address], after: &[Address]) -> usize {
 async fn wait_current_owner_slices(
     scenario: &SimnetScenario<'_>,
     track: &Address,
-    group: TrackGroup,
+    group: VirtualGroup,
     timeout: Duration,
 ) -> Result<()> {
     let start = Instant::now();
@@ -253,8 +253,8 @@ async fn wait_current_owner_slices(
     }
 }
 
-/// The nodes of the live group that carries a track group.
-async fn group_owners(scenario: &SimnetScenario<'_>, group: TrackGroup) -> Vec<Address> {
+/// The nodes of the live group that carries a virtual group.
+async fn group_owners(scenario: &SimnetScenario<'_>, group: VirtualGroup) -> Vec<Address> {
     let system = scenario.read_system().await.expect("read system");
     let live_group = system.live_group(group).expect("live group");
     let group = scenario

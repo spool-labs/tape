@@ -1,6 +1,7 @@
 use tape_solana::*;
 use tape_api::program::prelude::*;
 use tape_api::event::EpochAdvanced;
+use tape_core::spooler::MAX_LIVE_GROUPS;
 
 pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let _args = AdvanceEpoch::try_from_bytes(data)?;
@@ -206,10 +207,6 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     system.target_group_count = preferences.spool_groups;
     system.previous_group_count = system.live_group_count;
     system.live_group_count = next_epoch.total_groups;
-    system.track_group_count = system.track_group_count.max(system.live_group_count);
-
-    // Each epoch keeps its own count, so it can be folded on its own later.
-    next_epoch.track_groups = system.track_group_count;
 
     EpochAdvanced {
         old_epoch: curr,
@@ -235,7 +232,7 @@ fn validate_preferences(system: &System, preferences: NodePreferences) -> Progra
     if preferences.committee_size < u64::from(system.code()?.n()) {
         return Err(TapeError::InsufficientCommittee.into());
     }
-    if preferences.spool_groups == 0 {
+    if preferences.spool_groups == 0 || preferences.spool_groups > MAX_LIVE_GROUPS {
         return Err(TapeError::UnexpectedState.into());
     }
     if !preferences.burn_fee_bps.is_valid() {
@@ -285,7 +282,7 @@ mod tests {
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
-            node_capacity: StorageUnits::zero(),
+            spool_size: StorageUnits::zero(),
         }
     }
 
@@ -339,7 +336,6 @@ mod tests {
             committee_size: COMMITTEE_SIZE,
             target_group_count: 50,
             live_group_count: 50,
-            track_group_count: 50,
             min_epoch_duration: TEST_MIN_EPOCH_DURATION,
             max_epoch_duration: TEST_MAX_EPOCH_DURATION,
             ..permissionless_system()
@@ -424,7 +420,6 @@ mod tests {
         let expected_next_epoch = Epoch {
             start_slot: SlotNumber(slot),
             start_time: now,
-            track_groups: 50,
             state: EpochState {
                 phase: EpochPhase::Sync as u64,
                 ..EpochState::zeroed()
@@ -477,7 +472,6 @@ mod tests {
             committee_size: 256,
             target_group_count: 75,
             live_group_count: 75,
-            track_group_count: 75,
             ..permissionless_system()
         };
         let expected = System {
@@ -496,7 +490,6 @@ mod tests {
             committee_size: 64,
             target_group_count: 5,
             live_group_count: 10,
-            track_group_count: 10,
             ..permissionless_system()
         };
         let expected = System {
@@ -508,7 +501,7 @@ mod tests {
         advance_case(system, 5, pref(2_048, 950, 64, 5), Ok(expected));
     }
 
-    // growing past the highest count so far adds track groups
+    // the live count rises to the target the last advance set
     #[test]
     fn more_groups() {
         let system = System {
@@ -516,13 +509,11 @@ mod tests {
             target_group_count: 20,
             live_group_count: 5,
             previous_group_count: 10,
-            track_group_count: 10,
             ..permissionless_system()
         };
         let expected = System {
             live_group_count: 20,
             previous_group_count: 5,
-            track_group_count: 20,
             ..system
         };
 
@@ -535,11 +526,34 @@ mod tests {
             committee_size: 64,
             target_group_count: 5,
             live_group_count: 5,
-            track_group_count: 5,
             ..permissionless_system()
         };
 
         advance_case(system, 5, pref(2_048, 950, 64, 0), Err(TapeError::UnexpectedState.into()));
+    }
+
+    // a voted count past half the virtual groups is refused
+    #[test]
+    fn groups_above_cap_refused() {
+        let system = System {
+            committee_size: 64,
+            target_group_count: 5,
+            live_group_count: 5,
+            ..permissionless_system()
+        };
+        let at_cap = System {
+            target_group_count: MAX_LIVE_GROUPS,
+            previous_group_count: 5,
+            ..system
+        };
+
+        advance_case(system, 5, pref(2_048, 950, 64, MAX_LIVE_GROUPS), Ok(at_cap));
+        advance_case(
+            system,
+            5,
+            pref(2_048, 950, 64, MAX_LIVE_GROUPS + 1),
+            Err(TapeError::UnexpectedState.into()),
+        );
     }
 
     // advances into an epoch with `total_groups` finalized groups and the

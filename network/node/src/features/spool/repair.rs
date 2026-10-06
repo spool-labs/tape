@@ -5,7 +5,7 @@ use tape_peer_manager::PeerManager;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::encoding::{ClayParams, ErasureCode};
-use tape_core::spooler::TrackGroup;
+use tape_core::spooler::VirtualGroup;
 use tape_core::types::SpoolIndex;
 use tape_core::system::SpoolState;
 use tape_core::track::blob::BlobEncoding;
@@ -86,11 +86,11 @@ const REPAIR_FETCH_CONCURRENCY: usize = 4;
 // NOTE:
 //
 // The spool relationships are:
-//   - TrackGroup::containing(spool) → group is derived from spool
+//   - VirtualGroup::containing(spool) → group is derived from spool
 //   - group.position_of(spool) → slice index is derived from spool + group
 //   - group.spool_at(slice) → spool is derived from group + slice
 //
-//   Given a SpoolIndex, you can always derive the TrackGroup and the SliceIndex within it. So passing
+//   Given a SpoolIndex, you can always derive the VirtualGroup and the SliceIndex within it. So passing
 //   spool, group, AND lost is redundant, any one of these plus spool is computable from the other.
 //   The helpers should just take spool and derive what they need.
 
@@ -293,7 +293,7 @@ pub fn group_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     spool_state: &SpoolState,
     spool: SpoolIndex,
 ) -> GroupPeers {
-    let group = TrackGroup::containing(spool);
+    let group = VirtualGroup::containing(spool);
     let previous = spool_state
         .prev_helpers
         .iter()
@@ -336,7 +336,7 @@ async fn repair_track<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
         return Err(());
     }
 
-    let group = TrackGroup::containing(spool);
+    let group = VirtualGroup::containing(spool);
     let position = group.position_of(spool).ok_or(())?;
     let lost = SliceIndex::new(position);
 
@@ -514,7 +514,7 @@ fn per_helper_reqs(
     spool: SpoolIndex,
     track: Address,
 ) -> HashMap<SliceIndex, RepairReq> {
-    let group = TrackGroup::containing(spool);
+    let group = VirtualGroup::containing(spool);
     let mut reqs: HashMap<SliceIndex, RepairReq> = HashMap::new();
 
     for stripe_repair in &plan.stripes {
@@ -654,7 +654,7 @@ mod tests {
             state: TrackState::Certified as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::from_bytes(size),
-            group: TrackGroup::containing(SPOOL),
+            group: VirtualGroup::containing(SPOOL),
             value_hash: blob.get_hash(),
         }
     }
@@ -723,7 +723,7 @@ mod tests {
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
         let track = addr(9);
-        let group = TrackGroup::containing(SPOOL);
+        let group = VirtualGroup::containing(SPOOL);
         let lost_pos = group.position_of(SPOOL).unwrap();
         let expected = slices[lost_pos].clone();
         let track_info = clay_track(1024, &slices);
@@ -862,7 +862,7 @@ mod tests {
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
         let track = addr(9);
-        let group = TrackGroup::containing(SPOOL);
+        let group = VirtualGroup::containing(SPOOL);
         let lost_pos = group.position_of(SPOOL).unwrap();
         let expected = slices[lost_pos].clone();
         let track_info = clay_track(1024, &slices);

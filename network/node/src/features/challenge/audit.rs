@@ -16,7 +16,7 @@ use tape_core::erasure::{
 };
 use tape_core::track::blob::SubLeafProof;
 use tape_core::track::data::BlobData;
-use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex, TrackGroup};
+use tape_core::types::{EpochNumber, GroupIndex, RoundNumber, SlotNumber, SpoolIndex, VirtualGroup};
 use tape_crypto::Address;
 use tape_crypto::hash::Hash;
 use tape_protocol::api::{AttestReq, ProofOfAccessReq, SpoolAttestation};
@@ -104,8 +104,8 @@ pub fn has_sample_set<Db: Store, Cluster: Api, Blockchain: Rpc>(
 }
 
 /// The sample set for one round, shared by every answer drawn against it.
-/// Each row carries the track group its track was written to.
-pub type SampleSet = (Vec<(Address, TrackGroup, TrackSample)>, Vec<SampleEntry>);
+/// Each row carries the virtual group its track was stamped with.
+pub type SampleSet = (Vec<(Address, VirtualGroup, TrackSample)>, Vec<SampleEntry>);
 
 /// One round's sample set, built once and reused, or nothing while this node's
 /// store has yet to reach the round's cut.
@@ -171,28 +171,30 @@ fn build_set_entries<Db: Store, Cluster: Api, Blockchain: Rpc>(
     round: &Round,
     cutoff: SlotNumber,
 ) -> Option<SampleSet> {
-    // A live group answers for every track group folded onto it in the round's
+    // A live group answers for every virtual group folded onto it in the round's
     // epoch. A state that no longer holds that epoch can't say which, so no set.
     let fold = context.state().fold_at(round.epoch)?;
 
-    let mut rows: Vec<(Address, TrackGroup, TrackSample)> = Vec::new();
-    for group in fold.carried(round.group) {
+    // A live group carries hundreds of virtual groups in about a dozen runs of
+    // ids, so the set is read one run at a time.
+    let mut rows: Vec<(Address, VirtualGroup, TrackSample)> = Vec::new();
+    for groups in fold.carried_ranges(round.group) {
         let scanned = context
             .store
-            .iter_track_samples_by_group(group)
+            .iter_track_samples_in(groups)
             .map_err(|error| debug!(%error, "challenge: sample set unavailable"))
             .ok()?;
 
         rows.extend(
             scanned
                 .into_iter()
-                .filter(|(_, sample)| sample.in_set_at(cutoff))
-                .map(|(track, sample)| (track, group, sample)),
+                .filter(|(_, _, sample)| sample.in_set_at(cutoff))
+                .map(|(group, track, sample)| (track, group, sample)),
         );
     }
 
-    // Each scan arrives in track order. The draw is defined over one track
-    // order across every group carried, so the scans are merged into it.
+    // Each scan arrives by group and then track. The draw is defined over one
+    // track order across every group carried, so the scans are merged into it.
     rows.sort_unstable_by_key(|(track, _, _)| *track);
 
     let entries = rows
@@ -217,12 +219,12 @@ pub fn expected_sample<Db: Store, Cluster: Api, Blockchain: Rpc>(
     drawn_row(context, round, spool).map(|(sample, _, value_hash)| (sample, value_hash))
 }
 
-/// The sample a spool owes, with the track group and value hash of its track.
+/// The sample a spool owes, with the virtual group and value hash of its track.
 fn drawn_row<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
     round: &Round,
     spool: SpoolIndex,
-) -> Option<(Sample, TrackGroup, Hash)> {
+) -> Option<(Sample, VirtualGroup, Hash)> {
     let held = set_entries(context, round)?;
     let (rows, entries) = (&held.0, &held.1);
 
@@ -244,12 +246,12 @@ pub fn build_answer<Db: Store, Cluster: Api, Blockchain: Rpc>(
     round: &Round,
     spool: SpoolIndex,
 ) -> Option<ProofOfAccess> {
-    let (sample, track_group, _) = drawn_row(context, round, spool)?;
+    let (sample, virtual_group, _) = drawn_row(context, round, spool)?;
     let proof = match sample.leaf {
         SampleLeaf::Coded { sub_leaf } => {
             // The slice sits under the track's own group, at this spool's
             // position in the live group that carries it.
-            let stored = track_group.spool_at(round.group.position_of(spool)?);
+            let stored = virtual_group.spool_at(round.group.position_of(spool)?);
 
             // One window of the slice and the sidecar above it, which is every
             // byte a proof reads. The rest of the slice stays on the device.

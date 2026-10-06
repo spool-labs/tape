@@ -20,7 +20,7 @@ use tape_store_reel::{scaled, BenchArm, MetaBulkStore, ReelStore};
 use tape_store_api::{Column, Direction};
 use tape_store_rocks::SplitStore;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-use tape_core::types::{TrackGroup, StorageUnits, TrackNumber};
+use tape_core::types::{VirtualGroup, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_store::columns::TrackCol;
@@ -38,7 +38,7 @@ fn sample_track() -> CompressedTrack {
         state: TrackState::Certified as u64,
         flags: TrackFlags::NONE,
         size: StorageUnits::from_bytes(1024),
-        group: TrackGroup(3),
+        group: VirtualGroup(3),
         value_hash: Hash::new_unique(),
     }
 }

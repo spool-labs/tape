@@ -8,7 +8,6 @@ use tape_api::instruction::build_claim_commission_ix;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_api::program::tapedrive::TrackAddress;
 use tape_api::utils::ata;
-use tape_core::spooler::TrackGroup;
 use tape_core::system::Member;
 use tape_core::types::coin::TAPE;
 use tape_core::types::{BasisPoints, EpochNumber, StorageUnits};
@@ -322,7 +321,6 @@ async fn write_data(harness: &SimnetHarness) -> Address {
         .write_raw(&tape_key, &data)
         .await
         .expect("write raw track");
-    assert_eq!(track.group, TrackGroup(0), "unexpected raw track group");
 
     track.address()
 }

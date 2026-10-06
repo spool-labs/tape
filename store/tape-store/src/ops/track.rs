@@ -268,7 +268,7 @@ mod tests {
     use super::*;
     use tape_core::track::types::TrackFlags;
     use tape_core::types::StorageUnits;
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::VirtualGroup;
     use tape_crypto::Hash;
     use tape_store_memory::MemoryStore;
 
@@ -285,7 +285,7 @@ mod tests {
             state: 1,
             flags: TrackFlags::NONE,
             size: StorageUnits(1024 * 1024),
-            group: TrackGroup(3),
+            group: VirtualGroup(3),
             value_hash: Hash::new_unique(),
         }
     }

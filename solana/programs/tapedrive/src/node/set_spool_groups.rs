@@ -4,6 +4,7 @@
 //! aggregated network value is recomputed at the next epoch boundary.
 
 use tape_api::program::prelude::*;
+use tape_core::spooler::MAX_LIVE_GROUPS;
 
 pub fn process_set_spool_groups(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = SetSpoolGroups::try_from_bytes(data)?;
@@ -29,7 +30,7 @@ pub fn process_set_spool_groups(accounts: &[AccountInfo<'_>], data: &[u8]) -> Pr
         return Err(ProgramError::InvalidAccountData);
     }
 
-    if args.spool_groups == 0 {
+    if args.spool_groups == 0 || args.spool_groups > MAX_LIVE_GROUPS {
         return Err(ProgramError::InvalidArgument);
     }
 
@@ -43,8 +44,7 @@ mod tests {
     use super::*;
     use tape_test::*;
 
-    #[test]
-    fn zero_refused() {
+    fn vote(spool_groups: u64, checks: &[Check]) {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
@@ -54,7 +54,7 @@ mod tests {
             fee_payer.into(),
             authority.into(),
             node_address,
-            0,
+            spool_groups,
         );
 
         let node = Node {
@@ -68,11 +68,20 @@ mod tests {
             pda(node_address, node.pack(), tapedrive::ID),
         ];
 
-        test_env().process_instruction(
-            &instruction,
-            &accounts,
-            &[Check::err(ProgramError::InvalidArgument)],
-        );
+        test_env().process_instruction(&instruction, &accounts, checks);
+    }
+
+    #[test]
+    fn zero_refused() {
+        vote(0, &[Check::err(ProgramError::InvalidArgument)]);
+    }
+
+    // a group can split only while it carries two virtual groups, so the
+    // count stops at half of them
+    #[test]
+    fn above_cap_refused() {
+        vote(MAX_LIVE_GROUPS, &[Check::success()]);
+        vote(MAX_LIVE_GROUPS + 1, &[Check::err(ProgramError::InvalidArgument)]);
     }
 
     #[test]

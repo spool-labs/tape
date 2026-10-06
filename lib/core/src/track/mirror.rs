@@ -214,7 +214,7 @@ mod tests {
     use tape_crypto::address::Address;
     use tape_crypto::hash::hashv;
 
-    use crate::spooler::TrackGroup;
+    use crate::spooler::VirtualGroup;
     use crate::track::types::{TrackFlags, TrackKind, TrackState};
     use crate::types::StorageUnits;
 
@@ -233,7 +233,7 @@ mod tests {
             state: TrackState::Registered.into(),
             flags: TrackFlags::NONE,
             size: StorageUnits(1024),
-            group: TrackGroup(3),
+            group: VirtualGroup(3),
             value_hash: hashv(&[b"registered", &track_number.pack()]),
         }
     }

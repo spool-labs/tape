@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::prelude::{EpochNumber, TrackGroup, SpoolIndex, SpoolState, SpoolStatus};
+use tape_core::prelude::{EpochNumber, VirtualGroup, SpoolIndex, SpoolState, SpoolStatus};
 use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps};
 use tokio::task::JoinSet;
@@ -543,7 +543,7 @@ fn make_sync_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
 ) -> SpoolState {
     let protocol = ctx.state();
-    let group = TrackGroup::containing(spool);
+    let group = VirtualGroup::containing(spool);
     let mut state = SpoolState::new(SpoolStatus::Sync, epoch);
 
     state.prev_owner = protocol.spool_owner_prev(spool);
@@ -631,7 +631,7 @@ fn check_expiry(
 #[cfg(test)]
 mod tests {
     use tape_core::encoding::TAPENET_PROFILE;
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::VirtualGroup;
     use tape_core::system::{EpochPhase, SpoolState, SpoolStatus};
     use tape_core::types::{EpochNumber, SpoolIndex};
     use tape_crypto::address::Address;
@@ -695,7 +695,7 @@ mod tests {
 
     /// The stored spool of the retired group that the node at `SPOOL` now carries.
     fn absorbed_spool() -> SpoolIndex {
-        TrackGroup(1).spool_at(SPOOL.as_usize())
+        VirtualGroup(1).spool_at(SPOOL.as_usize())
     }
 
     // after the group count drops, a node pulls the retired group's spool at
@@ -760,15 +760,8 @@ mod tests {
             .expect("build harness");
         let ctx = harness.ctx_for(SPOOL.as_usize());
 
-        // Two groups were live once, so one track group is folded onto group 0
-        // in this epoch and the last.
-        let mut state = (*ctx.state()).clone();
-        state.current.epoch.track_groups = 2;
-        if let Some(previous) = state.previous.as_mut() {
-            previous.epoch.track_groups = 2;
-        }
-        ctx.set_state(state).expect("publish state");
-
+        // One group is live, so every other virtual group is folded onto
+        // group 0 in this epoch and the last.
         let mut manager =
             SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
         manager.advance(EPOCH).unwrap();
@@ -1093,10 +1086,12 @@ mod tests {
         assert_eq!(first.status, SpoolStatus::Sync);
         assert_eq!(first.epoch, EPOCH);
 
-        // the sync and scan pass finished and left the spool Active
-        ctx.store
-            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EPOCH))
-            .expect("set spool state");
+        // the sync and scan pass finished and left every stored spool Active
+        for spool in ctx.state().member_spools(ctx.node_address()) {
+            ctx.store
+                .set_spool_state(spool, SpoolState::new(SpoolStatus::Active, EPOCH))
+                .expect("set spool state");
+        }
 
         manager.advance(next_epoch).expect("advance");
 

@@ -303,7 +303,7 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_store_memory::MemoryStore;
     use tape_core::encoding::{RSParams, RepParams, TAPENET_CLAY, TAPENET_PROFILE};
-    use tape_core::spooler::TrackGroup;
+    use tape_core::spooler::VirtualGroup;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
         EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
@@ -318,9 +318,9 @@ mod tests {
         TapeStore::new(MemoryStore::new())
     }
 
-    /// A target epoch of `groups` groups with none retired.
+    /// A target epoch of `groups` groups.
     fn fold(groups: u64) -> GroupFold {
-        GroupFold::new(groups, groups).expect("live groups")
+        GroupFold::new(groups).expect("live groups")
     }
 
     fn ready_sizes(
@@ -329,15 +329,8 @@ mod tests {
         target_epoch: EpochNumber,
         target_groups: u64,
     ) -> Option<Vec<StorageUnits>> {
-        folded_sizes(store, voting_epoch, target_epoch, fold(target_groups))
-    }
+        let target = fold(target_groups);
 
-    fn folded_sizes(
-        store: &TapeStore<MemoryStore>,
-        voting_epoch: EpochNumber,
-        target_epoch: EpochNumber,
-        target: GroupFold,
-    ) -> Option<Vec<StorageUnits>> {
         match group_weights(store, voting_epoch, target_epoch, target, TAPENET_PROFILE)
             .expect("weights build")
         {
@@ -358,16 +351,15 @@ mod tests {
         let retired_size = StorageUnits::from_bytes(40);
 
         store.put_tape(tape, tape_info(EpochNumber(20))).unwrap();
-        store.put_track(kept, raw_track(tape, TrackGroup(3), kept_size)).unwrap();
-        store.put_track(retired, raw_track(tape, TrackGroup(7), retired_size)).unwrap();
+        store.put_track(kept, raw_track(tape, VirtualGroup(3), kept_size)).unwrap();
+        store.put_track(retired, raw_track(tape, VirtualGroup(7), retired_size)).unwrap();
         for track in [kept, retired] {
             store
                 .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
                 .unwrap();
         }
 
-        let shrunk = GroupFold::new(5, 10).expect("live groups");
-        let sizes = folded_sizes(&store, EpochNumber(10), EpochNumber(11), shrunk)
+        let sizes = ready_sizes(&store, EpochNumber(10), EpochNumber(11), 5)
             .expect("weights ready");
 
         assert_eq!(sizes.len(), 5);
@@ -392,7 +384,7 @@ mod tests {
         }
     }
 
-    fn raw_track(tape: Address, group: TrackGroup, size: StorageUnits) -> CompressedTrack {
+    fn raw_track(tape: Address, group: VirtualGroup, size: StorageUnits) -> CompressedTrack {
         CompressedTrack {
             tape,
             track_number: TrackNumber(0),
@@ -406,7 +398,7 @@ mod tests {
         }
     }
 
-    fn coded_track(tape: Address, group: TrackGroup, size: StorageUnits) -> CompressedTrack {
+    fn coded_track(tape: Address, group: VirtualGroup, size: StorageUnits) -> CompressedTrack {
         let mut track = raw_track(tape, group, size);
         track.kind = TrackKind::Coded as u64;
         track
@@ -429,7 +421,7 @@ mod tests {
         let size = StorageUnits::from_bytes(123);
 
         store.put_tape(tape, tape_info(EpochNumber(20))).unwrap();
-        store.put_track(track, raw_track(tape, TrackGroup(2), size)).unwrap();
+        store.put_track(track, raw_track(tape, VirtualGroup(2), size)).unwrap();
         store
             .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
             .unwrap();
@@ -451,7 +443,7 @@ mod tests {
         let size = StorageUnits::from_bytes(64);
 
         store.put_tape(tape, tape_info(EpochNumber(11))).unwrap();
-        store.put_track(track, raw_track(tape, TrackGroup(1), size)).unwrap();
+        store.put_track(track, raw_track(tape, VirtualGroup(1), size)).unwrap();
         store
             .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
             .unwrap();
@@ -487,14 +479,14 @@ mod tests {
             .put_tape(snapshot_tape, tape_info(EpochNumber(20)))
             .unwrap();
         store
-            .put_track(user_track, raw_track(user_tape, TrackGroup(1), user_size))
+            .put_track(user_track, raw_track(user_tape, VirtualGroup(1), user_size))
             .unwrap();
         store
             .put_track(
                 snapshot_track,
                 raw_track(
                     snapshot_tape,
-                    TrackGroup(1),
+                    VirtualGroup(1),
                     StorageUnits::from_bytes(999),
                 ),
             )
@@ -527,10 +519,10 @@ mod tests {
             .put_tape(tape, tape_info(EpochNumber(20)))
             .expect("tape stored");
         store
-            .put_track(inline_track, raw_track(tape, TrackGroup(0), size))
+            .put_track(inline_track, raw_track(tape, VirtualGroup(0), size))
             .expect("inline track stored");
         store
-            .put_track(coded, coded_track(tape, TrackGroup(1), size))
+            .put_track(coded, coded_track(tape, VirtualGroup(1), size))
             .expect("coded track stored");
         store
             .put_object_info(
@@ -618,7 +610,7 @@ mod tests {
         store
             .put_track(
                 track,
-                coded_track(tape, TrackGroup(0), StorageUnits::from_bytes(256)),
+                coded_track(tape, VirtualGroup(0), StorageUnits::from_bytes(256)),
             )
             .expect("track stored");
         store

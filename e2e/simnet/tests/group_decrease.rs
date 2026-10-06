@@ -2,12 +2,12 @@
 //!
 //! The network grows to GROWN_GROUPS, takes a blob in a group that will stay
 //! live and one in a group that will retire, then votes the count down to
-//! SHRUNK_GROUPS. A track keeps the group it was written with, so the retired
-//! blob has to be served by the live group that carries it: its new holders
-//! pull the slices from the nodes that held them, and a read at the turn
-//! reaches those old holders while they do. The group that stays live keeps
-//! its nodes. The count then goes back up, and the returning group starts on
-//! the nodes that already hold its data.
+//! SHRUNK_GROUPS. A track keeps the virtual group it was stamped with, so the
+//! retired blob has to be served by the live group that carries it: its new
+//! holders pull the slices from the nodes that held them, and a read at the
+//! turn reaches those old holders while they do. The group that stays live
+//! keeps its nodes. The count then goes back up, and the returning group
+//! starts on the nodes that already hold its data.
 //!
 //! A vote reaches the target at the next advance and the live count one epoch
 //! after that, so each change of count spans two epoch boundaries.
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::spooler::{GroupIndex, TrackGroup};
+use tape_core::spooler::{GroupFold, GroupIndex, VirtualGroup};
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::BasisPoints;
 use tape_crypto::Address;
@@ -44,10 +44,6 @@ const BLOB_EPOCHS: u64 = 16;
 /// Try this many uploads to land one blob in a kept group and one in a retired
 /// group. The program picks the group from a slot hash, so each try is a coin flip.
 const MAX_UPLOADS: usize = 24;
-
-/// A group may see this many positions change hands in one epoch with its
-/// data staying put: the spooler rebalances a few percent of stored bytes an epoch.
-const REBALANCE_ALLOWANCE: usize = 5;
 
 struct Blob {
     address: Address,
@@ -138,11 +134,11 @@ async fn inner() {
         .expect("the lower count came live");
 
     let system = scenario.read_system().await.expect("read system");
+    let retired_group = live_at(GROWN_GROUPS, retired.track.group);
     assert_eq!(system.previous_group_count, GROWN_GROUPS);
-    assert_eq!(system.track_group_count, GROWN_GROUPS);
     assert_eq!(
         system.live_group(retired.track.group).expect("live group").0,
-        retired.track.group.0 - SHRUNK_GROUPS,
+        retired_group.0 - SHRUNK_GROUPS,
         "at half the count each retired group folds onto the group two below it"
     );
     assert!(
@@ -173,8 +169,9 @@ async fn inner() {
         .expect("the kept group's holders hold every slice");
 
     let kept_after = holders(&scenario, kept.track.group).await;
-    assert!(
-        unchanged(&kept_before, &kept_after) >= TAPENET_GROUP_SIZE - REBALANCE_ALLOWANCE,
+    assert_eq!(
+        unchanged(&kept_before, &kept_after),
+        TAPENET_GROUP_SIZE,
         "a group that stays live keeps its nodes through a shrink"
     );
 
@@ -192,7 +189,6 @@ async fn inner() {
         .upload(harness.admin(), &fresh, BLOB_EPOCHS)
         .await
         .expect("upload after the shrink");
-    assert!(fresh_track.group.0 < SHRUNK_GROUPS);
     assert!(fresh_track.is_certified());
     let read = scenario
         .download(harness.admin(), &fresh_address)
@@ -212,16 +208,16 @@ async fn inner() {
         .expect("the grown count came live again");
 
     let system = scenario.read_system().await.expect("read system");
-    assert_eq!(system.track_group_count, GROWN_GROUPS);
     assert_eq!(
-        system.live_group(retired.track.group).expect("live group").0,
-        retired.track.group.0,
-        "a returned group is live as itself"
+        system.live_group(retired.track.group).expect("live group"),
+        retired_group,
+        "the blob is back in the group it was written to"
     );
 
     let returned = holders(&scenario, retired.track.group).await;
-    assert!(
-        unchanged(&carried_by, &returned) >= TAPENET_GROUP_SIZE - REBALANCE_ALLOWANCE,
+    assert_eq!(
+        unchanged(&carried_by, &returned),
+        TAPENET_GROUP_SIZE,
         "a group that returns with data starts on the nodes that hold it"
     );
 
@@ -259,7 +255,7 @@ async fn upload_both(harness: &SimnetHarness) -> (Blob, Blob) {
         assert!(track.is_certified(), "uploaded blob track should be certified");
 
         let blob = Blob { address, track, data };
-        match blob.track.group.0 < SHRUNK_GROUPS {
+        match live_at(GROWN_GROUPS, blob.track.group).0 < SHRUNK_GROUPS {
             true => kept = kept.or(Some(blob)),
             false => retired = retired.or(Some(blob)),
         }
@@ -318,7 +314,7 @@ async fn wait_holder_slices(
 
         if start.elapsed() >= timeout {
             bail!(
-                "timed out waiting for track group {} holders to hold {TAPENET_GROUP_SIZE} slices, observed {observed}",
+                "timed out waiting for virtual group {} holders to hold {TAPENET_GROUP_SIZE} slices, observed {observed}",
                 blob.track.group
             );
         }
@@ -327,8 +323,13 @@ async fn wait_holder_slices(
     }
 }
 
-/// The nodes that hold a track group this epoch, by position.
-async fn holders(scenario: &SimnetScenario<'_>, group: TrackGroup) -> Vec<Address> {
+/// The live group that carries a virtual group while `count` groups are live.
+fn live_at(count: u64, group: VirtualGroup) -> GroupIndex {
+    GroupFold::new(count).expect("live groups").live_group(group)
+}
+
+/// The nodes that hold a virtual group this epoch, by position.
+async fn holders(scenario: &SimnetScenario<'_>, group: VirtualGroup) -> Vec<Address> {
     let system = scenario.read_system().await.expect("read system");
     let live_group = system.live_group(group).expect("live group");
     let account = scenario

@@ -173,17 +173,16 @@ mod tests {
         certify_case(trusted_system(NARROW), &[0, 1, 4], Some(TapeError::BadMember.into()));
     }
 
-    // a track written to a retired group certifies under the live group that carries it
+    // a track stamped past the live count certifies under the live group that carries it
     #[test]
-    fn retired_group() {
+    fn folded_group() {
         let system = System {
             live_group_count: 5,
-            track_group_count: 10,
             ..permissionless_system()
         };
 
-        certify_track(system, TrackGroup(7), &signers(14), None);
-        certify_track(system, TrackGroup(7), &signers(13), Some(TapeError::NoQuorum.into()));
+        certify_track(system, VirtualGroup(7), &signers(14), None);
+        certify_track(system, VirtualGroup(7), &signers(13), Some(TapeError::NoQuorum.into()));
     }
 
     fn signers(count: usize) -> Vec<usize> {
@@ -193,16 +192,15 @@ mod tests {
     fn certify_case(base: System, signed: &[usize], error: Option<ProgramError>) {
         let system = System {
             live_group_count: 1,
-            track_group_count: 1,
             ..base
         };
 
-        certify_track(system, TrackGroup(0), signed, error);
+        certify_track(system, VirtualGroup(0), signed, error);
     }
 
     fn certify_track(
         base: System,
-        track_group: TrackGroup,
+        virtual_group: VirtualGroup,
         signed: &[usize],
         error: Option<ProgramError>,
     ) {
@@ -215,7 +213,7 @@ mod tests {
 
         let (tape_address, _) = tape_pda(authority.into());
         let (system_address, _) = system_pda();
-        let group_id = base.live_group(track_group).unwrap();
+        let group_id = base.live_group(virtual_group).unwrap();
         let (group_address, _) = group_pda(curr, group_id);
 
         let (sks, group) = make_group_of(curr, group_id, profile);
@@ -235,7 +233,7 @@ mod tests {
             state: TrackState::Registered as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
-            group: track_group,
+            group: virtual_group,
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();
@@ -346,7 +344,6 @@ mod tests {
             current_epoch: curr,
             committee_size: 128,
             live_group_count: 1,
-            track_group_count: 1,
             ..permissionless_system()
         };
 
@@ -359,7 +356,7 @@ mod tests {
             state: TrackState::Registered as u64,
             flags: TrackFlags::NONE,
             size: StorageUnits::mb(250),
-            group: TrackGroup::from(group_id),
+            group: VirtualGroup::from(group_id),
             value_hash: Hash::new_unique(),
         };
         let old_track_hash = track.get_hash();
