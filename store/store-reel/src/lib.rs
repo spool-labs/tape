@@ -22,9 +22,8 @@ mod split;
 use std::path::Path;
 
 use reel::{
-    ByteCount, CompactRate, IoBackend, MapShape, PointReads, Preallocate, RecordKey, ReelConfig,
-    ReelStore as EngineStore, ServingBackend, ShardShapes, SyncPolicy, ThreadBudget,
-    MAP_EVERYTHING,
+    ByteCount, CompactRate, IoBackend, PointReads, Preallocate, RecordKey, ReelConfig,
+    ReelStore as EngineStore, ServingBackend, SyncPolicy, ThreadBudget, MAP_EVERYTHING,
 };
 use reel_core::Store as EngineStoreTrait;
 use serde::Deserialize;
@@ -146,34 +145,6 @@ impl ReelStore {
     /// so the config states a request and this states the outcome.
     pub fn serving_backend(&self) -> ServingBackend {
         self.inner.serving_backend()
-    }
-
-    /// The shape each column's index actually took, beside the one it declared
-    ///
-    /// A declaration is a request the engine may decline, and it declines
-    /// silently, so a run reports the shape it got rather than the one it asked
-    /// for.
-    pub fn shapes(&self) -> Vec<(&'static str, MapShape, MapShape)> {
-        let index = self.inner.index();
-        let mut shapes = Vec::with_capacity(TAPE_COLUMNS.len());
-        for spec in TAPE_COLUMNS {
-            let Some(column) = index.column(spec.id) else {
-                continue;
-            };
-            shapes.push((spec.name, spec.map_shape, column.map_shape()));
-        }
-        shapes
-    }
-
-    /// Every column whose index did not take the shape it declared
-    pub fn declined_shapes(&self) -> Vec<&'static str> {
-        let mut declined = Vec::new();
-        for (name, asked, got) in self.shapes() {
-            if asked != got {
-                declined.push(name);
-            }
-        }
-        declined
     }
 
     /// What the engine's index holds, column by column
@@ -315,7 +286,6 @@ pub fn node_config(options: NodeStoreOptions) -> ReelConfig {
         map_above: None,
         point_reads: probe_for(options.backend),
         io_backend: options.backend,
-        shard_shapes: ShardShapes::Declared,
         ..ReelConfig::default()
     };
 
@@ -387,20 +357,12 @@ pub fn open_node_store(
 
 /// The config an offline tool reads a node's volume under
 ///
-/// The node's own shape declarations, since a column read under a different one
-/// is a column the engine refuses to serve. Residency is the caller's: resident
-/// answers what a column holds, paged answers which sealed segments stand over
-/// it and fits a volume larger than the memory reading it.
+/// The node's own config with the caller's residency: resident answers what a
+/// column holds, paged answers which sealed segments stand over it and fits a
+/// volume larger than the memory reading it.
 pub fn read_only_config(residency: IndexResidency) -> ReelConfig {
     ReelConfig {
         index: residency,
-        // The engine refuses an open shard under a paged walk, so a paged read
-        // takes every column as a tree. The shape is how this open builds its
-        // index, not how the volume was written.
-        shard_shapes: match residency {
-            IndexResidency::Resident => ShardShapes::Declared,
-            _ => ShardShapes::Tree,
-        },
         ..node_config(NodeStoreOptions::default())
     }
 }
@@ -450,11 +412,10 @@ pub fn bench_config(segment_bytes: u64) -> ReelConfig {
     // Printed rather than assumed: a bench that cannot say which config it
     // opened with cannot tell a real result from a stale binary.
     eprintln!(
-        "bench_config segment={segment_bytes} alloc_chunk={} sync={:?} map_above={:?} shapes={:?}",
+        "bench_config segment={segment_bytes} alloc_chunk={} sync={:?} map_above={:?}",
         alloc_chunk_bytes().min(segment_bytes),
         sync_policy(),
         MAP_EVERYTHING,
-        ShardShapes::Declared,
     );
     ReelConfig {
         segment_bytes: ByteCount::from_bytes(segment_bytes),
@@ -463,10 +424,6 @@ pub fn bench_config(segment_bytes: u64) -> ReelConfig {
         alloc_chunk: ByteCount::from_bytes(alloc_chunk_bytes().min(segment_bytes)),
         preallocate: Preallocate::Chunk,
         sync: sync_policy(),
-        // Without this the engine drops every open-shard request a column makes
-        // and hands back a tree, so a run measuring the shape would measure the
-        // default and never say so.
-        shard_shapes: ShardShapes::Declared,
         // The mapped read path is gated on this and the default forbids it, so
         // every warm read pays a door round trip it does not need.
         map_above: MAP_EVERYTHING,
