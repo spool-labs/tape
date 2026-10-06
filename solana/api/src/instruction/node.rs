@@ -108,6 +108,12 @@ pub struct SetSpoolSize {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetMaxReservationEpochs {
+    pub max_reservation_epochs: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetCommissionRate {
     pub commission_rate: BasisPoints,
 }
@@ -419,6 +425,25 @@ pub fn build_set_spool_size_ix(
         ],
         data: SetSpoolSize {
             spool_size,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_max_reservation_epochs_ix(
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    max_reservation_epochs: u64,
+) -> Instruction {
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
+        ],
+        data: SetMaxReservationEpochs {
+            max_reservation_epochs,
         }.to_bytes(),
     }
 }

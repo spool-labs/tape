@@ -954,6 +954,7 @@ mod tests {
             epoch_duration: EpochDuration(0),
             access_threshold: TAPE(0),
             spool_size: StorageUnits::zero(),
+            max_reservation_epochs: 0,
         }
     }
 

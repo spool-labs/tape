@@ -46,6 +46,7 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     let storage_price = args.storage_price;
     let burn_fee_bps = args.burn_fee_bps;
     let subsidy_decay_bps = args.subsidy_decay_bps;
+    let max_reservation_epochs = args.max_reservation_epochs;
 
     if storage_capacity.0 < MIN_STORAGE_CAPACITY as u64 {
         return Err(ProgramError::InvalidArgument);
@@ -57,6 +58,9 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         return Err(ProgramError::InvalidArgument);
     }
     if subsidy_decay_bps > MAX_SUBSIDY_DECAY_BPS {
+        return Err(ProgramError::InvalidArgument);
+    }
+    if max_reservation_epochs == 0 {
         return Err(ProgramError::InvalidArgument);
     }
 
@@ -121,7 +125,8 @@ pub fn process_create_archive(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
     archive.storage_price = storage_price;
     archive.burn_fee_bps = burn_fee_bps;
     archive.subsidy_decay_bps = subsidy_decay_bps;
-    archive.schedule = EpochSchedule::new_at(EpochNumber(0));
+    archive.max_reservation_epochs = max_reservation_epochs;
+    archive.schedule.reset(EpochNumber(0));
 
     Ok(())
 }
@@ -186,6 +191,7 @@ mod tests {
                         storage_price: config.storage_price,
                         burn_fee_bps: config.burn_fee_bps,
                         subsidy_decay_bps: config.subsidy_decay_bps,
+                        max_reservation_epochs: config.max_reservation_epochs,
                         schedule: EpochSchedule::new_at(EpochNumber(0)),
                         ..Archive::zeroed()
                     }.pack().as_ref()

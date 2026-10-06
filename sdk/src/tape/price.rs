@@ -3,7 +3,7 @@ use solana_program::program_pack::Pack;
 use tape_api::state::Tape;
 use tape_core::tape::{remaining_tape_epochs, tape_reservation_cost};
 use tape_core::types::coin::{Coin, SOL, TAPE};
-use tape_core::types::StorageUnits;
+use tape_core::types::{EpochNumber, StorageUnits};
 use tape_protocol::Api;
 
 use crate::balance::{get_rent, rent_exempt_minimum};
@@ -17,24 +17,39 @@ pub const LAMPORTS_PER_SIGNATURE: u64 = 5_000;
 const RESERVE_SIGNATURES: u64 = 2;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
-    /// Estimate the token cost of reserving a tape.
+    /// Estimate the token cost of reserving a tape. The estimate covers the
+    /// epochs `reserve` would get: the expiry rounded up to the next row of
+    /// the archive schedule, stopping at the network's longest reservation.
     pub async fn estimate_cost(
         &self,
         capacity: StorageUnits,
         epochs: u64,
     ) -> Result<Coin<TAPE>, TapedriveError> {
         let archive = self.rpc().get_archive().await?;
-        reservation_cost(archive.storage_price, capacity, epochs)
+        let activation = archive.schedule.current_epoch();
+        let requested = activation.saturating_add(EpochNumber(epochs));
+        let expiry = archive
+            .expiry_for(requested)
+            .map_err(|error| TapedriveError::InvalidArgument(format!("archive schedule: {error:?}")))?;
+        let reserved_epochs = expiry.saturating_sub(activation).as_u64();
+        reservation_cost(archive.storage_price, capacity, reserved_epochs)
     }
 
-    /// Estimate the token cost of adding epochs to a tape's expiry.
+    /// Estimate the token cost of adding epochs to a tape's expiry. The
+    /// estimate covers the epochs `extend_expiry` would add, with the new
+    /// expiry rounded as `reserve` rounds it.
     pub async fn estimate_extend_expiry_cost(
         &self,
         tape: &Tape,
         extra_epochs: u64,
     ) -> Result<Coin<TAPE>, TapedriveError> {
         let archive = self.rpc().get_archive().await?;
-        reservation_cost(archive.storage_price, tape.capacity, extra_epochs)
+        let requested = tape.expiry_epoch.saturating_add(EpochNumber(extra_epochs));
+        let new_expiry = archive
+            .expiry_for(requested)
+            .map_err(|error| TapedriveError::InvalidArgument(format!("archive schedule: {error:?}")))?;
+        let added_epochs = new_expiry.saturating_sub(tape.expiry_epoch).as_u64();
+        reservation_cost(archive.storage_price, tape.capacity, added_epochs)
     }
 
     /// Estimate the token cost of adding capacity for the rest of a tape's

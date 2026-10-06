@@ -116,6 +116,7 @@ mod tests {
     use tape_test::*;
 
     const SLOT_HASH: Hash = Hash([0x5A; 32]);
+    const MAX_RESERVATION_EPOCHS: u64 = 87_600;
 
     fn slot_hashes_account() -> (Pubkey, Account) {
         let mut data = vec![0u8; 48];
@@ -163,13 +164,69 @@ mod tests {
         reserve_case(1 << 40, refused);
     }
 
+    // an expiry inside a schedule row is refused: one-epoch rows end at 128
+    #[test]
+    fn reserve_mid_row() {
+        let refused = Err(TapeError::MidRow.into());
+
+        reserve_range(TapeFlags::NONE, EpochNumber(0), EpochNumber(129), MAX_RESERVATION_EPOCHS, refused);
+    }
+
+    // an activation inside a schedule row is refused too
+    #[test]
+    fn activate_mid_row() {
+        let refused = Err(TapeError::MidRow.into());
+
+        reserve_range(TapeFlags::NONE, EpochNumber(129), EpochNumber(256), MAX_RESERVATION_EPOCHS, refused);
+    }
+
+    // a reservation to the end of the schedule covers every row and pays for each epoch
+    #[test]
+    fn reserve_long() {
+        let end_epoch = EpochSchedule::new().layout().expect("layout").end();
+
+        reserve_range(TapeFlags::NONE, EpochNumber(0), end_epoch, MAX_RESERVATION_EPOCHS, Ok(end_epoch));
+    }
+
+    // a request past the longest reservation gets the longest one and pays for that
+    #[test]
+    fn reserve_shortened() {
+        reserve_range(TapeFlags::NONE, EpochNumber(0), EpochNumber(700_000), 100, Ok(EpochNumber(100)));
+        reserve_range(TapeFlags::NONE, EpochNumber(0), EpochNumber(700_000), 131, Ok(EpochNumber(130)));
+    }
+
+    // an activation at or past the longest reservation leaves nothing to reserve
+    #[test]
+    fn activate_too_late() {
+        let refused = Err(ProgramError::InvalidArgument);
+
+        reserve_range(TapeFlags::NONE, EpochNumber(100), EpochNumber(120), 100, refused);
+    }
+
     fn reserve_case(flags: u64, error: Option<ProgramError>) {
+        let start_epoch = EpochNumber(43);         // In the future
+        let end_epoch = EpochNumber(45);           // Two epochs duration
+        let outcome = match error {
+            Some(error) => Err(error),
+            None => Ok(end_epoch),
+        };
+
+        reserve_range(flags, start_epoch, end_epoch, MAX_RESERVATION_EPOCHS, outcome);
+    }
+
+    // Reserve `[start_epoch, end_epoch)` from epoch zero. The outcome is the
+    // expiry the tape gets, or the error.
+    fn reserve_range(
+        flags: u64,
+        start_epoch: EpochNumber,
+        end_epoch: EpochNumber,
+        max_reservation_epochs: u64,
+        outcome: Result<EpochNumber, ProgramError>,
+    ) {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
 
         let storage_units = StorageUnits::mb(100);   // 100 MB
-        let start_epoch = EpochNumber(43);         // In the future
-        let end_epoch = EpochNumber(45);           // Two epochs duration
         let price_per_unit = TAPE::from("0.0001"); // 0.0001 TAPE per MB
 
         let instruction = build_reserve_tape_ix(
@@ -192,26 +249,12 @@ mod tests {
         let archive = Archive {
             storage_capacity: StorageUnits::mb(1000), // 1000 MB capacity
             storage_price: price_per_unit,
+            max_reservation_epochs,
             schedule: EpochSchedule::new(),
             ..Archive::zeroed()
         };
 
-        // Calculate expected cost and state
-        let num_epochs = (end_epoch - start_epoch).as_u64(); // 2 epochs
-        let single_epoch_price = price_per_unit.as_u64() * storage_units.to_mb(); // 0.0001 * 100 = 0.01 TAPE
-        let total_cost = single_epoch_price * num_epochs; // 0.01 * 2 = 0.02 TAPE
-        let fee_per_epoch = TAPE(single_epoch_price);
-
-        // Simulate reserve_capacity and add_rewards
-
-        let mut expected_archive = archive;
-        expected_archive
-            .schedule
-            .reserve_capacity(storage_units, fee_per_epoch, start_epoch, end_epoch)
-            .unwrap();
-        expected_archive.tape_count = 1; // New tape created
-
-        let initial_token_balance: u64 = 100_000_000;
+        let initial_token_balance: u64 = 1_000_000_000_000;
 
         let accounts = vec![
             sol(fee_payer, 1_000_000_000),
@@ -231,10 +274,28 @@ mod tests {
         ];
 
         let env = test_env();
-        if let Some(error) = error {
-            env.process_instruction(&instruction, &accounts, &[Check::err(error)]);
-            return;
-        }
+        let end_epoch = match outcome {
+            Ok(end_epoch) => end_epoch,
+            Err(error) => {
+                env.process_instruction(&instruction, &accounts, &[Check::err(error)]);
+                return;
+            }
+        };
+
+        // Calculate expected cost and state
+        let num_epochs = (end_epoch - start_epoch).as_u64();
+        let single_epoch_price = price_per_unit.as_u64() * storage_units.to_mb(); // 0.0001 * 100 = 0.01 TAPE
+        let total_cost = single_epoch_price * num_epochs;
+        let fee_per_epoch = TAPE(single_epoch_price);
+
+        // Simulate reserve_capacity and add_rewards
+
+        let mut expected_archive = archive;
+        expected_archive
+            .schedule
+            .reserve_capacity(storage_units, fee_per_epoch, start_epoch, end_epoch)
+            .unwrap();
+        expected_archive.tape_count = 1; // New tape created
 
         env.process_instruction(
             &instruction,

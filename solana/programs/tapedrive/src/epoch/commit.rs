@@ -134,6 +134,7 @@ fn aggregate_preferences(
         access_threshold: TAPE(0),
         epoch_duration: system.min_epoch_duration,
         spool_size: StorageUnits::zero(),
+        max_reservation_epochs: 1,
     };
 
     aggregate_node_preferences(members, peers, current, bounds).map_err(|error| match error {
@@ -193,6 +194,7 @@ mod tests {
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
             spool_size: StorageUnits::zero(),
+            max_reservation_epochs: 520,
         }
     }
 

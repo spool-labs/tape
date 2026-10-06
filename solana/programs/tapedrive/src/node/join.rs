@@ -223,6 +223,7 @@ mod tests {
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
             spool_size: StorageUnits::zero(),
+            max_reservation_epochs: 520,
         };
         let node = Node {
             authority: authority.into(),
@@ -587,6 +588,7 @@ mod tests {
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
             spool_size: StorageUnits::zero(),
+            max_reservation_epochs: 520,
         };
         // Suspension expired below the target epoch: next > suspended_until.
         let node = Node {

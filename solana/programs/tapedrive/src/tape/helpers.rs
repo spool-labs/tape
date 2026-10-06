@@ -35,6 +35,14 @@ pub fn reserve_archive(
         return Err(ProgramError::InvalidArgument);
     }
 
+    // A request past the longest reservation the network takes is cut back
+    // to it, and the tape pays for the epochs it gets.
+    let latest_expiry = archive.latest_expiry().map_err(schedule_error)?;
+    let spec = TapeSpec {
+        expiry_epoch: spec.expiry_epoch.min(latest_expiry),
+        ..spec
+    };
+
     let payment = schedule_capacity(
         system,
         archive,
@@ -95,21 +103,31 @@ pub fn schedule_capacity(
         return Err(TapeError::UnexpectedState.into());
     }
 
-    if !archive.schedule.has_capacity_for(
-        units,
-        archive.storage_capacity,
-        start_epoch,
-        end_epoch,
-    ) {
+    let has_capacity = archive
+        .schedule
+        .has_capacity_for(units, archive.storage_capacity, start_epoch, end_epoch)
+        .map_err(schedule_error)?;
+    if !has_capacity {
         return Err(TapeError::NoCapacity.into());
     }
 
     archive
         .schedule
         .reserve_capacity(units, reward_per_epoch, start_epoch, end_epoch)
-        .map_err(|_| TapeError::UnexpectedState)?;
+        .map_err(schedule_error)?;
 
     Ok(SchedulePayment { cost, burned, scheduled })
+}
+
+pub fn schedule_error(error: EpochScheduleError) -> ProgramError {
+    match error {
+        EpochScheduleError::MidRow => TapeError::MidRow.into(),
+        EpochScheduleError::EpochTooFar => TapeError::NoCapacity.into(),
+        EpochScheduleError::EpochInPast
+        | EpochScheduleError::EndNotAfterStart
+        | EpochScheduleError::Overflow
+        | EpochScheduleError::Underflow => TapeError::UnexpectedState.into(),
+    }
 }
 
 pub fn collect_payment<'account_info>(

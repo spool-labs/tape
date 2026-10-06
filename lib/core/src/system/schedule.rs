@@ -1,15 +1,14 @@
 use bytemuck::{Pod, Zeroable};
-use crate::types::*;
+
+use super::{ScheduleLayout, SCHEDULE_ROWS};
+use crate::types::{Coin, EpochNumber, StorageUnits, TAPE};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EpochScheduleError {
     EpochInPast,
     EpochTooFar,
-    IndexOutOfBounds,
-    StartNotAfterBase,
     EndNotAfterStart,
-    RangeTooLarge,
-    ExceedsFutureEpochs,
+    MidRow,
     Overflow,
     Underflow,
 }
@@ -42,28 +41,35 @@ unsafe impl Pod for EpochUsage {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EpochSchedule<const N: usize> {
-    /// The current epoch number for index 0 in the buffer.
+pub struct EpochSchedule {
+    /// The current epoch, where the first row starts.
     pub now: EpochNumber,
 
-    /// The per-epoch usage as a contiguous ring buffer of size N.
-    pub values: RingBuffer<EpochUsage, N>,
+    /// The usage of each epoch a row covers. `ScheduleLayout` gives the
+    /// epochs and the slot of every row.
+    pub rows: [EpochUsage; SCHEDULE_ROWS],
 }
 
-unsafe impl<const N: usize> Zeroable for EpochSchedule<N> {}
-unsafe impl<const N: usize> Pod for EpochSchedule<N> {}
+unsafe impl Zeroable for EpochSchedule {}
+unsafe impl Pod for EpochSchedule {}
 
-impl<const N: usize> EpochSchedule<N> {
+impl EpochSchedule {
     pub fn new() -> Self {
         Self::new_at(EpochNumber(0))
     }
 
     pub fn new_at(start_epoch: EpochNumber) -> Self {
-        let front = (start_epoch.as_u64() as usize) % N;
         Self {
-            values: RingBuffer::filled_zero_at(front),
             now: start_epoch,
+            rows: [EpochUsage::zeroed(); SCHEDULE_ROWS],
         }
+    }
+
+    /// Empty the schedule and start it at an epoch, without building a copy
+    /// of it on the stack.
+    pub fn reset(&mut self, start_epoch: EpochNumber) {
+        self.now = start_epoch;
+        self.rows.fill(EpochUsage::zeroed());
     }
 
     #[inline]
@@ -71,39 +77,45 @@ impl<const N: usize> EpochSchedule<N> {
         self.now
     }
 
+    /// The epochs and slot of every row at the current epoch.
+    pub fn layout(&self) -> Result<ScheduleLayout, EpochScheduleError> {
+        ScheduleLayout::try_new(self.now)
+    }
+
     /// Advance to the next epoch, returning the EpochUsage of the current epoch.
-    pub fn advance_epoch(&mut self) -> EpochUsage {
-        debug_assert!(self.values.len() == N);
+    pub fn advance_epoch(&mut self) -> Result<EpochUsage, EpochScheduleError> {
+        let next = self.now.checked_next().ok_or(EpochScheduleError::Overflow)?;
+        let old = self.layout()?;
+        let new = ScheduleLayout::try_new(next)?;
 
-        let current = self.values.front().copied().unwrap_or(EpochUsage::zeroed());
+        let current = core::mem::take(&mut self.rows[old.row_at(self.now)?.slot()]);
 
-        // Push zeroed entry for the new future epoch
-        self.values.push(EpochUsage::zeroed());
+        // The parent is read before its tier takes its own two rows, which
+        // can land in the slot the parent leaves.
+        for split in old.splits(&new) {
+            let parent = core::mem::take(&mut self.rows[split.parent.slot()]);
+            for child in split.children {
+                self.rows[child.slot()] = parent;
+            }
+        }
 
-        // Advance the epoch number
-        self.now.increment();
+        // The last tier's new row lands in the slot its first row left, which
+        // is zeroed above.
+        self.now = next;
 
-        current
+        Ok(current)
     }
 
     /// Get the per-epoch scheduled usage/fees for the provided epoch.
     #[inline]
     pub fn get(&self, epoch: EpochNumber) -> Result<EpochUsage, EpochScheduleError> {
-        debug_assert!(self.values.len() == N);
-
-        if epoch < self.now {
-            return Err(EpochScheduleError::EpochInPast);
-        }
-        if epoch >= EpochNumber(self.now.as_u64() + N as u64) {
-            return Err(EpochScheduleError::EpochTooFar);
-        }
-
-        let index = (epoch - self.now).as_u64() as usize;
-        self.values.get(index).copied().ok_or(EpochScheduleError::IndexOutOfBounds)
+        let row = self.layout()?.row_at(epoch)?;
+        Ok(self.rows[row.slot()])
     }
 
     /// Reserve capacity and fees per-epoch in [start_epoch, end_epoch) (end exclusive).
     /// Adds `units` to reserved and `fee` to paid each epoch in the range.
+    /// Both epochs must be row boundaries.
     pub fn reserve_capacity(
         &mut self,
         units: StorageUnits,
@@ -111,14 +123,8 @@ impl<const N: usize> EpochSchedule<N> {
         start_epoch: EpochNumber,
         end_epoch: EpochNumber,
     ) -> Result<(), EpochScheduleError> {
-        debug_assert!(self.values.len() == N);
-
-        let (start_offset, end_offset) = get_offsets::<N>(self.now, start_epoch, end_epoch)?;
-
-        for i in start_offset..end_offset {
-            let entry = self.values
-                .get_mut(i)
-                .ok_or(EpochScheduleError::IndexOutOfBounds)?;
+        for row in self.layout()?.rows(start_epoch, end_epoch)? {
+            let entry = &mut self.rows[row.slot()];
 
             entry.reserved = entry.reserved
                 .checked_add(units)
@@ -140,16 +146,8 @@ impl<const N: usize> EpochSchedule<N> {
         start_epoch: EpochNumber,
         end_epoch: EpochNumber,
     ) -> Result<(), EpochScheduleError> {
-        debug_assert!(self.values.len() == N);
-
-        let (start_offset, mut end_offset) = get_offsets::<N>(self.now, start_epoch, end_epoch)?;
-
-        end_offset = end_offset.min(self.values.len());
-
-        for i in start_offset..end_offset {
-            let entry = self.values
-                .get_mut(i)
-                .ok_or(EpochScheduleError::IndexOutOfBounds)?;
+        for row in self.layout()?.rows(start_epoch, end_epoch)? {
+            let entry = &mut self.rows[row.slot()];
 
             entry.reserved = entry.reserved
                 .checked_sub(units)
@@ -170,340 +168,289 @@ impl<const N: usize> EpochSchedule<N> {
         max_capacity: StorageUnits,
         start_epoch: EpochNumber,
         end_epoch: EpochNumber,
-    ) -> bool {
-        debug_assert!(self.values.len() == N);
+    ) -> Result<bool, EpochScheduleError> {
+        for row in self.layout()?.rows(start_epoch, end_epoch)? {
+            let Some(new_used) = self.rows[row.slot()].reserved
+                .checked_add(additional_units) else {
+                return Ok(false);
+            };
 
-        let start = start_epoch.as_u64();
-        let end = end_epoch.as_u64();
-
-        for i in start..end {
-            let epoch = EpochNumber(i);
-            match self.get(epoch) {
-                Ok(entry) => {
-                    let Some(new_used) = entry.reserved
-                        .checked_add(additional_units) else {
-                        return false;
-                    };
-
-                    if new_used > max_capacity {
-                        return false;
-                    }
-
-                }
-                Err(_) => return false,
+            if new_used > max_capacity {
+                return Ok(false);
             }
         }
 
-        true
+        Ok(true)
     }
 }
 
-impl<const N: usize> Default for EpochSchedule<N> {
+impl Default for EpochSchedule {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Get the start and end offsets in the usage buffer for the specified epoch range.
-pub fn get_offsets<const N: usize>(
-    base_epoch: EpochNumber,
-    start_epoch: EpochNumber,
-    end_epoch: EpochNumber,
-) -> Result<(usize, usize), EpochScheduleError> {
-
-    if start_epoch < base_epoch {
-        return Err(EpochScheduleError::StartNotAfterBase);
-    }
-
-    if end_epoch <= start_epoch {
-        return Err(EpochScheduleError::EndNotAfterStart);
-    }
-
-    // Window and horizon (end is exclusive)
-    let epoch_count = (end_epoch - start_epoch).as_u64();
-    let horizon = (end_epoch - base_epoch).as_u64();
-
-    // Must be addressable within the ring capacity
-    if epoch_count > N as u64 {
-        return Err(EpochScheduleError::RangeTooLarge);
-    }
-    if horizon > N as u64 {
-        return Err(EpochScheduleError::ExceedsFutureEpochs);
-    }
-
-    assert!(epoch_count >= 1);
-    assert!(horizon >= epoch_count);
-
-    // [start, end), end exclusive
-    let start_offset = (start_epoch - base_epoch).as_u64() as usize;
-    let end_offset = start_offset + epoch_count as usize;
-
-    Ok((start_offset, end_offset))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{EpochNumber, StorageUnits};
+    use crate::system::SCHEDULE_MIN_REACH;
 
-    const N: usize = 5;
+    const RUN_EPOCHS: u64 = 45_000;
+    const RESERVE_EVERY: u64 = 16;
+    const COMPARE_EVERY: u64 = 64;
 
-    // Helpers
     fn epoch(n: u64) -> EpochNumber { EpochNumber(n) }
     fn storage(n: u64) -> StorageUnits { StorageUnits::mb(n) }
     fn tape(n: u64) -> Coin<TAPE> { TAPE(n) }
 
-    #[test]
-    fn test_get_offsets_success() {
-        let base = EpochNumber(0);
-        let res = get_offsets::<N>(base, EpochNumber(0), EpochNumber(1));
-        assert_eq!(res, Ok((0, 1)));
-
-        let res = get_offsets::<N>(base, EpochNumber(2), EpochNumber(4));
-        assert_eq!(res, Ok((2, 4)));
-
-        // Max range
-        let res = get_offsets::<N>(base, EpochNumber(0), EpochNumber(N as u64));
-        assert_eq!(res, Ok((0, N)));
-
-        // Max horizon with small range
-        let res = get_offsets::<N>(base, EpochNumber(N as u64 - 1), EpochNumber(N as u64));
-        assert_eq!(res, Ok((N - 1, N)));
+    // One entry per epoch, from epoch zero
+    struct Dense {
+        usage: Vec<EpochUsage>,
     }
 
-    #[test]
-    fn test_get_offsets_errors() {
-        let base = EpochNumber(10);
+    impl Dense {
+        fn new(epochs: u64) -> Self {
+            Self { usage: vec![EpochUsage::zeroed(); epochs as usize] }
+        }
 
-        // Start before base
-        assert_eq!(
-            get_offsets::<N>(base, EpochNumber(9), EpochNumber(11)),
-            Err(EpochScheduleError::StartNotAfterBase)
-        );
+        fn reserve(&mut self, units: StorageUnits, fee: Coin<TAPE>, start: EpochNumber, end: EpochNumber) {
+            for entry in &mut self.usage[start.as_usize()..end.as_usize()] {
+                entry.reserved = entry.reserved + units;
+                entry.paid = entry.paid + fee;
+            }
+        }
 
-        // End not after start
-        assert_eq!(
-            get_offsets::<N>(base, EpochNumber(10), EpochNumber(10)),
-            Err(EpochScheduleError::EndNotAfterStart)
-        );
-        assert_eq!(
-            get_offsets::<N>(base, EpochNumber(11), EpochNumber(10)),
-            Err(EpochScheduleError::EndNotAfterStart)
-        );
-
-        // Range too large
-        assert_eq!(
-            get_offsets::<N>(base, EpochNumber(10), EpochNumber(10 + N as u64 + 1)),
-            Err(EpochScheduleError::RangeTooLarge)
-        );
-    }
-
-    #[test]
-    fn accounting_new() {
-        let db: EpochSchedule<N> = EpochSchedule::new();
-        assert_eq!(db.now, epoch(0));
-        assert_eq!(db.values.len(), N);
-
-        for i in 0..N {
-            assert_eq!(
-                db.get(epoch(i as u64)).unwrap(),
-                EpochUsage::new(storage(0), tape(0))
-            );
+        fn rewards_from(&self, start: EpochNumber) -> u128 {
+            let mut total = 0;
+            for entry in &self.usage[start.as_usize()..] {
+                total += entry.paid.as_u128();
+            }
+            total
         }
     }
 
-    #[test]
-    fn accounting_get() {
-        let db: EpochSchedule<N> = EpochSchedule::new();
+    // xorshift, so a run is the same every time
+    struct Sequence(u64);
 
-        // Valid
-        for i in 0..N as u64 {
-            assert_eq!(
-                db.get(epoch(i)).unwrap(),
-                EpochUsage::new(storage(0), tape(0))
-            );
-        }
-
-        // Errors
-        assert_eq!(
-            db.get(epoch(u64::MAX)),
-            Err(EpochScheduleError::EpochTooFar)
-        );
-    }
-
-    #[test]
-    fn accounting_advance() {
-        let mut db: EpochSchedule<N> = EpochSchedule::new();
-
-        for _ in 0..10 {
-            let current = db.advance_epoch();
-            assert_eq!(current, EpochUsage::new(storage(0), tape(0)));
-            assert_eq!(db.values.len(), N);
-        }
-
-        assert_eq!(db.now, epoch(10));
-        for i in 0..N as u64 {
-            assert_eq!(
-                db.get(epoch(10 + i)).unwrap(),
-                EpochUsage::new(storage(0), tape(0))
-            );
+    impl Sequence {
+        fn next(&mut self, below: u64) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0 % below
         }
     }
 
+    fn assert_matches(schedule: &EpochSchedule, dense: &Dense) {
+        let layout = schedule.layout().expect("layout");
+        let mut rewards = 0;
+
+        for row in layout.all_rows() {
+            let usage = schedule.rows[row.slot()];
+            for entry in &dense.usage[row.start.as_usize()..row.end.as_usize()] {
+                assert_eq!(*entry, usage);
+            }
+            rewards += usage.paid().as_u128() * row.width() as u128;
+        }
+
+        assert_eq!(rewards, dense.rewards_from(layout.start()));
+    }
+
+    // a long run of reservations and advances agrees with one entry per epoch
     #[test]
-    fn accounting_reserve_and_cancel() {
-        let mut db: EpochSchedule<N> = EpochSchedule::new();
+    fn matches_dense() {
+        for start in [0, 1, 311] {
+            let mut schedule = EpochSchedule::new_at(epoch(start));
+            let mut dense = Dense::new(start + RUN_EPOCHS + 2 * SCHEDULE_MIN_REACH);
+            let mut sequence = Sequence(0x9E37_79B9_7F4A_7C15 + start);
+
+            for step in 0..RUN_EPOCHS {
+                if step % RESERVE_EVERY == 0 {
+                    let layout = schedule.layout().expect("layout");
+                    let reach = (layout.end() - layout.start()).as_u64();
+                    let first = layout.start().as_u64() + sequence.next(reach);
+                    let second = layout.start().as_u64() + sequence.next(reach + 1);
+
+                    // one in four starts now, as the SDK's do
+                    let from = match sequence.next(4) {
+                        0 => layout.start(),
+                        _ => layout.boundary_at_or_before(epoch(first.min(second))),
+                    };
+                    let to = layout.expiry_for(epoch(first.max(second)), u64::MAX);
+
+                    if to > from {
+                        let units = storage(1 + sequence.next(50));
+                        let fee = tape(sequence.next(1_000));
+                        schedule.reserve_capacity(units, fee, from, to).expect("reserve");
+                        dense.reserve(units, fee, from, to);
+                    }
+                }
+
+                if step % COMPARE_EVERY == 0 {
+                    assert_matches(&schedule, &dense);
+                }
+
+                let closing = schedule.advance_epoch().expect("advance");
+                assert_eq!(closing, dense.usage[(start + step) as usize]);
+            }
+
+            assert_matches(&schedule, &dense);
+        }
+    }
+
+    // a slot no row uses holds zero
+    #[test]
+    fn free_slots_zeroed() {
+        let mut schedule = EpochSchedule::new();
+        let layout = schedule.layout().expect("layout");
+        schedule.reserve_capacity(storage(1), tape(1), layout.start(), layout.end()).expect("reserve");
+
+        for _ in 0..3_000 {
+            schedule.advance_epoch().expect("advance");
+
+            let mut is_used = [false; SCHEDULE_ROWS];
+            for row in schedule.layout().expect("layout").all_rows() {
+                is_used[row.slot()] = true;
+            }
+            for (slot, usage) in schedule.rows.iter().enumerate() {
+                assert!(is_used[slot] || *usage == EpochUsage::zeroed());
+            }
+        }
+    }
+
+    // a new schedule is empty from its first epoch to its last
+    #[test]
+    fn starts_empty() {
+        let schedule = EpochSchedule::new_at(epoch(7));
+        let layout = schedule.layout().expect("layout");
+
+        assert_eq!(schedule.current_epoch(), epoch(7));
+        assert_eq!(schedule.get(epoch(7)), Ok(EpochUsage::zeroed()));
+        assert_eq!(schedule.get(layout.end().prev()), Ok(EpochUsage::zeroed()));
+        assert_eq!(schedule.get(epoch(6)), Err(EpochScheduleError::EpochInPast));
+        assert_eq!(schedule.get(layout.end()), Err(EpochScheduleError::EpochTooFar));
+        assert_eq!(schedule.get(epoch(u64::MAX)), Err(EpochScheduleError::EpochTooFar));
+    }
+
+    // reset empties a used schedule in place
+    #[test]
+    fn reset() {
+        let mut schedule = EpochSchedule::new();
+        schedule.reserve_capacity(storage(5), tape(5), epoch(0), epoch(200)).expect("reserve");
+
+        schedule.reset(epoch(40));
+
+        assert_eq!(schedule, EpochSchedule::new_at(epoch(40)));
+    }
+
+    // reserving adds to every epoch of the range and cancelling takes it back
+    #[test]
+    fn reserve_and_cancel() {
+        let mut schedule = EpochSchedule::new();
         let units = storage(100);
         let fee = tape(1000);
 
-        // Reserve in epochs 1..3 (1,2)
-        db.reserve_capacity(units, fee, epoch(1), epoch(3)).unwrap();
+        schedule.reserve_capacity(units, fee, epoch(1), epoch(300)).expect("reserve");
 
-        let e0 = db.get(epoch(0)).unwrap();
-        assert_eq!(e0.reserved(), storage(0));
-        assert_eq!(e0.paid(), tape(0));
+        assert_eq!(schedule.get(epoch(0)), Ok(EpochUsage::zeroed()));
+        assert_eq!(schedule.get(epoch(1)), Ok(EpochUsage::new(units, fee)));
+        assert_eq!(schedule.get(epoch(299)), Ok(EpochUsage::new(units, fee)));
+        assert_eq!(schedule.get(epoch(300)), Ok(EpochUsage::zeroed()));
 
-        let e1 = db.get(epoch(1)).unwrap();
-        assert_eq!(e1.reserved(), units);
-        assert_eq!(e1.paid(), fee);
+        schedule.cancel_capacity(units, fee, epoch(1), epoch(300)).expect("cancel");
 
-        let e2 = db.get(epoch(2)).unwrap();
-        assert_eq!(e2.reserved(), units);
-        assert_eq!(e2.paid(), fee);
-
-        let e3 = db.get(epoch(3)).unwrap();
-        assert_eq!(e3.reserved(), storage(0));
-        assert_eq!(e3.paid(), tape(0));
-
-        // Cancel the same range
-        db.cancel_capacity(units, fee, epoch(1), epoch(3)).unwrap();
-
-        for i in 0..N as u64 {
-            let e = db.get(epoch(i)).unwrap();
-            assert_eq!(e.reserved(), storage(0));
-            assert_eq!(e.paid(), tape(0));
-        }
+        assert_eq!(schedule, EpochSchedule::new());
     }
 
+    // a range off the row boundaries changes nothing
     #[test]
-    fn accounting_reserve_error_ranges() {
-        let mut db: EpochSchedule<N> = EpochSchedule::new();
-        let units = storage(100);
-        let fee = tape(1000);
+    fn mid_row() {
+        let mut schedule = EpochSchedule::new();
 
-        // Invalid ranges
+        // one-epoch rows end at 128, and 129 falls inside a two-epoch row
         assert_eq!(
-            db.reserve_capacity(units, fee, epoch(0), epoch(0)),
-            Err(EpochScheduleError::EndNotAfterStart)
+            schedule.reserve_capacity(storage(1), tape(1), epoch(0), epoch(129)),
+            Err(EpochScheduleError::MidRow),
         );
         assert_eq!(
-            db.reserve_capacity(units, fee, epoch(0), epoch(N as u64 + 1)),
-            Err(EpochScheduleError::RangeTooLarge)
+            schedule.has_capacity_for(storage(1), storage(10), epoch(129), epoch(256)),
+            Err(EpochScheduleError::MidRow),
         );
         assert_eq!(
-            db.reserve_capacity(units, fee, epoch(N as u64), epoch(N as u64 + 1)),
-            Err(EpochScheduleError::ExceedsFutureEpochs)
+            schedule.reserve_capacity(storage(1), tape(1), epoch(4), epoch(4)),
+            Err(EpochScheduleError::EndNotAfterStart),
         );
+        assert_eq!(schedule, EpochSchedule::new());
     }
 
+    // the reserved and paid amounts stop at the largest number
     #[test]
-    fn accounting_reserve_overflow() {
-        let mut db: EpochSchedule<N> = EpochSchedule::new();
-
-        // Overflow via reserved
-        let max_units = storage(u64::MAX);
-        db.reserve_capacity(max_units, tape(0), epoch(0), epoch(1)).unwrap();
+    fn overflow() {
+        let mut schedule = EpochSchedule::new();
+        schedule.reserve_capacity(StorageUnits(u64::MAX), tape(0), epoch(0), epoch(1)).expect("reserve");
         assert_eq!(
-            db.reserve_capacity(storage(1), tape(0), epoch(0), epoch(1)),
-            Err(EpochScheduleError::Overflow)
+            schedule.reserve_capacity(StorageUnits(1), tape(0), epoch(0), epoch(1)),
+            Err(EpochScheduleError::Overflow),
         );
 
-        // Overflow via paid
-        let mut db2: EpochSchedule<N> = EpochSchedule::new();
-        let max_fee = tape(u64::MAX);
-        db2.reserve_capacity(storage(0), max_fee, epoch(0), epoch(1)).unwrap();
+        let mut schedule = EpochSchedule::new();
+        schedule.reserve_capacity(storage(0), tape(u64::MAX), epoch(0), epoch(1)).expect("reserve");
         assert_eq!(
-            db2.reserve_capacity(storage(0), tape(1), epoch(0), epoch(1)),
-            Err(EpochScheduleError::Overflow)
+            schedule.reserve_capacity(storage(0), tape(1), epoch(0), epoch(1)),
+            Err(EpochScheduleError::Overflow),
         );
     }
 
+    // cancelling more than was reserved fails
     #[test]
-    fn accounting_cancel_underflow() {
-        let mut db: EpochSchedule<N> = EpochSchedule::new();
+    fn underflow() {
+        let mut schedule = EpochSchedule::new();
 
-        // Underflow via reserved
         assert_eq!(
-            db.cancel_capacity(storage(1), tape(0), epoch(0), epoch(1)),
-            Err(EpochScheduleError::Underflow)
+            schedule.cancel_capacity(storage(1), tape(0), epoch(0), epoch(1)),
+            Err(EpochScheduleError::Underflow),
         );
-
-        // Underflow via paid
         assert_eq!(
-            db.cancel_capacity(storage(0), tape(1), epoch(0), epoch(1)),
-            Err(EpochScheduleError::Underflow)
-        );
-
-        // Invalid range
-        assert_eq!(
-            db.cancel_capacity(storage(1), tape(1), epoch(0), epoch(0)),
-            Err(EpochScheduleError::EndNotAfterStart)
+            schedule.cancel_capacity(storage(0), tape(1), epoch(0), epoch(1)),
+            Err(EpochScheduleError::Underflow),
         );
     }
 
+    // capacity is checked against the fullest epoch of the range
     #[test]
-    fn accounting_capacity() {
-        let mut db: EpochSchedule<N> = EpochSchedule::new();
-        let max_cap = storage(200);
-        let add_units = storage(100);
+    fn capacity() {
+        let mut schedule = EpochSchedule::new();
+        let max = storage(200);
 
-        // Initially all zero, should have capacity
-        assert!(db.has_capacity_for(add_units, max_cap, epoch(0), epoch(N as u64)));
+        assert_eq!(schedule.has_capacity_for(storage(100), max, epoch(0), epoch(512)), Ok(true));
 
-        // Reserve units without adding any fee
-        db.reserve_capacity(add_units, tape(0), epoch(0), epoch(N as u64)).unwrap();
+        schedule.reserve_capacity(storage(100), tape(0), epoch(0), epoch(512)).expect("reserve");
+        schedule.reserve_capacity(storage(60), tape(0), epoch(256), epoch(264)).expect("reserve");
 
-        // Now used=100, add 50 <= 200 ok; add 101 > 200 no
-        assert!(db.has_capacity_for(storage(50), max_cap, epoch(0), epoch(N as u64)));
-        assert!(!db.has_capacity_for(storage(101), max_cap, epoch(0), epoch(N as u64)));
-
-        // Out of range
-        assert!(!db.has_capacity_for(add_units, max_cap, epoch(0), epoch(N as u64 + 1)));
-        assert!(!db.has_capacity_for(add_units, max_cap, epoch(u64::MAX - 1), epoch(u64::MAX)));
-
-        // Overflow case
-        assert!(!db.has_capacity_for(storage(u64::MAX), max_cap, epoch(0), epoch(1)));
+        assert_eq!(schedule.has_capacity_for(storage(100), max, epoch(0), epoch(256)), Ok(true));
+        assert_eq!(schedule.has_capacity_for(storage(41), max, epoch(0), epoch(512)), Ok(false));
+        assert_eq!(schedule.has_capacity_for(storage(40), max, epoch(0), epoch(512)), Ok(true));
+        assert_eq!(schedule.has_capacity_for(StorageUnits(u64::MAX), max, epoch(0), epoch(1)), Ok(false));
     }
 
+    // advancing returns the closing epoch's usage, whatever tier it was booked in
     #[test]
-    fn accounting_advance_schedules() {
-        let mut db: EpochSchedule<N> = EpochSchedule::new();
+    fn advance() {
+        let mut schedule = EpochSchedule::new();
         let units = storage(100);
         let fee = tape(100);
 
-        // Schedule both usage and fee on epochs 2..4
-        db.reserve_capacity(units, fee, epoch(2), epoch(4)).unwrap();
+        schedule.reserve_capacity(units, fee, epoch(1_024), epoch(1_040)).expect("reserve");
 
-        assert_eq!(db.get(epoch(0)).unwrap(), EpochUsage::new(storage(0), tape(0)));
-        assert_eq!(db.get(epoch(1)).unwrap(), EpochUsage::new(storage(0), tape(0)));
-        assert_eq!(db.get(epoch(2)).unwrap(), EpochUsage::new(units, fee));
-        assert_eq!(db.get(epoch(3)).unwrap(), EpochUsage::new(units, fee));
-        assert_eq!(db.get(epoch(4)).unwrap(), EpochUsage::new(storage(0), tape(0)));
+        for now in 0..1_050 {
+            let closing = schedule.advance_epoch().expect("advance");
+            let expected = match now {
+                1_024..1_040 => EpochUsage::new(units, fee),
+                _ => EpochUsage::zeroed(),
+            };
+            assert_eq!(closing, expected);
+        }
 
-        // Advance once: return zeros, now=1, new for 5 is zero
-        let ret = db.advance_epoch();
-        assert_eq!(ret, EpochUsage::new(storage(0), tape(0)));
-        assert_eq!(db.now, epoch(1));
-        assert_eq!(db.get(epoch(5)).unwrap(), EpochUsage::new(storage(0), tape(0)));
-
-        // Advance again: return zeros, now=2
-        let ret = db.advance_epoch();
-        assert_eq!(ret, EpochUsage::new(storage(0), tape(0)));
-        assert_eq!(db.now, epoch(2));
-
-        // Advance again: return scheduled (old epoch 2), now=3
-        let ret = db.advance_epoch();
-        assert_eq!(ret, EpochUsage::new(units, fee));
-        assert_eq!(db.now, epoch(3));
+        assert_eq!(schedule.current_epoch(), epoch(1_050));
     }
 }

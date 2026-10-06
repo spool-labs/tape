@@ -55,6 +55,7 @@ pub struct HarnessNodeSpec {
     pub storage_price: Coin<TAPE>,
     pub burn_fee_bps: BasisPoints,
     pub subsidy_decay_bps: BasisPoints,
+    pub max_reservation_epochs: u64,
 }
 
 impl HarnessNodeSpec {
@@ -69,6 +70,7 @@ impl HarnessNodeSpec {
             storage_price: TAPE(10),
             burn_fee_bps: BasisPoints(1_000),
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
+            max_reservation_epochs: 520,
         }
     }
 }

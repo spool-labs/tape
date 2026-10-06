@@ -10,6 +10,9 @@ use crate::tapedrive::Tapedrive;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Add time to a tape's expiry. Anyone can pay; no tape signature needed.
+    ///
+    /// The new expiry is rounded up to the next row of the archive schedule
+    /// and stops at the network's longest reservation, as `reserve` does.
     pub async fn extend_expiry(
         &self,
         tape_address: &Address,
@@ -17,8 +20,12 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     ) -> Result<Tape, TapedriveError> {
         let payer = self.payer()?;
         let tape = self.get_tape(tape_address).await?;
+        let archive = self.rpc().get_archive().await?;
 
-        let new_expiry = tape.expiry_epoch + EpochNumber(extra_epochs);
+        let requested = tape.expiry_epoch.saturating_add(EpochNumber(extra_epochs));
+        let new_expiry = archive
+            .expiry_for(requested)
+            .map_err(|error| TapedriveError::InvalidArgument(format!("archive schedule: {error:?}")))?;
         let ix = build_extend_tape_expiry_ix(
             payer.pubkey().into(),
             payer.pubkey().into(),

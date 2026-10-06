@@ -165,7 +165,10 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     // Archive schedule and rewards rollover. Unspent reward dust from the
     // closing epoch carries into next epoch's pool.
-    let epoch_usage = archive.schedule.advance_epoch();
+    let epoch_usage = archive
+        .schedule
+        .advance_epoch()
+        .map_err(|_| TapeError::BadSchedule)?;
     let leftover = archive.rewards_pool.saturating_sub(archive.rewards_paid);
     let subsidy_release = subsidy_release(subsidy_account.amount(), archive.subsidy_decay_bps)?;
 
@@ -191,6 +194,7 @@ pub fn process_advance_epoch(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     archive.storage_price = preferences.storage_price;
     archive.burn_fee_bps = preferences.burn_fee_bps;
     archive.subsidy_decay_bps = preferences.subsidy_decay_bps;
+    archive.max_reservation_epochs = preferences.max_reservation_epochs;
 
     // Light up the next epoch.
     let clock = Clock::get()?;
@@ -241,6 +245,9 @@ fn validate_preferences(system: &System, preferences: NodePreferences) -> Progra
     if preferences.subsidy_decay_bps > MAX_SUBSIDY_DECAY_BPS {
         return Err(TapeError::UnexpectedState.into());
     }
+    if preferences.max_reservation_epochs == 0 {
+        return Err(TapeError::UnexpectedState.into());
+    }
     if preferences.epoch_duration < system.min_epoch_duration
         || preferences.epoch_duration > system.max_epoch_duration
     {
@@ -283,6 +290,7 @@ mod tests {
             access_threshold: TAPE(0),
             epoch_duration: TEST_EPOCH_DURATION,
             spool_size: StorageUnits::zero(),
+            max_reservation_epochs: 520,
         }
     }
 
@@ -436,6 +444,7 @@ mod tests {
             storage_price: TAPE(950),
             burn_fee_bps: prefs.burn_fee_bps,
             subsidy_decay_bps: prefs.subsidy_decay_bps,
+            max_reservation_epochs: prefs.max_reservation_epochs,
             schedule: {
                 let mut s = archive.schedule;
                 let _ = s.advance_epoch();

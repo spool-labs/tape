@@ -80,7 +80,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
     let archive = archive_info
         .as_account_mut::<Archive>(&tapedrive::ID)?;
 
-    archive.schedule = EpochSchedule::new_at(target);
+    archive.schedule.reset(target);
     let genesis_preferences = NodePreferences {
         network_capacity: archive.storage_capacity,
         storage_price: archive.storage_price,
@@ -91,6 +91,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         access_threshold: TAPE(0),
         epoch_duration,
         spool_size: StorageUnits::zero(),
+        max_reservation_epochs: archive.max_reservation_epochs,
     };
 
     subsidy_info
@@ -440,6 +441,7 @@ mod tests {
             storage_price: config.storage_price,
             burn_fee_bps: config.burn_fee_bps,
             subsidy_decay_bps: config.subsidy_decay_bps,
+            max_reservation_epochs: config.max_reservation_epochs,
             ..Archive::zeroed()
         };
 

@@ -39,6 +39,10 @@ const RESERVE_EPOCHS: u64 = 4;
 const SUBSIDY_TOPUP: TAPE = TAPE(10_000);
 const EXTEND_EPOCHS: u64 = 3;
 const EXTEND_CAPACITY: StorageUnits = StorageUnits(3 * StorageUnits::MB / 2);
+// a year of hourly epochs, which lands in the 128-epoch rows
+const LONG_EPOCHS: u64 = 8_761;
+// further ahead than the schedule reaches
+const FAR_EPOCHS: u64 = 700_000;
 
 #[derive(Clone, Copy, Debug)]
 struct ReservationEconomics {
@@ -410,6 +414,123 @@ async fn run_extend_third_party() {
     harness.stop_all().await.expect("stop harness");
 }
 
+// a long reservation rounds up to a schedule row and pays what the estimate said
+#[test]
+fn long_reservation() {
+    run_simnet_test(run_long_reservation);
+}
+
+async fn run_long_reservation() {
+    let mut harness = SimnetBuilder::new()
+        .node_count(NODE_COUNT)
+        .runtime_mode(NodeRuntimeMode::Disabled)
+        .build()
+        .expect("build harness");
+
+    {
+        let scenario = harness.scenario();
+        scenario.init_system().await.expect("init system");
+        scenario
+            .register_nodes(BasisPoints(100))
+            .await
+            .expect("register nodes");
+        scenario.stake_all(1_000).await.expect("stake nodes");
+        scenario.start_network().await.expect("start network");
+    }
+
+    let scenario = harness.scenario();
+    let sdk = scenario.sdk(harness.admin());
+    let archive = scenario.read_archive().await.expect("read archive");
+    let system = scenario.read_system().await.expect("read system");
+
+    let requested = system.current_epoch + EpochNumber(LONG_EPOCHS);
+    let expiry = archive.expiry_for(requested).expect("rounded expiry");
+    assert!(expiry > requested, "the request should fall inside a wide row");
+
+    let estimate = sdk
+        .estimate_cost(RESERVE_CAPACITY, LONG_EPOCHS)
+        .await
+        .expect("estimate cost");
+    let reserved_epochs = (expiry - system.current_epoch).as_u64();
+    assert_eq!(
+        estimate,
+        tape_reservation_cost(archive.storage_price, RESERVE_CAPACITY, reserved_epochs)
+            .expect("cost should fit"),
+        "the estimate should cover the rounded reservation"
+    );
+
+    let tape_key = TapeKey::generate();
+    let reserved = sdk
+        .reserve(&tape_key, RESERVE_CAPACITY, LONG_EPOCHS)
+        .await
+        .expect("reserve tape");
+    assert_eq!(reserved.expiry_epoch, expiry, "expiry should round up to the row");
+    assert_eq!(
+        owner_token_balance(&harness, Address::from(tape_key.pubkey())).await,
+        TAPE::zero(),
+        "the tape key should be funded with what the reservation cost"
+    );
+
+    let extended = archive
+        .expiry_for(reserved.expiry_epoch + EpochNumber(EXTEND_EPOCHS))
+        .expect("rounded extension");
+    let extend_cost = sdk
+        .estimate_extend_expiry_cost(&reserved, EXTEND_EPOCHS)
+        .await
+        .expect("estimate extension");
+
+    let payer = Keypair::new();
+    harness
+        .chain()
+        .airdrop(&payer.pubkey(), 10_000_000_000)
+        .expect("airdrop payer");
+    let fund_ixs = build_authority_with_tokens_ix(
+        harness.admin().pubkey().into(),
+        payer.pubkey().into(),
+        extend_cost,
+    )
+    .expect("build payer funding");
+    harness
+        .chain()
+        .send_instructions_and_advance(
+            harness.admin(),
+            fund_ixs,
+            harness.config().slot_advance_per_tx,
+        )
+        .await
+        .expect("fund payer");
+
+    let tape = scenario
+        .sdk(&payer)
+        .extend_expiry(&tape_key.address(), EXTEND_EPOCHS)
+        .await
+        .expect("extend expiry");
+    assert_eq!(tape.expiry_epoch, extended, "the new expiry should round up to the row");
+    assert_eq!(
+        owner_token_balance(&harness, Address::from(payer.pubkey())).await,
+        TAPE::zero(),
+        "the extension should cost what the estimate said"
+    );
+
+    let far_key = TapeKey::generate();
+    let far = sdk
+        .reserve(&far_key, RESERVE_CAPACITY, FAR_EPOCHS)
+        .await
+        .expect("reserve far tape");
+    assert_eq!(
+        far.expiry_epoch,
+        archive.latest_expiry().expect("latest expiry"),
+        "a request past the schedule should get its last row"
+    );
+    assert_eq!(
+        owner_token_balance(&harness, Address::from(far_key.pubkey())).await,
+        TAPE::zero(),
+        "the far tape key should be funded with what its reservation cost"
+    );
+
+    harness.stop_all().await.expect("stop harness");
+}
+
 async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumber) {
     let scenario = harness.scenario();
     let system = scenario.read_system().await.expect("read system");
@@ -440,6 +561,7 @@ async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumbe
         access_threshold: TAPE(0),
         epoch_duration: TEST_EPOCH_DURATION,
         spool_size: StorageUnits::zero(),
+        max_reservation_epochs: archive.max_reservation_epochs,
     };
 
     assert_eq!(

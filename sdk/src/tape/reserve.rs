@@ -12,7 +12,8 @@ use crate::tape::price::reservation_cost;
 use crate::tapedrive::Tapedrive;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
-    /// Reserve a new tape (storage allocation).
+    /// Reserve a new tape (storage allocation). The expiry is rounded as in
+    /// `reserve_with_flags`.
     pub async fn reserve(
         &self,
         tape_key: &TapeKey,
@@ -25,6 +26,10 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
     /// Reserve a new tape with `TapeFlags` bits. A hidden or immutable tape
     /// makes every track written to it the same, and the flags can't change later.
+    ///
+    /// The expiry is rounded up to the next row of the archive schedule, which
+    /// far ahead is up to 512 epochs wide, and stops at the network's longest
+    /// reservation. The tape pays for the epochs it gets.
     pub async fn reserve_with_flags(
         &self,
         tape_key: &TapeKey,
@@ -45,8 +50,12 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let archive = self.rpc().get_archive().await?;
 
         let activation = epoch.id;
-        let expiry = EpochNumber(epoch.id.as_u64() + epochs);
-        let cost = reservation_cost(archive.storage_price, capacity, epochs)?;
+        let requested = activation.saturating_add(EpochNumber(epochs));
+        let expiry = archive
+            .expiry_for(requested)
+            .map_err(|error| TapedriveError::InvalidArgument(format!("archive schedule: {error:?}")))?;
+        let reserved_epochs = expiry.saturating_sub(activation).as_u64();
+        let cost = reservation_cost(archive.storage_price, capacity, reserved_epochs)?;
 
         let mut ixs = build_authority_with_tokens_ix(
             payer.pubkey().into(),

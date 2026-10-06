@@ -732,6 +732,7 @@ pub fn parse_raw_instruction(
         | TapeInstruction::SetSpoolGroups
         | TapeInstruction::SetEpochDuration
         | TapeInstruction::SetSpoolSize
+        | TapeInstruction::SetMaxReservationEpochs
         | TapeInstruction::SplitPoolStake
         | TapeInstruction::MergePoolStake => Ok(None),
     }

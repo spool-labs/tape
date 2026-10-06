@@ -2,7 +2,7 @@ use tape_solana::*;
 use tape_api::event::TapeExtended;
 use tape_api::program::prelude::*;
 
-use crate::tape::helpers::{collect_payment, schedule_capacity, SchedulePayment};
+use crate::tape::helpers::{collect_payment, schedule_capacity, schedule_error, SchedulePayment};
 
 pub fn process_extend_tape_capacity(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = ExtendTapeCapacity::try_from_bytes(data)?;
@@ -152,15 +152,19 @@ pub fn process_extend_tape_expiry(accounts: &[AccountInfo<'_>], data: &[u8]) -> 
         return Err(TapeError::TapeExpired.into());
     }
 
+    // A request past the longest reservation the network takes is cut back to it.
+    let latest_expiry = archive.latest_expiry().map_err(schedule_error)?;
+    let new_expiry_epoch = args.new_expiry_epoch.min(latest_expiry);
+
     let payment = schedule_capacity(
         system,
         archive,
         tape.capacity,
         tape.expiry_epoch,
-        args.new_expiry_epoch,
+        new_expiry_epoch,
     )?;
 
-    tape.expiry_epoch = args.new_expiry_epoch;
+    tape.expiry_epoch = new_expiry_epoch;
 
     settle_extension(
         payer_info,
@@ -215,11 +219,13 @@ mod tests {
     use tape_test::*;
 
     const PRICE: u64 = 100;
+    const MAX_RESERVATION_EPOCHS: u64 = 87_600;
 
     fn base_archive(current: EpochNumber) -> Archive {
         Archive {
             storage_capacity: StorageUnits::mb(1000),
             storage_price: TAPE(PRICE),
+            max_reservation_epochs: MAX_RESERVATION_EPOCHS,
             schedule: EpochSchedule::new_at(current),
             ..Archive::zeroed()
         }
@@ -359,6 +365,114 @@ mod tests {
                 Check::account(&Pubkey::from(archive_ata_address))
                     .data(token(archive_ata_address, archive_address, cost).1.data.as_ref()).build(),
             ],
+        );
+    }
+
+    // a new expiry past the longest reservation gets the longest one and pays for that
+    #[test]
+    fn extend_shortened() {
+        let fee_payer = Pubkey::new_unique();
+        let payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let (tape_address, _) = tape_pda(authority.into());
+        let tape = user_tape(authority);
+
+        let current = EpochNumber(0);
+        let system = base_system(current);
+        let archive = Archive {
+            max_reservation_epochs: 100,
+            ..base_archive(current)
+        };
+
+        let cost = PRICE * tape.capacity.to_mb() * 50;
+        let expected_tape = Tape {
+            expiry_epoch: EpochNumber(100),
+            ..tape
+        };
+
+        let instruction = build_extend_tape_expiry_ix(
+            fee_payer.into(),
+            payer.into(),
+            tape_address,
+            EpochNumber(700_000),
+        );
+        let accounts = extend_accounts(
+            fee_payer, payer, tape_address, &tape, &system, &archive, cost,
+        );
+        let payer_ata = ata_address(&payer);
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[
+                Check::success(),
+                Check::account(&Pubkey::from(tape_address))
+                    .data(expected_tape.pack().as_ref()).build(),
+                Check::account(&payer_ata)
+                    .data(token(payer_ata, payer, 0).1.data.as_ref()).build(),
+            ],
+        );
+    }
+
+    // a tape already at the longest reservation has nothing to add
+    #[test]
+    fn extend_at_limit() {
+        let fee_payer = Pubkey::new_unique();
+        let payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let (tape_address, _) = tape_pda(authority.into());
+        let tape = user_tape(authority);
+
+        let current = EpochNumber(0);
+        let system = base_system(current);
+        let archive = Archive {
+            max_reservation_epochs: tape.expiry_epoch.as_u64(),
+            ..base_archive(current)
+        };
+
+        let instruction = build_extend_tape_expiry_ix(
+            fee_payer.into(),
+            payer.into(),
+            tape_address,
+            EpochNumber(60),
+        );
+        let accounts = extend_accounts(
+            fee_payer, payer, tape_address, &tape, &system, &archive, 1_000_000,
+        );
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(ProgramError::InvalidArgument)],
+        );
+    }
+
+    // a new expiry inside a schedule row is refused: one-epoch rows end at 128
+    #[test]
+    fn extend_mid_row() {
+        let fee_payer = Pubkey::new_unique();
+        let payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let (tape_address, _) = tape_pda(authority.into());
+        let tape = user_tape(authority);
+
+        let instruction = build_extend_tape_expiry_ix(
+            fee_payer.into(),
+            payer.into(),
+            tape_address,
+            EpochNumber(129),
+        );
+
+        expect_reject(
+            fee_payer,
+            payer,
+            tape_address,
+            &tape,
+            EpochNumber(0),
+            instruction,
+            TapeError::MidRow.into(),
         );
     }
 

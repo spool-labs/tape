@@ -60,6 +60,9 @@ pub struct NodePreferences {
     /// Operators compare the voted value with the real spool sizes to see
     /// when the group count should go up. No instruction reads it.
     pub spool_size: StorageUnits,
+
+    /// The longest reservation this node accepts, in epochs from the current one.
+    pub max_reservation_epochs: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +87,7 @@ pub fn aggregate_node_preferences(
     let mut access_thresholds: Vec<(u64, u64)> = Vec::new();
     let mut epoch_durations: Vec<(u64, u64)> = Vec::new();
     let mut spool_sizes: Vec<(u64, u64)> = Vec::new();
+    let mut max_reservation_epochs: Vec<(u64, u64)> = Vec::new();
 
     for member in members.iter() {
         let peer = peers
@@ -101,6 +105,7 @@ pub fn aggregate_node_preferences(
         access_thresholds.push((peer.preferences.access_threshold.0, weight));
         epoch_durations.push((peer.preferences.epoch_duration.0, weight));
         spool_sizes.push((peer.preferences.spool_size.0, weight));
+        max_reservation_epochs.push((peer.preferences.max_reservation_epochs, weight));
 
         total_weight = total_weight.saturating_add(weight);
     }
@@ -147,6 +152,9 @@ pub fn aggregate_node_preferences(
         ),
         // The largest spool two thirds of the weight are willing to hold.
         spool_size: StorageUnits(quorum_above(&spool_sizes, total_weight)),
+        // The longest reservation two thirds of the weight accept.
+        max_reservation_epochs: quorum_above(&max_reservation_epochs, total_weight)
+            .max(bounds.max_reservation_epochs),
     })
 }
 
@@ -246,5 +254,51 @@ mod tests {
         assert_eq!(spool_size(&[(0, 100)]), StorageUnits(0));
         assert_eq!(spool_size(&[(1_000, 66), (0, 34)]), StorageUnits(0));
         assert_eq!(spool_size(&[(1_000, 67), (0, 33)]), StorageUnits(1_000));
+    }
+
+    // spool weight per voted longest reservation, in epochs
+    fn max_reservation(votes: &[(u64, u64)]) -> u64 {
+        let mut members = Vec::new();
+        let mut peers = Vec::new();
+
+        for (index, (epochs, weight)) in votes.iter().enumerate() {
+            let node = Address::from([index as u8 + 1; 32]);
+
+            members.push(Member { spools: *weight, ..Member::new(node, TAPE(1)) });
+            peers.push(Peer {
+                preferences: NodePreferences {
+                    max_reservation_epochs: *epochs,
+                    ..NodePreferences::zeroed()
+                },
+                ..Peer::new(node)
+            });
+        }
+
+        let current = NodePreferences { spool_groups: 1, ..NodePreferences::zeroed() };
+        let bounds = NodePreferences {
+            spool_groups: 1,
+            max_reservation_epochs: 1,
+            ..NodePreferences::zeroed()
+        };
+
+        aggregate_node_preferences(&members, &peers, current, bounds)
+            .expect("aggregate")
+            .max_reservation_epochs
+    }
+
+    // the voted length is the longest one two thirds of the weight accept
+    #[test]
+    fn max_reservation_two_thirds() {
+        assert_eq!(max_reservation(&[(520, 100)]), 520);
+        assert_eq!(max_reservation(&[(520, 67), (52, 33)]), 520);
+        assert_eq!(max_reservation(&[(520, 66), (52, 34)]), 52);
+        assert_eq!(max_reservation(&[(520, 40), (260, 30), (52, 30)]), 260);
+    }
+
+    // a network that never voted still takes one-epoch reservations
+    #[test]
+    fn max_reservation_unset() {
+        assert_eq!(max_reservation(&[(0, 100)]), 1);
+        assert_eq!(max_reservation(&[(520, 66), (0, 34)]), 1);
     }
 }

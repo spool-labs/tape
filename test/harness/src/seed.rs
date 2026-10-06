@@ -482,6 +482,7 @@ fn committed_preferences(
         access_threshold: TAPE(0),
         epoch_duration: TEST_MIN_EPOCH_DURATION,
         spool_size: StorageUnits::zero(),
+        max_reservation_epochs: 1,
     };
 
     aggregate_node_preferences(members, peers, current_preferences(spec), bounds)
@@ -511,6 +512,7 @@ fn node_preferences(
         access_threshold: TAPE(0),
         epoch_duration: TEST_EPOCH_DURATION,
         spool_size: StorageUnits::zero(),
+        max_reservation_epochs: spec.max_reservation_epochs,
     }
 }
 

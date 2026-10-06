@@ -25,6 +25,7 @@ pub struct GenesisConfig {
     pub burn_fee_bps: BasisPoints,
     pub subsidy_decay_bps: BasisPoints,
     pub subsidy_amount: Coin<TAPE>,
+    pub max_reservation_epochs: u64,
 }
 
 impl GenesisConfig {
@@ -79,10 +80,12 @@ const MAINNET: GenesisConfig = GenesisConfig {
     burn_fee_bps: DEFAULT_BURN_FEE_BPS,
     subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
     subsidy_amount: TAPE(0),
+    max_reservation_epochs: 520,                   // 10 years
 };
 
 const DEVNET: GenesisConfig = GenesisConfig {
     epoch_duration: EpochDuration(3_600),          // 1 hour
+    max_reservation_epochs: 87_600,                // 10 years
     ..LOCALNET
 };
 
@@ -92,6 +95,7 @@ const LOCALNET: GenesisConfig = GenesisConfig {
     epoch_duration: EpochDuration(100),            // 100 seconds
     spool_groups: 4,
     subsidy_amount: TAPE(50_000 * ONE_TAPE),       // 50000 TAPE
+    max_reservation_epochs: 3_153_600,             // 10 years
     ..MAINNET
 };
 
@@ -99,6 +103,7 @@ const SIMNET: GenesisConfig = GenesisConfig {
     min_epoch_duration: EpochDuration(10),         // 10 seconds
     max_epoch_duration: EpochDuration(200),        // 200 seconds
     epoch_duration: EpochDuration(20),             // 20 seconds
+    max_reservation_epochs: 15_768_000,            // 10 years
     ..MAINNET
 };
 
@@ -114,6 +119,7 @@ impl From<&GenesisConfig> for NodePreferences {
             epoch_duration: config.epoch_duration,
             access_threshold: TAPE(0),
             spool_size: StorageUnits::zero(),
+            max_reservation_epochs: config.max_reservation_epochs,
         }
     }
 }
@@ -125,6 +131,18 @@ mod tests {
     use tape_core::thresholds::Thresholds;
 
     const PRESETS: [GenesisConfig; 4] = [MAINNET, DEVNET, LOCALNET, SIMNET];
+    const TEN_YEARS: u64 = 10 * 365 * 86_400;
+
+    // every preset's longest reservation is ten years of its own epochs
+    #[test]
+    fn ten_year_reservations() {
+        for preset in PRESETS {
+            let seconds = preset.max_reservation_epochs * preset.epoch_duration.0;
+
+            assert!(seconds <= TEN_YEARS);
+            assert!(TEN_YEARS - seconds < 2 * preset.epoch_duration.0);
+        }
+    }
 
     // every tapenet preset is a permissionless network on tapenet's profile
     #[test]

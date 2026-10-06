@@ -36,6 +36,7 @@ pub struct CreateArchive {
     pub storage_price: Coin<TAPE>,
     pub burn_fee_bps: BasisPoints,
     pub subsidy_decay_bps: BasisPoints,
+    pub max_reservation_epochs: u64,
 }
 
 #[repr(C)]
@@ -118,6 +119,7 @@ pub fn build_create_archive_ix(
             storage_price: config.storage_price,
             burn_fee_bps: config.burn_fee_bps,
             subsidy_decay_bps: config.subsidy_decay_bps,
+            max_reservation_epochs: config.max_reservation_epochs,
         }.to_bytes(),
     }
 }

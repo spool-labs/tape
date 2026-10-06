@@ -7,6 +7,7 @@ mod node;
 mod peer;
 mod rewards;
 mod schedule;
+mod schedule_layout;
 mod status;
 mod vote;
 
@@ -19,5 +20,6 @@ pub use node::*;
 pub use peer::*;
 pub use rewards::*;
 pub use schedule::*;
+pub use schedule_layout::*;
 pub use status::*;
 pub use vote::*;
