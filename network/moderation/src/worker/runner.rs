@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use reqwest::StatusCode;
 use tape_api::program::tapedrive::TrackAddress;
 use tape_crypto::address::Address;
 use tape_sdk::stream::manifest::ChunkManifest;
@@ -279,7 +280,17 @@ impl Worker {
         let mut chunks = Vec::new();
         if record.size.to_bytes() <= MANIFEST_READ_BYTES {
             if let GatewayRead::Content(read) = self.gateway.read_track(track, MANIFEST_READ_BYTES).await? {
-                chunks = manifest_chunks(&read);
+                // A manifest can list any address, so a chunk counts only
+                // when the gateway has it on the manifest's tape.
+                for chunk in manifest_chunks(&read) {
+                    match self.gateway.track_record(chunk).await {
+                        Ok(found) if found.tape == record.tape => chunks.push(chunk),
+                        Ok(_) => {}
+                        Err(WorkerError::GatewayStatus { status, .. })
+                            if status == StatusCode::NOT_FOUND || status == StatusCode::GONE => {}
+                        Err(error) => return Err(error),
+                    }
+                }
             }
         }
         Ok(RemovalScope {
@@ -825,13 +836,15 @@ mod tests {
         harness.stop().await;
     }
 
-    // removing a stream's manifest removes every chunk track too
+    // removing a stream's manifest removes its chunk tracks on the same tape and no others
     #[tokio::test]
     async fn stream() {
         let harness = Harness::new(config(), TapeRuleConfig::default()).await;
         let tape = address(60);
         let manifest_track = address(2);
         let chunks = vec![record(tape, 3, 10), record(tape, 4, 10)];
+        let other_tape = record(address(61), 0, 10);
+        let unknown = record(tape, 9, 10);
         let entry = |chunk: &CompressedTrack, offset: u64| ChunkEntry {
             track: chunk.address(),
             offset: StorageUnits(offset),
@@ -839,15 +852,23 @@ mod tests {
         };
         let manifest = ChunkManifest {
             version: MANIFEST_VERSION,
-            total_size: StorageUnits(20),
-            chunk_count: TrackNumber(2),
+            total_size: StorageUnits(40),
+            chunk_count: TrackNumber(4),
             chunk_size: StorageUnits(10),
             key: Hash::default(),
-            chunks: vec![entry(&chunks[0], 0), entry(&chunks[1], 10)],
+            chunks: vec![
+                entry(&chunks[0], 0),
+                entry(&chunks[1], 10),
+                entry(&other_tape, 20),
+                entry(&unknown, 30),
+            ],
         };
         let manifest_bytes = manifest.to_bytes().expect("manifest bytes");
         harness.object(manifest_track, Some("text/plain"), b"violent text");
         harness.track_record(manifest_track, record(tape, 5, manifest_bytes.len() as u64), &manifest_bytes);
+        for chunk in [chunks[0], chunks[1], other_tape] {
+            harness.track_record(chunk.address(), chunk, b"");
+        }
         harness.flag(&[Category::Violence]);
         harness.report(Target::track(manifest_track), Timestamp(100)).await;
 

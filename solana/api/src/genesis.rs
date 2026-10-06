@@ -13,11 +13,8 @@ use crate::program::tapedrive::{
 /// Genesis params for bringing up a fresh network.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GenesisConfig {
-    /// Erasure code every track uses, fixed for the network's life.
     pub profile: ErasureCode,
-    /// What the network assumes about its nodes, fixed for its life.
     pub trust_model: TrustModel,
-    /// Committee capacity at genesis: one node per spool of the first group.
     pub committee_size: u64,
     pub spool_groups: u64,
     pub min_epoch_duration: EpochDuration,

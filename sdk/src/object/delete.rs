@@ -12,6 +12,11 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     pub async fn delete_object(&self, bucket: &TapeKey, name: &str) -> Result<(), TapedriveError> {
         let address = self.resolve_object(&bucket.address(), name).await?;
         let proof = self.get_track_proof(&address).await?;
+        if proof.state.tape != bucket.address() {
+            return Err(TapedriveError::InvalidArgument(
+                "track is on another tape".to_string(),
+            ));
+        }
         if proof.state.is_immutable() {
             return Err(TapedriveError::Immutable);
         }

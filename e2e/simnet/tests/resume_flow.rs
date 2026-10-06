@@ -11,7 +11,8 @@
 // Cases I and J cover the gateway overwrite path instead: a new track is
 // written and the old one deleted, and a multi-track stream is deleted
 // whole. Both assert the tape returns to its live track count once the old
-// chunks and manifest are gone.
+// chunks and manifest are gone. Case K deletes an object as the delegate of
+// two tapes and asserts the second tape keeps its track.
 
 use std::time::{Duration, Instant};
 
@@ -23,10 +24,12 @@ use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BasisPoints, ContentType, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
+use tape_crypto::ed25519::Keypair;
 use tape_e2e_simnet::{run_simnet_test, NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE};
 use tape_protocol::Api;
+use tape_sdk::keys::operator::TapeDelegate;
 use tape_sdk::keys::tape_key::TapeKey;
-use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
+use tape_sdk::stream::manifest::{ChunkEntry, ChunkManifest, MANIFEST_VERSION, MAX_TRACK_SIZE};
 use tape_sdk::tapedrive::Tapedrive;
 use tape_sdk::write_options::WriteOptions;
 
@@ -387,6 +390,55 @@ async fn resume_flow_inner() {
 
         let got = read_bytes_retry(&sdk, &second.manifest, active_timeout).await;
         assert_eq!(got, stream_v2, "J: new stream intact after delete");
+    }
+
+    // Case K: an object delete stays on the operator's tape. Two tapes delegate
+    // to one key, as two buckets on one gateway do. The first holds a track
+    // that parses as a manifest and lists the second tape's track. Deleting it
+    // as the first tape's delegate deletes that one track and leaves the
+    // second tape as it was.
+    {
+        let key = TapeKey::generate();
+        let other_key = TapeKey::generate();
+        let gateway = Keypair::new(&mut rand::thread_rng());
+        let delegate = Address::from(gateway.pubkey());
+        for tape_key in [&key, &other_key] {
+            sdk.reserve(tape_key, capacity, EPOCHS).await.expect("K reserve");
+            sdk.set_tape_delegate(tape_key, delegate).await.expect("K delegate");
+        }
+
+        let kept = sdk
+            .write_named_track(&other_key, OBJECT_NAME, ContentType::Unknown, &data)
+            .await
+            .expect("K write on the second tape");
+        let manifest = ChunkManifest {
+            version: MANIFEST_VERSION,
+            total_size: kept.size,
+            chunk_count: TrackNumber(1),
+            chunk_size: kept.size,
+            key: kept.key,
+            chunks: vec![ChunkEntry {
+                track: kept.address(),
+                offset: StorageUnits::zero(),
+                size: kept.size,
+            }],
+        };
+        let manifest = manifest.to_bytes().expect("K manifest bytes");
+        let listing = sdk
+            .write_named_track(&key, OBJECT_NAME, ContentType::Unknown, &manifest)
+            .await
+            .expect("K write the manifest");
+        // The delete reads the manifest back, so it must be readable first.
+        assert_eq!(read_track(&sdk, &listing, active_timeout).await, manifest, "K: manifest reads back");
+
+        let operator = TapeDelegate::new(gateway, key.address());
+        sdk.delete_object_as(&operator, listing.address()).await.expect("K delete");
+
+        let tape = sdk.get_tape(&key.address()).await.expect("K tape");
+        let other_tape = sdk.get_tape(&other_key.address()).await.expect("K second tape");
+        assert_eq!(tape.tracks.num_tracks, 0, "K: the manifest track is deleted");
+        assert_eq!(other_tape.tracks.num_tracks, 1, "K: the second tape keeps its track");
+        assert_eq!(read_track(&sdk, &kept, active_timeout).await, data, "K: the kept track still reads");
     }
 
     harness.stop_all().await.expect("stop runtimes");

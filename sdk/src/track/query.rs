@@ -3,6 +3,7 @@ use std::time::Instant;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tape_rpc::Rpc;
 use tokio::time::{Instant as TokioInstant, sleep};
+use tape_api::program::tapedrive::TrackAddress;
 use tape_core::track::types::{CompressedTrack, CompressedTrackProof};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
@@ -303,6 +304,10 @@ pub async fn query_track_proof<Blockchain: Rpc, Cluster: Api>(
         // against the tape before it counts as an answer. Rejecting one keeps
         // the ladder going rather than failing the query.
         |res: GetTrackProofRes| async move {
+            // The peer picks the proof it sends, so one for another track is passed over.
+            if res.proof.state.address() != *track {
+                return Ok(None);
+            }
             let tape = client
                 .rpc()
                 .get_tape_by_address(&res.proof.state.tape)

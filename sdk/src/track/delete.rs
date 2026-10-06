@@ -47,6 +47,13 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let payer = self.payer()?;
         let tape_signer = operator.keypair();
         let proof = query::query_track_proof(self, &track).await?;
+        // The program accepts a delegate's key on every tape that delegates to
+        // it, so the operator's tape is the only bound on what the key deletes.
+        if proof.state.tape != operator.address() {
+            return Err(TapedriveError::InvalidArgument(
+                "track is on another tape".to_string(),
+            ));
+        }
         // The program refuses this delete, so no transaction is sent for it.
         if proof.state.is_immutable() {
             return Err(TapedriveError::Immutable);

@@ -16,6 +16,7 @@ use tape_core::system::{Member, NodePreferences, Spool};
 use tape_core::thresholds::TrustModel;
 use tape_core::track::data::BlobData;
 use tape_core::track::archive::TrackArchive;
+use tape_core::track::TRACK_TREE_HEIGHT;
 use tape_core::track::types::{
     CompressedTrack, CompressedTrackProof, TrackFlags, TrackKind, TrackState,
 };
@@ -26,6 +27,7 @@ use tape_core::types::{ContentType, EpochNumber, SlotNumber, StorageUnits, Track
 use tape_crypto::{hash, Hash};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair;
+use tape_crypto::merkle::create_proof_from_leaf_hashes;
 use tape_protocol::api::{
     ApiError, FindTrackVersion, FindTrackRes, GetTrackByNumberRes, GetTrackDataRes,
     GetTrackProofRes, GetTrackRes, ListObjectsRes, ListTracksByTapeRes, ObjectListItem, PeerReq,
@@ -33,8 +35,10 @@ use tape_protocol::api::{
 };
 use tape_protocol::ProtocolState;
 
+use tape_sdk::error::TapedriveError;
 use tape_sdk::object::ListObjectsQuery;
 use tape_sdk::stream::manifest::{ChunkEntry, ChunkManifest, MANIFEST_VERSION};
+use tape_sdk::keys::operator::TapeDelegate;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
 use tape_sdk::track::write::WrittenTrack;
@@ -48,6 +52,7 @@ struct Fixture {
     tracks: Arc<Mutex<HashMap<Address, CompressedTrack>>>,
     data: Arc<Mutex<HashMap<Address, BlobData>>>,
     objects: Arc<Mutex<HashMap<Address, Vec<ObjectListItem>>>>,
+    proofs: Arc<Mutex<HashMap<Address, CompressedTrackProof>>>,
     requests: Arc<Mutex<Vec<&'static str>>>,
     /// When set, only this node answers for track data
     data_holder: Arc<Mutex<Option<Address>>>,
@@ -95,6 +100,22 @@ impl Fixture {
             .entry(bucket)
             .or_default()
             .push(object);
+    }
+
+    /// Put a tape holding `tracks` on chain and serve each track's proof
+    fn insert_tape(&self, tape_key: &TapeKey, tracks: &[CompressedTrack]) {
+        let mut tape = make_tape(tape_key.pubkey().into());
+        let leaves: Vec<Hash> = tracks.iter().map(|track| track.get_hash()).collect();
+        for (index, track) in tracks.iter().enumerate() {
+            tape.tracks.append(track).expect("append track");
+            let proof = create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(&leaves, index)
+                .expect("track proof")
+                .try_into()
+                .expect("proof length");
+            let proof = CompressedTrackProof { state: *track, proof };
+            self.proofs.lock().unwrap().insert(track.address(), proof);
+        }
+        pipe(&self.rpc, tape_key.address(), &tape.pack());
     }
 }
 
@@ -313,6 +334,7 @@ fn setup() -> Fixture {
         tracks,
         data,
         objects,
+        proofs,
         requests,
         data_holder,
     }
@@ -676,4 +698,38 @@ async fn certified_receipt() {
 
     assert_eq!(certified.track_number, written.track.track_number);
     assert!(certified.is_certified());
+}
+
+// a delegate signs no delete for a track on a tape it isn't acting for
+#[tokio::test]
+async fn delete_stays_on_tape() {
+    let fixture = setup();
+    let mut rng = rand::thread_rng();
+    let bucket = TapeKey::generate();
+    let other_bucket = TapeKey::generate();
+    let (track, _) = make_raw_track(other_bucket.address(), hash::hash(b"theirs"), 0, b"kept");
+    fixture.insert_tape(&other_bucket, &[track]);
+    let delegate = TapeDelegate::new(Keypair::new(&mut rng), bucket.address());
+
+    let deleted = fixture.client.delete_as(&delegate, track.address()).await;
+
+    assert!(matches!(deleted, Err(TapedriveError::InvalidArgument(_))), "{deleted:?}");
+}
+
+// a peer that answers with another track's proof is passed over
+#[tokio::test]
+async fn proof_for_another_track() {
+    let fixture = setup();
+    let tape_key = TapeKey::generate();
+    let (asked, _) = make_raw_track(tape_key.address(), hash::hash(b"asked"), 0, b"asked");
+    let (other, _) = make_raw_track(tape_key.address(), hash::hash(b"other"), 1, b"other");
+    fixture.insert_tape(&tape_key, &[asked, other]);
+    let other_proof = fixture.proofs.lock().unwrap()[&other.address()];
+    fixture.proofs.lock().unwrap().insert(asked.address(), other_proof);
+
+    let swapped = fixture.client.get_track_proof(&asked.address()).await.map(|proof| proof.state.address());
+    let own = fixture.client.get_track_proof(&other.address()).await.expect("own proof");
+
+    assert!(matches!(swapped, Err(TapedriveError::Peer(ApiError::StaleTrackProof))), "{swapped:?}");
+    assert_eq!(own.state.address(), other.address());
 }
