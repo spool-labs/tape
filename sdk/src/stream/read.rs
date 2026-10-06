@@ -55,7 +55,8 @@ pub(crate) async fn read_manifest<Blockchain: Rpc, Cluster: Api>(
     let manifest_bytes = client
         .read_known(manifest_address, manifest_track, Operation::ReadStream)
         .await?;
-    let manifest = ChunkManifest::from_bytes(&manifest_bytes)
+    let profile = client.params().await?.profile;
+    let manifest = ChunkManifest::from_bytes(&manifest_bytes, profile)
         .map_err(|error| stream_error(StreamError::Manifest(format!("invalid manifest: {error}"))))?;
     Ok((manifest, manifest_track))
 }

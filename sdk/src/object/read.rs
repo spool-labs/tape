@@ -19,7 +19,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
         // A stream's representing track is its manifest; detect and follow it.
         // (Hardening: a magic-prefixed manifest would make this unambiguous.)
-        if let Ok(manifest) = ChunkManifest::from_bytes(&bytes) {
+        let profile = self.params().await?.profile;
+        if let Ok(manifest) = ChunkManifest::from_bytes(&bytes, profile) {
             let timer = self.timer(Operation::ReadStream, Phase::Total);
             let result = read_manifest_bytes(self, &manifest, &track).await;
             let timer = match &result {
@@ -47,7 +48,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let address = track.address();
         let bytes = self.read_known(&address, track, Operation::ReadTrack).await?;
 
-        if let Ok(manifest) = ChunkManifest::from_bytes(&bytes) {
+        let profile = self.params().await?.profile;
+        if let Ok(manifest) = ChunkManifest::from_bytes(&bytes, profile) {
             let timer = self.timer(Operation::ReadStream, Phase::Total);
             let result = read_manifest_into(self, &manifest, &track, &mut writer).await;
             timer.finish_result(&result);

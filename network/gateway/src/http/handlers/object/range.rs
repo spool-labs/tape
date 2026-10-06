@@ -3,6 +3,7 @@
 use std::time::Instant;
 
 use axum::body::Bytes;
+use tape_core::encoding::ErasureCode;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{SpoolIndex, StorageUnits};
@@ -42,8 +43,8 @@ pub fn head_range(blob: &BlobEncoding) -> ByteRange {
 }
 
 /// Whether the first bytes of an object prove it is plain bytes and never a stream manifest
-pub fn is_plain_object(head: &[u8], blob_len: u64) -> bool {
-    if ChunkManifest::from_bytes(head).is_ok() {
+pub fn is_plain_object(head: &[u8], blob_len: u64, profile: ErasureCode) -> bool {
+    if ChunkManifest::from_bytes(head, profile).is_ok() {
         return false;
     }
     if head.len() as u64 >= blob_len || head.first() != Some(&MANIFEST_VERSION) {
@@ -179,24 +180,27 @@ async fn fetch_window_from<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 #[cfg(test)]
 mod tests {
+    use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::types::TrackNumber;
     use tape_crypto::Hash;
+    use tape_sdk::stream::manifest::max_track_size;
 
     use super::*;
 
     fn manifest_bytes(segments: u64) -> Vec<u8> {
+        let full = max_track_size(TAPENET_PROFILE) as u64;
         let chunks = (0..segments)
             .map(|index| ChunkEntry {
                 track: Address::new_unique(),
-                offset: StorageUnits::from_bytes(index * 10),
-                size: StorageUnits::from_bytes(10),
+                offset: StorageUnits::from_bytes(index * full),
+                size: StorageUnits::from_bytes(full),
             })
             .collect();
         ChunkManifest {
             version: MANIFEST_VERSION,
-            total_size: StorageUnits::from_bytes(segments * 10),
+            total_size: StorageUnits::from_bytes(segments * full),
             chunk_count: TrackNumber(segments),
-            chunk_size: StorageUnits::from_bytes(10),
+            chunk_size: StorageUnits::from_bytes(full),
             key: Hash::default(),
             chunks,
         }
@@ -210,9 +214,9 @@ mod tests {
         let manifest = manifest_bytes(4);
         let long = manifest_bytes(4000);
 
-        assert!(!is_plain_object(&manifest, 1 << 30));
-        assert!(!is_plain_object(&long[..200], 1 << 30));
-        assert!(is_plain_object(&[7u8; 4096], 1 << 30));
-        assert!(is_plain_object(&[MANIFEST_VERSION; 4096][..], 4096));
+        assert!(!is_plain_object(&manifest, 1 << 30, TAPENET_PROFILE));
+        assert!(!is_plain_object(&long[..200], 1 << 30, TAPENET_PROFILE));
+        assert!(is_plain_object(&[7u8; 4096], 1 << 30, TAPENET_PROFILE));
+        assert!(is_plain_object(&[MANIFEST_VERSION; 4096][..], 4096, TAPENET_PROFILE));
     }
 }

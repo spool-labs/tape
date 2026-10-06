@@ -87,15 +87,18 @@ impl ChunkManifest {
     }
 
     /// Deserialize and validate from bytes using wincode.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, StreamError> {
+    ///
+    /// The profile gives the size of a full chunk. Every chunk but the last
+    /// is one, so a manifest can't list small tracks.
+    pub fn from_bytes(bytes: &[u8], profile: ErasureCode) -> Result<Self, StreamError> {
         let manifest: Self = wincode::deserialize(bytes)
             .map_err(|error| StreamError::Manifest(error.to_string()))?;
-        manifest.validate()?;
+        manifest.validate(profile)?;
         Ok(manifest)
     }
 
     /// Check manifest invariants.
-    fn validate(&self) -> Result<(), StreamError> {
+    fn validate(&self, profile: ErasureCode) -> Result<(), StreamError> {
         if self.version != MANIFEST_VERSION {
             return Err(StreamError::Manifest(format!(
                 "unsupported manifest version: got {}, expected {MANIFEST_VERSION}",
@@ -115,8 +118,24 @@ impl ChunkManifest {
             return Err(StreamError::Manifest("manifest has no chunks".into()));
         }
 
+        let full = StorageUnits::from_bytes(max_track_size(profile) as u64);
+        if self.chunk_size != full {
+            return Err(StreamError::Manifest(format!(
+                "chunk_size mismatch: a full chunk is {full}, header says {}",
+                self.chunk_size
+            )));
+        }
+
         let mut expected_offset = StorageUnits::zero();
         for (chunk_index, entry) in self.chunks.iter().enumerate() {
+            let is_short_last = chunk_index + 1 == self.chunks.len() && entry.size < full;
+            if entry.size != full && !is_short_last {
+                return Err(StreamError::Manifest(format!(
+                    "chunk {chunk_index} size mismatch: only the last chunk can be under {full}, got {}",
+                    entry.size
+                )));
+            }
+
             if entry.offset != expected_offset {
                 return Err(StreamError::Manifest(format!(
                     "chunk {chunk_index} offset mismatch: expected {expected_offset}, got {}",
@@ -148,6 +167,8 @@ impl ChunkManifest {
 
 #[cfg(test)]
 mod tests {
+    use tape_core::encoding::TAPENET_PROFILE;
+
     use super::*;
 
     fn sample_manifest(chunk_count: usize) -> ChunkManifest {
@@ -174,7 +195,7 @@ mod tests {
     fn roundtrip() {
         let manifest = sample_manifest(16);
         let bytes = manifest.to_bytes().expect("serialize manifest");
-        let recovered = ChunkManifest::from_bytes(&bytes).expect("deserialize manifest");
+        let recovered = ChunkManifest::from_bytes(&bytes, TAPENET_PROFILE).expect("deserialize manifest");
         assert_eq!(manifest, recovered);
     }
 
@@ -183,7 +204,7 @@ mod tests {
     fn single() {
         let manifest = sample_manifest(1);
         let bytes = manifest.to_bytes().expect("serialize manifest");
-        let recovered = ChunkManifest::from_bytes(&bytes).expect("deserialize manifest");
+        let recovered = ChunkManifest::from_bytes(&bytes, TAPENET_PROFILE).expect("deserialize manifest");
         assert_eq!(recovered.chunk_count, TrackNumber(1));
         assert_eq!(recovered.chunks.len(), 1);
     }
@@ -194,7 +215,7 @@ mod tests {
         let manifest = sample_manifest(65_535);
         let bytes = manifest.to_bytes().expect("serialize manifest");
         assert!(bytes.len() < 4 * 1024 * 1024, "manifest should fit in a single blob track");
-        let recovered = ChunkManifest::from_bytes(&bytes).expect("deserialize manifest");
+        let recovered = ChunkManifest::from_bytes(&bytes, TAPENET_PROFILE).expect("deserialize manifest");
         assert_eq!(recovered.chunk_count, TrackNumber(65_535));
     }
 
@@ -233,8 +254,41 @@ mod tests {
         };
 
         let bytes = manifest.to_bytes().expect("serialize manifest");
-        let recovered = ChunkManifest::from_bytes(&bytes).expect("deserialize manifest");
+        let recovered = ChunkManifest::from_bytes(&bytes, TAPENET_PROFILE).expect("deserialize manifest");
         assert_eq!(recovered.chunks[3].size, StorageUnits::from_bytes(1000));
+    }
+
+    // a manifest can't list small tracks: every chunk but the last is a full one
+    #[test]
+    fn small_chunks_refused() {
+        let full = MAX_TRACK_SIZE as u64;
+        let manifest_of = |chunk_size: u64, sizes: &[u64]| {
+            let mut offset = 0;
+            let mut chunks = Vec::new();
+            for size in sizes {
+                chunks.push(ChunkEntry {
+                    track: Address::new_unique(),
+                    offset: StorageUnits::from_bytes(offset),
+                    size: StorageUnits::from_bytes(*size),
+                });
+                offset += size;
+            }
+            let manifest = ChunkManifest {
+                version: MANIFEST_VERSION,
+                total_size: StorageUnits::from_bytes(offset),
+                chunk_count: TrackNumber(sizes.len() as u64),
+                chunk_size: StorageUnits::from_bytes(chunk_size),
+                key: Hash::default(),
+                chunks,
+            };
+            let bytes = manifest.to_bytes().expect("serialize manifest");
+            ChunkManifest::from_bytes(&bytes, TAPENET_PROFILE)
+        };
+
+        assert!(manifest_of(full, &[full, 1000]).is_ok());
+        assert!(manifest_of(full, &[1000, full]).is_err());
+        assert!(manifest_of(full, &[full, full + 1]).is_err());
+        assert!(manifest_of(10, &[10, 10]).is_err());
     }
 
     // stripe sizing holds across the whole track range: a full track still

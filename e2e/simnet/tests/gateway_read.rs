@@ -154,7 +154,7 @@ async fn staked_gateway_inner() {
             Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
         }
     };
-    let manifest = ChunkManifest::from_bytes(&manifest_bytes).expect("stream manifest");
+    let manifest = ChunkManifest::from_bytes(&manifest_bytes, TAPENET_PROFILE).expect("stream manifest");
     assert!(
         manifest.chunks.len() > 1,
         "stream fixture should span multiple chunk tracks"

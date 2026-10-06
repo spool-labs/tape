@@ -415,7 +415,7 @@ async fn resume_flow_inner() {
             version: MANIFEST_VERSION,
             total_size: kept.size,
             chunk_count: TrackNumber(1),
-            chunk_size: kept.size,
+            chunk_size: StorageUnits::from_bytes(MAX_TRACK_SIZE as u64),
             key: kept.key,
             chunks: vec![ChunkEntry {
                 track: kept.address(),

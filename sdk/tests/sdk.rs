@@ -37,7 +37,7 @@ use tape_protocol::ProtocolState;
 
 use tape_sdk::error::TapedriveError;
 use tape_sdk::object::ListObjectsQuery;
-use tape_sdk::stream::manifest::{ChunkEntry, ChunkManifest, MANIFEST_VERSION};
+use tape_sdk::stream::manifest::{max_track_size, ChunkEntry, ChunkManifest, MANIFEST_VERSION};
 use tape_sdk::keys::operator::TapeDelegate;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
@@ -629,11 +629,14 @@ async fn object_round_trips() {
 async fn stream_round_trips() {
     let fixture = setup();
     let tape = tape_pda(Keypair::new(&mut rand::thread_rng()).pubkey().into()).0;
-    let segments: [&[u8]; 2] = [b"first half ", b"second half"];
+    // Every segment but the last is a full track.
+    let full = max_track_size(TAPENET_PROFILE);
+    let segments: [Vec<u8>; 2] = [vec![0x5A; full], b"second half".to_vec()];
     let mut entries = Vec::new();
     let mut offset = 0;
     for (number, segment) in segments.iter().enumerate() {
-        let (track, data) = make_raw_track(tape, hash::hash(segment), number as u64, segment);
+        let key = hash::hash(&number.to_le_bytes());
+        let (track, data) = make_raw_track(tape, key, number as u64, segment);
         fixture.insert_track(track, data);
         entries.push(ChunkEntry {
             track: track.address(),
@@ -646,7 +649,7 @@ async fn stream_round_trips() {
         version: MANIFEST_VERSION,
         total_size: StorageUnits::from_bytes(offset),
         chunk_count: TrackNumber(entries.len() as u64),
-        chunk_size: StorageUnits::from_bytes(segments[0].len() as u64),
+        chunk_size: StorageUnits::from_bytes(full as u64),
         key: hash::hash(b"movie.bin"),
         chunks: entries,
     };
@@ -656,7 +659,7 @@ async fn stream_round_trips() {
 
     let read = fixture.client.get_object(&tape, "movie.bin").await.expect("read stream");
 
-    assert_eq!(read, b"first half second half");
+    assert!(read == segments.concat(), "the stream reads back whole");
     let requests = fixture.requests.lock().unwrap().clone();
     assert_eq!(requests.iter().filter(|kind| **kind == "find_track").count(), 1);
     assert_eq!(requests.iter().filter(|kind| **kind == "get_track_data").count(), 3);

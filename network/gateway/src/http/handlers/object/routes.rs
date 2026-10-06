@@ -174,7 +174,7 @@ pub async fn read_object_response<
         let blob = coded_blob(&state, track_addr, &track)?;
         if is_rangeable(&blob) {
             let head = decode_track_range(&state, track_addr, &track, blob, head_range(&blob)).await?;
-            if is_plain_object(&head, blob.size.to_bytes()) {
+            if is_plain_object(&head, blob.size.to_bytes(), state.context.params().profile) {
                 let total = blob.size.to_bytes();
                 if let Some(range) = resolve_range(range.as_deref(), total)? {
                     let bytes = match range.end <= head.len() as u64 {
@@ -189,7 +189,7 @@ pub async fn read_object_response<
     }
 
     let decoded = decode_track_bytes(&state, track_addr, track).await?;
-    let Ok(manifest) = ChunkManifest::from_bytes(&decoded.bytes) else {
+    let Ok(manifest) = ChunkManifest::from_bytes(&decoded.bytes, state.context.params().profile) else {
         state
             .context
             .metrics

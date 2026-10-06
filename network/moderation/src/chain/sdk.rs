@@ -4,6 +4,7 @@ use tape_peer_http::HttpApi;
 use tape_rpc::RpcError;
 use tape_rpc_solana::{RpcConfig, SolanaRpc};
 use tape_api::program::tapedrive::TrackAddress;
+use tape_core::encoding::ErasureCode;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
 use tape_crypto::address::Address;
@@ -39,6 +40,11 @@ impl SdkChain {
         Ok(Self {
             client: Tapedrive::new(rpc, payer),
         })
+    }
+
+    /// The network's erasure code, which gives the size of a full stream chunk
+    pub async fn profile(&self) -> Result<ErasureCode, ChainError> {
+        Ok(self.client.params().await.map_err(sdk_error)?.profile)
     }
 }
 

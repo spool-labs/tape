@@ -1753,7 +1753,7 @@ mod tests {
         );
 
         let bytes = manifest.to_bytes().expect("serialize manifest");
-        assert_eq!(ChunkManifest::from_bytes(&bytes).expect("valid manifest"), manifest);
+        assert_eq!(ChunkManifest::from_bytes(&bytes, small).expect("valid manifest"), manifest);
     }
 
     #[test]

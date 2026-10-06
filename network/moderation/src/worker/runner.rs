@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use reqwest::StatusCode;
 use tape_api::program::tapedrive::TrackAddress;
+use tape_core::encoding::ErasureCode;
 use tape_crypto::address::Address;
 use tape_sdk::stream::manifest::ChunkManifest;
 use tokio::time::{interval, MissedTickBehavior};
@@ -41,6 +41,7 @@ pub struct Worker {
     config: WorkerConfig,
     removal_categories: Vec<Category>,
     tape_rule: TapeRule,
+    profile: ErasureCode,
 }
 
 /// What running one job did
@@ -74,6 +75,7 @@ impl Worker {
         config: WorkerConfig,
         removal_categories: Vec<Category>,
         tape_rule: TapeRule,
+        profile: ErasureCode,
     ) -> Self {
         Self {
             records,
@@ -82,6 +84,7 @@ impl Worker {
             config,
             removal_categories,
             tape_rule,
+            profile,
         }
     }
 
@@ -250,7 +253,7 @@ impl Worker {
         categories: Vec<Category>,
         attempt: &mut CheckAttempt,
     ) -> Result<(Option<Address>, Option<Removal>), WorkerError> {
-        let scope = self.removal_scope(track).await?;
+        let scope = self.removal_scope(track, attempt.read_bytes.unwrap_or_default()).await?;
         let names: Vec<&str> = categories.iter().map(|category| category.as_str()).collect();
         attempt.detail = Some(format!("flagged: {}", names.join(", ")));
         let removal = Removal {
@@ -275,22 +278,13 @@ impl Worker {
         }
     }
 
-    async fn removal_scope(&self, track: Address) -> Result<RemovalScope, WorkerError> {
+    /// The tape a flagged track is on, and the chunks behind the `read_bytes` the check read
+    async fn removal_scope(&self, track: Address, read_bytes: u64) -> Result<RemovalScope, WorkerError> {
         let record = self.gateway.track_record(track).await?;
         let mut chunks = Vec::new();
         if record.size.to_bytes() <= MANIFEST_READ_BYTES {
             if let GatewayRead::Content(read) = self.gateway.read_track(track, MANIFEST_READ_BYTES).await? {
-                // A manifest can list any address, so a chunk counts only
-                // when the gateway has it on the manifest's tape.
-                for chunk in manifest_chunks(&read) {
-                    match self.gateway.track_record(chunk).await {
-                        Ok(found) if found.tape == record.tape => chunks.push(chunk),
-                        Ok(_) => {}
-                        Err(WorkerError::GatewayStatus { status, .. })
-                            if status == StatusCode::NOT_FOUND || status == StatusCode::GONE => {}
-                        Err(error) => return Err(error),
-                    }
-                }
+                chunks = manifest_chunks(&read, read_bytes, self.profile);
             }
         }
         Ok(RemovalScope {
@@ -362,17 +356,24 @@ fn to_request(prepared: PreparedInput) -> Result<(SentInput, ModerationInput), S
     }
 }
 
-/// Addresses of a stream manifest's chunks, each once; empty when the bytes are not a manifest
-fn manifest_chunks(read: &ContentRead) -> Vec<Address> {
+/// The chunks holding a stream's first `read_bytes`, each once; empty when the bytes are not a manifest
+///
+/// The gateway served those bytes from these chunks, so they are on the
+/// manifest's tape and they are what the check read. A manifest can list any
+/// address past them.
+fn manifest_chunks(read: &ContentRead, read_bytes: u64, profile: ErasureCode) -> Vec<Address> {
     if !read.is_complete() {
         return Vec::new();
     }
-    let Ok(manifest) = ChunkManifest::from_bytes(&read.bytes) else {
+    let Ok(manifest) = ChunkManifest::from_bytes(&read.bytes, profile) else {
         return Vec::new();
     };
     let mut seen = HashSet::new();
     let mut chunks = Vec::new();
     for entry in &manifest.chunks {
+        if entry.offset.to_bytes() >= read_bytes {
+            break;
+        }
         if seen.insert(entry.track) {
             chunks.push(entry.track);
         }
@@ -426,7 +427,8 @@ mod tests {
         ListTracksByTapeRequest, ListTracksByTapeResponse, TrackResponse, TAPE_TRACK_LIST_PATH,
         TRACK_PATH,
     };
-    use tape_sdk::stream::manifest::{ChunkEntry, MANIFEST_VERSION};
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_sdk::stream::manifest::{max_track_size, ChunkEntry, MANIFEST_VERSION};
     use tempfile::TempDir;
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
@@ -549,6 +551,7 @@ mod tests {
                 config,
                 Category::ALL.to_vec(),
                 TapeRule::new(&rule),
+                TAPENET_PROFILE,
             );
             Self {
                 dir,
@@ -836,54 +839,40 @@ mod tests {
         harness.stop().await;
     }
 
-    // removing a stream's manifest removes its chunk tracks on the same tape and no others
+    // removing a stream's manifest removes the chunks the check read and none past them
     #[tokio::test]
     async fn stream() {
         let harness = Harness::new(config(), TapeRuleConfig::default()).await;
         let tape = address(60);
         let manifest_track = address(2);
-        let chunks = vec![record(tape, 3, 10), record(tape, 4, 10)];
+        let full = max_track_size(TAPENET_PROFILE) as u64;
+        let read = record(tape, 3, full);
+        let unread = record(tape, 4, full);
         let other_tape = record(address(61), 0, 10);
-        let unknown = record(tape, 9, 10);
         let entry = |chunk: &CompressedTrack, offset: u64| ChunkEntry {
             track: chunk.address(),
             offset: StorageUnits(offset),
-            size: StorageUnits(10),
+            size: chunk.size,
         };
         let manifest = ChunkManifest {
             version: MANIFEST_VERSION,
-            total_size: StorageUnits(40),
-            chunk_count: TrackNumber(4),
-            chunk_size: StorageUnits(10),
+            total_size: StorageUnits(2 * full + 10),
+            chunk_count: TrackNumber(3),
+            chunk_size: StorageUnits(full),
             key: Hash::default(),
-            chunks: vec![
-                entry(&chunks[0], 0),
-                entry(&chunks[1], 10),
-                entry(&other_tape, 20),
-                entry(&unknown, 30),
-            ],
+            chunks: vec![entry(&read, 0), entry(&unread, full), entry(&other_tape, 2 * full)],
         };
         let manifest_bytes = manifest.to_bytes().expect("manifest bytes");
         harness.object(manifest_track, Some("text/plain"), b"violent text");
         harness.track_record(manifest_track, record(tape, 5, manifest_bytes.len() as u64), &manifest_bytes);
-        for chunk in [chunks[0], chunks[1], other_tape] {
-            harness.track_record(chunk.address(), chunk, b"");
-        }
         harness.flag(&[Category::Violence]);
         harness.report(Target::track(manifest_track), Timestamp(100)).await;
 
         let outcome = harness.run(Timestamp(100)).await;
 
-        assert_eq!(outcome, Some(JobOutcome::Checked { outcome: CheckOutcome::Remove, decisions: 3 }));
+        assert_eq!(outcome, Some(JobOutcome::Checked { outcome: CheckOutcome::Remove, decisions: 2 }));
         let removed: Vec<String> = decisions(&harness.database()).into_iter().map(|row| row.2).collect();
-        assert_eq!(
-            removed,
-            vec![
-                manifest_track.to_string(),
-                chunks[0].address().to_string(),
-                chunks[1].address().to_string(),
-            ]
-        );
+        assert_eq!(removed, vec![manifest_track.to_string(), read.address().to_string()]);
         harness.stop().await;
     }
 

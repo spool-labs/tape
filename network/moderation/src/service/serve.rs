@@ -31,6 +31,7 @@ pub async fn serve(config: Config) -> Result<(), ServiceError> {
     let salt = read_secret(&config.api.reporter_salt_file)?;
     let api_key = read_secret(&config.moderation.api_key_file)?;
     let chain = Arc::new(SdkChain::try_new(&config.chain)?);
+    let profile = chain.profile().await?;
     let observer = Arc::new(Observer::try_new(Limits::new(&config.publisher, &config.funder))?);
     if records.list_tapes().await?.newest().is_none() {
         warn!("no named blacklist tape yet; decisions wait until `create-rack` finishes");
@@ -43,6 +44,7 @@ pub async fn serve(config: Config) -> Result<(), ServiceError> {
         config.worker.clone(),
         config.moderation.removal_categories.clone(),
         TapeRule::new(&config.tape_rule),
+        profile,
     );
     let publisher = Publisher::new(records.clone(), Arc::clone(&chain), config.publisher.batch_window);
     let funder = Funder::new(
