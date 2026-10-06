@@ -6,7 +6,7 @@ use tape_api::genesis::GenesisConfig;
 use tape_api::program::tapedrive::TrackAddress;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::encoding::{ClayParams, ErasureCode, RSParams, RepParams};
-use tape_core::spooler::VirtualGroup;
+use tape_core::spooler::{GroupIndex, VirtualGroup};
 use tape_core::thresholds::TrustModel;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{BasisPoints, EpochNumber};
@@ -417,10 +417,17 @@ async fn write_each_group(
     payload: &[u8],
 ) -> Vec<(Address, CompressedTrack)> {
     let mut tracks: Vec<(Address, CompressedTrack)> = Vec::new();
+    let mut reached: Vec<GroupIndex> = Vec::new();
 
     for _ in 0..WRITE_ATTEMPTS {
         let (track, written) = write(harness, payload).await;
-        if tracks.iter().all(|(_, other)| other.group != written.group) {
+
+        // A track's leaf carries its virtual group. The live group that holds
+        // it is what has to differ from one track to the next.
+        let system = harness.scenario().read_system().await.expect("read system");
+        let live_group = system.live_group(written.group).expect("live group");
+        if !reached.contains(&live_group) {
+            reached.push(live_group);
             tracks.push((track, written));
         }
         if tracks.len() as u64 == groups {
