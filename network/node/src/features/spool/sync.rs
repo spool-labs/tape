@@ -4,47 +4,48 @@ use tracing::warn;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
+use tape_core::erasure::leaf_position;
 use tape_core::track::data::BlobData;
-use tape_core::track::types::CompressedTrack;
-use tape_core::spooler::VirtualGroup;
-use tape_core::types::SpoolIndex;
+use tape_core::spooler::{GroupFold, GroupIndex, VirtualGroup};
+use tape_core::system::SpoolStatus;
+use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_core::types::StorageUnits;
 use tape_core::track::blob::BlobEncoding;
 use tape_crypto::address::Address;
 use tape_protocol::{Api, ApiError};
 use tape_protocol::api::ops::{GetTrackDataReq, SyncSlicesReq};
-use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
+use tape_store::ops::{SliceOps, TrackDataOps, TrackOps};
 use tape_retry::RetryConfig;
 
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::core::peer_call::call_peer;
+use crate::features::spool::manager::carried_rows;
 use crate::features::spool::types::SyncResult;
 
-// Purpose: Transfer slice data for a spool from its previous owner
-//          after a spool reassignment.
+// Purpose: Transfer slice data for a live spool from its previous owner
+//          after a spool reassignment. One run covers every stored spool
+//          the live spool carries.
 //
 // Algorithm:
-// 1. Load spool state from the store. If missing, return Done.
+// 1. Load the rows waiting to sync under the live spool. If none, return Done.
 // 2. Sync track_data from any peer in the spool group.
-// 3. Determine slice source: if no previous owner, or we are the previous
-//    owner, skip slice sync.
-// 4. Paginated pull from the previous owner via call_peer + api.sync_slices:
-//    - Load the sync cursor (last track we left off at).
+// 3. Determine slice sources: the previous owners in those rows, leaving
+//    out this node. There is one, or one per retired group in the epoch
+//    after the group count drops.
+// 4. Paginated pull from each previous owner via call_peer + api.sync_slices:
 //    - Loop:
 //      a. Check cancellation.
 //      b. Send SyncSlicesReq to previous owner with cursor + batch limit.
 //      c. For each entry in the response:
-//         - Skip if we already have the slice locally (has_slice).
-//         - If we have the track metadata, validate the slice against
-//           the commitment. Skip invalid entries.
-//         - put_slice to store.
-//      d. Advance the cursor to the last track in the batch.
-//         Persist cursor so we can resume if interrupted.
-//      e. Stop when the peer returns no entries and no next cursor.
-// 5. Clear the sync cursor. Return Done.
+//         - Skip one whose track belongs to another live group.
+//         - Validate the slice against the commitment. Skip invalid entries.
+//         - put_slice to store, under the track's own stored spool.
+//      d. Carry the peer's cursor into the next request.
+//      e. Stop when the peer returns no next cursor.
+// 5. Return Done.
 //
-// If the previous owner is unreachable we return after retrying.
+// If a previous owner is unreachable we give up on it after retrying.
 // The FSM treats unreachable the same as Done, it moves to Scan,
 // which will identify the gaps, and repair/recover will fetch from
 // the rest of the spool group.
@@ -60,114 +61,106 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &RecoveryConfig,
     spool: SpoolIndex,
+    epoch: EpochNumber,
     token: &CancellationToken,
 ) -> SyncResult {
 
-    // If the spool state is missing, we don't own this spool
-    let state = match ctx.store.get_spool_state(spool) {
-        Ok(Some(state)) => state,
-        Ok(None) => {
-            return SyncResult::Done {
-                synced_tracks: 0,
-                synced_slices: 0,
-            };
-        }
+    let nothing_synced = SyncResult::Done {
+        synced_tracks: 0,
+        synced_slices: 0,
+    };
+
+    // The spool is a live one. The fold of the epoch the rows were written for
+    // says which stored spools it carries.
+    let Some(fold) = ctx.state().fold_at(epoch) else {
+        warn!(spool = %spool, epoch = epoch.0, "no fold for the epoch");
+        return nothing_synced;
+    };
+
+    // If no carried row waits to sync, we don't own this spool
+    let rows = match carried_rows(&ctx.store, fold, spool, epoch, SpoolStatus::Sync) {
+        Ok(rows) => rows,
         Err(error) => {
             warn!(spool = %spool, %error, "failed to read spool state");
-            return SyncResult::Done {
-                synced_tracks: 0,
-                synced_slices: 0,
-            };
+            return nothing_synced;
         }
     };
+    if rows.is_empty() {
+        return nothing_synced;
+    }
 
     // Sync track data first, since it's needed to validate slices. We can sync track data from any
     // peer in the spool group, not just the previous owner, which increases our chances of success
     // if the previous owner is unavailable.
     let synced_tracks = sync_track_data(
-        ctx.clone(), 
-        spool, 
-        config.sync_batch.max(1), 
+        ctx.clone(),
+        spool,
+        fold,
+        config.sync_batch.max(1),
         token)
     .await;
 
-    // If the spool has no previous owner, then there's no slice peer to sync from.
-    let Some(prev_owner) = state.prev_owner else {
-        return SyncResult::Done {
-            synced_tracks,
-            synced_slices: 0,
+    // The stored spools under a live spool share one previous owner, except in
+    // the epoch after the group count drops, when each retired group had its
+    // own. A row with no previous owner, or with this node as the owner, has no
+    // slice peer to sync from.
+    let mut prev_owners: Vec<Address> = Vec::new();
+    for (_, state) in &rows {
+        let Some(prev_owner) = state.prev_owner else {
+            continue;
         };
-    };
 
-    // If we're the previous owner, then we can't sync slices from ourselves.
-    if prev_owner == ctx.node_address() {
-        return SyncResult::Done {
-            synced_tracks,
-            synced_slices: 0,
-        };
+        if prev_owner != ctx.node_address() && !prev_owners.contains(&prev_owner) {
+            prev_owners.push(prev_owner);
+        }
     }
 
-    // Sync in batches, persisting the cursor after each batch so we can resume if interrupted.
-    let mut cursor = match ctx.store.get_spool_sync_cursor(spool) {
-        Ok(cursor) => cursor,
-        Err(error) => {
-            warn!(spool = %spool, %error, "failed to read sync cursor");
-            None
-        }
-    };
     let mut synced_slices = 0;
 
-    loop {
-        if token.is_cancelled() {
-            return SyncResult::Done {
-                synced_tracks,
-                synced_slices,
-            };
-        }
+    for prev_owner in prev_owners {
+        let mut cursor: Option<Vec<u8>> = None;
 
-        // Optimistically pull a batch of slices from the previous owner. If the peer is
-        // unreachable, or any error occurs, we keep going, the repair/recovery will fill the gaps
-        // from the rest of the group.
-
-        match pull_batch(ctx.as_ref(), config, spool, prev_owner, cursor, token).await {
-            Ok(batch) => {
-                synced_slices += batch.synced;
-
-                if batch.fetched_bytes > 0 {
-                    ctx.metrics.add_sync_fetched(batch.fetched_bytes);
-                }
-
-                if batch.persisted_bytes > 0 {
-                    ctx.metrics.add_sync_persisted(batch.persisted_bytes);
-                }
-
-                match batch.next_cursor {
-                    Some(c) => {
-                        cursor = Some(c.clone());
-                        if let Err(error) = ctx.store.set_spool_sync_cursor(spool, &c) {
-                            warn!(spool = %spool, %error, "set_spool_sync_cursor failed");
-                        }
-                    }
-                    None => {
-                        if let Err(error) = ctx.store.remove_spool_sync_cursor(spool) {
-                            warn!(spool = %spool, %error, "remove_spool_sync_cursor failed");
-                        }
-                        return SyncResult::Done {
-                            synced_tracks,
-                            synced_slices,
-                        };
-                    }
-                }
-            }
-
-            Err(e) => {
-                warn!(spool = %spool, %e, "pull_batch failed during sync");
+        loop {
+            if token.is_cancelled() {
                 return SyncResult::Done {
                     synced_tracks,
                     synced_slices,
                 };
             }
+
+            // Optimistically pull a batch of slices from the previous owner. If the peer is
+            // unreachable, or any error occurs, we keep going, the repair/recovery will fill the gaps
+            // from the rest of the group.
+
+            match pull_batch(ctx.as_ref(), config, spool, fold, prev_owner, cursor, token).await {
+                Ok(batch) => {
+                    synced_slices += batch.synced;
+
+                    if batch.fetched_bytes > 0 {
+                        ctx.metrics.add_sync_fetched(batch.fetched_bytes);
+                    }
+
+                    if batch.persisted_bytes > 0 {
+                        ctx.metrics.add_sync_persisted(batch.persisted_bytes);
+                    }
+
+                    match batch.next_cursor {
+                        Some(next) => cursor = Some(next),
+                        None => break,
+                    }
+                }
+
+                Err(e) => {
+                    warn!(spool = %spool, peer = %prev_owner, %e, "pull_batch failed during sync");
+                    break;
+                }
+            }
         }
+    }
+
+    SyncResult::Done {
+        synced_tracks,
+        synced_slices,
     }
 }
 
@@ -177,6 +170,7 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     config: &RecoveryConfig,
     spool: SpoolIndex,
+    fold: GroupFold,
     prev_owner: Address,
     cursor: Option<Vec<u8>>,
     token: &CancellationToken,
@@ -186,8 +180,12 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let mut fetched_bytes = 0u64;
     let mut persisted_bytes = 0u64;
 
+    let group = GroupIndex::containing(spool);
+    let position = leaf_position(spool).as_usize();
+
     let req = SyncSlicesReq {
         spool_index: spool,
+        live_groups: fold.live(),
         cursor: cursor.clone(),
         limit: config.sync_batch.max(1) as u32,
     };
@@ -249,6 +247,14 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
             continue;
         }
 
+        // A slice is kept under its track's own group, and only one this live
+        // spool carries has a row here.
+        if fold.live_group(track_info.group) != group {
+            warn!(spool = %spool, track = %track_addr, "received synced slice for another group, skipping");
+            continue;
+        }
+        let stored = track_info.group.spool_at(position);
+
         let track_data = match data {
             Some(BlobData::Coded(data)) => data,
             Some(_) => {
@@ -261,13 +267,13 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         };
 
-        if !verify_slice(spool, &track_info, &track_data, &entry.slice_data) {
-            warn!(spool = %spool, track = %track_addr, "skipping invalid synced slice");
+        if !verify_slice(position, &track_data, &entry.slice_data) {
+            warn!(spool = %stored, track = %track_addr, "skipping invalid synced slice");
             continue;
         }
 
-        if let Err(e) = ctx.store.put_slice(spool, track_addr, entry.slice_data) {
-            warn!(spool = %spool, track = %track_addr, %e, "put_slice failed, skipping");
+        if let Err(e) = ctx.store.put_slice(stored, track_addr, entry.slice_data) {
+            warn!(spool = %stored, track = %track_addr, %e, "put_slice failed, skipping");
             continue;
         }
 
@@ -286,15 +292,10 @@ async fn pull_batch<Db: Store, Cluster: Api, Blockchain: Rpc>(
 }
 
 fn verify_slice(
-    spool: SpoolIndex,
-    track_info: &CompressedTrack,
+    position: usize,
     track_data: &BlobEncoding,
     data: &[u8],
 ) -> bool {
-    let Some(position) = track_info.group.position_of(spool) else {
-        return false;
-    };
-
     if track_data.size.0 > 0 && data.is_empty() {
         return false;
     }
@@ -314,12 +315,13 @@ fn verify_slice(
 pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
     ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
     spool: SpoolIndex,
+    fold: GroupFold,
     batch_size: usize,
     token: &CancellationToken,
 ) -> usize {
     let mut cursor: Option<Vec<u8>> = None;
     let mut synced = 0usize;
-    let peers = track_data_peers(ctx.as_ref(), spool);
+    let group = GroupIndex::containing(spool);
 
     loop {
         if token.is_cancelled() {
@@ -339,7 +341,7 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
                 break;
             }
 
-            if !track.group.contains(spool) {
+            if fold.live_group(track.group) != group {
                 continue;
             }
 
@@ -351,6 +353,8 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
                     continue;
                 }
             }
+
+            let peers = track_data_peers(ctx.as_ref(), track.group);
 
             match fetch_track_data_from_group(ctx.as_ref(), *track_addr, &peers, token).await {
                 Ok(data) => {
@@ -377,9 +381,8 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
 
 fn track_data_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
-    spool: SpoolIndex,
+    group: VirtualGroup,
 ) -> Vec<Address> {
-    let group = VirtualGroup::containing(spool);
     let state = ctx.state();
     let mut peers = Vec::new();
 
@@ -430,10 +433,12 @@ async fn fetch_track_data_from_group<Db: Store, Cluster: Api + 'static, Blockcha
 mod tests {
     use peer_memory::MemoryApi;
     use tape_core::encoding::TAPENET_PROFILE;
+    use std::sync::Mutex;
+
     use tape_core::erasure::{SLICE_TREE_HEIGHT, slice_root};
     use tape_core::spooler::VirtualGroup;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber};
+    use tape_core::types::{StorageUnits, StripeCount, TapeNumber, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
@@ -441,11 +446,14 @@ mod tests {
     use tape_protocol::api::types::SyncSliceEntry;
     use tape_slicer::{ErasureCoder, SliceMetadata, Slicer};
     use tape_core::system::{SpoolState, SpoolStatus};
+    use tape_store::ops::SpoolOps;
 
     use super::*;
     use crate::harness::{NodeHarness, TestContext};
 
     const SPOOL: SpoolIndex = SpoolIndex(5);
+
+    const WIDTH: usize = TAPENET_PROFILE.n() as usize;
 
     fn addr(n: u8) -> Address {
         Address::from([n; 32])
@@ -460,14 +468,28 @@ mod tests {
     }
 
     async fn test_context_with_api(api: MemoryApi) -> TestContext {
+        context_with_groups(api, 1).await
+    }
+
+    async fn context_with_groups(api: MemoryApi, live_groups: u64) -> TestContext {
         NodeHarness::builder()
-            .nodes(25)
+            .nodes(live_groups as usize * WIDTH + 5)
+            .current_group_count(live_groups)
             .no_prev_snapshot_tape()
             .api(api)
             .build()
             .await
             .expect("build harness")
             .ctx_for(SPOOL.as_usize())
+    }
+
+    async fn sync(ctx: &TestContext) -> SyncResult {
+        let epoch = ctx.state().epoch();
+        run(ctx.clone(), &RecoveryConfig::default(), SPOOL, epoch, &CancellationToken::new()).await
+    }
+
+    fn carried_spool(group: VirtualGroup) -> SpoolIndex {
+        group.spool_at(SPOOL.as_usize())
     }
 
     fn entry(track: Address, data: &[u8]) -> SyncSliceEntry {
@@ -532,10 +554,10 @@ mod tests {
     async fn no_prev_owner() {
         let ctx = test_context().await;
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), None))
+            .set_spool_state(SPOOL, sync_state(ctx.state().epoch(),None))
             .unwrap();
 
-        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = sync(&ctx).await;
         assert!(matches!(result, SyncResult::Done { .. }));
     }
 
@@ -555,12 +577,12 @@ mod tests {
         .await;
 
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
+            .set_spool_state(SPOOL, sync_state(ctx.state().epoch(),Some(peer())))
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
         ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
 
-        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = sync(&ctx).await;
 
         assert!(matches!(
             result,
@@ -571,7 +593,6 @@ mod tests {
         ));
         assert!(ctx.store.has_slice(SPOOL, a).unwrap());
         assert_eq!(ctx.store.get_slice(SPOOL, a).unwrap().unwrap(), data);
-        assert!(ctx.store.get_spool_sync_cursor(SPOOL).unwrap().is_none());
     }
 
     #[tokio::test]
@@ -591,14 +612,14 @@ mod tests {
         .await;
 
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
+            .set_spool_state(SPOOL, sync_state(ctx.state().epoch(),Some(peer())))
             .unwrap();
 
         ctx.store.put_track(a, track_info).unwrap();
         ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
         ctx.store.put_slice(SPOOL, a, stale_data).unwrap();
 
-        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = sync(&ctx).await;
         assert!(matches!(
             result,
             SyncResult::Done {
@@ -615,10 +636,10 @@ mod tests {
     async fn peer_unavailable() {
         let ctx = test_context().await; // noop api returns errors
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
+            .set_spool_state(SPOOL, sync_state(ctx.state().epoch(),Some(peer())))
             .unwrap();
 
-        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = sync(&ctx).await;
         assert_eq!(
             result,
             SyncResult::Done {
@@ -644,11 +665,11 @@ mod tests {
         .await;
 
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
+            .set_spool_state(SPOOL, sync_state(ctx.state().epoch(),Some(peer())))
             .unwrap();
         ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
 
-        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = sync(&ctx).await;
 
         assert_eq!(
             result,
@@ -658,7 +679,6 @@ mod tests {
             }
         );
         assert!(!ctx.store.has_slice(SPOOL, a).unwrap());
-        assert!(ctx.store.get_spool_sync_cursor(SPOOL).unwrap().is_none());
     }
 
     #[tokio::test]
@@ -678,12 +698,12 @@ mod tests {
         .await;
 
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
+            .set_spool_state(SPOOL, sync_state(ctx.state().epoch(),Some(peer())))
             .unwrap();
         ctx.store.put_track(a, track_info).unwrap();
         ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
 
-        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = sync(&ctx).await;
 
         assert_eq!(
             result,
@@ -693,7 +713,6 @@ mod tests {
             }
         );
         assert!(!ctx.store.has_slice(SPOOL, a).unwrap());
-        assert!(ctx.store.get_spool_sync_cursor(SPOOL).unwrap().is_none());
     }
 
     #[tokio::test]
@@ -702,22 +721,24 @@ mod tests {
         let a2 = addr(2);
         let (track_info1, blob1, slice1) = local_slice(0x11, 1024);
         let (track_info2, blob2, slice2) = local_slice(0x22, 1024);
-        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let counter = call_count.clone();
+        let cursors = Arc::new(Mutex::new(Vec::new()));
+        let seen = cursors.clone();
 
+        // The second page is only served to a request that carries the first page's cursor.
         let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
-            PeerReq::SyncSlices(_) => {
-                let n = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if n == 0 {
-                    PeerRes::SyncSlices(Ok(SyncSlicesRes {
+            PeerReq::SyncSlices(req) => {
+                let mut seen = seen.lock().expect("cursor list");
+                seen.push(req.cursor.clone());
+
+                match req.cursor {
+                    None => PeerRes::SyncSlices(Ok(SyncSlicesRes {
                         entries: vec![entry(a1, &slice1)],
-                    next_cursor: Some(a2.to_bytes().to_vec()),
-                    }))
-                } else {
-                    PeerRes::SyncSlices(Ok(SyncSlicesRes {
+                        next_cursor: Some(a2.to_bytes().to_vec()),
+                    })),
+                    Some(_) => PeerRes::SyncSlices(Ok(SyncSlicesRes {
                         entries: vec![entry(a2, &slice2)],
                         next_cursor: None,
-                    }))
+                    })),
                 }
             }
             _ => panic!("unexpected request"),
@@ -725,17 +746,144 @@ mod tests {
         .await;
 
         ctx.store
-            .set_spool_state(SPOOL, sync_state(EpochNumber(3), Some(peer())))
+            .set_spool_state(SPOOL, sync_state(ctx.state().epoch(),Some(peer())))
             .unwrap();
         ctx.store.put_track(a1, track_info1).unwrap();
         ctx.store.put_track(a2, track_info2).unwrap();
         ctx.store.put_track_data(a1, BlobData::Coded(blob1)).unwrap();
         ctx.store.put_track_data(a2, BlobData::Coded(blob2)).unwrap();
 
-        let result = run(ctx.clone(), &RecoveryConfig::default(), SPOOL, &CancellationToken::new()).await;
+        let result = sync(&ctx).await;
         assert!(matches!(result, SyncResult::Done { .. }));
         assert!(ctx.store.has_slice(SPOOL, a1).unwrap());
         assert!(ctx.store.has_slice(SPOOL, a2).unwrap());
-        assert_eq!(call_count.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(
+            *cursors.lock().expect("cursor list"),
+            [None, Some(a2.to_bytes().to_vec())],
+        );
+    }
+
+    // slices of two carried groups arrive on one stream and land under their own stored spools
+    #[tokio::test]
+    async fn one_stream() {
+        let own = addr(1);
+        let carried = addr(2);
+        let group = VirtualGroup(1);
+        let (own_track, own_blob, own_slice) = local_slice(0x11, 1024);
+        let (mut carried_track, carried_blob, carried_slice) = local_slice(0x22, 1024);
+        carried_track.group = group;
+
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let entries = vec![entry(own, &own_slice), entry(carried, &carried_slice)];
+
+        let ctx = test_context_with_api(MemoryApi::new(move |_, req| match req {
+            PeerReq::SyncSlices(req) => {
+                seen.lock().expect("request list").push(req);
+                PeerRes::SyncSlices(Ok(SyncSlicesRes {
+                    entries: entries.clone(),
+                    next_cursor: None,
+                }))
+            }
+            _ => panic!("unexpected request"),
+        }))
+        .await;
+
+        for spool in [SPOOL, carried_spool(group)] {
+            ctx.store
+                .set_spool_state(spool, sync_state(ctx.state().epoch(), Some(peer())))
+                .unwrap();
+        }
+        ctx.store.put_track(own, own_track).unwrap();
+        ctx.store.put_track(carried, carried_track).unwrap();
+        ctx.store.put_track_data(own, BlobData::Coded(own_blob)).unwrap();
+        ctx.store.put_track_data(carried, BlobData::Coded(carried_blob)).unwrap();
+
+        let result = sync(&ctx).await;
+
+        assert_eq!(
+            result,
+            SyncResult::Done {
+                synced_tracks: 0,
+                synced_slices: 2,
+            }
+        );
+        assert!(ctx.store.has_slice(SPOOL, own).unwrap());
+        assert!(ctx.store.has_slice(carried_spool(group), carried).unwrap());
+        assert!(!ctx.store.has_slice(SPOOL, carried).unwrap());
+
+        let requests = requests.lock().expect("request list");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].spool_index, SPOOL);
+        assert_eq!(requests[0].live_groups, 1);
+    }
+
+    // the epoch after the group count drops, the holder of each retired group is asked once
+    #[tokio::test]
+    async fn asks_each_owner() {
+        let kept = addr(98);
+        let retired = addr(99);
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = asked.clone();
+
+        let ctx = test_context_with_api(MemoryApi::new(move |node, req| match req {
+            PeerReq::SyncSlices(_) => {
+                seen.lock().expect("peer list").push(node);
+                PeerRes::SyncSlices(Ok(SyncSlicesRes {
+                    entries: Vec::new(),
+                    next_cursor: None,
+                }))
+            }
+            _ => panic!("unexpected request"),
+        }))
+        .await;
+
+        let epoch = ctx.state().epoch();
+        ctx.store.set_spool_state(SPOOL, sync_state(epoch, Some(kept))).unwrap();
+        for group in [VirtualGroup(1), VirtualGroup(3)] {
+            ctx.store
+                .set_spool_state(carried_spool(group), sync_state(epoch, Some(retired)))
+                .unwrap();
+        }
+
+        sync(&ctx).await;
+
+        assert_eq!(*asked.lock().expect("peer list"), [kept, retired]);
+    }
+
+    // with two live groups, a slice whose track is in the other one is left out
+    #[tokio::test]
+    async fn skips_other_group() {
+        let a = addr(1);
+        let other = VirtualGroup(1);
+        let (mut track_info, track_blob, data) = local_slice(0xAB, 1024);
+        track_info.group = other;
+
+        let api = MemoryApi::new(move |_, req| match req {
+            PeerReq::SyncSlices(_) => PeerRes::SyncSlices(Ok(SyncSlicesRes {
+                entries: vec![entry(a, &data)],
+                next_cursor: None,
+            })),
+            _ => panic!("unexpected request"),
+        });
+        let ctx = context_with_groups(api, 2).await;
+
+        ctx.store
+            .set_spool_state(SPOOL, sync_state(ctx.state().epoch(), Some(peer())))
+            .unwrap();
+        ctx.store.put_track(a, track_info).unwrap();
+        ctx.store.put_track_data(a, BlobData::Coded(track_blob)).unwrap();
+
+        let result = sync(&ctx).await;
+
+        assert_eq!(
+            result,
+            SyncResult::Done {
+                synced_tracks: 0,
+                synced_slices: 0,
+            }
+        );
+        assert!(!ctx.store.has_slice(SPOOL, a).unwrap());
+        assert!(!ctx.store.has_slice(carried_spool(other), a).unwrap());
     }
 }

@@ -3,7 +3,6 @@
 //! - SpoolStatusCol: spool_id -> SpoolStatus
 //! - SpoolPendingRepairCol: (spool_id, track_address) -> ready slot
 //! - SpoolPendingRecoveryCol: (spool_id, track_address) -> ()
-//! - SpoolSyncCursorCol: spool_id -> the peer's opaque sweep mark
 
 use tape_store_api::Column;
 use tape_core::system::SpoolState;
@@ -45,21 +44,4 @@ impl Column for SpoolPendingRecoveryCol {
     const CF_NAME: &'static str = "spool_pending_recovery";
     type Key = SliceKey;
     type Value = ();
-}
-
-/// Spool sync cursor tracking
-///
-/// Key: SpoolIndexKey (2 bytes: spool_id BE)
-/// Value: the peer's opaque sweep mark, which this node only ever hands back
-///
-/// A stored mark outlives the process that minted it and can meet a peer that
-/// has restarted or a different peer entirely, which is what the mark's own
-/// nonce is for: one the answering node did not mint restarts the sync rather
-/// than resuming into a layout that is not there.
-pub struct SpoolSyncCursorCol;
-
-impl Column for SpoolSyncCursorCol {
-    const CF_NAME: &'static str = "spool_sync_cursor";
-    type Key = SpoolIndexKey;
-    type Value = Vec<u8>;
 }

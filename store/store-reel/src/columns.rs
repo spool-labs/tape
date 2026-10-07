@@ -95,7 +95,6 @@ const fn tape_columns(track_data_codec: Codec) -> [ColumnSpec; ALL_COLUMN_FAMILI
     plain(17, "challenge_record"),
     plain(18, "challenge_round"),
     plain(19, "track_sample"),
-    plain(20, "spool_sync_cursor"),
     plain(21, "event_log"),
     plain(22, "vote_sig"),
     shaped(23, "snapshot_artifact", SNAPSHOT_KEY_LEN, 0),

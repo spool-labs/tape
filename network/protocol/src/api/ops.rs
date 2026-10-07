@@ -151,6 +151,7 @@ pub struct GetTrackProofRes {
 #[derive(Clone, Debug)]
 pub struct SyncSlicesReq {
     pub spool_index: SpoolIndex,
+    pub live_groups: u64,
     pub cursor: Option<Vec<u8>>,
     pub limit: u32,
 }

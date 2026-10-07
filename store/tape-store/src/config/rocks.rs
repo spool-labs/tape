@@ -54,7 +54,6 @@ const TOTAL_WRITE_BUFFER_BYTES: usize = 128 * 1024 * 1024;
 /// - `spool_status` - 2-byte SpoolIndexKey
 /// - `spool_pending_repair` - 34-byte SliceKey with 2-byte spool prefix
 /// - `spool_pending_recovery` - 34-byte SliceKey with 2-byte spool prefix
-/// - `spool_sync_cursor` - 2-byte SpoolIndexKey
 ///
 /// ## Slice Data Column (BlobDB)
 /// - `slice` - 34-byte SliceKey, large (~1MB) values (BlobDB with 2-byte prefix)
@@ -174,10 +173,6 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
         ColumnFamilyConfig::new("challenge_round")
             .with_block_based(cache)
             .with_prefix_extractor(32),
-
-        // Spool sync progress - 2-byte SpoolIndexKey
-        ColumnFamilyConfig::new("spool_sync_cursor")
-            .with_block_based(cache),
 
         // Event log - 20-byte EventLogKey (epoch 8B + slot 8B + seq 4B)
         // 8-byte epoch prefix for efficient per-epoch scanning and deletion
@@ -335,7 +330,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 31);
+        assert_eq!(configs.len(), 30);
     }
 
     #[test]
@@ -361,7 +356,6 @@ mod tests {
             "slice",
             "challenge_record",
             "challenge_round",
-            "spool_sync_cursor",
             "event_log",
             "vote_sig",
             "snapshot_artifact",

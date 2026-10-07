@@ -5,6 +5,7 @@ use std::time::Duration;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::prelude::{EpochNumber, VirtualGroup, SpoolIndex, SpoolState, SpoolStatus};
+use tape_core::spooler::GroupFold;
 use tape_protocol::Api;
 use tape_store::ops::{SliceOps, SpoolOps};
 use tokio::task::JoinSet;
@@ -14,7 +15,7 @@ use tracing::{debug, info, warn, Instrument};
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::features::spool::types::{Action, ScanResult, TaskDone, TaskResult};
+use crate::features::spool::types::{Action, ScanResult, TaskDone, TaskResult, TaskSpool};
 use crate::features::spool::{recover, repair, scan, sync};
 
 const SPOOL_MANAGER_HEARTBEAT: Duration = Duration::from_secs(1);
@@ -24,7 +25,7 @@ pub struct SpoolManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: RecoveryConfig,
     cancel: CancellationToken,
-    workers: HashMap<SpoolIndex, CancellationToken>,
+    workers: HashMap<TaskSpool, CancellationToken>,
     join_set: JoinSet<TaskDone>,
     queued: VecDeque<Action>,
     has_advanced: bool,
@@ -129,23 +130,12 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         }
     }
 
-    /// Determine the next action based on current state.
-    pub fn next_action(
-        &self,
-        epoch: EpochNumber,
-    ) -> Result<Option<Action>, NodeError> {
-        if self.workers.len() >= self.config.max_workers {
-            return Ok(None);
-        }
-
-        Ok(self.due_actions(epoch, 1)?.pop())
-    }
-
     fn due_actions(
         &self,
         epoch: EpochNumber,
-        limit: usize,
     ) -> Result<Vec<Action>, NodeError> {
+        let fold = self.context.state().fold_at(epoch);
+
         let mut spools = self
             .context
             .store
@@ -157,21 +147,34 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 |(spool, state)| (status_priority(state.status), *spool)
         );
 
+        let mut listed = HashSet::new();
         let mut actions = Vec::new();
         for (spool, state) in spools {
-            if actions.len() >= limit {
-                break;
-            }
-
             if state.epoch != epoch {
                 continue;
             }
 
-            if self.is_running(spool) {
+            // Sync and Scan run once for a live spool. Rows sort Sync first, so
+            // a live spool with rows in both states syncs before it scans.
+            let task_spool = match state.status {
+                SpoolStatus::Sync | SpoolStatus::Scan => {
+                    let Some(fold) = fold else {
+                        continue;
+                    };
+
+                    TaskSpool::Live(fold.live_spool(spool))
+                }
+                SpoolStatus::Repair
+                | SpoolStatus::Recover
+                | SpoolStatus::Active
+                | SpoolStatus::LockedToMove => TaskSpool::Virtual(spool),
+            };
+
+            if self.is_running(task_spool) || !listed.insert(task_spool) {
                 continue;
             }
 
-            if let Some(action) = action_for_status(spool, epoch, state.status) {
+            if let Some(action) = action_for_status(task_spool.index(), epoch, state.status) {
                 actions.push(action);
                 continue;
             }
@@ -195,7 +198,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         epoch: EpochNumber,
     ) -> Result<Option<Action>, NodeError> {
         if self.queued.is_empty() {
-            self.queued = self.due_actions(epoch, usize::MAX)?.into();
+            self.queued = self.due_actions(epoch)?.into();
         }
 
         Ok(self.queued.pop_front())
@@ -212,28 +215,24 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             };
 
             // Check if we're already running a task for this spool
-            let spool = action.spool();
-            if self.is_running(spool) {
+            let task_spool = action.task_spool();
+            if self.is_running(task_spool) {
                 continue;
             }
 
-            // The list was read a while ago, so the row is read again: a spool
-            // whose row no longer asks for this action is left alone.
-            let Some(mut state) = self
-                .context
-                .store
-                .get_spool_state(spool)
-                .map_err(|e| NodeError::Store(format!("get_spool_state({spool}): {e}")))?
-            else {
-                continue;
-            };
-
-            if !is_due(action, epoch, &state) {
+            // The list was read a while ago, so the rows are read again: a spool
+            // whose rows no longer ask for this action is left alone.
+            let rows = self.rows_for(action)?;
+            if !rows.iter().any(|(_, state)| is_due(action, epoch, state)) {
                 continue;
             }
 
             // If the spool is Active but we're about to run work, persist the transition.
-            if state.status == SpoolStatus::Active {
+            for (spool, mut state) in rows {
+                if state.status != SpoolStatus::Active {
+                    continue;
+                }
+
                 let next_status = match action {
                     Action::Repair { .. } => SpoolStatus::Repair,
                     Action::Recover { .. } => SpoolStatus::Recover,
@@ -252,18 +251,18 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             let config = self.config.clone();
             let token = self.cancel.child_token();
 
-            self.workers.insert(spool, token.clone());
+            self.workers.insert(task_spool, token.clone());
 
             info!(?action, epoch = epoch.0, "spool: spawning task");
 
             self.join_set.spawn(
                 async move {
                     let result = match action {
-                        Action::Sync { spool, .. } => {
-                            TaskResult::Sync(sync::run(ctx, &config, spool, &token).await)
+                        Action::Sync { spool, epoch } => {
+                            TaskResult::Sync(sync::run(ctx, &config, spool, epoch, &token).await)
                         }
-                        Action::Scan { spool, .. } => {
-                            TaskResult::Scan(scan::run(ctx, &config, spool, &token).await)
+                        Action::Scan { spool, epoch } => {
+                            TaskResult::Scan(scan::run(ctx, &config, spool, epoch, &token).await)
                         }
                         Action::Repair { spool, .. } => {
                             TaskResult::Repair(repair::run(ctx, &config, spool, &token).await)
@@ -292,10 +291,9 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         observed_epoch: EpochNumber,
     ) -> Result<(), NodeError> {
         let action = done.action();
-        let spool = action.spool();
         let worker_epoch = action.epoch();
 
-        self.workers.remove(&spool);
+        self.workers.remove(&action.task_spool());
 
         if worker_epoch != observed_epoch {
             debug!(
@@ -308,35 +306,33 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
         match done {
             TaskDone::Done(action, result) => {
-                let Some(mut state) = self
-                    .context
-                    .store
-                    .get_spool_state(spool)
-                    .map_err(|e| NodeError::Store(format!("get_spool_state({spool}): {e}")))?
-                else {
-                    debug!(spool = %spool, "spool: missing state for completed task");
+                let rows = self.rows_for(action)?;
+                if rows.is_empty() {
+                    debug!(?action, "spool: missing state for completed task");
                     return Ok(());
-                };
+                }
 
-                let Some(next_status) = transition_status(&self.context.store, spool, action, result)? else {
-                    warn!(?action, ?result, "spool: invalid task completion");
-                    return Ok(());
-                };
+                let spools = rows.len();
+                for (spool, mut state) in rows {
+                    let Some(next_status) = transition_status(&self.context.store, spool, action, result)? else {
+                        warn!(?action, ?result, "spool: invalid task completion");
+                        return Ok(());
+                    };
 
-                state.set_status(next_status);
+                    state.set_status(next_status);
 
-                self.context
-                    .store
-                    .set_spool_state(spool, state)
-                    .map_err(|e| NodeError::Store(format!("set_spool_state({spool}): {e}")))?;
+                    self.context
+                        .store
+                        .set_spool_state(spool, state)
+                        .map_err(|e| NodeError::Store(format!("set_spool_state({spool}): {e}")))?;
 
-                info!(spool = %spool, epoch = observed_epoch.0, status = ?next_status, "spool: task completed");
+                    debug!(spool = %spool, status = ?next_status, "spool: row updated");
+                }
+
+                info!(?action, epoch = observed_epoch.0, spools, "spool: task completed");
             }
             TaskDone::Cancelled(action, result) => {
                 debug!(?action, ?result, "spool: task cancelled");
-            }
-            TaskDone::Rejected(action, result) => {
-                warn!(?action, ?result, "spool: task rejected");
             }
         }
 
@@ -427,11 +423,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
                 // Assigned, have state -> (sync, or keep what we hold)
                 (true, Some(state)) => {
-                    self.context
-                        .store
-                        .remove_spool_sync_cursor(spool)
-                        .map_err(|e| NodeError::Store(format!("remove_spool_sync_cursor({spool}): {e}")))?;
-
                     let next = match self.has_advanced {
                         true => refresh_state(self.context.as_ref(), spool, epoch, state.status)?,
                         false => make_sync_state(self.context.as_ref(), spool, epoch),
@@ -452,9 +443,35 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
         Ok(())
     }
 
-    /// Check if the spool manager already has a running task for the given spool index.
-    fn is_running(&self, spool: SpoolIndex) -> bool {
-        self.workers.contains_key(&spool)
+    /// List the rows a task for this action works on.
+    fn rows_for(
+        &self,
+        action: Action,
+    ) -> Result<Vec<(SpoolIndex, SpoolState)>, NodeError> {
+        let status = match action {
+            Action::Sync { .. } => SpoolStatus::Sync,
+            Action::Scan { .. } => SpoolStatus::Scan,
+            Action::Repair { spool, .. } | Action::Recover { spool, .. } => {
+                let state = self
+                    .context
+                    .store
+                    .get_spool_state(spool)
+                    .map_err(|e| NodeError::Store(format!("get_spool_state({spool}): {e}")))?;
+
+                return Ok(state.map(|state| (spool, state)).into_iter().collect());
+            }
+        };
+
+        let Some(fold) = self.context.state().fold_at(action.epoch()) else {
+            return Ok(Vec::new());
+        };
+
+        carried_rows(&self.context.store, fold, action.spool(), action.epoch(), status)
+    }
+
+    /// Check if the spool manager already has a running task for the given spool.
+    fn is_running(&self, task_spool: TaskSpool) -> bool {
+        self.workers.contains_key(&task_spool)
     }
 
     /// Stop all workers
@@ -467,6 +484,32 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
     }
 }
 
+
+/// The stored spools a live spool carries whose rows are in `status` this epoch
+pub fn carried_rows<Db: Store>(
+    store: &tape_store::TapeStore<Db>,
+    fold: GroupFold,
+    spool: SpoolIndex,
+    epoch: EpochNumber,
+    status: SpoolStatus,
+) -> Result<Vec<(SpoolIndex, SpoolState)>, NodeError> {
+    let mut rows = Vec::new();
+
+    for stored in fold.carried_spools(spool) {
+        let state = store
+            .get_spool_state(stored)
+            .map_err(|e| NodeError::Store(format!("get_spool_state({stored}): {e}")))?;
+
+        match state {
+            Some(state) if state.epoch == epoch && state.status == status => {
+                rows.push((stored, state));
+            }
+            Some(_) | None => {}
+        }
+    }
+
+    Ok(rows)
+}
 
 /// The work a spool still owes
 pub fn has_pending_work<Db: Store>(
@@ -636,10 +679,6 @@ fn reset_spool_state<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .clear_all_pending_recoveries(spool)
         .map_err(|e| NodeError::Store(format!("clear_all_pending_recoveries({spool}): {e}")))?;
 
-    ctx.store
-        .remove_spool_sync_cursor(spool)
-        .map_err(|e| NodeError::Store(format!("remove_spool_sync_cursor({spool}): {e}")))?;
-
     Ok(())
 }
 
@@ -687,7 +726,7 @@ mod tests {
     use super::SpoolManager;
     use crate::config::recovery::RecoveryConfig;
     use crate::features::spool::types::{
-        Action, RepairResult, ScanResult, SyncResult, TaskDone, TaskResult,
+        Action, RepairResult, ScanResult, SyncResult, TaskDone, TaskResult, TaskSpool,
     };
     use crate::harness::{NodeHarness, TestContext};
 
@@ -852,12 +891,11 @@ mod tests {
         let track = Address::from([7; 32]);
 
         // Assigned spool persisted under a stale epoch, with detected repair work
-        // queued and a per-epoch sync cursor set.
+        // queued.
         ctx.store
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .unwrap();
         ctx.store.add_pending_repair(SPOOL, track).unwrap();
-        ctx.store.set_spool_sync_cursor(SPOOL, &track.to_bytes()).unwrap();
 
         let mut manager = SpoolManager::new(
             ctx.clone(),
@@ -867,17 +905,17 @@ mod tests {
 
         manager.advance(EPOCH).unwrap();
 
-        // Re-entered Sync for the new epoch, the per-epoch cursor cleared, but the
-        // repair queue survives the refresh.
+        // Re-entered Sync for the new epoch, but the repair queue survives the
+        // refresh.
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Sync);
         assert_eq!(state.epoch, EPOCH);
-        assert_eq!(ctx.store.get_spool_sync_cursor(SPOOL).unwrap(), None);
         assert!(ctx.store.has_pending_repair(SPOOL, track).unwrap());
     }
 
+    // a sync is listed ahead of a repair, and the lowest spool first
     #[tokio::test]
-    async fn next_action_prefers_sync_then_lowest_spool() {
+    async fn sync_listed_first() {
         let ctx = test_context().await;
         ctx.store
             .set_spool_state(SpoolIndex(7), SpoolState::new(SpoolStatus::Repair, EPOCH))
@@ -896,11 +934,12 @@ mod tests {
         );
 
         assert_eq!(
-            manager.next_action(EPOCH).unwrap(),
-            Some(Action::Sync {
-                spool: SPOOL,
-                epoch: EPOCH,
-            })
+            manager.due_actions(EPOCH).unwrap(),
+            [
+                Action::Sync { spool: SPOOL, epoch: EPOCH },
+                Action::Sync { spool: SpoolIndex(6), epoch: EPOCH },
+                Action::Repair { spool: SpoolIndex(7), epoch: EPOCH },
+            ],
         );
     }
 
@@ -950,7 +989,7 @@ mod tests {
 
         let manager = SpoolManager::new(ctx, RecoveryConfig::default(), CancellationToken::new());
         assert_eq!(
-            manager.next_action(EPOCH).unwrap(),
+            manager.due_actions(EPOCH).unwrap().first().copied(),
             Some(Action::Repair { spool: SPOOL, epoch: EPOCH })
         );
     }
@@ -978,7 +1017,7 @@ mod tests {
         let manager = SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
 
         assert_eq!(
-            manager.next_action(EPOCH).expect("action read"),
+            manager.due_actions(EPOCH).expect("action read").first().copied(),
             Some(Action::Repair { spool: SPOOL, epoch: EPOCH })
         );
         // The read leaves the queue alone; the repair worker drains it.
@@ -997,7 +1036,7 @@ mod tests {
 
         let manager = SpoolManager::new(ctx, RecoveryConfig::default(), CancellationToken::new());
         assert_eq!(
-            manager.next_action(EPOCH).unwrap(),
+            manager.due_actions(EPOCH).unwrap().first().copied(),
             Some(Action::Recover { spool: SPOOL, epoch: EPOCH })
         );
     }
@@ -1106,7 +1145,7 @@ mod tests {
 
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Repair);
-        assert!(manager.is_running(SPOOL));
+        assert!(manager.is_running(TaskSpool::Virtual(SPOOL)));
     }
 
     /// A manager that runs one task at a time over three spools waiting to sync.
@@ -1141,7 +1180,7 @@ mod tests {
         let (_ctx, mut manager, spools) = single_worker().await;
 
         manager.try_spawn(EPOCH).expect("try spawn");
-        assert!(manager.is_running(spools[0]));
+        assert!(manager.is_running(TaskSpool::Live(spools[0])));
         assert_eq!(
             manager.queued,
             [
@@ -1153,7 +1192,7 @@ mod tests {
         finish_sync(&mut manager, spools[0]);
         manager.try_spawn(EPOCH).expect("try spawn");
 
-        assert!(manager.is_running(spools[1]));
+        assert!(manager.is_running(TaskSpool::Live(spools[1])));
         assert_eq!(manager.queued, [Action::Sync { spool: spools[2], epoch: EPOCH }]);
     }
 
@@ -1169,8 +1208,119 @@ mod tests {
         finish_sync(&mut manager, spools[0]);
         manager.try_spawn(EPOCH).expect("try spawn");
 
-        assert!(!manager.is_running(spools[1]));
-        assert!(manager.is_running(spools[2]));
+        assert!(!manager.is_running(TaskSpool::Live(spools[1])));
+        assert!(manager.is_running(TaskSpool::Live(spools[2])));
+    }
+
+    // one task syncs every stored spool a live spool carries, and its end moves all their rows on
+    #[tokio::test]
+    async fn one_live_sync() {
+        let ctx = test_context().await;
+        for spool in [SPOOL, absorbed_spool()] {
+            ctx.store
+                .set_spool_state(spool, SpoolState::new(SpoolStatus::Sync, EPOCH))
+                .expect("set spool state");
+        }
+
+        let mut manager =
+            SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
+
+        assert_eq!(
+            manager.due_actions(EPOCH).expect("due actions"),
+            [Action::Sync { spool: SPOOL, epoch: EPOCH }],
+        );
+
+        finish_sync(&mut manager, SPOOL);
+
+        for spool in [SPOOL, absorbed_spool()] {
+            let state = ctx.store.get_spool_state(spool).expect("get spool state").expect("spool state");
+            assert_eq!(state.status, SpoolStatus::Scan, "spool {spool}");
+        }
+    }
+
+    // a live spool with rows still waiting to sync does that before it scans
+    #[tokio::test]
+    async fn sync_before_scan() {
+        let ctx = test_context().await;
+        ctx.store
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Scan, EPOCH))
+            .expect("set spool state");
+        ctx.store
+            .set_spool_state(absorbed_spool(), SpoolState::new(SpoolStatus::Sync, EPOCH))
+            .expect("set spool state");
+
+        let mut manager =
+            SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
+
+        assert_eq!(
+            manager.due_actions(EPOCH).expect("due actions"),
+            [Action::Sync { spool: SPOOL, epoch: EPOCH }],
+        );
+
+        finish_sync(&mut manager, SPOOL);
+
+        assert_eq!(
+            manager.due_actions(EPOCH).expect("due actions"),
+            [Action::Scan { spool: SPOOL, epoch: EPOCH }],
+        );
+    }
+
+    // a scan's end settles each carried row from that stored spool's own queues
+    #[tokio::test]
+    async fn scan_settles_rows() {
+        let ctx = test_context().await;
+        for spool in [SPOOL, absorbed_spool()] {
+            ctx.store
+                .set_spool_state(spool, SpoolState::new(SpoolStatus::Scan, EPOCH))
+                .expect("set spool state");
+        }
+        ctx.store
+            .add_pending_repair(absorbed_spool(), Address::from([1; 32]))
+            .expect("add pending repair");
+
+        let mut manager =
+            SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
+
+        manager
+            .handle_done(
+                TaskDone::Done(
+                    Action::Scan { spool: SPOOL, epoch: EPOCH },
+                    TaskResult::Scan(ScanResult::Done { gaps: 1 }),
+                ),
+                EPOCH,
+            )
+            .expect("handle done");
+
+        let own = ctx.store.get_spool_state(SPOOL).expect("get spool state").expect("spool state");
+        let absorbed = ctx
+            .store
+            .get_spool_state(absorbed_spool())
+            .expect("get spool state")
+            .expect("spool state");
+        assert_eq!(own.status, SpoolStatus::Active);
+        assert_eq!(absorbed.status, SpoolStatus::Repair);
+    }
+
+    // a live spool's sync and a repair on the stored spool of the same number run as two tasks
+    #[tokio::test]
+    async fn same_number() {
+        let ctx = test_context().await;
+        ctx.store
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EPOCH))
+            .expect("set spool state");
+        ctx.store
+            .add_pending_repair(SPOOL, Address::from([1; 32]))
+            .expect("add pending repair");
+        ctx.store
+            .set_spool_state(absorbed_spool(), SpoolState::new(SpoolStatus::Sync, EPOCH))
+            .expect("set spool state");
+
+        let mut manager =
+            SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
+        manager.try_spawn(EPOCH).expect("try spawn");
+
+        assert!(manager.is_running(TaskSpool::Live(SPOOL)));
+        assert!(manager.is_running(TaskSpool::Virtual(SPOOL)));
     }
 
     // a new epoch drops the list read in the old one
@@ -1227,7 +1377,7 @@ mod tests {
         assert_eq!(second.status, SpoolStatus::Active);
         assert_eq!(second.epoch, next_epoch);
         assert_eq!(second.prev_owner, Some(ctx.node_address()));
-        assert_eq!(manager.next_action(next_epoch).expect("next action"), None);
+        assert!(manager.due_actions(next_epoch).expect("due actions").is_empty());
     }
 
     // a queued repair puts the kept spool straight into Repair

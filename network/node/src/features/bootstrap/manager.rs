@@ -159,6 +159,14 @@ where
             let start_slot = cursor.next();
             let start_epoch = epoch_for_slot(context, checkpoint.state.epoch(), start_slot).await?;
 
+            // A cursor left by a snapshot stops one slot short of the
+            // snapshot's last block, which this replay then reads again.
+            let snapshot_epoch = context
+                .store
+                .get_bootstrap_target_epoch()
+                .map_err(|error| NodeError::Store(format!("get_bootstrap_target_epoch: {error}")))?;
+            replay.set_snapshot_epoch(snapshot_epoch);
+
             let parent = execute_block_phase(
                 context,
                 &mut replay,
@@ -220,12 +228,15 @@ where
     }
 
     let parent = match last_snapshot {
+        // The snapshot's last block can also hold the advance and the next
+        // epoch's first events. The replay starts on that block, and the
+        // engine leaves out what the snapshot already applied.
         Some((epoch, end_slot)) => {
             execute_block_phase(
                 context,
                 &mut replay,
                 BootstrapReplayPhase::BlockReplay {
-                    start_slot: end_slot.next(),
+                    start_slot: end_slot,
                     end_slot: checkpoint.slot,
                     start_epoch: epoch,
                 },
@@ -505,7 +516,9 @@ where
             .rpc
             .get_epoch_with_commitment(epoch_number, CommitmentLevel::Finalized)
             .await?;
-        if epoch.start_slot <= slot {
+        // The block at an epoch's start slot opens in the epoch before it,
+        // since the advance sits inside that block.
+        if epoch.start_slot < slot {
             selected = epoch_number;
         } else {
             break;
@@ -526,15 +539,20 @@ where
     Blockchain: Rpc,
 {
 
-    context
-        .store
-        .set_bootstrap_target_epoch(epoch)
-        .map_err(|error| NodeError::Store(format!("set_bootstrap_target_epoch: {error}")))?;
+    // The block at `end_slot` is replayed after the snapshot, so the cursor
+    // stops one slot short of it. The cursor goes first: a restart between
+    // the two writes then resumes at the newest block the chain still serves.
+    if let Some(applied) = end_slot.checked_prev() {
+        context
+            .store
+            .set_sync_cursor(applied, None)
+            .map_err(|error| NodeError::Store(format!("set_sync_cursor: {error}")))?;
+    }
 
     context
         .store
-        .set_sync_cursor(end_slot, None)
-        .map_err(|error| NodeError::Store(format!("set_sync_cursor: {error}")))
+        .set_bootstrap_target_epoch(epoch)
+        .map_err(|error| NodeError::Store(format!("set_bootstrap_target_epoch: {error}")))
 
 }
 
@@ -746,6 +764,7 @@ mod tests {
             context.store.get_bootstrap_target_epoch().unwrap(),
             Some(epoch)
         );
-        assert_eq!(context.store.get_sync_cursor().unwrap(), Some(end_slot));
+        // the snapshot's last block is still to be replayed
+        assert_eq!(context.store.get_sync_cursor().unwrap(), end_slot.checked_prev());
     }
 }

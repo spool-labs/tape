@@ -1,7 +1,7 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::types::{BasisPoints, EpochNumber};
+use tape_core::types::{BasisPoints, EpochNumber, SlotNumber};
 use tape_e2e_simnet::{
     log::append_log, NodeRuntimeMode, SimnetBuilder, SimnetScenario, TAPENET_GROUP_SIZE,
     run_simnet_test,
@@ -189,6 +189,30 @@ async fn late_join_inner() {
                 format!("failed to compare replay stores: {diagnostic_error:#}")
             });
         panic!("late node healthy: {error:#}\n{diagnostics}");
+    }
+
+    // Health turns good when bootstrap ends, with the blocks since the late
+    // node's checkpoint still to apply. Its store is comparable once it has
+    // applied through the tip.
+    let late_store = harness
+        .node(late_node)
+        .expect("late node")
+        .context()
+        .store
+        .clone();
+    let catch_up = Instant::now();
+    loop {
+        let tip = harness.chain().current_slot().await.expect("current slot");
+        let applied = late_store.get_sync_cursor().expect("late node sync cursor");
+        if applied >= Some(SlotNumber(tip)) {
+            break;
+        }
+
+        assert!(
+            catch_up.elapsed() < health_timeout,
+            "late node applied through {applied:?} with the tip at {tip}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     let replay_store_diff = harness

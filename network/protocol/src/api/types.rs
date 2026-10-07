@@ -422,6 +422,7 @@ fn read_hash(body: &Bytes, at: &mut usize) -> Result<Hash, String> {
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncSlicesRequest {
     pub spool_index: SpoolIndex,
+    pub live_groups: u64,
     pub cursor: Option<Vec<u8>>,
     pub limit: u32,
 }
@@ -823,6 +824,7 @@ mod tests {
     fn sync_slices_request() {
         let req = SyncSlicesRequest {
             spool_index: SpoolIndex(42),
+            live_groups: 4,
             cursor: Some(vec![0xAA; 32]),
             limit: 100,
         };

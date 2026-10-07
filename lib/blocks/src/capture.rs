@@ -34,6 +34,7 @@ pub struct CaptureOutput {
     pub next_epoch: EpochNumber,
     pub events: Vec<CapturedEvent>,
     pub raw_tracks: Vec<RawTrack>,
+    pub skipped: usize,
 }
 
 
@@ -41,8 +42,13 @@ pub struct CaptureOutput {
 ///
 /// A coded track's commitment is checked under `profile`, the network's
 /// erasure code.
+///
+/// A store filled from snapshots already holds every event up to
+/// `snapshot_epoch`, so those are left out. The last block of that epoch can
+/// also hold the advance and the next epoch's first events, which are kept.
 pub fn capture_block(
     initial_epoch: EpochNumber,
+    snapshot_epoch: Option<EpochNumber>,
     slot: SlotNumber,
     instructions: &[ParsedInstruction],
     tx_ids: &[Txid],
@@ -51,6 +57,7 @@ pub fn capture_block(
     let mut current_epoch = initial_epoch;
     let mut events = Vec::new();
     let mut raw_tracks = Vec::new();
+    let mut skipped = 0usize;
 
     for (index, instruction) in instructions.iter().enumerate() {
         let tx_id = *tx_ids.get(index).ok_or_else(|| {
@@ -64,6 +71,10 @@ pub fn capture_block(
         else {
             continue;
         };
+        if snapshot_epoch.is_some_and(|applied| captured.event.epoch <= applied) {
+            skipped += 1;
+            continue;
+        }
         if let Some(raw_track) = captured.raw_track {
             raw_tracks.push(raw_track);
         }
@@ -74,6 +85,7 @@ pub fn capture_block(
         next_epoch: current_epoch,
         events,
         raw_tracks,
+        skipped,
     })
 }
 
@@ -853,7 +865,7 @@ mod tests {
         instructions: Vec<ParsedInstruction>,
     ) -> CaptureOutput {
         let tx_ids = vec![Txid::default(); instructions.len()];
-        capture_block(epoch, slot, &instructions, &tx_ids, TAPENET_PROFILE).unwrap()
+        capture_block(epoch, None, slot, &instructions, &tx_ids, TAPENET_PROFILE).unwrap()
     }
 
     #[test]
@@ -910,6 +922,41 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // a block replayed after its epoch's snapshot keeps the advance and what follows it
+    #[test]
+    fn skips_snapshot_epoch() {
+        let tape = Address::new_unique();
+        let instructions = vec![
+            raw_track_write_instruction(tape, EpochNumber(4)),
+            advance_epoch_instruction(EpochNumber(4), EpochNumber(5)),
+            reserve_tape_instruction(tape, EpochNumber(5), EpochNumber(10)),
+        ];
+        let tx_ids = vec![Txid::default(); instructions.len()];
+
+        let captured = capture_block(
+            EpochNumber(4),
+            Some(EpochNumber(4)),
+            SlotNumber(100),
+            &instructions,
+            &tx_ids,
+            TAPENET_PROFILE,
+        )
+        .unwrap();
+
+        assert_eq!(captured.next_epoch, EpochNumber(5));
+        assert_eq!(captured.skipped, 1);
+        assert_eq!(captured.events.len(), 2);
+        assert!(matches!(
+            captured.events[0].record.event,
+            ReplayableEvent::AdvanceEpoch { .. }
+        ));
+        assert!(matches!(
+            captured.events[1].record.event,
+            ReplayableEvent::ReserveTape { .. }
+        ));
+        assert!(captured.raw_tracks.is_empty());
     }
 
     #[test]

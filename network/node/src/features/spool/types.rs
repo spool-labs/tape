@@ -9,11 +9,16 @@ pub enum Action {
     Recover { spool: SpoolIndex, epoch: EpochNumber },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskSpool {
+    Live(SpoolIndex),
+    Virtual(SpoolIndex),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskDone {
     Done(Action, TaskResult),
     Cancelled(Action, TaskResult),
-    Rejected(Action, TaskResult),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +63,13 @@ impl Action {
         }
     }
 
+    pub fn task_spool(self) -> TaskSpool {
+        match self {
+            Action::Sync { spool, .. } | Action::Scan { spool, .. } => TaskSpool::Live(spool),
+            Action::Repair { spool, .. } | Action::Recover { spool, .. } => TaskSpool::Virtual(spool),
+        }
+    }
+
     pub fn epoch(self) -> EpochNumber {
         match self {
             Action::Sync { epoch, .. }
@@ -68,12 +80,18 @@ impl Action {
     }
 }
 
+impl TaskSpool {
+    pub fn index(self) -> SpoolIndex {
+        match self {
+            TaskSpool::Live(spool) | TaskSpool::Virtual(spool) => spool,
+        }
+    }
+}
+
 impl TaskDone {
     pub fn action(self) -> Action {
         match self {
-            TaskDone::Done(action, _)
-            | TaskDone::Cancelled(action, _)
-            | TaskDone::Rejected(action, _) => action,
+            TaskDone::Done(action, _) | TaskDone::Cancelled(action, _) => action,
         }
     }
 }

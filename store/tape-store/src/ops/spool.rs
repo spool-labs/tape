@@ -5,9 +5,7 @@ use tape_core::types::{SlotNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_store_api::{Column, Store};
 
-use crate::columns::{
-    SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol, SpoolSyncCursorCol,
-};
+use crate::columns::{SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol};
 use crate::error::{Result, TapeStoreError};
 use crate::ops::MetaOps;
 use crate::types::{SliceKey, SpoolIndexKey};
@@ -47,11 +45,6 @@ pub trait SpoolOps {
 
     // Iterate pending recoveries for a spool (up to `limit`)
     fn iter_pending_recoveries( &self, spool_id: SpoolIndex, limit: usize,) -> Result<Vec<Address>>;
-
-    // Sync progress
-    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Vec<u8>>>;
-    fn set_spool_sync_cursor(&self, spool_id: SpoolIndex, mark: &[u8]) -> Result<()>;
-    fn remove_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<()>;
 
     // Bulk clear all pending repairs for a spool
     fn clear_all_pending_repairs(&self, spool_id: SpoolIndex) -> Result<()>;
@@ -157,23 +150,6 @@ impl<S: Store> SpoolOps for TapeStore<S> {
 
     fn clear_all_pending_recoveries(&self, spool_id: SpoolIndex) -> Result<()> {
         clear_all_pending_by_spool(self, SpoolPendingRecoveryCol::CF_NAME, spool_id)
-    }
-
-    fn get_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<Option<Vec<u8>>> {
-        let key = SpoolIndexKey::new(spool_id);
-        Ok(self.get::<SpoolSyncCursorCol>(&key)?)
-    }
-
-    fn set_spool_sync_cursor(&self, spool_id: SpoolIndex, mark: &[u8]) -> Result<()> {
-        let key = SpoolIndexKey::new(spool_id);
-        self.put::<SpoolSyncCursorCol>(&key, &mark.to_vec())?;
-        Ok(())
-    }
-
-    fn remove_spool_sync_cursor(&self, spool_id: SpoolIndex) -> Result<()> {
-        let key = SpoolIndexKey::new(spool_id);
-        self.delete::<SpoolSyncCursorCol>(&key)?;
-        Ok(())
     }
 
 }
@@ -439,23 +415,5 @@ mod tests {
 
         assert!(store.iter_pending_repairs(SpoolIndex(42), 100).unwrap().is_empty());
         assert_eq!(store.iter_pending_repairs(SpoolIndex(99), 100).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn test_sync_progress_roundtrip() {
-        let store = test_store();
-        let spool_id = SpoolIndex(42);
-        let track = Address::new_unique();
-
-        assert!(store.get_spool_sync_cursor(spool_id).unwrap().is_none());
-
-        store.set_spool_sync_cursor(spool_id, &track.to_bytes()).unwrap();
-        assert_eq!(
-            store.get_spool_sync_cursor(spool_id).unwrap(),
-            Some(track.to_bytes().to_vec()),
-        );
-
-        store.remove_spool_sync_cursor(spool_id).unwrap();
-        assert!(store.get_spool_sync_cursor(spool_id).unwrap().is_none());
     }
 }

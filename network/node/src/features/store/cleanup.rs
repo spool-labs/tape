@@ -212,10 +212,6 @@ pub fn purge_spool_local<Db: Store>(
         .clear_all_pending_recoveries(spool_id)
         .map_err(store_error)?;
 
-    store
-        .remove_spool_sync_cursor(spool_id)
-        .map_err(store_error)?;
-
     store.remove_spool_state(spool_id).map_err(store_error)
 }
 

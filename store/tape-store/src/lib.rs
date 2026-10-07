@@ -27,7 +27,6 @@
 //! - `spool_status`: Spool status
 //! - `spool_pending_repair`: Pending repair queue
 //! - `spool_pending_recovery`: Pending recovery queue
-//! - `spool_sync_cursor`: Sync cursor
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Erasure-coded slice data

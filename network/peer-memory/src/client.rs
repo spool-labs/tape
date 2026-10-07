@@ -116,7 +116,7 @@ impl Api for MemoryApi {
     }
 
     async fn sync_slices(&self, node: Address, req: &SyncSlicesReq) -> Result<SyncSlicesRes, ApiError> {
-        dispatch!(self, node, SyncSlicesReq { spool_index: req.spool_index, cursor: req.cursor.clone(), limit: req.limit }, SyncSlices)
+        dispatch!(self, node, SyncSlicesReq { spool_index: req.spool_index, live_groups: req.live_groups, cursor: req.cursor.clone(), limit: req.limit }, SyncSlices)
     }
 
     async fn repair(&self, node: Address, req: &RepairReq) -> Result<RepairRes, ApiError> {
