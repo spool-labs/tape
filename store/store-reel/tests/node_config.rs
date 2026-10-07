@@ -77,8 +77,7 @@ fn probe_follows() {
     }
 }
 
-// a small reservation moves all four knobs, since three of them alone still
-// leave a gibibyte on disk before the first slice
+// a small volume moves both knobs: smaller segments, on one tail
 #[test]
 fn small_reservation() {
     let fleet = tape_store_reel::node_config(tape_store_reel::NodeStoreOptions::default());
@@ -87,13 +86,10 @@ fn small_reservation() {
         ..tape_store_reel::NodeStoreOptions::default()
     });
 
-    assert_eq!(fleet.preallocate, reel::Preallocate::Full);
-    assert_eq!(small.preallocate, reel::Preallocate::Chunk);
     assert_eq!(small.active_tails.resolve_tails(), 1);
     assert!(small.segment_bytes.to_bytes() < fleet.segment_bytes.to_bytes());
-    assert!(small.alloc_chunk.to_bytes() < fleet.alloc_chunk.to_bytes());
 
-    // What the volume claims before it holds anything, which is the whole point.
+    // What the open segments span across every tail before the first seal.
     let idle = |config: &reel::ReelConfig| {
         config.segment_bytes.to_bytes() * config.tail_count() as u64
     };
@@ -126,15 +122,14 @@ fn small_claims_little() {
             let meta = entry.metadata().expect("metadata");
             match meta.is_dir() {
                 true => stack.push(entry.path()),
-                // Blocks rather than length: preallocation is the reservation,
-                // and a sparse extend would show a length it never took.
+                // Blocks: a tail zeroes a window ahead of its writes, and the
+                // rest of the segment is sparse.
                 false => claimed += meta.blocks() * BLOCK_BYTES,
             }
         }
     }
 
-    // One tail reserving one chunk, against the gibibyte per tail the shipped
-    // shape would have claimed here.
+    // One tail's window, against a window per tail under the shipped shape.
     assert!(
         claimed < 64 * 1024 * 1024,
         "a fresh small volume claimed {claimed} bytes"
