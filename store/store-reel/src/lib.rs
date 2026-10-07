@@ -22,7 +22,7 @@ mod split;
 use std::path::Path;
 
 use reel::{
-    ByteCount, CompactRate, IoBackend, PointReads, RecordKey, ReelConfig,
+    ByteCount, CompactRate, IoBackend, RecordKey, ReelConfig,
     ReelStore as EngineStore, ServingBackend, SyncPolicy, ThreadBudget, MAP_EVERYTHING,
 };
 use reel_core::Store as EngineStoreTrait;
@@ -270,7 +270,6 @@ pub fn node_config(options: NodeStoreOptions) -> ReelConfig {
         // and a dead process where the door returns an error the node can act
         // on. The mapped path stays a bench and tooling knob.
         map_above: None,
-        point_reads: probe_for(options.backend),
         io_backend: options.backend,
         ..ReelConfig::default()
     };
@@ -291,18 +290,6 @@ pub fn node_config(options: NodeStoreOptions) -> ReelConfig {
         config.segment_bytes = ByteCount::from_bytes(options.segment_bytes);
     }
     config
-}
-
-/// Whether to ask the page cache before queueing a read, which only a ring wants
-///
-/// A ring read is a submit and a wait, and the probe skips that round trip. A
-/// posix read is answered inline already, so there the probe is one wasted
-/// syscall per read. Coupled here so the pairing is not something to re-learn.
-fn probe_for(backend: IoBackend) -> PointReads {
-    match backend {
-        IoBackend::Uring => PointReads::Probed,
-        IoBackend::Posix | IoBackend::UringDirect => PointReads::Queued,
-    }
 }
 
 /// The store a node runs, every tape family on one reel volume
@@ -387,9 +374,6 @@ pub fn bench_config(segment_bytes: u64) -> ReelConfig {
         // The mapped read path is gated on this and the default forbids it, so
         // every warm read pays a door round trip it does not need.
         map_above: MAP_EVERYTHING,
-        // Ask the page cache before queueing a read: a cold probe costs one
-        // nowait syscall against a seek, and a warm one skips the door.
-        point_reads: PointReads::Probed,
         ..ReelConfig::default()
     }
 }

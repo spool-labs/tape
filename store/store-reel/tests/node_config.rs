@@ -26,7 +26,6 @@ fn node_opens() {
     let volume = store.inner().inner();
     let config = volume.engine().config();
     assert!(config.map_above.is_none());
-    assert_eq!(config.point_reads, reel::PointReads::Queued);
     assert_ne!(
         config.sync,
         reel::SyncPolicy::Never,
@@ -44,37 +43,15 @@ fn shipped_defaults() {
         reel::SyncPolicy::Bytes(reel::ByteCount::from_bytes(16 * 1024 * 1024)),
     );
 
-    // A ring wherever one can exist, and the probe follows it.
+    // A ring wherever one can exist.
     #[cfg(target_os = "linux")]
-    {
-        assert_eq!(config.io_backend, reel::IoBackend::Uring);
-        assert_eq!(config.point_reads, reel::PointReads::Probed);
-    }
+    assert_eq!(config.io_backend, reel::IoBackend::Uring);
     #[cfg(not(target_os = "linux"))]
-    {
-        assert_eq!(config.io_backend, reel::IoBackend::Posix);
-        assert_eq!(config.point_reads, reel::PointReads::Queued);
-    }
+    assert_eq!(config.io_backend, reel::IoBackend::Posix);
 
     // A bad sector under a mapping is SIGBUS rather than an error the node can
     // act on.
     assert!(config.map_above.is_none());
-}
-
-// the probe is coupled to the backend, since only a ring has overhead to undo
-#[test]
-fn probe_follows() {
-    for (backend, wanted) in [
-        (reel::IoBackend::Posix, reel::PointReads::Queued),
-        (reel::IoBackend::Uring, reel::PointReads::Probed),
-        (reel::IoBackend::UringDirect, reel::PointReads::Queued),
-    ] {
-        let config = tape_store_reel::node_config(tape_store_reel::NodeStoreOptions {
-            backend,
-            ..tape_store_reel::NodeStoreOptions::default()
-        });
-        assert_eq!(config.point_reads, wanted, "{backend:?}");
-    }
 }
 
 // a small volume moves both knobs: smaller segments, on one tail
@@ -98,7 +75,6 @@ fn small_reservation() {
     // Every other shipped knob survives the smaller reservation.
     assert_eq!(small.sync, fleet.sync);
     assert_eq!(small.io_backend, fleet.io_backend);
-    assert_eq!(small.point_reads, fleet.point_reads);
     assert_eq!(small.map_above, fleet.map_above);
 }
 
