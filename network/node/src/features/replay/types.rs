@@ -1,5 +1,5 @@
 use tape_core::snapshot::replay::ReplayRecord;
-use tape_core::types::SlotNumber;
+use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::Hash;
 
 pub use tape_blocks::RawTrack;
@@ -11,4 +11,5 @@ pub struct ReplayBatch {
     pub block_time: Option<i64>,
     pub records: Vec<ReplayRecord>,
     pub raw_tracks: Vec<RawTrack>,
+    pub advanced_epoch: Option<EpochNumber>,
 }

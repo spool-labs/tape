@@ -36,6 +36,7 @@ use crate::core::error::NodeError;
 use crate::core::ingest::{IngestBus, IngestState};
 use crate::core::metrics::NodeMetrics;
 use crate::core::state::StateBus;
+use crate::core::store_epoch::StoreEpoch;
 use crate::core::write_signatures::WriteSignatures;
 use crate::features::blacklist::BlacklistCache;
 use crate::features::block::pending_tracks::PendingTracks;
@@ -63,6 +64,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub store: Arc<TapeStore<Db>>,
     pub rpc: Arc<RpcClient<Blockchain>>,
     pub state: StateBus,
+    pub store_epoch: StoreEpoch,
     pub ingest: IngestBus,
     pub bootstrap: BootstrapBus,
     pub pending: Arc<PendingTracks>,
@@ -557,6 +559,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             store: Arc::new(self.store),
             rpc: Arc::new(self.rpc),
             state: StateBus::default(),
+            store_epoch: StoreEpoch::default(),
             ingest: IngestBus::default(),
             bootstrap: BootstrapBus::default(),
             pending: Arc::new(PendingTracks::new()),

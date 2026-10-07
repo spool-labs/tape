@@ -50,8 +50,7 @@ pub async fn sweep_epoch<Db: Store>(
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
 
-    stats += sweep_expired_tapes(store, config, current_epoch, epoch_start_slot, at_tip, profile)
-        .await?;
+    stats += sweep_expired_tapes(store, config, current_epoch, epoch_start_slot, profile).await?;
     stats +=
         sweep_uncertified_tracks(store, config, current_epoch, owned_spools, at_tip, profile)
             .await?;
@@ -72,22 +71,16 @@ pub async fn sweep_epoch<Db: Store>(
     Ok(stats)
 }
 
-/// Delete every tape expired as of `current_epoch`, with its tracks; a no-op behind the tip
+/// Delete every tape expired as of `current_epoch`, with its tracks. The store
+/// has to have reached that epoch, or an extension may still be on its way.
 pub async fn sweep_expired_tapes<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
     current_epoch: EpochNumber,
     epoch_start_slot: SlotNumber,
-    at_tip: bool,
     profile: ErasureCode,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
-
-    // Local expiry is only trustworthy when our catalog is current. A node
-    // that is behind may not have applied an ExtendTape event yet.
-    if !at_tip {
-        return Ok(stats);
-    }
 
     let tapes = store.iter_all_tapes().map_err(store_error)?;
     for (index, (tape, info)) in tapes.into_iter().enumerate() {
@@ -545,41 +538,6 @@ mod tests {
         assert!(store.get_track(track).unwrap().is_none());
         assert!(store.get_object_info(track).unwrap().is_none());
         assert!(store.get_slice(spool_id, track).unwrap().is_none());
-    }
-
-    // expired tape survives a sweep behind the tip and dies once caught up
-    #[tokio::test]
-    async fn expiry_needs_tip() {
-        let store = test_store();
-        let config = test_config();
-        let tape = Address::new_unique();
-
-        store
-            .put_tape(
-                tape,
-                TapeInfo {
-                    id: TapeNumber(1),
-                    flags: 0,
-                    end_epoch: EpochNumber(2),
-                    next_track_number: TrackNumber(0),
-                    authority: Address::default(),
-                    delegate: Address::default(),
-                    share_nonce: Hash::default(),
-                },
-            )
-            .expect("put tape");
-
-        sweep_epoch(&store, &config, EpochNumber(3), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), false, TAPENET_PROFILE)
-            .await
-            .expect("sweep behind tip");
-
-        assert!(store.get_tape(tape).expect("get tape").is_some());
-
-        sweep_epoch(&store, &config, EpochNumber(3), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
-            .await
-            .expect("sweep at tip");
-
-        assert!(store.get_tape(tape).expect("get tape").is_none());
     }
 
     #[tokio::test]

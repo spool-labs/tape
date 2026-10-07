@@ -96,6 +96,13 @@ where
     let replay_ms = replay_began.elapsed().as_millis();
     debug!(node_id = context.node_id().0, replay_ms, "bootstrap: replay done");
 
+    // The replay brought the store to the checkpoint the state was read at, so
+    // the store has reached that state's epoch. A start slot set by hand skips
+    // the replay, and the store's epoch stays unknown until it applies an advance.
+    if config.solana.start_slot.is_none() {
+        context.store_epoch.reach(checkpoint.state.epoch());
+    }
+
     let validate_began = std::time::Instant::now();
     validate::validate_bootstrap_store(context.store.as_ref())?;
     let validate_ms = validate_began.elapsed().as_millis();
@@ -576,6 +583,8 @@ mod tests {
             .expect("bootstrap returned ok");
 
         assert_eq!(start, LiveStart { slot: SlotNumber(42), parent: None });
+        // Nothing was replayed, so the store's epoch stays unknown.
+        assert_eq!(context.store_epoch.current(), None);
     }
 
     #[tokio::test]
@@ -610,6 +619,8 @@ mod tests {
         assert_eq!(context.store.get_sync_cursor().unwrap(), Some(checkpoint));
         // Live ingest chains from whatever the replay applied last, if anything.
         assert_eq!(start.parent, context.store.get_sync_parent().unwrap());
+        // The replayed store has reached the epoch the state was read in.
+        assert_eq!(context.store_epoch.current(), Some(FIRST_LIVE_EPOCH));
     }
 
     // a fresh boot that replayed a block hands live ingest that block to chain from

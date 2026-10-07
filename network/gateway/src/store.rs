@@ -80,6 +80,9 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
 
                     let profile = self.context.params().profile;
                     persist_batch(self.context.store.as_ref(), &batch, profile)?;
+                    if let Some(epoch) = batch.advanced_epoch {
+                        self.context.store_epoch.reach(epoch);
+                    }
                     self.follow.apply_block(&batch, &self.cancel).await?;
 
                     self.context.pending.drop_slot(batch.slot);
@@ -147,6 +150,7 @@ mod tests {
                     data: vec![4, 5, 6],
                 },
             ],
+            advanced_epoch: None,
         };
 
         persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");

@@ -59,6 +59,9 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
                 .map_err(store_error)?;
         }
 
+        // The epoch only moves on a block that holds the advance.
+        let advanced_epoch =
+            (captured.next_epoch != self.current_epoch).then_some(captured.next_epoch);
         self.current_epoch = captured.next_epoch;
 
         let batch = ReplayBatch {
@@ -67,6 +70,7 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
             block_time: block.block_time,
             records: captured.events.into_iter().map(|entry| entry.record).collect(),
             raw_tracks: captured.raw_tracks,
+            advanced_epoch,
         };
         let event_count = batch.records.len();
 
@@ -123,4 +127,55 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
 
 fn store_error(error: impl std::fmt::Display) -> NodeError {
     NodeError::Store(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use bytemuck::Zeroable;
+    use tape_api::event::EpochAdvanced;
+    use tape_blocks::ParsedInstruction;
+    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::types::SlotNumber;
+    use tape_crypto::tx::Txid;
+    use tape_crypto::Hash;
+    use tape_store_memory::MemoryStore;
+
+    use super::*;
+
+    fn block(slot: u64, instructions: Vec<ParsedInstruction>) -> ParsedBlock {
+        ParsedBlock {
+            slot: SlotNumber(slot),
+            parent_slot: SlotNumber(slot - 1),
+            blockhash: Hash::default(),
+            previous_blockhash: Hash::default(),
+            block_time: None,
+            instruction_tx_ids: vec![Txid::default(); instructions.len()],
+            instructions,
+        }
+    }
+
+    // only the block that holds the advance carries the new epoch
+    #[test]
+    fn stamps_the_advance_block() {
+        let store = TapeStore::new(MemoryStore::new());
+        let mut engine = ReplayEngine::new(&store, EpochNumber(4), TAPENET_PROFILE);
+
+        let (quiet, _) = engine.capture_and_journal(&block(10, Vec::new())).expect("capture");
+        assert_eq!(quiet.advanced_epoch, None);
+
+        let advance = ParsedInstruction::AdvanceEpoch {
+            event: EpochAdvanced {
+                old_epoch: EpochNumber(4),
+                new_epoch: EpochNumber(5),
+                ..Zeroable::zeroed()
+            },
+        };
+        let (turned, _) = engine
+            .capture_and_journal(&block(11, vec![advance]))
+            .expect("capture");
+        assert_eq!(turned.advanced_epoch, Some(EpochNumber(5)));
+
+        let (after, _) = engine.capture_and_journal(&block(12, Vec::new())).expect("capture");
+        assert_eq!(after.advanced_epoch, None);
+    }
 }

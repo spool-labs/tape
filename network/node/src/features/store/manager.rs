@@ -138,6 +138,9 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> StoreManager<Db, Cluste
 
                     let profile = self.context.params().profile;
                     persist_batch(self.context.store.as_ref(), &batch, profile)?;
+                    if let Some(epoch) = batch.advanced_epoch {
+                        self.context.store_epoch.reach(epoch);
+                    }
                     self.feed_atlas(&batch);
 
                     self.context.pending
@@ -283,6 +286,7 @@ mod tests {
             block_time: None,
             records: Vec::new(),
             raw_tracks: Vec::new(),
+            advanced_epoch: None,
         };
 
         persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");
@@ -314,6 +318,7 @@ mod tests {
                 object: None,
             }))],
             raw_tracks: Vec::new(),
+            advanced_epoch: None,
         };
 
         persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");
@@ -344,6 +349,7 @@ mod tests {
                 group,
                 data: raw.clone(),
             }],
+            advanced_epoch: None,
         };
 
         persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");
@@ -367,6 +373,7 @@ mod tests {
                 group,
                 data: vec![9, 8, 7],
             }],
+            advanced_epoch: None,
         };
 
         persist_batch(&store, &batch, TAPENET_PROFILE).expect("persist batch");

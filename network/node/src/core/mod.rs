@@ -11,6 +11,7 @@ pub mod restarts;
 pub mod signals;
 pub mod startup;
 pub mod state;
+pub mod store_epoch;
 pub mod types;
 pub mod write_signatures;
 

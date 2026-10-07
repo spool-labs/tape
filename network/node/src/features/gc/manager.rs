@@ -56,7 +56,8 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, 
         }
 
         let mut state_rx = self.context.subscribe_state();
-        let mut observed_epoch = state_rx.borrow().epoch();
+        let mut store_rx = self.context.store_epoch.subscribe();
+        let mut observed_epoch = reached_epoch(&self.context);
 
         let mut ticker = interval(Duration::from_secs(self.config.interval_secs));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -66,30 +67,59 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GcManager<Db, Cluster, 
             select! {
                 _ = self.cancel.cancelled() => return Ok(()),
                 _ = ticker.tick() => {
-                    let current_epoch = self.context.state().epoch();
-                    run_tick(&self.context, &self.config, current_epoch).await?;
-                    observed_epoch = current_epoch;
+                    let reached = reached_epoch(&self.context);
+                    run_tick(&self.context, &self.config, reached).await?;
+                    observed_epoch = reached;
                 }
                 changed = state_rx.changed() => {
                     if changed.is_err() {
                         return Ok(());
                     }
 
-                    let current_epoch = state_rx.borrow().epoch();
-                    if current_epoch > observed_epoch {
-                        catch_up_epochs(&self.context, &self.config, current_epoch).await?;
-                        observed_epoch = current_epoch;
+                    observed_epoch = self.sweep_new_epochs(observed_epoch).await?;
+                }
+                changed = store_rx.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
                     }
+
+                    observed_epoch = self.sweep_new_epochs(observed_epoch).await?;
                 }
             }
         }
     }
+
+    /// Sweep the epochs reached since `observed`, and return the latest one reached
+    async fn sweep_new_epochs(
+        &self,
+        observed: Option<EpochNumber>,
+    ) -> Result<Option<EpochNumber>, NodeError> {
+        let reached = reached_epoch(&self.context);
+        let Some(epoch) = reached.filter(|epoch| Some(*epoch) > observed) else {
+            return Ok(observed);
+        };
+
+        catch_up_epochs(&self.context, &self.config, epoch).await?;
+        Ok(reached)
+    }
+}
+
+/// The latest epoch the cleanup may sweep, which both the store and the
+/// protocol state have reached. Once the store has applied the block that
+/// begins an epoch it holds every event before it, and an expired tape cannot
+/// be extended, so nothing later can save a tape that ends by then. Spool
+/// ownership comes from the state, so the state has to be there too.
+pub fn reached_epoch<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> Option<EpochNumber> {
+    let store_epoch = context.store_epoch.current()?;
+    Some(store_epoch.min(context.state().epoch()))
 }
 
 async fn run_tick<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     config: &GcConfig,
-    current_epoch: EpochNumber,
+    reached: Option<EpochNumber>,
 ) -> Result<(), NodeError> {
     // every tick, since a deleted track only has to outlive the rounds that can still ask for it
     let slot = SlotNumber(context.ingest.progress().last_dispatched_slot());
@@ -104,7 +134,10 @@ async fn run_tick<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     }
 
     // Only epochs the markers still owe. A completed epoch is never swept twice.
-    catch_up_epochs(context, config, current_epoch).await
+    match reached {
+        Some(epoch) => catch_up_epochs(context, config, epoch).await,
+        None => Ok(()),
+    }
 }
 
 /// Run any epoch sweeps still owed according to the persisted GC progress markers.
@@ -133,9 +166,9 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<bool, NodeError> {
     let store = context.store.as_ref();
     let at_tip = at_durable_tip(context.as_ref())?;
-    // Behind the tip every expiry and certify check reads a store the chain has
-    // outrun, so the sweep would scan for nothing; the epoch stays owed and the
-    // next tick runs it once the store catches up.
+    // Behind the tip a certify or a registration the chain holds may be missing
+    // from the store, so the track and slice sweeps would act on stale rows; the
+    // epoch stays owed and the next tick runs it once the store catches up.
     if !at_tip {
         return Ok(false);
     }
@@ -285,15 +318,26 @@ fn prune_handed_off_records<Db: Store, Cluster: Api, Blockchain: Rpc>(
 mod tests {
     use std::time::Duration;
 
+    use bytemuck::Zeroable;
     use tape_store_memory::MemoryStore;
     use tape_core::challenge::PeerRecord;
-    use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
-    use tape_crypto::Address;
-    use tape_store::{TapeStore, ops::{ChallengeOps, MetaOps}};
+    use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent};
+    use tape_core::system::NodePreferences;
+    use tape_core::types::coin::TAPE;
+    use tape_core::types::{
+        EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
+    };
+    use tape_crypto::tx::Txid;
+    use tape_crypto::{Address, Hash};
+    use tape_store::types::TapeInfo;
+    use tape_store::{TapeStore, ops::{ChallengeOps, MetaOps, TapeOps}};
+    use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use super::{GcManager, next_pending_epoch, run_epoch_sweep, run_tick};
+    use super::{GcManager, next_pending_epoch, reached_epoch, run_epoch_sweep, run_tick};
     use crate::config::store::GcConfig;
+    use crate::features::replay::types::ReplayBatch;
+    use crate::features::store::manager::StoreManager;
     use crate::harness::{NodeHarness, TestContext};
 
     fn test_store() -> TapeStore<MemoryStore> {
@@ -425,7 +469,7 @@ mod tests {
             .put_peer_record(peer, spool, PeerRecord::default())
             .expect("put peer record");
 
-        run_tick(&context, &config, epoch).await.expect("first tick");
+        run_tick(&context, &config, Some(epoch)).await.expect("first tick");
 
         assert_eq!(context.store.get_gc_completed_epoch().expect("completed"), Some(epoch));
         assert_eq!(next_pending_epoch(&context.store, epoch).expect("pending"), None);
@@ -436,7 +480,7 @@ mod tests {
             .put_peer_record(peer, spool, PeerRecord::default())
             .expect("put peer record again");
 
-        run_tick(&context, &config, epoch).await.expect("second tick");
+        run_tick(&context, &config, Some(epoch)).await.expect("second tick");
 
         assert_eq!(context.store.iter_peer_records().expect("records").len(), 1);
     }
@@ -458,5 +502,123 @@ mod tests {
 
         assert_eq!(context.store.get_gc_started_epoch().unwrap(), None);
         assert_eq!(context.store.get_gc_completed_epoch().unwrap(), None);
+    }
+
+    // the cleanup has no epoch until the store's is known, and then takes the
+    // lower of the store's and the state's
+    #[tokio::test]
+    async fn reached_is_the_lower() {
+        let context = test_context().await;
+        let epoch = context.state().epoch();
+
+        assert_eq!(reached_epoch(&context), None);
+
+        context.store_epoch.reach(epoch.prev());
+        assert_eq!(reached_epoch(&context), Some(epoch.prev()));
+
+        context.store_epoch.reach(epoch.next());
+        assert_eq!(reached_epoch(&context), Some(epoch));
+    }
+
+    fn put_tape(context: &TestContext, end_epoch: EpochNumber) -> Address {
+        let tape = Address::new_unique();
+        context
+            .store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
+                    end_epoch,
+                    next_track_number: TrackNumber(0),
+                    authority: Address::default(),
+                    delegate: Address::default(),
+                    share_nonce: Hash::default(),
+                },
+            )
+            .expect("put tape");
+        tape
+    }
+
+    fn record(event: ReplayableEvent) -> ReplayRecord {
+        ReplayRecord { tx_id: Txid::default(), actor: None, event }
+    }
+
+    // a tape extended in the block that turns the epoch outlives the cleanup,
+    // which waits for the store to apply that block
+    #[tokio::test]
+    async fn waits_for_the_store() {
+        let context = test_context().await;
+        let cancel = CancellationToken::new();
+        let before = context.state().epoch();
+        let epoch = before.next();
+        let later = epoch.next();
+        put_at_durable_tip(&context);
+        context.store_epoch.reach(before);
+
+        let extended = put_tape(&context, epoch);
+        let expired = put_tape(&context, epoch);
+
+        let (batch_tx, batch_rx) = mpsc::channel(1);
+        let store = tokio::spawn(
+            StoreManager::new(context.clone(), batch_rx, cancel.clone()).run(),
+        );
+        let cleanup = tokio::spawn(
+            GcManager::new(context.clone(), test_config(), cancel.clone()).run(),
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // The state shows the new epoch before the store has applied its block.
+        let mut state = (*context.state()).clone();
+        state.current.epoch.id = epoch;
+        context.set_state(state).expect("publish");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(context.store.get_tape(extended).expect("get tape").is_some());
+        assert!(context.store.get_tape(expired).expect("get tape").is_some());
+
+        // The block holds the extension and then the advance.
+        let block = ReplayBatch {
+            slot: SlotNumber(100),
+            blockhash: Hash::default(),
+            block_time: None,
+            records: vec![
+                record(ReplayableEvent::ExtendTape {
+                    tape: extended,
+                    capacity: StorageUnits::mb(1),
+                    expiry_epoch: later,
+                    cost: TAPE(0),
+                    burned: TAPE(0),
+                    scheduled: TAPE(0),
+                }),
+                record(ReplayableEvent::AdvanceEpoch {
+                    old_epoch: before,
+                    new_epoch: epoch,
+                    timestamp: 0,
+                    total_stake: TAPE(0),
+                    committee_count: 0,
+                    preferences: NodePreferences::zeroed(),
+                    subsidy: TAPE(0),
+                    nonce: Hash::default(),
+                }),
+            ],
+            raw_tracks: Vec::new(),
+            advanced_epoch: Some(epoch),
+        };
+        batch_tx.send(block).await.expect("send the block");
+
+        for _ in 0..40 {
+            if context.store.get_tape(expired).expect("get tape").is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        cancel.cancel();
+        store.await.expect("store joins").expect("store ok");
+        cleanup.await.expect("cleanup joins").expect("cleanup ok");
+
+        assert!(context.store.get_tape(expired).expect("get tape").is_none());
+        let kept = context.store.get_tape(extended).expect("get tape").expect("tape kept");
+        assert_eq!(kept.end_epoch, later);
     }
 }

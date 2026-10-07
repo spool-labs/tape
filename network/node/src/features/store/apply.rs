@@ -19,7 +19,7 @@ use tape_store::ops::{
 };
 use tape_store::types::{ObjectInfo, ObjectListEntry, ObjectMetadata, SystemObjectKind, TapeInfo};
 use tape_store::TapeStore;
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::core::error::NodeError;
 use crate::features::store::sample::put_sample;
@@ -127,10 +127,10 @@ pub fn apply_event<Db: Store>(
                     store.put_tape(*tape, info).map_err(store_error)?;
                 }
                 Some(_) => {}
-                // A lagging node may have swept the tape before applying the
-                // extend; there is nothing left to keep alive.
+                // The cleanup removes a tape only once it can no longer be
+                // extended, so a missing row means the store has lost a tape.
                 None => {
-                    warn!(tape = %tape, "extend for unknown tape, skipping");
+                    error!(tape = %tape, "extend for a tape the store does not hold");
                 }
             }
         }
@@ -416,7 +416,7 @@ fn update_tape<Db: Store, Edit: FnOnce(&mut TapeInfo)>(
     edit: Edit,
 ) -> Result<(), NodeError> {
     let Some(mut info) = store.get_tape(tape).map_err(store_error)? else {
-        // A lagging node may have swept the tape already; there is nothing to update.
+        // An expired tape is swept, and its owner can still change it on chain.
         warn!(tape = %tape, what, "tape update for unknown tape, skipping");
         return Ok(());
     };
