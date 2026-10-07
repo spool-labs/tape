@@ -22,7 +22,7 @@ use crate::core::atlas::short_label;
 use crate::core::error::NodeError;
 use crate::core::types::ChannelName;
 use crate::features::replay::types::{RawTrack, ReplayBatch};
-use crate::features::store::apply::apply_slot;
+use crate::features::store::apply::{apply_slot, DeletePolicy};
 use crate::features::store::util::is_responsible_for_group;
 
 /// How often the store is asked for one maintenance pass
@@ -186,16 +186,23 @@ pub fn persist_batch<Db: Store>(
     batch: &ReplayBatch,
     profile: ErasureCode,
 ) -> Result<(), NodeError> {
-    persist_batch_with(store, batch, RawTrackPolicy::OwnedGroups, profile)
+    persist_batch_with(
+        store,
+        batch,
+        RawTrackPolicy::OwnedGroups,
+        DeletePolicy::NextEpoch,
+        profile,
+    )
 }
 
 pub fn persist_batch_with<Db: Store>(
     store: &TapeStore<Db>,
     batch: &ReplayBatch,
     policy: RawTrackPolicy,
+    deletes: DeletePolicy,
     profile: ErasureCode,
 ) -> Result<(), NodeError> {
-    apply_records(store, batch.slot, batch.block_time, &batch.records, profile)?;
+    apply_records(store, batch.slot, batch.block_time, &batch.records, profile, deletes)?;
     persist_raw_tracks(store, &batch.raw_tracks, policy, profile)?;
 
     store
@@ -209,9 +216,10 @@ fn apply_records<Db: Store>(
     block_time: Option<i64>,
     records: &[ReplayRecord],
     profile: ErasureCode,
+    deletes: DeletePolicy,
 ) -> Result<(), NodeError> {
     let events: Vec<_> = records.iter().map(|record| record.event.clone()).collect();
-    apply_slot(store, slot, block_time, &events, profile)
+    apply_slot(store, slot, block_time, &events, profile, deletes)
 }
 
 fn persist_raw_tracks<Db: Store>(

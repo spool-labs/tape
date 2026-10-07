@@ -354,13 +354,15 @@ mod tests {
     use bytemuck::{Zeroable, bytes_of};
     use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::{blacklist_pda, TrackAddress};
+    use tape_core::snapshot::replay::ReplayableEvent;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-    use tape_core::types::{TapeNumber, TrackNumber};
+    use tape_core::types::{SlotNumber, TapeNumber, TrackNumber};
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
     use tape_store::types::{ObjectInfo, TapeInfo};
 
     use super::*;
+    use crate::features::store::apply::{apply_event, DeletePolicy};
     use tape_api::state::Group;
     use tape_core::cert::verify_assignment_group_payload;
     use tape_core::encoding::{RSParams, TAPENET_PROFILE};
@@ -593,7 +595,12 @@ mod tests {
     }
 
     /// A certified inline track of `bytes` in a virtual group, old enough to count.
-    fn put_counted_track(store: &TapeStore<MemoryStore>, tape: Address, group: u64, bytes: u64) {
+    fn put_counted_track(
+        store: &TapeStore<MemoryStore>,
+        tape: Address,
+        group: u64,
+        bytes: u64,
+    ) -> Address {
         let state = CompressedTrack {
             tape,
             key: Hash::new_unique(),
@@ -619,6 +626,8 @@ mod tests {
                 },
             )
             .unwrap();
+
+        track
     }
 
     fn user_tape(store: &TapeStore<MemoryStore>) -> Address {
@@ -679,6 +688,67 @@ mod tests {
             .expect("build")
             .expect("a candidate");
         assert_eq!(candidate.hash, again.hash);
+    }
+
+    // a delete that lands in the voting epoch leaves the candidate as it was
+    #[test]
+    fn delete_in_voting_epoch() {
+        let store = test_store();
+        let tape = user_tape(&store);
+        put_counted_track(&store, tape, 0, 10);
+        let deleted = put_counted_track(&store, tape, 1, 100);
+
+        let (state, holders) = narrow_state(2);
+        let state = with_next_epoch(state, &holders, 2);
+
+        let before = build_assignment_blocking(&store, &state, NARROW)
+            .expect("build")
+            .expect("a candidate");
+
+        apply_event(
+            &store,
+            SlotNumber(100),
+            None,
+            &ReplayableEvent::DeleteTrack { track: deleted, epoch: EpochNumber(10) },
+            NARROW,
+            DeletePolicy::NextEpoch,
+        )
+        .expect("delete applied");
+
+        let after = build_assignment_blocking(&store, &state, NARROW)
+            .expect("build")
+            .expect("a candidate");
+
+        assert_eq!(after.groups[1].payload.size, StorageUnits::from_bytes(100));
+        assert_eq!(before.hash, after.hash);
+    }
+
+    // a delete from an earlier epoch takes the track out of the candidate
+    #[test]
+    fn delete_before_voting_epoch() {
+        let store = test_store();
+        let tape = user_tape(&store);
+        put_counted_track(&store, tape, 0, 10);
+        let deleted = put_counted_track(&store, tape, 1, 100);
+
+        let (state, holders) = narrow_state(2);
+        let state = with_next_epoch(state, &holders, 2);
+
+        apply_event(
+            &store,
+            SlotNumber(100),
+            None,
+            &ReplayableEvent::DeleteTrack { track: deleted, epoch: EpochNumber(9) },
+            NARROW,
+            DeletePolicy::NextEpoch,
+        )
+        .expect("delete applied");
+
+        let candidate = build_assignment_blocking(&store, &state, NARROW)
+            .expect("build")
+            .expect("a candidate");
+
+        assert_eq!(candidate.groups[1].payload.size, StorageUnits::zero());
     }
 
     // two groups doubling to four: each new group starts on the nodes that

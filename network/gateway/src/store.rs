@@ -7,6 +7,7 @@ use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_node::core::types::ChannelName;
 use tape_node::features::replay::types::ReplayBatch;
+use tape_node::features::store::apply::DeletePolicy;
 use tape_node::features::store::manager::{
     maintenance_ticker, persist_batch_with, settle_maintenance, tick_maintenance,
     MaintenancePass, RawTrackPolicy,
@@ -94,13 +95,14 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
     }
 }
 
-/// Every raw track is kept: a gateway serves reads for all of them
+/// Every raw track is kept: a gateway serves reads for all of them. A deleted
+/// track goes at once, since a gateway builds no assignment.
 pub fn persist_batch<Db: Store>(
     store: &TapeStore<Db>,
     batch: &ReplayBatch,
     profile: ErasureCode,
 ) -> Result<(), NodeError> {
-    persist_batch_with(store, batch, RawTrackPolicy::All, profile)
+    persist_batch_with(store, batch, RawTrackPolicy::All, DeletePolicy::AtOnce, profile)
 }
 
 #[cfg(test)]

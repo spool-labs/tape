@@ -9,6 +9,7 @@ use tape_api::errors::TapeError;
 use tape_core::bls::BlsSignature;
 use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, SpoolBitmap};
+use tape_crypto::Hash;
 use tape_protocol::{Api, ProtocolState};
 use tape_store::ops::VoteOps;
 use tokio_util::sync::CancellationToken;
@@ -26,7 +27,7 @@ pub async fn submit_snapshot_proposal<Db, Cluster, Blockchain>(
     ctx: &Arc<NodeContext<Db, Cluster, Blockchain>>,
     candidate: &SnapshotCandidate,
     cancel: &CancellationToken,
-    proposed: &Mutex<HashSet<EpochNumber>>,
+    proposed: &Mutex<HashSet<(EpochNumber, Hash)>>,
 ) -> Result<(), NodeError>
 where
     Db: Store + 'static,
@@ -43,12 +44,11 @@ where
         return Ok(());
     }
 
-    // Skip proposing if another member's proposal for this voting epoch already
-    // landed, or the round already reached a canonical snapshot hash.
-    if proposed
-        .lock()
-        .is_ok_and(|seen| seen.contains(&candidate.voting_epoch))
-    {
+    // Skip proposing if a proposal for this same hash already landed, or the
+    // round already reached a canonical snapshot hash. A proposal for any
+    // other hash says nothing about this one.
+    let own = (candidate.voting_epoch, candidate.hash);
+    if proposed.lock().is_ok_and(|seen| seen.contains(&own)) {
         return Ok(());
     }
     if state
@@ -65,6 +65,21 @@ where
         submit_propose_snapshot(ctx, candidate.voting_epoch, candidate.hash),
     )
     .await;
+
+    // Both outcomes mean the vote account for this hash exists.
+    if matches!(
+        outcome,
+        TxOutcome::Confirmed(_)
+            | TxOutcome::Rejected {
+                kind: TxRejectionKind::KnownContention,
+                ..
+            }
+    ) {
+        if let Ok(mut seen) = proposed.lock() {
+            seen.insert(own);
+        }
+    }
+
     match outcome {
         TxOutcome::Confirmed(txid) => {
             info!(
@@ -433,4 +448,123 @@ where
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tape_api::program::tapedrive::snapshot_vote_pda;
+    use tape_api::state::Tape;
+    use tape_core::types::SlotNumber;
+
+    use super::*;
+    use crate::core::ingest::IngestState;
+    use crate::harness::{NodeHarness, TestContext};
+
+    fn candidate(epoch: EpochNumber) -> SnapshotCandidate {
+        SnapshotCandidate {
+            voting_epoch: epoch,
+            target_epoch: epoch.prev(),
+            end_slot: SlotNumber(1),
+            hash: Hash::new_unique(),
+            tape: Tape::snapshot(epoch.prev()),
+            tracks: Vec::new(),
+        }
+    }
+
+    async fn snapshot_harness() -> NodeHarness {
+        NodeHarness::builder()
+            .nodes(25)
+            .phase(EpochPhase::Snapshot)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness")
+    }
+
+    async fn has_vote_account(ctx: &TestContext, candidate: &SnapshotCandidate) -> bool {
+        let (vote, _) = snapshot_vote_pda(
+            candidate.voting_epoch,
+            candidate.target_epoch,
+            candidate.hash,
+        );
+        ctx.rpc.rpc().get_account(&vote).await.is_ok()
+    }
+
+    // with nothing on record a node proposes its hash
+    #[tokio::test]
+    async fn proposes_first() {
+        let harness = snapshot_harness().await;
+        let ctx = harness.ctx_for(0);
+        ctx.ingest.publish(IngestState::AtTip);
+
+        let candidate = candidate(harness.epoch());
+        let proposed = Mutex::new(HashSet::new());
+
+        submit_snapshot_proposal(&ctx, &candidate, &CancellationToken::new(), &proposed)
+            .await
+            .expect("propose");
+
+        assert!(has_vote_account(&ctx, &candidate).await);
+    }
+
+    // a proposal for another hash leaves a node free to propose its own
+    #[tokio::test]
+    async fn proposes_beside_another_hash() {
+        let harness = snapshot_harness().await;
+        let ctx = harness.ctx_for(0);
+        ctx.ingest.publish(IngestState::AtTip);
+
+        let candidate = candidate(harness.epoch());
+        let own = (candidate.voting_epoch, candidate.hash);
+        let other = (candidate.voting_epoch, Hash::new_unique());
+        let proposed = Mutex::new(HashSet::from([other]));
+
+        submit_snapshot_proposal(&ctx, &candidate, &CancellationToken::new(), &proposed)
+            .await
+            .expect("propose");
+
+        assert!(has_vote_account(&ctx, &candidate).await);
+        assert!(proposed.lock().expect("record").contains(&own));
+    }
+
+    // a hash already on record is not proposed again
+    #[tokio::test]
+    async fn skips_proposed_hash() {
+        let harness = snapshot_harness().await;
+        let ctx = harness.ctx_for(0);
+        ctx.ingest.publish(IngestState::AtTip);
+
+        let candidate = candidate(harness.epoch());
+        let own = (candidate.voting_epoch, candidate.hash);
+        let proposed = Mutex::new(HashSet::from([own]));
+
+        submit_snapshot_proposal(&ctx, &candidate, &CancellationToken::new(), &proposed)
+            .await
+            .expect("propose");
+
+        assert!(!has_vote_account(&ctx, &candidate).await);
+    }
+
+    // a node that proposes a hash another node got in first learns the vote account exists
+    #[tokio::test]
+    async fn lost_race_is_recorded() {
+        let harness = snapshot_harness().await;
+        let (first, second) = (harness.ctx_for(0), harness.ctx_for(1));
+        first.ingest.publish(IngestState::AtTip);
+        second.ingest.publish(IngestState::AtTip);
+
+        let candidate = candidate(harness.epoch());
+        let own = (candidate.voting_epoch, candidate.hash);
+        let cancel = CancellationToken::new();
+        submit_snapshot_proposal(&first, &candidate, &cancel, &Mutex::new(HashSet::new()))
+            .await
+            .expect("first proposal");
+
+        let proposed = Mutex::new(HashSet::new());
+        submit_snapshot_proposal(&second, &candidate, &cancel, &proposed)
+            .await
+            .expect("second proposal");
+
+        assert!(proposed.lock().expect("record").contains(&own));
+    }
 }

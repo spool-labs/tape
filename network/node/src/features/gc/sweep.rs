@@ -55,7 +55,9 @@ pub async fn sweep_epoch<Db: Store>(
     stats +=
         sweep_uncertified_tracks(store, config, current_epoch, owned_spools, at_tip, profile)
             .await?;
-    stats += sweep_orphan_tracks(store, config, epoch_start_slot, at_tip, profile).await?;
+    stats +=
+        sweep_orphan_tracks(store, config, current_epoch, epoch_start_slot, at_tip, profile)
+            .await?;
     stats += sweep_orphan_slices(store, config, pending, at_tip).await?;
 
     sweep_stale_recoveries(store, pending, at_tip).await?;
@@ -203,6 +205,7 @@ fn cleanup_unowned_track_slices<Db: Store>(
 async fn sweep_orphan_tracks<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
+    current_epoch: EpochNumber,
     epoch_start_slot: SlotNumber,
     at_tip: bool,
     profile: ErasureCode,
@@ -241,6 +244,15 @@ async fn sweep_orphan_tracks<Db: Store>(
                     "gc deleting orphan track with missing parent tape"
                 );
                 stats += delete_track_local(store, *track, epoch_start_slot, profile)?.into();
+                continue;
+            }
+
+            // A deleted track stays through its own epoch, whose assignment
+            // round counts it, and goes once that epoch is over.
+            if let Some(ObjectInfo::Deleted { deleted_epoch, .. }) = object {
+                if deleted_epoch < current_epoch {
+                    stats += delete_track_local(store, *track, epoch_start_slot, profile)?.into();
+                }
                 continue;
             }
 
@@ -987,6 +999,98 @@ mod tests {
         let swept = sweep_deleted_slices(&store, past, TAPENET_PROFILE).unwrap();
         assert_eq!((swept.tracks, swept.slices), (1, 1));
         assert!(store.get_slice(spool, track).unwrap().is_none());
+        assert!(store.get_track_data(track).unwrap().is_none());
+        assert!(store.track_sample(group, track).unwrap().is_none());
+    }
+
+    fn deleted_object(track: Address, deleted_epoch: EpochNumber) -> ObjectInfo {
+        ObjectInfo::Deleted {
+            kind: None,
+            track_address: track,
+            registered_epoch: EpochNumber(2),
+            certified_epoch: EpochNumber(2),
+            deleted_epoch,
+        }
+    }
+
+    // a deleted track stays through its own epoch and goes in the next one
+    #[tokio::test]
+    async fn purges_deleted_track() {
+        let store = test_store();
+        let config = test_config();
+        let tape = Address::new_unique();
+        let info = track_info(tape, TrackNumber(0), VirtualGroup(1));
+        let track = info.address();
+
+        store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
+                    end_epoch: EpochNumber(10),
+                    next_track_number: TrackNumber(0),
+                    authority: Address::default(),
+                    delegate: Address::default(),
+                    share_nonce: Hash::default(),
+                },
+            )
+            .unwrap();
+        store.put_track(track, info).unwrap();
+        store
+            .put_object_info(track, deleted_object(track, EpochNumber(6)))
+            .unwrap();
+
+        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
+            .await
+            .unwrap();
+
+        assert!(store.get_track(track).unwrap().is_some());
+        assert!(store.get_object_info(track).unwrap().is_some());
+
+        sweep_epoch(&store, &config, EpochNumber(7), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
+            .await
+            .unwrap();
+
+        assert!(store.get_track(track).unwrap().is_none());
+        assert!(store.get_object_info(track).unwrap().is_none());
+    }
+
+    // a flagged track keeps the encoding the assignment round reads, past the
+    // round horizon, until the epoch sweep has removed the flag
+    #[tokio::test]
+    async fn flagged_track_keeps_encoding() {
+        let store = test_store();
+        let track = Address::new_unique();
+        let group = VirtualGroup(0);
+
+        store
+            .put_track_data(track, tape_core::track::data::BlobData::Inline(vec![1, 2, 3]))
+            .unwrap();
+        store
+            .put_track_sample(
+                group,
+                track,
+                TrackSample {
+                    kind: EntryKind::Inline,
+                    value_hash: Hash::default(),
+                    registered_slot: SlotNumber(1),
+                    deleted_slot: None,
+                },
+            )
+            .unwrap();
+        store
+            .put_object_info(track, deleted_object(track, EpochNumber(6)))
+            .unwrap();
+        cleanup_track_slices(&store, track, group, SlotNumber(10), TAPENET_PROFILE).unwrap();
+
+        let past = SlotNumber(11 + DELETED_SLICE_HORIZON_SLOTS);
+        assert_eq!(sweep_deleted_slices(&store, past, TAPENET_PROFILE).unwrap().tracks, 0);
+        assert!(store.get_track_data(track).unwrap().is_some());
+
+        store.delete_object_info(track).unwrap();
+
+        assert_eq!(sweep_deleted_slices(&store, past, TAPENET_PROFILE).unwrap().tracks, 1);
         assert!(store.get_track_data(track).unwrap().is_none());
         assert!(store.track_sample(group, track).unwrap().is_none());
     }

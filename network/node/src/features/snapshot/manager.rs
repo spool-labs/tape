@@ -40,7 +40,7 @@ pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     cancel: CancellationToken,
     vote_round: Option<JoinHandle<()>>,
     finalize: Option<JoinHandle<()>>,
-    proposed: Arc<Mutex<HashSet<EpochNumber>>>,
+    proposed: Arc<Mutex<HashSet<(EpochNumber, Hash)>>>,
 }
 
 impl<Db, Cluster, Blockchain> SnapshotManager<Db, Cluster, Blockchain>
@@ -172,7 +172,7 @@ where
                 }
                 ParsedInstruction::ProposeSnapshot { event, .. } => {
                     if let Ok(mut seen) = self.proposed.lock() {
-                        seen.insert(event.voting_epoch);
+                        seen.insert((event.voting_epoch, event.hash));
                     }
                 }
                 _ => {}
@@ -197,7 +197,7 @@ where
             .map_err(|e| NodeError::Store(format!("delete_vote_epochs_except: {e}")))?;
 
         if let Ok(mut seen) = self.proposed.lock() {
-            seen.retain(|&epoch| epoch >= new);
+            seen.retain(|&(epoch, _)| epoch >= new);
         }
 
         Ok(())
@@ -420,7 +420,7 @@ async fn run_vote_round<Db, Cluster, Blockchain>(
     state: Arc<ProtocolState>,
     candidate: SnapshotCandidate,
     cancel: CancellationToken,
-    proposed: Arc<Mutex<HashSet<EpochNumber>>>,
+    proposed: Arc<Mutex<HashSet<(EpochNumber, Hash)>>>,
 ) -> Result<(), NodeError>
 where
     Db: Store + 'static,
@@ -479,4 +479,101 @@ fn validate_block_state(
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use bytemuck::Zeroable;
+    use tape_api::event::{SpoolSynced, VoteProposed};
+    use tape_api::program::tapedrive::snapshot_vote_pda;
+    use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent};
+    use tape_core::types::SlotNumber;
+    use tape_crypto::tx::Txid;
+    use tape_crypto::Address;
+
+    use super::*;
+    use crate::core::ingest::IngestState;
+    use crate::harness::NodeHarness;
+
+    const EPOCH: EpochNumber = EpochNumber(4);
+
+    // a proposal for a hash no node holds, landing with the sync that opens the
+    // snapshot round, leaves a node free to propose its own
+    #[tokio::test]
+    async fn junk_proposal_at_round_start() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EPOCH)
+            .phase(EpochPhase::Snapshot)
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(0);
+        ctx.ingest.publish(IngestState::AtTip);
+        let target = EPOCH.prev();
+        let cancel = CancellationToken::new();
+
+        let record = ReplayRecord {
+            tx_id: Txid::default(),
+            actor: None,
+            event: ReplayableEvent::CertifyTrack {
+                track: Address::from([3u8; 32]),
+                epoch: target,
+            },
+        };
+        ctx.store
+            .append_record(target, SlotNumber(9), None, &record)
+            .expect("append record");
+
+        let candidate = build_snapshot(&ctx, ctx.state(), target, &cancel)
+            .await
+            .expect("build")
+            .expect("a candidate");
+
+        let (_block_tx, block_rx) = mpsc::channel(1);
+        let mut manager = SnapshotManager::new(ctx.clone(), block_rx, cancel);
+
+        let junk = Hash::new_unique();
+        let block = ParsedBlock {
+            slot: SlotNumber(10),
+            parent_slot: SlotNumber(9),
+            blockhash: Hash::default(),
+            previous_blockhash: Hash::default(),
+            block_time: None,
+            instructions: vec![
+                ParsedInstruction::SyncSpool {
+                    node: Address::new_unique(),
+                    spool: 0,
+                    event: SpoolSynced {
+                        epoch: EPOCH,
+                        phase: EpochPhase::Snapshot as u64,
+                        ..Zeroable::zeroed()
+                    },
+                },
+                ParsedInstruction::ProposeSnapshot {
+                    hash: junk,
+                    proposer: Address::new_unique(),
+                    event: VoteProposed {
+                        kind: VoteKind::Snapshot as u64,
+                        voting_epoch: EPOCH,
+                        target_epoch: target,
+                        hash: junk,
+                        ..Zeroable::zeroed()
+                    },
+                },
+            ],
+            instruction_tx_ids: Vec::new(),
+        };
+
+        manager.on_block(Arc::new(block)).await.expect("block handled");
+        let round = manager.vote_round.take().expect("a vote round started");
+        round.await.expect("vote round joins");
+
+        let (vote, _) = snapshot_vote_pda(EPOCH, target, candidate.hash);
+        assert!(
+            ctx.rpc.rpc().get_account(&vote).await.is_ok(),
+            "the node's own hash has no vote account"
+        );
+    }
 }

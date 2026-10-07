@@ -23,7 +23,8 @@ use tape_protocol::api::{
     ListObjectsRequest, ListObjectsResponse, ObjectListItem, TrackDataResponse,
     TrackProofResponse, TrackResponse, ops::FindTrackVersion,
 };
-use tape_store::ops::{ObjectListOps, TapeOps, TrackDataOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, ObjectListOps, TapeOps, TrackDataOps, TrackOps};
+use tape_store::types::ObjectInfo;
 
 use crate::features::http::auth::{local_access_threshold, MaybeActivePeer, MaybeStakedPeer};
 use crate::features::blacklist::refuses_object;
@@ -134,6 +135,12 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let track = resolve_track(&state, track_addr)?
         .ok_or(RouteError::NotFound)?;
 
+    // The chain has no leaf for a deleted track this node still holds.
+    let info = state.context.store.get_object_info(track_addr).map_err(store_error)?;
+    if matches!(info, Some(ObjectInfo::Deleted { .. })) {
+        return Err(RouteError::NotFound);
+    }
+
     // The reservation is folded in too. A track resolved from the overlay whose
     // tape was only read from disk is not-found on every peer at once until the
     // reservation finalizes, which is a whole finality window of refused deletes
@@ -189,7 +196,7 @@ pub async fn get_track_proof<Db: Store, Cluster: Api, Blockchain: Rpc>(
         track.tape,
         disk_tracks,
         pending_tracks,
-    ) {
+    )? {
         let index = tape_track.track_number.0 as usize;
         if index < leaf_count {
             leaves[index] = tape_track.get_hash();
@@ -251,7 +258,7 @@ pub async fn find_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .store
         .iter_tracks_by_tape_from(tape, None, MAX_TRACK_SCAN_LIMIT)
         .map_err(store_error)?;
-    let mut matches = merge_pending_tape_tracks(&state, tape, disk_tracks, pending_tracks)
+    let mut matches = merge_pending_tape_tracks(&state, tape, disk_tracks, pending_tracks)?
         .into_iter()
         .filter(|track| track.key == request.key)
         .collect::<Vec<_>>();
@@ -311,14 +318,29 @@ pub async fn list_tracks_by_tape<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .iter_tracks_by_tape_from(tape, request.cursor, disk_limit)
         .map_err(store_error)?;
 
-    let mut tracks = merge_pending_tape_tracks(&state, tape, disk_tracks, pending_tracks);
+    // A full scan means more rows may follow it, however many of these the
+    // merge leaves out as deleted.
+    let scanned_to = match disk_tracks.last() {
+        Some(last) if disk_tracks.len() == disk_limit => Some(last.track_number),
+        Some(_) | None => None,
+    };
+
+    let mut tracks = merge_pending_tape_tracks(&state, tape, disk_tracks, pending_tracks)?;
     if let Some(cursor) = request.cursor {
         tracks.retain(|track| track.track_number > cursor);
+    }
+    if let Some(scanned_to) = scanned_to {
+        tracks.retain(|track| track.track_number <= scanned_to);
     }
 
     tracks.sort_by_key(|track| track.track_number.0);
     // The cursor is the last track sent, since the next page starts after it.
-    let next_cursor = (tracks.len() > limit).then(|| tracks[limit - 1].track_number);
+    // A page the deleted rows left short still continues after its scan.
+    let next_cursor = if tracks.len() > limit {
+        Some(tracks[limit - 1].track_number)
+    } else {
+        scanned_to
+    };
 
     let tracks = tracks
         .into_iter()
@@ -411,11 +433,22 @@ fn merge_pending_tape_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
     tape: Address,
     disk_tracks: Vec<CompressedTrack>,
     pending_tracks: Vec<(Address, CompressedTrack)>,
-) -> Vec<CompressedTrack> {
+) -> Result<Vec<CompressedTrack>, RouteError> {
     let mut by_number = BTreeMap::new();
 
-    for disk_track in disk_tracks {
-        let track_addr = disk_track.address();
+    let addresses: Vec<Address> = disk_tracks.iter().map(|track| track.address()).collect();
+    let infos = state
+        .context
+        .store
+        .get_object_infos(&addresses)
+        .map_err(store_error)?;
+
+    for ((disk_track, track_addr), info) in disk_tracks.into_iter().zip(addresses).zip(infos) {
+
+        if matches!(info, Some(ObjectInfo::Deleted { .. })) {
+            continue;
+        }
+
         if let Some(track) = state
             .context
             .pending
@@ -431,7 +464,7 @@ fn merge_pending_tape_tracks<Db: Store, Cluster: Api, Blockchain: Rpc>(
         }
     }
 
-    by_number.into_values().collect()
+    Ok(by_number.into_values().collect())
 }
 
 fn store_error(error: impl core::fmt::Display) -> RouteError {
@@ -652,6 +685,149 @@ mod tests {
         assert_eq!(seen, vec![0, 1, 2, 3, 4]);
     }
 
+    /// Five tracks on one tape, sharing a key, with the tape's cursor past them.
+    fn seed_tape(ctx: &TestContext) -> (Address, Vec<CompressedTrack>) {
+        let tape = Address::new_unique();
+        ctx.store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    id: TapeNumber(1),
+                    flags: 0,
+                    end_epoch: EpochNumber(100),
+                    next_track_number: TrackNumber(5),
+                    authority: Address::default(),
+                    delegate: Address::default(),
+                    share_nonce: Hash::default(),
+                },
+            )
+            .expect("put tape");
+
+        let mut tracks = Vec::new();
+        for number in 0..5 {
+            let track = CompressedTrack {
+                tape,
+                track_number: TrackNumber(number),
+                key: Hash::from([1u8; 32]),
+                kind: TrackKind::Coded as u64,
+                state: TrackState::Certified as u64,
+                flags: TrackFlags::NONE,
+                size: StorageUnits::from_bytes(64),
+                group: VirtualGroup(0),
+                value_hash: Hash::from([2u8; 32]),
+            };
+            ctx.store.put_track(track.address(), track).expect("put track");
+            tracks.push(track);
+        }
+
+        (tape, tracks)
+    }
+
+    /// Flag a track the way a delete applied on a storage node leaves it.
+    fn flag_deleted(ctx: &TestContext, track: &CompressedTrack) {
+        ctx.store
+            .put_object_info(
+                track.address(),
+                ObjectInfo::Deleted {
+                    kind: None,
+                    track_address: track.address(),
+                    registered_epoch: EpochNumber(1),
+                    certified_epoch: EpochNumber(1),
+                    deleted_epoch: EpochNumber(3),
+                },
+            )
+            .expect("put object info");
+    }
+
+    // a listing leaves out deleted tracks and still reaches the rows after them
+    #[tokio::test]
+    async fn pages_skip_deleted() {
+        let ctx = test_context().await;
+        let (tape, tracks) = seed_tape(&ctx);
+        for number in [1, 2, 3] {
+            flag_deleted(&ctx, &tracks[number]);
+        }
+
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let request = wincode::serialize(&ListTracksByTapeRequest { cursor, limit: 2 }).expect("encode");
+            let response = list_tracks_by_tape::<_, _, _>(
+                State(AppState { context: ctx.clone() }),
+                MaybeStakedPeer(None),
+                Path(tape.to_string()),
+                Bytes::from(request),
+            )
+            .await
+            .expect("list")
+            .into_response();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("body");
+            let page: ListTracksByTapeResponse = wincode::deserialize(&body).expect("decode");
+            seen.extend(page.tracks.into_iter().map(|track| CompressedTrack::unpack(track).track_number.0));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+
+        assert_eq!(seen, vec![0, 4]);
+    }
+
+    // a proof holds an empty leaf where a deleted track sits, as the chain's
+    // tree does, and the deleted track has no proof of its own
+    #[tokio::test]
+    async fn proof_blanks_deleted() {
+        let ctx = test_context().await;
+        let (_, tracks) = seed_tape(&ctx);
+        flag_deleted(&ctx, &tracks[1]);
+
+        let response = call_get_track_proof(&ctx, tracks[0].address(), None)
+            .await
+            .expect("proof")
+            .into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("body");
+        let response: TrackProofResponse = wincode::deserialize(&body).expect("decode");
+        let proof = CompressedTrackProof::unpack(response.proof);
+
+        let mut leaves: Vec<Hash> = tracks.iter().map(|track| track.get_hash()).collect();
+        leaves[1] = hash_leaf(&[]);
+        let expected: [Hash; TRACK_TREE_HEIGHT] = MerkleLeafTree::new(&leaves, TRACK_TREE_HEIGHT)
+            .and_then(|tree| tree.proof_at_n::<{ TRACK_TREE_HEIGHT }>(0))
+            .expect("expected proof");
+
+        assert_eq!(proof.proof, expected);
+
+        let deleted = call_get_track_proof(&ctx, tracks[1].address(), None).await;
+        assert!(matches!(deleted, Err(RouteError::NotFound)));
+    }
+
+    // the latest track for a key is the latest one the chain still holds
+    #[tokio::test]
+    async fn find_skips_deleted() {
+        let ctx = test_context().await;
+        let (tape, tracks) = seed_tape(&ctx);
+        flag_deleted(&ctx, &tracks[4]);
+
+        let request = wincode::serialize(&FindTrackRequest {
+            key: tracks[0].key,
+            version: FindTrackVersion::Latest,
+        })
+        .expect("encode");
+        let response = find_track::<_, _, _>(
+            State(AppState { context: ctx.clone() }),
+            MaybeStakedPeer(None),
+            Path(tape.to_string()),
+            Bytes::from(request),
+        )
+        .await
+        .expect("find")
+        .into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("body");
+        let found: TrackResponse = wincode::deserialize(&body).expect("decode");
+
+        assert_eq!(CompressedTrack::unpack(found.track).track_number, TrackNumber(3));
+    }
+
     // a track and the tape it names both resolve through the pending overlay,
     // so a fresh tape's first track is servable at confirmed latency
     #[tokio::test]
@@ -756,5 +932,16 @@ mod tests {
 
         assert_eq!(track_by_number(&ctx, tape, 1).await.expect("pending"), pending);
         assert!(matches!(track_by_number(&ctx, tape, 2).await, Err(RouteError::NotFound)));
+    }
+
+    // a lookup by number has nothing where a deleted track sits
+    #[tokio::test]
+    async fn by_number_skips_deleted() {
+        let ctx = test_context().await;
+        let (tape, tracks) = seed_tape(&ctx);
+        flag_deleted(&ctx, &tracks[2]);
+
+        assert!(matches!(track_by_number(&ctx, tape, 2).await, Err(RouteError::NotFound)));
+        assert_eq!(track_by_number(&ctx, tape, 3).await.expect("live"), tracks[3]);
     }
 }

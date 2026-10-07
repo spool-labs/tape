@@ -156,7 +156,13 @@ fn collect_blacklist_entries<Db: Store>(
             Some(cutoff_epoch) => {
                 blacklist_track_is_before_cutoff(store, scanned.address, cutoff_epoch)?
             }
-            None => true,
+            // A removed entry stops refusing as soon as the set is rebuilt.
+            None => {
+                let info = store.get_object_info(scanned.address).map_err(|error| {
+                    NodeError::Store(format!("blacklist object info lookup: {error}"))
+                })?;
+                !matches!(info, Some(ObjectInfo::Deleted { .. }))
+            }
         };
 
         if !is_in_window {
@@ -226,7 +232,7 @@ fn blacklist_track_is_before_cutoff<Db: Store>(
         )));
     };
 
-    let (track_address, registered_epoch, certified_epoch) = match info {
+    let (track_address, registered_epoch, certified_epoch, removed_epoch) = match info {
         ObjectInfo::Valid {
             track_address,
             registered_epoch,
@@ -239,7 +245,14 @@ fn blacklist_track_is_before_cutoff<Db: Store>(
             registered_epoch,
             certified_epoch,
             ..
-        } => (track_address, registered_epoch, certified_epoch),
+        } => (track_address, registered_epoch, certified_epoch, None),
+        ObjectInfo::Deleted {
+            kind: None | Some(SystemObjectKind::Blacklist),
+            track_address,
+            registered_epoch,
+            certified_epoch,
+            deleted_epoch,
+        } => (track_address, registered_epoch, Some(certified_epoch), Some(deleted_epoch)),
         _ => {
             return Err(NodeError::Store(format!(
                 "invalid blacklist object info for {track}"
@@ -259,7 +272,11 @@ fn blacklist_track_is_before_cutoff<Db: Store>(
         )));
     };
 
-    Ok(registered_epoch < cutoff_epoch && certified_epoch < cutoff_epoch)
+    // An entry removed in the cutoff epoch still counts in that epoch's round,
+    // since the removal reaches each node at its own moment.
+    let is_removed = removed_epoch.is_some_and(|removed_epoch| removed_epoch < cutoff_epoch);
+
+    Ok(registered_epoch < cutoff_epoch && certified_epoch < cutoff_epoch && !is_removed)
 }
 
 #[cfg(test)]
@@ -394,6 +411,45 @@ mod tests {
             !refuses(&store, &cache, node, EpochNumber(EPOCH.0 + 1), target).expect("next epoch"),
             "the set was answered from the epoch before"
         );
+    }
+
+    // a removed entry stops refusing once the set is rebuilt, and still counts
+    // in the assignment round of the epoch it was removed in
+    #[test]
+    fn removed_entry() {
+        let store = test_store();
+        let node = Address::new_unique();
+        let target = Address::new_unique();
+        let entry_track = seed_entry(&store, node, TrackNumber(0), BlacklistEntry::track(target));
+        let next = EpochNumber(EPOCH.0 + 1);
+
+        store
+            .put_object_info(
+                entry_track,
+                ObjectInfo::Deleted {
+                    kind: Some(SystemObjectKind::Blacklist),
+                    track_address: entry_track,
+                    registered_epoch: EpochNumber(2),
+                    certified_epoch: EpochNumber(2),
+                    deleted_epoch: EPOCH,
+                },
+            )
+            .expect("flag the entry");
+
+        assert!(
+            !refuses(&store, &BlacklistCache::default(), node, EPOCH, target).expect("refusal"),
+        );
+
+        let counted = blacklist_entries_for_assignment(&store, node, EPOCH, next)
+            .expect("round of the removal");
+        assert_eq!(
+            counted,
+            BlacklistEntries::Ready(HashSet::from([BlacklistEntry::track(target)]))
+        );
+
+        let later = blacklist_entries_for_assignment(&store, node, next, EpochNumber(next.0 + 1))
+            .expect("next round");
+        assert_eq!(later, BlacklistEntries::Ready(HashSet::new()));
     }
 
     // a tape entry refuses every track on that tape, and an empty set refuses nothing

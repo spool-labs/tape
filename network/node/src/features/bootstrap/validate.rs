@@ -85,7 +85,8 @@ fn validate_object_track_address(
 ) -> Result<(), NodeError> {
     let object_track = match object {
         ObjectInfo::Valid { track_address, .. }
-        | ObjectInfo::System { track_address, .. } => Some(*track_address),
+        | ObjectInfo::System { track_address, .. }
+        | ObjectInfo::Deleted { track_address, .. } => Some(*track_address),
         ObjectInfo::Blacklisted | ObjectInfo::Invalid { .. } => None,
     };
 
@@ -114,7 +115,10 @@ fn validate_tape_classification(
         let expected = system_object_kind(tape_info.id)
             .map_err(|reason| violation(track, tape, reason))?;
 
-        let ObjectInfo::System { kind, .. } = object else {
+        // A deleted blacklist entry keeps its kind until the epoch cleanup removes it.
+        let (ObjectInfo::System { kind, .. } | ObjectInfo::Deleted { kind: Some(kind), .. }) =
+            object
+        else {
             return Err(violation(
                 track,
                 tape,
@@ -132,7 +136,10 @@ fn validate_tape_classification(
                 format!("system object kind mismatch: expected {expected:?}, got {kind:?}"),
             ));
         }
-    } else if matches!(object, ObjectInfo::System { .. }) {
+    } else if matches!(
+        object,
+        ObjectInfo::System { .. } | ObjectInfo::Deleted { kind: Some(_), .. }
+    ) {
         return Err(violation(
             track,
             tape,
@@ -161,6 +168,7 @@ fn object_classification(object: &ObjectInfo) -> &'static str {
         ObjectInfo::Invalid { .. } => "Invalid",
         ObjectInfo::Valid { .. } => "Valid",
         ObjectInfo::System { .. } => "System",
+        ObjectInfo::Deleted { .. } => "Deleted",
     }
 }
 
@@ -179,9 +187,9 @@ mod tests {
     use tape_store_memory::MemoryStore;
     use tape_api::program::tapedrive::TrackAddress;
     use tape_core::spooler::VirtualGroup;
-    use tape_core::tape::{snapshot_tape_number, user_tape_number};
+    use tape_core::tape::{blacklist_tape_number, snapshot_tape_number, user_tape_number};
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-    use tape_core::types::{SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{NodeId, SlotNumber, StorageUnits, TrackNumber};
     use tape_crypto::{Address, Hash};
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
 
@@ -303,5 +311,67 @@ mod tests {
         assert!(error
             .to_string()
             .contains("track on system tape classified as Valid"));
+    }
+
+    fn deleted_object(track: Address, kind: Option<SystemObjectKind>) -> ObjectInfo {
+        ObjectInfo::Deleted {
+            kind,
+            track_address: track,
+            registered_epoch: EpochNumber(1),
+            certified_epoch: EpochNumber(2),
+            deleted_epoch: EpochNumber(5),
+        }
+    }
+
+    fn blacklist_tape_info() -> TapeInfo {
+        TapeInfo {
+            id: blacklist_tape_number(NodeId(3)),
+            flags: TapeFlags::SYSTEM,
+            end_epoch: EpochNumber(u64::MAX),
+            next_track_number: TrackNumber(0),
+            authority: Address::default(),
+            delegate: Address::default(),
+            share_nonce: Hash::default(),
+        }
+    }
+
+    // a store holding a deleted user track and a removed blacklist entry starts
+    #[test]
+    fn accepts_deleted_tracks() {
+        let store = test_store();
+        let user_tape = Address::new_unique();
+        let blacklist = Address::new_unique();
+        let (track, metadata) = track_for(user_tape, TrackNumber(0));
+        let (entry, entry_metadata) = track_for(blacklist, TrackNumber(0));
+
+        store.put_tape(user_tape, user_tape_info()).unwrap();
+        store.put_tape(blacklist, blacklist_tape_info()).unwrap();
+        store.put_track(track, metadata).unwrap();
+        store.put_track(entry, entry_metadata).unwrap();
+        store.put_object_info(track, deleted_object(track, None)).unwrap();
+        store
+            .put_object_info(entry, deleted_object(entry, Some(SystemObjectKind::Blacklist)))
+            .unwrap();
+
+        let stats = validate_bootstrap_store(&store).unwrap();
+        assert_eq!(stats.tracks_scanned, 2);
+        assert_eq!(stats.system_tracks, 1);
+    }
+
+    // a deleted track with no system kind has no place on a system tape
+    #[test]
+    fn rejects_deleted_user_track_on_system_tape() {
+        let store = test_store();
+        let blacklist = Address::new_unique();
+        let (entry, entry_metadata) = track_for(blacklist, TrackNumber(0));
+
+        store.put_tape(blacklist, blacklist_tape_info()).unwrap();
+        store.put_track(entry, entry_metadata).unwrap();
+        store.put_object_info(entry, deleted_object(entry, None)).unwrap();
+
+        let error = validate_bootstrap_store(&store).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("track on system tape classified as Deleted"));
     }
 }

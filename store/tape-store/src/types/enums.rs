@@ -43,6 +43,16 @@ pub enum ObjectInfo {
         certified_epoch: Option<EpochNumber>,
         slot: SlotNumber,
     },
+
+    /// Track deleted on chain in `deleted_epoch`. The assignment round of that
+    /// epoch still counts it, so its record stays until the epoch is over.
+    Deleted {
+        kind: Option<SystemObjectKind>,
+        track_address: Address,
+        registered_epoch: EpochNumber,
+        certified_epoch: EpochNumber,
+        deleted_epoch: EpochNumber,
+    },
 }
 
 /// The set of buckets a credential is permitted to write to.
@@ -186,6 +196,20 @@ mod tests {
                 certified_epoch: Some(EpochNumber(8)),
                 slot: SlotNumber(80),
             },
+            ObjectInfo::Deleted {
+                kind: None,
+                track_address: Address::new([5u8; 32]),
+                registered_epoch: EpochNumber(5),
+                certified_epoch: EpochNumber(6),
+                deleted_epoch: EpochNumber(9),
+            },
+            ObjectInfo::Deleted {
+                kind: Some(SystemObjectKind::Blacklist),
+                track_address: Address::new([6u8; 32]),
+                registered_epoch: EpochNumber(5),
+                certified_epoch: EpochNumber(5),
+                deleted_epoch: EpochNumber(9),
+            },
         ];
 
         for info in infos {
@@ -193,6 +217,21 @@ mod tests {
             let decoded: ObjectInfo = wincode::deserialize(&bytes).unwrap();
             assert_eq!(info, decoded);
         }
+    }
+
+    // a deleted track gets no repair and the cleanup may take its slices
+    #[test]
+    fn deleted_is_gone() {
+        let info = ObjectInfo::Deleted {
+            kind: None,
+            track_address: Address::new([1u8; 32]),
+            registered_epoch: EpochNumber(5),
+            certified_epoch: EpochNumber(6),
+            deleted_epoch: EpochNumber(9),
+        };
+
+        assert!(!info.is_certified());
+        assert!(!info.is_live());
     }
 
     // credential scope round-trips through serialization

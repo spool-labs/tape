@@ -10,7 +10,8 @@ use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_rpc::Rpc;
-use tape_store::ops::TrackOps;
+use tape_store::ops::{ObjectInfoOps, TrackOps};
+use tape_store::types::ObjectInfo;
 use tape_store_api::Store;
 
 use crate::features::http::error::RouteError;
@@ -58,6 +59,15 @@ pub(crate) fn resolve_tape_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let Some(track) = stored.or_else(pending) else {
         return Ok(None);
     };
+
+    let info = state
+        .context
+        .store
+        .get_object_info(track)
+        .map_err(|error| RouteError::Internal(error.to_string()))?;
+    if matches!(info, Some(ObjectInfo::Deleted { .. })) {
+        return Ok(None);
+    }
 
     resolve_track(state, track)
 }

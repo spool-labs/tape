@@ -45,7 +45,7 @@ pub struct AssignmentManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     cancel: CancellationToken,
     vote_round: Option<JoinHandle<()>>,
     finalize: Option<JoinHandle<()>>,
-    proposed: Arc<Mutex<HashSet<EpochNumber>>>,
+    proposed: Arc<Mutex<HashSet<(EpochNumber, Hash)>>>,
 }
 
 impl<Db, Cluster, Blockchain> AssignmentManager<Db, Cluster, Blockchain>
@@ -136,7 +136,7 @@ where
                 }
                 ParsedInstruction::ProposeAssignment { event, .. } => {
                     if let Ok(mut seen) = self.proposed.lock() {
-                        seen.insert(event.voting_epoch);
+                        seen.insert((event.voting_epoch, event.hash));
                     }
                 }
                 _ => {}
@@ -149,7 +149,7 @@ where
         let state = self.context.state();
 
         if let Ok(mut seen) = self.proposed.lock() {
-            seen.retain(|&epoch| epoch >= state.epoch());
+            seen.retain(|&(epoch, _)| epoch >= state.epoch());
         }
 
         let Some(target_epoch) = heartbeat_assignment_target(state.as_ref()) else {
@@ -305,6 +305,12 @@ where
             return Ok(true);
         };
 
+        // An entry removed before the voting epoch is out of the round, and no
+        // peer still holds its payload.
+        if let ObjectInfo::Deleted { deleted_epoch, .. } = info {
+            return Ok(deleted_epoch >= voting_epoch);
+        }
+
         let ObjectInfo::Valid {
             registered_epoch,
             certified_epoch,
@@ -378,7 +384,7 @@ async fn run_vote_round<Db, Cluster, Blockchain>(
     state: Arc<ProtocolState>,
     candidate: AssignmentCandidate,
     cancel: CancellationToken,
-    proposed: Arc<Mutex<HashSet<EpochNumber>>>,
+    proposed: Arc<Mutex<HashSet<(EpochNumber, Hash)>>>,
 ) -> Result<(), NodeError>
 where
     Db: Store + 'static,
@@ -440,4 +446,77 @@ fn validate_assignment_state(
 
 fn store_error(label: &'static str) -> impl FnOnce(tape_store::error::TapeStoreError) -> NodeError {
     move |error| NodeError::Store(format!("{label}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use bytemuck::Zeroable;
+    use tape_api::event::{EpochCommitted, VoteProposed};
+    use tape_api::program::tapedrive::assignment_vote_pda;
+    use tape_core::types::SlotNumber;
+
+    use super::*;
+    use crate::core::ingest::IngestState;
+    use crate::harness::NodeHarness;
+
+    // a proposal for a hash no node holds, landing in the commit block, leaves
+    // a node free to propose its own
+    #[tokio::test]
+    async fn junk_proposal_in_commit_block() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .phase(EpochPhase::Closing)
+            .next_committee_size(20)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(0);
+        ctx.ingest.publish(IngestState::AtTip);
+        let epoch = harness.epoch();
+        let cancel = CancellationToken::new();
+
+        let candidate = build_assignment(&ctx, ctx.state(), &cancel)
+            .await
+            .expect("build")
+            .expect("a candidate");
+
+        let (_block_tx, block_rx) = mpsc::channel(1);
+        let mut manager = AssignmentManager::new(ctx.clone(), block_rx, cancel);
+
+        let junk = Hash::new_unique();
+        let block = ParsedBlock {
+            slot: SlotNumber(1),
+            parent_slot: SlotNumber(0),
+            blockhash: Hash::default(),
+            previous_blockhash: Hash::default(),
+            block_time: None,
+            instructions: vec![
+                ParsedInstruction::CommitEpoch {
+                    event: EpochCommitted { epoch, ..Zeroable::zeroed() },
+                },
+                ParsedInstruction::ProposeAssignment {
+                    hash: junk,
+                    proposer: Address::new_unique(),
+                    event: VoteProposed {
+                        kind: VoteKind::Assignment as u64,
+                        voting_epoch: epoch,
+                        target_epoch: epoch.next(),
+                        hash: junk,
+                        ..Zeroable::zeroed()
+                    },
+                },
+            ],
+            instruction_tx_ids: Vec::new(),
+        };
+
+        manager.on_block(Arc::new(block)).await.expect("block handled");
+        let round = manager.vote_round.take().expect("a vote round started");
+        round.await.expect("vote round joins");
+
+        let (vote, _) = assignment_vote_pda(epoch, epoch.next(), candidate.hash);
+        assert!(
+            ctx.rpc.rpc().get_account(&vote).await.is_ok(),
+            "the node's own hash has no vote account"
+        );
+    }
 }

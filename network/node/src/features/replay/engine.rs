@@ -10,7 +10,7 @@ use tracing::debug;
 use crate::core::error::NodeError;
 use crate::features::block::ingestor::ParsedBlock;
 use crate::features::replay::types::ReplayBatch;
-use crate::features::store::apply::apply_event;
+use crate::features::store::apply::{apply_event, DeletePolicy};
 use crate::features::store::manager::persist_batch;
 
 pub type ReplayPersistFn<Db> =
@@ -98,6 +98,7 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
             "bootstrap: applying snapshot log"
         );
 
+        // A snapshot log is a closed epoch, so no round still counts its deletes.
         for entry in &log.entries {
             for record in &entry.records {
                 apply_event(
@@ -106,6 +107,7 @@ impl<'a, Db: Store> ReplayEngine<'a, Db> {
                     entry.block_time,
                     &record.event,
                     self.profile,
+                    DeletePolicy::AtOnce,
                 )?;
             }
         }

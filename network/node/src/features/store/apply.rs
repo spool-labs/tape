@@ -32,6 +32,16 @@ const DELETE_TAPE_BATCH_SIZE: usize = 100;
 /// A slice missing at certification waits this many slots before the repair path takes it
 const REPAIR_GRACE_SLOTS: SlotNumber = SlotNumber(12);
 
+/// What a store does with a track the chain has deleted
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeletePolicy {
+    /// Remove the track when the delete is applied
+    AtOnce,
+    /// Keep a track the closing assignment round counts until its epoch is
+    /// over, as a storage node does
+    NextEpoch,
+}
+
 /// Apply a slot's events. `profile` is the network's, which sizes a track's
 /// slices and says how many spools its group holds.
 pub fn apply_slot<Db: Store>(
@@ -40,9 +50,10 @@ pub fn apply_slot<Db: Store>(
     block_time: Option<i64>,
     events: &[ReplayableEvent],
     profile: ErasureCode,
+    deletes: DeletePolicy,
 ) -> Result<(), NodeError> {
     for event in events {
-        apply_event(store, slot, block_time, event, profile)?;
+        apply_event(store, slot, block_time, event, profile, deletes)?;
     }
 
     Ok(())
@@ -54,6 +65,7 @@ pub fn apply_event<Db: Store>(
     block_time: Option<i64>,
     event: &ReplayableEvent,
     profile: ErasureCode,
+    deletes: DeletePolicy,
 ) -> Result<(), NodeError> {
     match event {
         ReplayableEvent::Track(replay) => {
@@ -62,9 +74,14 @@ pub fn apply_event<Db: Store>(
         ReplayableEvent::CertifyTrack { track, epoch } => {
             set_certified(store, *track, *epoch, slot, profile)?;
         }
-        ReplayableEvent::DeleteTrack { track, .. } => {
-            delete_track_local(store, *track, slot, profile)?;
-        }
+        ReplayableEvent::DeleteTrack { track, epoch } => match deletes {
+            DeletePolicy::AtOnce => {
+                delete_track_local(store, *track, slot, profile)?;
+            }
+            DeletePolicy::NextEpoch => {
+                defer_track_delete(store, *track, *epoch, slot, profile)?;
+            }
+        },
         ReplayableEvent::InvalidateTrack { track, epoch } => {
             invalidate_track(store, *track, *epoch, slot, profile)?;
         }
@@ -505,6 +522,67 @@ fn defer_certified_repairs<Db: Store>(
     Ok(())
 }
 
+/// Delete a track on a storage node. The assignment round of `epoch` counts a
+/// track registered and certified before it, so that track is flagged and kept
+/// until the epoch is over. Any other track goes at once.
+fn defer_track_delete<Db: Store>(
+    store: &TapeStore<Db>,
+    track: Address,
+    epoch: EpochNumber,
+    slot: SlotNumber,
+    profile: ErasureCode,
+) -> Result<(), NodeError> {
+    let info = store.get_object_info(track).map_err(store_error)?;
+
+    let flag = match info {
+        // A block applied twice after a crash finds the flag already written.
+        Some(ObjectInfo::Deleted { .. }) => return Ok(()),
+        Some(ObjectInfo::Valid {
+            track_address,
+            registered_epoch,
+            certified_epoch: Some(certified_epoch),
+            ..
+        }) if registered_epoch < epoch && certified_epoch < epoch => Some(ObjectInfo::Deleted {
+            kind: None,
+            track_address,
+            registered_epoch,
+            certified_epoch,
+            deleted_epoch: epoch,
+        }),
+        Some(ObjectInfo::System {
+            kind: SystemObjectKind::Blacklist,
+            track_address,
+            registered_epoch,
+            certified_epoch: Some(certified_epoch),
+            ..
+        }) if registered_epoch < epoch && certified_epoch < epoch => Some(ObjectInfo::Deleted {
+            kind: Some(SystemObjectKind::Blacklist),
+            track_address,
+            registered_epoch,
+            certified_epoch,
+            deleted_epoch: epoch,
+        }),
+        Some(
+            ObjectInfo::Valid { .. }
+            | ObjectInfo::System { .. }
+            | ObjectInfo::Invalid { .. }
+            | ObjectInfo::Blacklisted,
+        )
+        | None => None,
+    };
+
+    let row = store.get_track(track).map_err(store_error)?;
+    let (Some(flag), Some(row)) = (flag, row) else {
+        delete_track_local(store, track, slot, profile)?;
+        return Ok(());
+    };
+
+    remove_object_listing_for_track(store, track, &row)?;
+    cleanup_track_slices(store, track, row.group, slot, profile)?;
+
+    store.put_object_info(track, flag).map_err(store_error)
+}
+
 fn invalidate_track<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
@@ -541,12 +619,14 @@ mod tests {
     use tape_core::snapshot::replay::{ReplayTrack, ReplayTrackObject, ReplayableEvent};
     use tape_core::spooler::VirtualGroup;
     use tape_core::system::{SpoolState, SpoolStatus};
+    use tape_core::tape::{blacklist_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
-        ContentType, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
+        ContentType, EpochNumber, NodeId, SlotNumber, StorageUnits, StripeCount, TapeNumber,
+        TrackNumber,
     };
     use tape_crypto::address::Address;
     use tape_crypto::hash::hash;
@@ -556,14 +636,14 @@ mod tests {
         MetaOps, ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps,
         TrackDataOps, TrackOps,
     };
-    use tape_store::types::{ObjectInfo, TapeInfo};
+    use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
     use tape_store::TapeStore;
     use tape_store_api::Store as _;
 
     use crate::core::error::NodeError;
     use crate::features::spool::manager::has_pending_work;
 
-    use super::{apply_slot, REPAIR_GRACE_SLOTS};
+    use super::{apply_slot, DeletePolicy, REPAIR_GRACE_SLOTS};
 
     /// Spools in a tapenet group.
     const WIDTH: usize = TAPENET_PROFILE.n() as usize;
@@ -579,7 +659,7 @@ mod tests {
         block_time: Option<i64>,
         events: &[ReplayableEvent],
     ) -> Result<(), NodeError> {
-        apply_slot(store, slot, block_time, events, TAPENET_PROFILE)
+        apply_slot(store, slot, block_time, events, TAPENET_PROFILE, DeletePolicy::NextEpoch)
     }
 
     /// Copy every row into a fresh store, the way a restart finds what it left behind
@@ -869,7 +949,8 @@ mod tests {
         .unwrap();
 
         assert!(store.get_object_entry(tape, b"photos/cat.jpg").unwrap().is_none());
-        assert!(store.get_object_metadata(track).unwrap().is_none());
+        // The name's reverse lookup stays for the cleanup that removes the track.
+        assert!(store.get_object_metadata(track).unwrap().is_some());
     }
 
     #[test]
@@ -918,13 +999,12 @@ mod tests {
 
         apply(&store, SlotNumber(51), None, &[delete(second)]).unwrap();
 
-        assert!(store.get_track(first).unwrap().is_some());
-        assert!(store.get_track(second).unwrap().is_none());
-        assert!(store.get_object_info(second).unwrap().is_none());
+        assert!(is_deleted(&store, second));
+        assert!(!is_deleted(&store, first));
 
         apply(&store, SlotNumber(52), None, &[delete(first)]).unwrap();
 
-        assert!(store.get_track(first).unwrap().is_none());
+        assert!(is_deleted(&store, first));
 
         // The same content written after the deletes gets an address of its own.
         let later = written_again(&written, TrackNumber(9));
@@ -932,8 +1012,141 @@ mod tests {
         apply(&store, SlotNumber(53), None, &[later]).unwrap();
 
         assert_ne!(third, first);
-        assert!(store.get_object_info(third).unwrap().is_some());
-        assert!(store.get_track(first).unwrap().is_none());
+        assert!(!is_deleted(&store, third));
+        assert!(is_deleted(&store, first));
+    }
+
+    fn is_deleted(store: &TapeStore<MemoryStore>, track: Address) -> bool {
+        matches!(
+            store.get_object_info(track).unwrap(),
+            Some(ObjectInfo::Deleted { .. })
+        )
+    }
+
+    // a track an earlier epoch certified is flagged and kept whole
+    #[test]
+    fn delete_flags_counted_track() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let written = make_blob_track(tape, TrackNumber(2), EpochNumber(6));
+        let track = track_address(&written);
+
+        apply(&store, SlotNumber(40), None, &[written]).unwrap();
+        apply(
+            &store,
+            SlotNumber(41),
+            None,
+            &[ReplayableEvent::CertifyTrack { track, epoch: EpochNumber(7) }],
+        )
+        .unwrap();
+        apply(&store, SlotNumber(60), None, &[delete(track)]).unwrap();
+
+        assert_eq!(
+            store.get_object_info(track).unwrap(),
+            Some(ObjectInfo::Deleted {
+                kind: None,
+                track_address: track,
+                registered_epoch: EpochNumber(6),
+                certified_epoch: EpochNumber(7),
+                deleted_epoch: EpochNumber(8),
+            })
+        );
+        assert!(store.get_track(track).unwrap().is_some());
+        assert!(store.get_track_data(track).unwrap().is_some());
+    }
+
+    // a track written or certified in the delete's own epoch goes at once
+    #[test]
+    fn delete_removes_uncounted_track() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let written = make_raw_track(tape, TrackNumber(2), EpochNumber(8));
+        let track = track_address(&written);
+
+        apply(&store, SlotNumber(40), None, &[written]).unwrap();
+        apply(&store, SlotNumber(41), None, &[delete(track)]).unwrap();
+
+        assert!(store.get_track(track).unwrap().is_none());
+        assert!(store.get_object_info(track).unwrap().is_none());
+    }
+
+    // a delete applied twice, as after a crash, leaves the flag as it was
+    #[test]
+    fn delete_twice() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let written = make_raw_track(tape, TrackNumber(2), EpochNumber(7));
+        let track = track_address(&written);
+
+        apply(&store, SlotNumber(40), None, &[written]).unwrap();
+        apply(&store, SlotNumber(41), None, &[delete(track)]).unwrap();
+        let flagged = store.get_object_info(track).unwrap();
+
+        apply(&store, SlotNumber(41), None, &[delete(track)]).unwrap();
+
+        assert!(is_deleted(&store, track));
+        assert_eq!(store.get_object_info(track).unwrap(), flagged);
+        assert!(store.get_track(track).unwrap().is_some());
+    }
+
+    // a store that builds no assignment removes a counted track at once
+    #[test]
+    fn delete_at_once() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let written = make_raw_track(tape, TrackNumber(2), EpochNumber(7));
+        let track = track_address(&written);
+
+        apply(&store, SlotNumber(40), None, &[written]).unwrap();
+        apply_slot(
+            &store,
+            SlotNumber(41),
+            None,
+            &[delete(track)],
+            TAPENET_PROFILE,
+            DeletePolicy::AtOnce,
+        )
+        .unwrap();
+
+        assert!(store.get_track(track).unwrap().is_none());
+        assert!(store.get_object_info(track).unwrap().is_none());
+    }
+
+    // a removed blacklist entry keeps its system kind under the flag
+    #[test]
+    fn delete_flags_blacklist_entry() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        store
+            .put_tape(
+                tape,
+                TapeInfo {
+                    id: blacklist_tape_number(NodeId(3)),
+                    flags: TapeFlags::SYSTEM,
+                    end_epoch: EpochNumber(u64::MAX),
+                    next_track_number: TrackNumber(0),
+                    authority: Address::default(),
+                    delegate: Address::default(),
+                    share_nonce: Hash::default(),
+                },
+            )
+            .unwrap();
+        let written = make_raw_track(tape, TrackNumber(0), EpochNumber(7));
+        let track = track_address(&written);
+
+        apply(&store, SlotNumber(40), None, &[written]).unwrap();
+        apply(&store, SlotNumber(41), None, &[delete(track)]).unwrap();
+
+        assert_eq!(
+            store.get_object_info(track).unwrap(),
+            Some(ObjectInfo::Deleted {
+                kind: Some(SystemObjectKind::Blacklist),
+                track_address: track,
+                registered_epoch: EpochNumber(7),
+                certified_epoch: EpochNumber(7),
+                deleted_epoch: EpochNumber(8),
+            })
+        );
     }
 
     #[test]

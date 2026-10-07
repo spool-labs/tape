@@ -11,6 +11,7 @@ use tape_crypto::address::Address;
 use tape_store::ops::{
     ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SampleOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
 };
+use tape_store::types::ObjectInfo;
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -136,6 +137,13 @@ pub fn sweep_deleted_slices<Db: Store>(
         .track_samples_deleted_before(cutoff)
         .map_err(store_error)?
     {
+        // The assignment round still reads a flagged track's encoding. The
+        // epoch sweep removes the flag, and the next pass here takes the rest.
+        let info = store.get_object_info(track).map_err(store_error)?;
+        if matches!(info, Some(ObjectInfo::Deleted { .. })) {
+            continue;
+        }
+
         swept.slices += drop_track_slices(store, track, group, profile)?;
         store
             .delete_track_sample(group, track)

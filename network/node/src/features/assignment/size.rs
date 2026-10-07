@@ -69,8 +69,9 @@ enum TrackWeight {
 ///  Rules implemented:
 ///   - include only user ObjectInfo::Valid tracks with registered_epoch < voting_epoch;
 ///   - require certified_epoch < voting_epoch;
-///   - skip invalidated/deleted/uncertified/current-epoch tracks;
-///   - skip tapes with end_epoch <= target_epoch;
+///   - include a track deleted in the voting epoch, and skip one deleted before it;
+///   - skip invalidated/uncertified/current-epoch tracks;
+///   - skip tapes that had expired by the voting epoch;
 ///   - return zero for empty/new groups;
 ///   - count a track under the group that carries it at the target epoch's
 ///     group count, so a group that absorbs another weighs both;
@@ -157,16 +158,33 @@ fn active_track_footprint<Db: Store>(
     target: GroupFold,
     profile: ErasureCode,
 ) -> Result<TrackWeight, AssignmentSizeError> {
-    // Only ObjectInfo::Valid is accounted user data. System-owned tracks are
-    // kept live for repair/GC without entering assignment sizing.
-    let Some(ObjectInfo::Valid {
-        track_address,
-        registered_epoch,
-        certified_epoch,
-        ..
-    }) = info
-    else {
-        return Ok(TrackWeight::Excluded);
+    // Only user tracks are accounted. System-owned tracks are kept live for
+    // repair/GC without entering assignment sizing.
+    let (track_address, registered_epoch, certified_epoch) = match info {
+        Some(ObjectInfo::Valid {
+            track_address,
+            registered_epoch,
+            certified_epoch,
+            ..
+        }) => (track_address, registered_epoch, certified_epoch),
+        // A delete that landed in the voting epoch reaches each node at its own
+        // moment, so the track counts as if it had yet to land.
+        Some(ObjectInfo::Deleted {
+            kind: None,
+            track_address,
+            registered_epoch,
+            certified_epoch,
+            deleted_epoch,
+        }) if deleted_epoch >= voting_epoch => {
+            (track_address, registered_epoch, Some(certified_epoch))
+        }
+        Some(
+            ObjectInfo::Deleted { .. }
+            | ObjectInfo::System { .. }
+            | ObjectInfo::Invalid { .. }
+            | ObjectInfo::Blacklisted,
+        )
+        | None => return Ok(TrackWeight::Excluded),
     };
 
     if track_address != track {
@@ -196,7 +214,10 @@ fn active_track_footprint<Db: Store>(
         ));
     };
 
-    if tape.end_epoch <= target_epoch {
+    // A tape counts when it was live in the voting epoch, which is an end at or
+    // after the target epoch. No extension during the round changes that: the
+    // program refuses to extend an expired tape, and an end only moves later.
+    if tape.end_epoch < target_epoch {
         return Ok(TrackWeight::Excluded);
     }
 
@@ -310,7 +331,7 @@ mod tests {
     };
     use tape_crypto::Hash;
     use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
-    use tape_store::types::{ObjectInfo, TapeInfo};
+    use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 
     use super::*;
 
@@ -435,8 +456,9 @@ mod tests {
         assert_eq!(sizes[3], StorageUnits::zero());
     }
 
+    // a tape in its last epoch counts, so an extend during the round changes nothing
     #[test]
-    fn counts_tracks_after_extend() {
+    fn extend_in_round() {
         let store = test_store();
         let tape = Address::new_unique();
         let track = Address::new_unique();
@@ -448,19 +470,102 @@ mod tests {
             .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
             .unwrap();
 
-        // Expiring at the target epoch excludes the tape from sizing.
-        let sizes = ready_sizes(&store, EpochNumber(10), EpochNumber(11), 2)
+        let before = ready_sizes(&store, EpochNumber(10), EpochNumber(11), 2)
             .expect("weights ready");
-        assert_eq!(sizes[1], StorageUnits::zero());
+        assert_eq!(before[1], size);
 
-        // An applied extend moves the expiry out and the tracks count again.
         let mut info = store.get_tape(tape).expect("tape read").expect("tape stored");
         info.end_epoch = EpochNumber(30);
         store.put_tape(tape, info).expect("tape stored");
 
+        let after = ready_sizes(&store, EpochNumber(10), EpochNumber(11), 2)
+            .expect("weights ready");
+        assert_eq!(after, before);
+    }
+
+    // a tape that had expired by the voting epoch is left out
+    #[test]
+    fn expired_tape_skipped() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+
+        store.put_tape(tape, tape_info(EpochNumber(10))).unwrap();
+        store
+            .put_track(track, raw_track(tape, VirtualGroup(1), StorageUnits::from_bytes(64)))
+            .unwrap();
+        store
+            .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
+            .unwrap();
+
+        let sizes = ready_sizes(&store, EpochNumber(10), EpochNumber(11), 2)
+            .expect("weights ready");
+        assert_eq!(sizes[1], StorageUnits::zero());
+    }
+
+    fn deleted_object(track: Address, deleted_epoch: EpochNumber) -> ObjectInfo {
+        ObjectInfo::Deleted {
+            kind: None,
+            track_address: track,
+            registered_epoch: EpochNumber(8),
+            certified_epoch: EpochNumber(8),
+            deleted_epoch,
+        }
+    }
+
+    // a track deleted in the voting epoch still counts, and one deleted before it is skipped
+    #[test]
+    fn deleted_track_by_epoch() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+        let size = StorageUnits::from_bytes(64);
+
+        store.put_tape(tape, tape_info(EpochNumber(20))).unwrap();
+        store.put_track(track, raw_track(tape, VirtualGroup(1), size)).unwrap();
+
+        store
+            .put_object_info(track, deleted_object(track, EpochNumber(10)))
+            .unwrap();
         let sizes = ready_sizes(&store, EpochNumber(10), EpochNumber(11), 2)
             .expect("weights ready");
         assert_eq!(sizes[1], size);
+
+        store
+            .put_object_info(track, deleted_object(track, EpochNumber(9)))
+            .unwrap();
+        let sizes = ready_sizes(&store, EpochNumber(10), EpochNumber(11), 2)
+            .expect("weights ready");
+        assert_eq!(sizes[1], StorageUnits::zero());
+    }
+
+    // a removed blacklist entry is a system track and never enters the sizes
+    #[test]
+    fn deleted_system_track_skipped() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let track = Address::new_unique();
+
+        store.put_tape(tape, tape_info(EpochNumber(20))).unwrap();
+        store
+            .put_track(track, raw_track(tape, VirtualGroup(1), StorageUnits::from_bytes(64)))
+            .unwrap();
+        store
+            .put_object_info(
+                track,
+                ObjectInfo::Deleted {
+                    kind: Some(SystemObjectKind::Blacklist),
+                    track_address: track,
+                    registered_epoch: EpochNumber(8),
+                    certified_epoch: EpochNumber(8),
+                    deleted_epoch: EpochNumber(10),
+                },
+            )
+            .unwrap();
+
+        let sizes = ready_sizes(&store, EpochNumber(10), EpochNumber(11), 2)
+            .expect("weights ready");
+        assert_eq!(sizes[1], StorageUnits::zero());
     }
 
     #[test]
