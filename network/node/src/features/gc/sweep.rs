@@ -10,7 +10,10 @@ use tape_crypto::address::Address;
 use tape_core::track::types::CompressedTrack;
 use tape_store::{
     TapeStore,
-    ops::{ChallengeOps, ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps},
+    ops::{
+        ChallengeOps, ObjectInfoOps, RemovalOps, SliceOps, SpoolOps, TapeOps, TrackOps,
+        track_has_left,
+    },
     types::ObjectInfo,
 };
 use tracing::debug;
@@ -19,7 +22,7 @@ use crate::config::store::GcConfig;
 use crate::core::error::NodeError;
 use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::store::cleanup::{
-    cleanup_track_slices, delete_tape_local, delete_track_local, CleanupStats,
+    cleanup_track_slices, delete_tape_tracks, delete_track_local, CleanupStats,
 };
 
 const UNCERTIFIED_RETENTION_EPOCHS: u64 = 2;
@@ -33,7 +36,7 @@ const ROUND_RETENTION_EPOCHS: u64 = 1;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GcSweepStats {
-    pub tapes_deleted: usize,
+    pub tapes_cleared: usize,
     pub tracks_deleted: usize,
     pub slices_deleted: usize,
 }
@@ -68,11 +71,16 @@ pub async fn sweep_epoch<Db: Store>(
     );
     store.prune_rounds_before(keep_from).map_err(store_error)?;
 
+    // A removal entry is read by its own epoch's assignment round and by this
+    // sweep, and the store only reaches an epoch once the round before it is over.
+    store.prune_removals_before(current_epoch).map_err(store_error)?;
+
     Ok(stats)
 }
 
-/// Delete every tape expired as of `current_epoch`, with its tracks. The store
+/// Delete the tracks of every tape expired as of `current_epoch`. The store
 /// has to have reached that epoch, or an extension may still be on its way.
+/// The tape's row stays, since a renew brings the tape back under it.
 pub async fn sweep_expired_tapes<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
@@ -82,17 +90,60 @@ pub async fn sweep_expired_tapes<Db: Store>(
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
 
+    // The list is a moment old by the time a tape is reached, so the delete
+    // reads the tape's row again before it removes anything.
     let tapes = store.iter_all_tapes().map_err(store_error)?;
     for (index, (tape, info)) in tapes.into_iter().enumerate() {
         if info.end_epoch <= current_epoch {
-            stats +=
-                delete_tape_local(store, tape, track_batch(config), epoch_start_slot, profile)?
-                    .into();
+            stats += delete_tape_tracks(
+                store,
+                tape,
+                current_epoch,
+                track_batch(config),
+                epoch_start_slot,
+                profile,
+            )?
+            .into();
         }
 
         if should_yield(index) {
             yield_now().await;
         }
+    }
+
+    Ok(stats)
+}
+
+/// Delete every track that has left its tape. A gateway runs this pass: it
+/// builds no assignment, so no round still counts such a track.
+pub async fn sweep_left_tracks<Db: Store>(
+    store: &TapeStore<Db>,
+    config: &GcConfig,
+    epoch_start_slot: SlotNumber,
+    profile: ErasureCode,
+) -> Result<GcSweepStats, NodeError> {
+    let mut stats = GcSweepStats::default();
+    let mut cursor: Option<Vec<u8>> = None;
+
+    loop {
+        let (tracks, next) = store
+            .sweep_tracks(cursor.as_deref(), track_batch(config))
+            .map_err(store_error)?;
+
+        let tapes: Vec<Address> = tracks.iter().map(|(_, info)| info.tape).collect();
+        let parents = store.get_tapes(&tapes).map_err(store_error)?;
+
+        for ((track, info), parent) in tracks.iter().zip(parents) {
+            if track_has_left(parent.as_ref(), info) {
+                stats += delete_track_local(store, *track, epoch_start_slot, profile)?.into();
+            }
+        }
+
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+        yield_now().await;
     }
 
     Ok(stats)
@@ -225,8 +276,20 @@ async fn sweep_orphan_tracks<Db: Store>(
         for (((track, info), parent), object) in
             tracks.iter().zip(parents).zip(objects)
         {
-            if parent.is_none() {
+            // A track leaves when its tape is closed, rewound or renewed. It
+            // stays through the epoch it left in, whose assignment round
+            // counts it, and goes once that epoch is over.
+            if track_has_left(parent.as_ref(), info) {
                 if !at_tip {
+                    continue;
+                }
+
+                let is_counted = store
+                    .removals_from(info.tape, info.tape_number, current_epoch)
+                    .map_err(store_error)?
+                    .iter()
+                    .any(|tree_start| info.track_number >= *tree_start);
+                if is_counted {
                     continue;
                 }
 
@@ -234,7 +297,7 @@ async fn sweep_orphan_tracks<Db: Store>(
                     track = %track,
                     tape = %info.tape,
                     track_number = info.track_number.0,
-                    "gc deleting orphan track with missing parent tape"
+                    "gc deleting a track that has left its tape"
                 );
                 stats += delete_track_local(store, *track, epoch_start_slot, profile)?.into();
                 continue;
@@ -408,7 +471,7 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 
 impl core::ops::AddAssign for GcSweepStats {
     fn add_assign(&mut self, rhs: Self) {
-        self.tapes_deleted += rhs.tapes_deleted;
+        self.tapes_cleared += rhs.tapes_cleared;
         self.tracks_deleted += rhs.tracks_deleted;
         self.slices_deleted += rhs.slices_deleted;
     }
@@ -417,7 +480,7 @@ impl core::ops::AddAssign for GcSweepStats {
 impl From<CleanupStats> for GcSweepStats {
     fn from(value: CleanupStats) -> Self {
         Self {
-            tapes_deleted: value.tapes_deleted,
+            tapes_cleared: value.tapes_cleared,
             tracks_deleted: value.tracks_deleted,
             slices_deleted: value.slices_deleted,
         }
@@ -440,8 +503,8 @@ mod tests {
     use tape_core::challenge::sample::EntryKind;
     use tape_store::{
         ops::{
-            ChallengeOps, ObjectInfoOps, SampleOps, SliceOps, SpoolOps, TapeOps, TrackDataOps,
-            TrackOps,
+            ChallengeOps, ObjectInfoOps, RemovalOps, SampleOps, SliceOps, SpoolOps, TapeOps,
+            TrackDataOps, TrackOps,
         },
         types::{ObjectInfo, SystemObjectKind, TapeInfo, TrackSample},
         TapeStore,
@@ -486,6 +549,7 @@ mod tests {
     fn track_info(tape: Address, track_number: TrackNumber, group: VirtualGroup) -> CompressedTrack {
         CompressedTrack {
             tape,
+            tape_number: TapeNumber(1),
             key: Hash::new_unique(),
             track_number,
             kind: TrackKind::Coded as u64,
@@ -517,10 +581,11 @@ mod tests {
                     id: TapeNumber(1),
                     flags: 0,
                     end_epoch: EpochNumber(2),
-                    next_track_number: TrackNumber(0),
+                    next_track_number: TrackNumber(1),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .unwrap();
@@ -534,10 +599,72 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store.get_tape(tape).unwrap().is_none());
+        // The row stays for a renew, and goes when the tape is closed.
+        assert!(store.get_tape(tape).unwrap().is_some());
         assert!(store.get_track(track).unwrap().is_none());
         assert!(store.get_object_info(track).unwrap().is_none());
         assert!(store.get_slice(spool_id, track).unwrap().is_none());
+    }
+
+    // a track that left its tape stays through the sweep of the epoch it left
+    // in, whose round counts it, and goes with the next sweep. A track that
+    // left in an earlier epoch goes at once.
+    #[tokio::test]
+    async fn left_track_by_epoch() {
+        let store = test_store();
+        let config = test_config();
+        let tape = Address::new_unique();
+        let left_epoch = EpochNumber(6);
+        let earlier = track_info(tape, TrackNumber(0), VirtualGroup(1));
+        let counted = track_info(tape, TrackNumber(1), VirtualGroup(1));
+
+        for info in [earlier, counted] {
+            let track = info.address();
+            store.put_track(track, info).unwrap();
+            store
+                .put_object_info(track, valid_object(track, EpochNumber(2), SlotNumber(20)))
+                .unwrap();
+        }
+        // The tape was rewound before this epoch and closed in it, which left
+        // no row and an entry from the tree start it had by then.
+        store
+            .record_removal(tape, counted.tape_number, left_epoch, counted.track_number)
+            .unwrap();
+
+        sweep_epoch(&store, &config, left_epoch, SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
+            .await
+            .unwrap();
+
+        assert!(store.get_track(earlier.address()).unwrap().is_none());
+        assert!(store.get_track(counted.address()).unwrap().is_some());
+        assert!(store.get_removal(tape, counted.tape_number, left_epoch).unwrap().is_some());
+
+        sweep_epoch(&store, &config, left_epoch.next(), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
+            .await
+            .unwrap();
+
+        assert!(store.get_track(counted.address()).unwrap().is_none());
+        assert!(store.get_removal(tape, counted.tape_number, left_epoch).unwrap().is_none());
+    }
+
+    // a track that has left is kept while the node is behind the tip, where a
+    // missing tape row may only be a row the replay has yet to write
+    #[tokio::test]
+    async fn left_track_behind_tip() {
+        let store = test_store();
+        let config = test_config();
+        let info = track_info(Address::new_unique(), TrackNumber(0), VirtualGroup(1));
+        let track = info.address();
+        store.put_track(track, info).unwrap();
+        store
+            .put_object_info(track, valid_object(track, EpochNumber(2), SlotNumber(20)))
+            .unwrap();
+
+        sweep_epoch(&store, &config, EpochNumber(6), SlotNumber(0), &owned_spools(&[]), &PendingTracks::new(), false, TAPENET_PROFILE)
+            .await
+            .unwrap();
+
+        assert!(store.get_track(track).unwrap().is_some());
     }
 
     #[tokio::test]
@@ -587,9 +714,10 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(10),
                     next_track_number: TrackNumber(0),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .unwrap();
@@ -637,9 +765,10 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(0),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .unwrap();
@@ -697,9 +826,10 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(10),
                     next_track_number: TrackNumber(0),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .unwrap();
@@ -741,10 +871,11 @@ mod tests {
                     id: TapeNumber(1),
                     flags: 0,
                     end_epoch: EpochNumber(1),
-                    next_track_number: TrackNumber(0),
+                    next_track_number: TrackNumber(1),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .unwrap();
@@ -761,7 +892,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store.get_tape(tape).unwrap().is_none());
+        assert!(store.get_tape(tape).unwrap().is_some());
         assert!(store.get_track(track).unwrap().is_none());
         assert!(store.get_object_info(track).unwrap().is_none());
         assert!(store.get_slice(spool_id, track).unwrap().is_none());
@@ -988,9 +1119,10 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(10),
                     next_track_number: TrackNumber(0),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .unwrap();

@@ -660,9 +660,10 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(9),
             next_track_number: TrackNumber(1),
+            tree_start: TrackNumber(0),
             authority: Address::default(),
             delegate: Address::default(),
-            share_nonce: Hash::default(),
+            nonce: Hash::default(),
         }
     }
 
@@ -670,6 +671,7 @@ mod tests {
         TrackSnapshot {
             metadata: CompressedTrack {
                 tape,
+                tape_number: TapeNumber(1),
                 key: Hash::new_unique(),
                 track_number: TrackNumber(0),
                 kind: TrackKind::Inline as u64,

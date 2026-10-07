@@ -23,10 +23,14 @@ pub enum TapeError {
     NoSpace = 0x21,
     #[error("tape expired")]
     TapeExpired = 0x22,
+    #[error("tape not expired")]
+    TapeNotExpired = 0x23,
     #[error("not empty")]
     NotEmpty = 0x24,
     #[error("epoch inside a schedule row")]
     MidRow = 0x25,
+    #[error("tape immutable")]
+    TapeImmutable = 0x26,
 
     // Epoch
     #[error("bad epoch state")]
@@ -166,8 +170,10 @@ impl TapeError {
             Self::NoCapacity => "No storage capacity available",
             Self::NoSpace => "Insufficient space on tape",
             Self::TapeExpired => "Tape has expired",
+            Self::TapeNotExpired => "Tape has not expired yet",
             Self::NotEmpty => "Tape is not empty",
             Self::MidRow => "Epoch falls inside a schedule row",
+            Self::TapeImmutable => "Tape is immutable and can't be rewound, or closed before it expires",
             Self::BadEpochState => "Epoch is not in the expected phase",
             Self::TooSoon => "Please wait - epoch duration has not elapsed",
             Self::BadSchedule => "Invalid schedule",

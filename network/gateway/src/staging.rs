@@ -368,6 +368,18 @@ impl<Db: Store> StagingStore<Db> {
         Ok(())
     }
 
+    /// Drop every entry of a closed tape, returning how many went. A queued
+    /// write can never land there, and a landed one waits for an object the
+    /// index will never show.
+    pub async fn drop_tape(&self, tape: Address) -> Result<usize, TapeStoreError> {
+        let _guard = self.lock_tape(tape).await;
+        let entries = self.store.scan_pending_writes(tape)?;
+        for (key, write) in &entries {
+            self.remove(tape, key, write.seq)?;
+        }
+        Ok(entries.len())
+    }
+
     /// Keep a PUT's encode so the drain can write with it
     pub fn stage_plan(&self, etag: Hash, plan: UploadPlan) {
         let mut staged = self.staged_plans.lock().unwrap_or_else(PoisonError::into_inner);
@@ -838,5 +850,37 @@ mod tests {
         assert_eq!(reopened.queued_bytes(), data.len() as u64);
         assert_eq!(reopened.tape_queued_bytes(tape), data.len() as u64);
         assert_eq!(reopened.bytes(tape, b"big.bin").expect("bytes"), Some(data));
+    }
+
+    // dropping a closed tape takes its queued, landed and delete entries with
+    // their bytes and byte counts, and leaves another tape's queue alone
+    #[tokio::test]
+    async fn drops_tape() {
+        let staging = staging();
+        let cleared = Address::new([0x53; 32]);
+        let other = Address::new([0x54; 32]);
+        put(&staging, cleared, b"queued.bin", &pattern(64)).await;
+        staging
+            .enqueue_landed_put(
+                cleared,
+                b"landed.bin",
+                32,
+                ContentType::Unknown,
+                Hash([2u8; 32]),
+                1_700_000_000,
+                Address::new_unique(),
+            )
+            .await
+            .expect("enqueue landed put");
+        staging.enqueue_delete(cleared, b"gone.bin").await.expect("enqueue delete");
+        put(&staging, other, b"kept.bin", &pattern(16)).await;
+
+        assert_eq!(staging.drop_tape(cleared).await.expect("drop tape"), 3);
+
+        assert!(staging.entries(cleared).expect("entries").is_empty());
+        assert_eq!(staging.bytes(cleared, b"queued.bin").expect("bytes"), None);
+        assert_eq!(staging.tape_queued_bytes(cleared), 0);
+        assert_eq!(staging.entries(other).expect("entries").len(), 1);
+        assert_eq!(staging.queued_bytes(), 16);
     }
 }

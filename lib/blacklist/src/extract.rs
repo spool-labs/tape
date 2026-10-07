@@ -11,7 +11,7 @@ pub enum Change {
     Written { tape: Address, track_number: TrackNumber },
     /// A track was deleted or invalidated
     Removed { track: Address },
-    /// A tape was reserved or extended
+    /// A tape was reserved, extended, closed, rewound or renewed
     Tape { tape: Address },
     /// The epoch advanced, so tapes may have expired
     Epoch { epoch: EpochNumber },
@@ -30,7 +30,14 @@ pub fn change(record: &ReplayRecord) -> Option<Change> {
     {
         return Some(Change::Removed { track: *track });
     }
-    if let ReplayableEvent::ReserveTape { tape, .. } | ReplayableEvent::ExtendTape { tape, .. } = &record.event {
+    // A close, a rewind and a renew each take every track off the tape at
+    // once, so a list that reads the tape reads it again.
+    if let ReplayableEvent::ReserveTape { tape, .. }
+    | ReplayableEvent::ExtendTape { tape, .. }
+    | ReplayableEvent::CloseTape { tape, .. }
+    | ReplayableEvent::RewindTape { tape, .. }
+    | ReplayableEvent::RenewTape { tape, .. } = &record.event
+    {
         return Some(Change::Tape { tape: *tape });
     }
     if let ReplayableEvent::AdvanceEpoch { new_epoch, .. } = &record.event {
@@ -44,7 +51,7 @@ mod tests {
     use tape_core::snapshot::replay::ReplayTrack;
     use tape_core::spooler::VirtualGroup;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-    use tape_core::types::StorageUnits;
+    use tape_core::types::{StorageUnits, TapeNumber};
     use tape_crypto::Hash;
     use tape_crypto::tx::Txid;
 
@@ -62,6 +69,7 @@ mod tests {
         ReplayableEvent::Track(ReplayTrack {
             state: CompressedTrack {
                 tape,
+                tape_number: TapeNumber(1),
                 track_number: TrackNumber(number),
                 key: Hash::new_unique(),
                 kind: TrackKind::Inline as u64,
@@ -91,5 +99,24 @@ mod tests {
         assert_eq!(delete, Some(Change::Removed { track }));
         assert_eq!(invalidate, Some(Change::Removed { track }));
         assert_eq!(certify, None);
+    }
+
+    // a close and a rewind change the tape as a whole
+    #[test]
+    fn tape_cleared() {
+        let tape = Address::new_unique();
+        let (id, epoch) = (TapeNumber(1), EpochNumber(2));
+
+        let close = change(&record(ReplayableEvent::CloseTape { tape, id, epoch }));
+        let rewind = change(&record(ReplayableEvent::RewindTape {
+            tape,
+            id,
+            epoch,
+            tree_start: TrackNumber(4),
+            nonce: Hash::new_unique(),
+        }));
+
+        assert_eq!(close, Some(Change::Tape { tape }));
+        assert_eq!(rewind, Some(Change::Tape { tape }));
     }
 }

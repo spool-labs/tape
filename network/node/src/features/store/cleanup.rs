@@ -6,7 +6,7 @@ use tape_core::challenge::schedule::{
 use tape_core::encoding::ErasureCode;
 use tape_core::spooler::VirtualGroup;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{SlotNumber, SpoolIndex};
+use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_store::ops::{
     ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SampleOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
@@ -18,7 +18,7 @@ use crate::core::error::NodeError;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CleanupStats {
-    pub tapes_deleted: usize,
+    pub tapes_cleared: usize,
     pub tracks_deleted: usize,
     pub slices_deleted: usize,
 }
@@ -47,22 +47,35 @@ pub fn delete_track_local<Db: Store>(
     Ok(stats)
 }
 
-pub fn delete_tape_local<Db: Store>(
+/// Delete the tracks of the tape at an address, if it has expired as of
+/// `current_epoch`. The tape's row stays: it goes when the tape is closed, and
+/// a renew needs it until then.
+///
+/// The store keeps applying blocks while this runs. The row is read here and
+/// the walk stops at the track counter it shows, so a tape renewed since the
+/// caller looked, or one reserved again at the address, keeps its tracks: an
+/// expired tape takes no writes, and a renewed tape's tracks are numbered from
+/// that counter on.
+pub fn delete_tape_tracks<Db: Store>(
     store: &TapeStore<Db>,
     tape: Address,
+    current_epoch: EpochNumber,
     track_batch: usize,
     deleted_at: SlotNumber,
     profile: ErasureCode,
 ) -> Result<CleanupStats, NodeError> {
     let mut stats = CleanupStats::default();
-    if store.get_tape(tape).map_err(store_error)?.is_some() {
-        stats.tapes_deleted = 1;
+    let Some(expired) = store.get_tape(tape).map_err(store_error)? else {
+        return Ok(stats);
+    };
+    if expired.end_epoch > current_epoch {
+        return Ok(stats);
     }
     let mut cursor = None;
 
-    loop {
+    'walk: loop {
         let tracks = store
-            .iter_tracks_by_tape_from(tape, cursor, track_batch)
+            .iter_tracks_by_tape_from(tape, expired.id, cursor, track_batch)
             .map_err(store_error)?;
 
         if tracks.is_empty() {
@@ -72,6 +85,10 @@ pub fn delete_tape_local<Db: Store>(
         cursor = tracks.last().map(|info| info.track_number);
 
         for info in &tracks {
+            if info.track_number >= expired.next_track_number {
+                break 'walk;
+            }
+
             let track = info.address();
             remove_object_listing_for_track(store, track, info)?;
             stats.slices_deleted +=
@@ -83,7 +100,9 @@ pub fn delete_tape_local<Db: Store>(
         }
     }
 
-    store.delete_tape(tape).map_err(store_error)?;
+    if stats.tracks_deleted > 0 {
+        stats.tapes_cleared = 1;
+    }
     Ok(stats)
 }
 
@@ -217,7 +236,9 @@ pub fn remove_object_listing_for_track<Db: Store>(
         return Ok(());
     };
 
-    if entry.data_tape == info.tape && entry.track_number == info.track_number {
+    // The name may already list a newer write, which on a tape reserved again
+    // at this address can sit at the same track number.
+    if entry.track == track {
         store
             .delete_object_entry(info.tape, &metadata.name)
             .map_err(store_error)?;
@@ -235,24 +256,42 @@ mod tests {
     use super::*;
     use tape_store_memory::MemoryStore;
     use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::tape::TapeFlags;
     use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
-    use tape_core::types::{StorageUnits, TrackNumber};
+    use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::Hash;
+    use tape_store::types::TapeInfo;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
     }
 
-    // delete_tape_local derives each address from the stored leaf, so every
+    const TARGET: TapeNumber = TapeNumber(1);
+    const OTHER: TapeNumber = TapeNumber(2);
+    /// The seeded tapes end here, and the sweep under test runs in this epoch
+    const EXPIRY: EpochNumber = EpochNumber(10);
+    /// The seeded tapes' track counter, past every track the tests write
+    const WRITTEN: TrackNumber = TrackNumber(8);
+
+    fn seed_tape(store: &TapeStore<MemoryStore>, tape_number: TapeNumber) -> Address {
+        let tape = Address::new_unique();
+        let info = TapeInfo::new(tape_number, TapeFlags::NONE, EXPIRY, WRITTEN);
+        store.put_tape(tape, info).unwrap();
+        tape
+    }
+
+    // delete_tape_tracks derives each address from the stored leaf, so every
     // track is seeded under its own address.
     fn seed_track(
         store: &TapeStore<MemoryStore>,
         tape: Address,
+        tape_number: TapeNumber,
         track_number: TrackNumber,
         group: VirtualGroup,
     ) -> Address {
         let info = CompressedTrack {
             tape,
+            tape_number,
             key: Hash::new_unique(),
             track_number,
             kind: TrackKind::Coded as u64,
@@ -275,24 +314,26 @@ mod tests {
         track
     }
 
+    // a tape's tracks go and its row stays, and another tape is left alone
     #[test]
-    fn delete_tape_local_clears_only_its_own_tape() {
+    fn clears_only_its_own_tape() {
         let store = test_store();
-        let target = Address::new_unique();
-        let other = Address::new_unique();
+        let target = seed_tape(&store, TARGET);
+        let other = seed_tape(&store, OTHER);
         let group = VirtualGroup::from(3);
 
         let mine: Vec<Address> = (0..5)
-            .map(|n| seed_track(&store, target, TrackNumber(n), group))
+            .map(|n| seed_track(&store, target, TARGET, TrackNumber(n), group))
             .collect();
         let theirs: Vec<Address> = (0..3)
-            .map(|n| seed_track(&store, other, TrackNumber(n), group))
+            .map(|n| seed_track(&store, other, OTHER, TrackNumber(n), group))
             .collect();
 
         // Batch under the track count, so the tape cursor has to advance.
         let stats =
-            delete_tape_local(&store, target, 2, SlotNumber(10), TAPENET_PROFILE).unwrap();
+            delete_tape_tracks(&store, target, EXPIRY, 2, SlotNumber(10), TAPENET_PROFILE).unwrap();
 
+        assert_eq!(stats.tapes_cleared, 1);
         assert_eq!(stats.tracks_deleted, mine.len());
         assert_eq!(stats.slices_deleted, 0);
 
@@ -306,13 +347,93 @@ mod tests {
             assert!(store.has_slice(group.spool_at(0), track).unwrap());
         }
 
+        assert!(store.get_tape(target).unwrap().is_some());
+        assert!(store.get_tape(other).unwrap().is_some());
         assert!(store
-            .iter_tracks_by_tape_from(target, None, 16)
+            .iter_tracks_by_tape_from(target, TARGET, None, 16)
             .unwrap()
             .is_empty());
         assert_eq!(
-            store.iter_tracks_by_tape_from(other, None, 16).unwrap().len(),
+            store.iter_tracks_by_tape_from(other, OTHER, None, 16).unwrap().len(),
             3
         );
+    }
+
+    // the program gives every tape its own number, and a delete all the same
+    // leaves alone a tape that shares the deleted tape's number
+    #[test]
+    fn shared_number() {
+        let store = test_store();
+        let target = seed_tape(&store, TARGET);
+        let other = seed_tape(&store, TARGET);
+        let group = VirtualGroup::from(3);
+        let mine = seed_track(&store, target, TARGET, TrackNumber(0), group);
+        let theirs = seed_track(&store, other, TARGET, TrackNumber(0), group);
+
+        let stats =
+            delete_tape_tracks(&store, target, EXPIRY, 2, SlotNumber(10), TAPENET_PROFILE).unwrap();
+
+        assert_eq!(stats.tracks_deleted, 1);
+        assert!(!store.has_track(mine).unwrap());
+        assert!(store.has_track(theirs).unwrap());
+        assert!(store.get_tape(other).unwrap().is_some());
+    }
+
+    // a tape renewed or reserved again after the sweep listed it keeps its tracks
+    #[test]
+    fn live_again() {
+        let store = test_store();
+        let group = VirtualGroup::from(3);
+        let later = EpochNumber(EXPIRY.0 + 5);
+
+        // Renewed: the row is live again and its tree starts past the old track.
+        let renewed = seed_tape(&store, TARGET);
+        let row = TapeInfo {
+            end_epoch: later,
+            tree_start: TrackNumber(1),
+            ..TapeInfo::new(TARGET, TapeFlags::NONE, EXPIRY, WRITTEN)
+        };
+        store.put_tape(renewed, row).unwrap();
+        let old = seed_track(&store, renewed, TARGET, TrackNumber(0), group);
+        let new = seed_track(&store, renewed, TARGET, TrackNumber(1), group);
+
+        // Reserved again: the address holds another tape number.
+        let reserved = seed_tape(&store, TARGET);
+        store
+            .put_tape(reserved, TapeInfo::new(OTHER, TapeFlags::NONE, later, TrackNumber(1)))
+            .unwrap();
+        let fresh = seed_track(&store, reserved, OTHER, TrackNumber(0), group);
+
+        for tape in [renewed, reserved] {
+            let stats =
+                delete_tape_tracks(&store, tape, EXPIRY, 2, SlotNumber(10), TAPENET_PROFILE).unwrap();
+            assert_eq!(stats.tracks_deleted, 0);
+        }
+
+        // The old track has left its tape, and the sweep of such tracks takes it.
+        for track in [old, new, fresh] {
+            assert!(store.has_track(track).unwrap());
+        }
+    }
+
+    // the walk stops at the expired row's track counter, short of a later write
+    #[test]
+    fn renewed_mid_walk() {
+        let store = test_store();
+        let group = VirtualGroup::from(3);
+        let tape = Address::new_unique();
+        store
+            .put_tape(tape, TapeInfo::new(TARGET, TapeFlags::NONE, EXPIRY, TrackNumber(2)))
+            .unwrap();
+        let old: Vec<Address> = (0..2)
+            .map(|n| seed_track(&store, tape, TARGET, TrackNumber(n), group))
+            .collect();
+        let written_after = seed_track(&store, tape, TARGET, TrackNumber(2), group);
+
+        let stats =
+            delete_tape_tracks(&store, tape, EXPIRY, 1, SlotNumber(10), TAPENET_PROFILE).unwrap();
+
+        assert_eq!(stats.tracks_deleted, old.len());
+        assert!(store.has_track(written_after).unwrap());
     }
 }

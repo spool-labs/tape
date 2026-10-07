@@ -25,6 +25,7 @@ mod tests {
     fn track(value_hash: Hash) -> CompressedTrack {
         CompressedTrack {
             tape: Address::from([1u8; 32]),
+            tape_number: 1u64.into(),
             track_number: 1u64.into(),
             key: Hash::from([2u8; 32]),
             kind: TrackKind::Inline as u64,

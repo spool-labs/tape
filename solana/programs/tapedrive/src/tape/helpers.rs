@@ -8,7 +8,6 @@ pub struct TapeSpec {
     pub authority: Address,
     pub flags: u64,
     pub capacity: StorageUnits,
-    pub active_epoch: EpochNumber,
     pub expiry_epoch: EpochNumber,
 }
 
@@ -16,6 +15,7 @@ pub struct TapeSpec {
 pub struct TapeReservation {
     pub spec: TapeSpec,
     pub id: TapeNumber,
+    pub active_epoch: EpochNumber,
     pub payment: SchedulePayment,
 }
 
@@ -31,10 +31,32 @@ pub fn reserve_archive(
     archive: &mut Archive,
     spec: TapeSpec,
 ) -> Result<TapeReservation, ProgramError> {
-    if spec.active_epoch < current_epoch(system) {
-        return Err(ProgramError::InvalidArgument);
-    }
+    let (spec, payment) = schedule_reservation(system, archive, spec)?;
 
+    let next_count = archive
+        .tape_count
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    let tape_id = user_tape_number(next_count)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+
+    archive.tape_count = next_count;
+
+    Ok(TapeReservation {
+        spec,
+        id: tape_id,
+        active_epoch: current_epoch(system),
+        payment,
+    })
+}
+
+/// Schedule a reservation's capacity from the current epoch. The spec comes
+/// back with the expiry the tape gets.
+pub fn schedule_reservation(
+    system: &System,
+    archive: &mut Archive,
+    spec: TapeSpec,
+) -> Result<(TapeSpec, SchedulePayment), ProgramError> {
     // A request past the longest reservation the network takes is cut back
     // to it, and the tape pays for the epochs it gets.
     let latest_expiry = archive.latest_expiry().map_err(schedule_error)?;
@@ -47,20 +69,11 @@ pub fn reserve_archive(
         system,
         archive,
         spec.capacity,
-        spec.active_epoch,
+        current_epoch(system),
         spec.expiry_epoch,
     )?;
 
-    let next_count = archive
-        .tape_count
-        .checked_add(1)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-    let tape_id = user_tape_number(next_count)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-
-    archive.tape_count = next_count;
-
-    Ok(TapeReservation { spec, id: tape_id, payment })
+    Ok((spec, payment))
 }
 
 pub fn schedule_capacity(
@@ -199,11 +212,11 @@ pub fn create_tape_account<'account_info>(
     tape.id = reservation.id;
     tape.flags = reservation.spec.flags;
     tape.authority = reservation.spec.authority;
-    tape.active_epoch = reservation.spec.active_epoch;
+    tape.active_epoch = reservation.active_epoch;
     tape.expiry_epoch = reservation.spec.expiry_epoch;
     tape.capacity = reservation.spec.capacity;
     tape.used = StorageUnits::zero();
-    tape.seed_share_nonce(slot_hash);
+    tape.seed_nonce(slot_hash);
 
     TapeReserved {
         tape: reservation.spec.address,
@@ -211,12 +224,12 @@ pub fn create_tape_account<'account_info>(
         flags: reservation.spec.flags,
         authority: reservation.spec.authority,
         capacity: reservation.spec.capacity,
-        active_epoch: reservation.spec.active_epoch,
+        active_epoch: reservation.active_epoch,
         expiry_epoch: reservation.spec.expiry_epoch,
         cost: reservation.payment.cost,
         burned: reservation.payment.burned,
         scheduled: reservation.payment.scheduled,
-        share_nonce: tape.share_nonce,
+        nonce: tape.nonce,
     }
     .log();
 

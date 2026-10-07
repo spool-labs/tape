@@ -15,7 +15,9 @@ use tape_core::track::types::CompressedTrack;
 use tape_core::types::{EpochNumber, StorageUnits};
 use tape_crypto::Address;
 use tape_slicer::{num_stripes, stripe_chunk_len, SliceMetadata};
-use tape_store::ops::{ObjectInfoOps, TapeOps, TrackDataOps, TrackOps};
+use tape_store::ops::{
+    ObjectInfoOps, RemovalOps, TapeOps, TrackDataOps, TrackOps, track_has_left,
+};
 use tape_store::types::ObjectInfo;
 use tape_store::TapeStore;
 
@@ -207,17 +209,27 @@ fn active_track_footprint<Db: Store>(
     }
 
     let tape = store.get_tape(metadata.tape).map_err(store_error)?;
-    let Some(tape) = tape else {
-        return Err(invalid_track(
-            track,
-            format!("missing tape metadata for tape {}", metadata.tape),
-        ));
-    };
 
-    // A tape counts when it was live in the voting epoch, which is an end at or
-    // after the target epoch. No extension during the round changes that: the
-    // program refuses to extend an expired tape, and an end only moves later.
-    if tape.end_epoch < target_epoch {
+    if track_has_left(tape.as_ref(), metadata) {
+        // A close or a rewind that landed in the voting epoch reaches each node
+        // at its own moment, so its tracks count as if it had yet to land. The
+        // entry is only written for a tape that was live in that epoch, and it
+        // gives the tree start the tape had then: a track numbered below it
+        // left in an earlier epoch.
+        let left_in_voting_epoch = store
+            .get_removal(metadata.tape, metadata.tape_number, voting_epoch)
+            .map_err(store_error)?
+            .is_some_and(|tree_start| metadata.track_number >= tree_start);
+
+        if !left_in_voting_epoch {
+            return Ok(TrackWeight::Excluded);
+        }
+    } else if tape.is_some_and(|tape| tape.end_epoch < target_epoch) {
+        // A tape counts when it was live in the voting epoch, which is an end at
+        // or after the target epoch. No extension during the round changes that:
+        // the program refuses to extend an expired tape, and an end only moves
+        // later. A renew moves the tree's start too, so the expired tape's
+        // tracks have left.
         return Ok(TrackWeight::Excluded);
     }
 
@@ -399,15 +411,17 @@ mod tests {
             flags: 0,
             end_epoch,
             next_track_number: TrackNumber(0),
+            tree_start: TrackNumber(0),
             authority: Address::default(),
             delegate: Address::default(),
-            share_nonce: Hash::default(),
+            nonce: Hash::default(),
         }
     }
 
     fn raw_track(tape: Address, group: VirtualGroup, size: StorageUnits) -> CompressedTrack {
         CompressedTrack {
             tape,
+            tape_number: TapeNumber(1),
             track_number: TrackNumber(0),
             key: Hash::new_unique(),
             kind: TrackKind::Inline as u64,
@@ -537,6 +551,104 @@ mod tests {
         let sizes = ready_sizes(&store, EpochNumber(10), EpochNumber(11), 2)
             .expect("weights ready");
         assert_eq!(sizes[1], StorageUnits::zero());
+    }
+
+    const VOTING: EpochNumber = EpochNumber(10);
+    const TARGET: EpochNumber = EpochNumber(11);
+    const LEFT_GROUP: usize = 1;
+
+    /// A certified track at `number` on a tape, registered before the voting epoch
+    fn put_numbered(
+        store: &TapeStore<MemoryStore>,
+        tape: Address,
+        tape_number: TapeNumber,
+        number: u64,
+        size: StorageUnits,
+    ) {
+        let track = Address::new_unique();
+        let state = CompressedTrack {
+            tape_number,
+            track_number: TrackNumber(number),
+            ..raw_track(tape, VirtualGroup(LEFT_GROUP as u64), size)
+        };
+        store.put_track(track, state).unwrap();
+        store
+            .put_object_info(track, valid_object(track, EpochNumber(8), SlotNumber(1)))
+            .unwrap();
+    }
+
+    fn left_group_size(store: &TapeStore<MemoryStore>, voting_epoch: EpochNumber) -> StorageUnits {
+        let sizes = ready_sizes(store, voting_epoch, voting_epoch.next(), 2).expect("weights ready");
+        sizes[LEFT_GROUP]
+    }
+
+    // a tape closed in the voting epoch still weighs what it held, and weighs
+    // nothing in the round after
+    #[test]
+    fn closed_tape_by_epoch() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let size = StorageUnits::from_bytes(64);
+        put_numbered(&store, tape, TapeNumber(1), 0, size);
+
+        // The close deleted the tape's row and left this entry.
+        store.record_removal(tape, TapeNumber(1), VOTING, TrackNumber(0)).unwrap();
+
+        assert_eq!(left_group_size(&store, VOTING), size);
+        assert_eq!(left_group_size(&store, TARGET), StorageUnits::zero());
+    }
+
+    // after a rewind in the voting epoch, the tracks the tape held when the
+    // epoch began still count. A track from before an earlier rewind does not.
+    #[test]
+    fn rewound_tape_by_epoch() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let earlier = StorageUnits::from_bytes(1);
+        let rewound = StorageUnits::from_bytes(10);
+        let held = StorageUnits::from_bytes(100);
+        put_numbered(&store, tape, TapeNumber(1), 0, earlier);
+        put_numbered(&store, tape, TapeNumber(1), 1, rewound);
+        put_numbered(&store, tape, TapeNumber(1), 2, held);
+
+        // An earlier rewind moved the start to 1, and this epoch's moved it to 2.
+        let row = TapeInfo { tree_start: TrackNumber(2), ..tape_info(EpochNumber(20)) };
+        store.put_tape(tape, row).unwrap();
+        store.record_removal(tape, TapeNumber(1), VOTING, TrackNumber(1)).unwrap();
+
+        assert_eq!(left_group_size(&store, VOTING), rewound + held);
+        assert_eq!(left_group_size(&store, TARGET), held);
+    }
+
+    // a tape closed and reserved again in the voting epoch: the closed tape's
+    // tracks count under its own number, whatever the new tape's row says
+    #[test]
+    fn reserved_again_in_epoch() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        let size = StorageUnits::from_bytes(64);
+        put_numbered(&store, tape, TapeNumber(1), 0, size);
+
+        let row = TapeInfo { id: TapeNumber(2), ..tape_info(EpochNumber(20)) };
+        store.put_tape(tape, row).unwrap();
+        store.record_removal(tape, TapeNumber(1), VOTING, TrackNumber(0)).unwrap();
+
+        assert_eq!(left_group_size(&store, VOTING), size);
+        assert_eq!(left_group_size(&store, TARGET), StorageUnits::zero());
+    }
+
+    // a renewed tape is live again, and the tracks it held when it expired
+    // weigh nothing: a renew leaves no entry
+    #[test]
+    fn renewed_tape_weighs_nothing() {
+        let store = test_store();
+        let tape = Address::new_unique();
+        put_numbered(&store, tape, TapeNumber(1), 0, StorageUnits::from_bytes(64));
+
+        let row = TapeInfo { tree_start: TrackNumber(1), ..tape_info(EpochNumber(20)) };
+        store.put_tape(tape, row).unwrap();
+
+        assert_eq!(left_group_size(&store, VOTING), StorageUnits::zero());
     }
 
     // a removed blacklist entry is a system track and never enters the sizes

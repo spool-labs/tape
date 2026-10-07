@@ -420,6 +420,7 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::{json, Value};
     use tape_core::prelude::{VirtualGroup, StorageUnits, TrackNumber};
+    use tape_core::types::TapeNumber;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_crypto::hash::hash;
     use tape_crypto::Hash;
@@ -631,6 +632,7 @@ mod tests {
     fn record(tape: Address, number: u64, size: u64) -> CompressedTrack {
         CompressedTrack {
             tape,
+            tape_number: TapeNumber(1),
             track_number: TrackNumber(number),
             key: hash(&number.to_le_bytes()),
             kind: TrackKind::Coded as u64,

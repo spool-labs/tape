@@ -1,8 +1,11 @@
+use std::fmt::Display;
 use std::sync::Arc;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::encoding::ErasureCode;
+use tape_core::snapshot::replay::ReplayableEvent;
+use tape_crypto::address::Address;
 use tape_node::context::NodeContext;
 use tape_node::core::error::NodeError;
 use tape_node::core::types::ChannelName;
@@ -14,19 +17,23 @@ use tape_node::features::store::manager::{
 };
 use tape_protocol::Api;
 use tape_store::TapeStore;
+use tape_store::ops::MultipartOps;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 use crate::blacklist::denials::GatewayBlacklists;
 use crate::blacklist::follow::BlacklistFollow;
 use crate::cache::GatewaySliceCache;
-use crate::sweep::ExpiredTapeSweep;
+use crate::staging::StagingStore;
+use crate::sweep::EpochSweep;
 
 pub struct GatewayStoreManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
     rx: mpsc::Receiver<ReplayBatch>,
     follow: BlacklistFollow<Db, Cluster, Blockchain>,
-    sweep: ExpiredTapeSweep,
+    staging: Arc<StagingStore<Db>>,
+    sweep: EpochSweep,
     cancel: CancellationToken,
 }
 
@@ -36,6 +43,7 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
         rx: mpsc::Receiver<ReplayBatch>,
         slice_cache: Arc<GatewaySliceCache<Db>>,
         blacklists: Arc<GatewayBlacklists>,
+        staging: Arc<StagingStore<Db>>,
         cancel: CancellationToken,
     ) -> Self {
         let follow = BlacklistFollow::new(context.clone(), slice_cache, blacklists);
@@ -43,7 +51,8 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
             context,
             rx,
             follow,
-            sweep: ExpiredTapeSweep::default(),
+            staging,
+            sweep: EpochSweep::default(),
             cancel,
         }
     }
@@ -83,6 +92,10 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
                     if let Some(epoch) = batch.advanced_epoch {
                         self.context.store_epoch.reach(epoch);
                     }
+                    for tape in closed_tapes(&batch) {
+                        drop_accepted_writes(self.context.store.as_ref(), &self.staging, tape)
+                            .await?;
+                    }
                     self.follow.apply_block(&batch, &self.cancel).await?;
 
                     self.context.pending.drop_slot(batch.slot);
@@ -96,6 +109,52 @@ impl<Db: Store + 'static, Cluster: Api, Blockchain: Rpc> GatewayStoreManager<Db,
             }
         }
     }
+}
+
+/// The tapes a batch closed
+fn closed_tapes(batch: &ReplayBatch) -> Vec<Address> {
+    let mut tapes = Vec::new();
+    for record in &batch.records {
+        if let ReplayableEvent::CloseTape { tape, .. } = &record.event {
+            tapes.push(*tape);
+        }
+    }
+    tapes
+}
+
+/// Drop what the gateway accepted for a tape that is now closed: its queued S3
+/// writes and its open multipart uploads. None of them can land. A tape
+/// reserved again at the address starts with no delegate, so the gateway
+/// can't write to it until its owner sets one.
+///
+/// A rewind and a renew keep the delegate and drop nothing here. A write
+/// acknowledged after the rewind landed on chain can still be in the queue
+/// when the rewind is final, and it has to land. The drain clears the one
+/// kind of entry a rewind strands, a write that landed on a track the rewind
+/// took.
+async fn drop_accepted_writes<Db: Store>(
+    store: &TapeStore<Db>,
+    staging: &StagingStore<Db>,
+    tape: Address,
+) -> Result<(), NodeError> {
+    let writes = staging.drop_tape(tape).await.map_err(store_error)?;
+
+    let mut uploads = 0usize;
+    for (upload_id, upload) in store.list_multipart_uploads().map_err(store_error)? {
+        if upload.bucket == tape {
+            store.delete_multipart_upload(&upload_id).map_err(store_error)?;
+            uploads += 1;
+        }
+    }
+
+    if writes > 0 || uploads > 0 {
+        info!(%tape, writes, uploads, "dropped the writes accepted for a closed tape");
+    }
+    Ok(())
+}
+
+fn store_error(error: impl Display) -> NodeError {
+    NodeError::Store(error.to_string())
 }
 
 /// Every raw track is kept: a gateway serves reads for all of them. A deleted

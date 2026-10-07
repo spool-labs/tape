@@ -6,10 +6,11 @@
 //! - `meta`: Node configuration and metadata (String -> Vec<u8>)
 //! - `tape`: Tape metadata (Address -> TapeInfo)
 //! - `track`: Canonical compressed-track catalog (Address -> PackedTrack)
-//! - `track_lookup`: Tape-local ordered index ((tape, track_number, key) -> ())
+//! - `track_lookup`: Tape-local ordered index ((tape, tape_number, track_number) -> Address)
 //! - `track_data`: Local track payload data (Address -> BlobData)
 //! - `object_info`: Object metadata (Address -> ObjectInfo)
 //! - `object_metadata`: Named-object reverse lookup (Address -> ObjectMetadata)
+//! - `removal_log`: Tapes closed or rewound in an epoch ((tape, tape_number, epoch) -> TrackNumber)
 //!
 //! ## Sync Columns
 //! - `sync_cursor`: Last processed slot (UnitKey -> SlotNumber)
@@ -64,6 +65,7 @@ pub mod object_info;
 pub mod object_list;
 pub mod object_metadata;
 pub mod policy;
+pub mod removal_log;
 pub mod s3_multipart;
 pub mod s3_pending;
 pub mod snapshot;
@@ -91,6 +93,7 @@ pub use object_info::ObjectInfoCol;
 pub use object_list::ObjectListCol;
 pub use object_metadata::ObjectMetadataCol;
 pub use policy::PolicyRuleCol;
+pub use removal_log::RemovalLogCol;
 pub use s3_multipart::{S3MultipartPartCol, S3MultipartPartDataCol, S3MultipartUploadCol};
 pub use s3_pending::{S3PendingWriteCol, S3PendingWriteDataCol};
 pub use snapshot::SnapshotArtifactCol;
@@ -140,4 +143,5 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "s3_multipart_part_data",
     "s3_pending_write",
     "s3_pending_write_data",
+    "removal_log",
 ];

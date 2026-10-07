@@ -31,7 +31,7 @@ use tape_core::tape::TapeFlags;
 use tape_core::track::archive::{TrackArchive, TRACK_TREE_HEIGHT};
 use tape_core::track::mirror::ArchiveMirror;
 use tape_core::track::types::CompressedTrackProof;
-use tape_core::types::ContentType;
+use tape_core::types::{ContentType, TapeNumber};
 use tape_crypto::hash::hash;
 use tape_crypto::merkle::{hash_leaf, MerkleLeafTree};
 use tape_crypto::prelude::{Address, Hash};
@@ -896,6 +896,7 @@ async fn send_raw<Blockchain: Rpc, Cluster: Api>(
     let meta = TrackMeta::inline(raw);
     let track = CompressedTrack {
         tape: written.tape,
+        tape_number: written.tape_number,
         track_number: written.track_number,
         key,
         kind: meta.kind as u64,
@@ -1064,6 +1065,7 @@ pub(crate) async fn resolve_sent_raw<Blockchain: Rpc, Cluster: Api>(
     let written = fetch_track_written_event(client, &sent.signature).await?;
     let track = CompressedTrack {
         tape: written.tape,
+        tape_number: written.tape_number,
         track_number: written.track_number,
         key: sent.key,
         kind: sent.kind,
@@ -1181,6 +1183,7 @@ pub(crate) async fn resolve_sent_blob<Blockchain: Rpc, Cluster: Api>(
 
     let track = CompressedTrack {
         tape: written.tape,
+        tape_number: written.tape_number,
         track_number: written.track_number,
         key: sent.key,
         kind: meta.kind as u64,
@@ -1727,9 +1730,16 @@ pub(crate) async fn wait_for_certified_track<Blockchain: Rpc, Cluster: Api>(
 }
 
 /// The content address a track with this key and content gets on `tape`
-fn content_address(tape: Address, key: Hash, meta: &TrackMeta, flags: u64) -> Hash {
+fn content_address(
+    tape: Address,
+    tape_number: TapeNumber,
+    key: Hash,
+    meta: &TrackMeta,
+    flags: u64,
+) -> Hash {
     CompressedTrack {
         tape,
+        tape_number,
         track_number: TrackNumber(0),
         key,
         kind: meta.kind as u64,
@@ -1745,6 +1755,7 @@ fn content_address(tape: Address, key: Hash, meta: &TrackMeta, flags: u64) -> Ha
 /// The content address of a coded track for `name` registered with this plan
 pub(crate) fn coded_content_address(
     tape: Address,
+    tape_number: TapeNumber,
     name: &[u8],
     plan: &UploadPlan,
     flags: u64,
@@ -1753,13 +1764,19 @@ pub(crate) fn coded_content_address(
     let meta = slice
         .meta(plan.profile)
         .ok_or_else(|| TapedriveError::Encoding("coded blob has no commitment".into()))?;
-    Ok(content_address(tape, track_key(name, &slice), &meta, flags))
+    Ok(content_address(tape, tape_number, track_key(name, &slice), &meta, flags))
 }
 
 /// The content address of an inline track for `name` holding these bytes
-pub(crate) fn inline_content_address(tape: Address, name: &[u8], data: &[u8], flags: u64) -> Hash {
+pub(crate) fn inline_content_address(
+    tape: Address,
+    tape_number: TapeNumber,
+    name: &[u8],
+    data: &[u8],
+    flags: u64,
+) -> Hash {
     let key = track_key(name, &BlobDataSlice::Inline(data));
-    content_address(tape, key, &TrackMeta::inline(data), flags)
+    content_address(tape, tape_number, key, &TrackMeta::inline(data), flags)
 }
 
 /// Tracks one listing page of a resumed write asks for
@@ -1767,8 +1784,8 @@ const RESUME_LIST_PAGE: u32 = 1024;
 
 /// What a tape holds, by content address, for a resumed write to match against
 pub(crate) struct TapeContents {
+    tape_number: TapeNumber,
     tracks: HashMap<Hash, CompressedTrack>,
-    /// The tape adds these flags to every track written to it
     flags: u64,
 }
 
@@ -1788,17 +1805,21 @@ impl TapeContents {
             let account = client.get_tape(&tape).await?;
             let flags = TapeFlags::track_flags(account.flags);
             let archive = account.tracks;
-            if archive.next_number() == TrackNumber(0) {
-                return Ok(Self::from_tracks(Vec::new(), flags));
+            if archive.tree.next_index == 0 {
+                return Ok(Self::from_tracks(Vec::new(), flags, account.id));
             }
 
-            let listed = list_tape(client, tape).await?;
+            // A peer may still list tracks from before the tape's tree was
+            // cleared. They have no leaf, and a write must never match one.
+            let mut listed = list_tape(client, tape).await?;
+            listed.retain(|track| archive.position(track.track_number).is_some());
+
             if listed_root(&listed, &archive) == Some(archive.tree.root()) {
-                return Ok(Self::from_tracks(listed, flags));
+                return Ok(Self::from_tracks(listed, flags, account.id));
             }
             match backoff.next_delay() {
                 Some(delay) => sleep(delay).await,
-                None => return Ok(Self::from_tracks(listed, flags)),
+                None => return Ok(Self::from_tracks(listed, flags, account.id)),
             }
         }
     }
@@ -1806,7 +1827,11 @@ impl TapeContents {
     /// Of the tracks with one content, the certified one with the highest
     /// number stays, or the highest-numbered when none is certified, so an
     /// unfinished write gets finished.
-    pub(crate) fn from_tracks(listed: Vec<CompressedTrack>, flags: u64) -> Self {
+    pub(crate) fn from_tracks(
+        listed: Vec<CompressedTrack>,
+        flags: u64,
+        tape_number: TapeNumber,
+    ) -> Self {
         let mut tracks: HashMap<Hash, CompressedTrack> = HashMap::new();
         for track in listed {
             let held = tracks.entry(track.content_address()).or_insert(track);
@@ -1814,13 +1839,17 @@ impl TapeContents {
                 *held = track;
             }
         }
-        Self { tracks, flags }
+        Self { tracks, flags, tape_number }
     }
 
     /// A write lands with the tape's flags added, and a content-address
     /// lookup has to match that
     pub(crate) fn track_flags(&self, flags: u64) -> u64 {
         flags | self.flags
+    }
+
+    pub(crate) fn tape_number(&self) -> TapeNumber {
+        self.tape_number
     }
 
     pub(crate) fn find(&self, content: &Hash) -> Option<CompressedTrack> {
@@ -1848,11 +1877,13 @@ async fn list_tape<Blockchain: Rpc, Cluster: Api>(
 }
 
 /// The root the listed tracks give the tape's tree, or nothing when a track
-/// sits past the end of the tape as the chain has it
+/// sits outside the tree as the chain has it
 fn listed_root(listed: &[CompressedTrack], archive: &TrackArchive) -> Option<Hash> {
-    let mut leaves = vec![hash_leaf(&[]); archive.next_number().as_usize()];
+    let leaf_count = usize::try_from(archive.tree.next_index).ok()?;
+    let mut leaves = vec![hash_leaf(&[]); leaf_count];
     for track in listed {
-        *leaves.get_mut(track.track_number.as_usize())? = track.get_hash();
+        let position = usize::try_from(archive.position(track.track_number)?).ok()?;
+        *leaves.get_mut(position)? = track.get_hash();
     }
     let tree = MerkleLeafTree::new(&leaves, TRACK_TREE_HEIGHT).ok()?;
     Some(tree.root())
@@ -1909,7 +1940,7 @@ async fn resume_track<Blockchain: Rpc, Cluster: Api>(
 
     if inline_write_fits(name, data.len()) {
         // Inline tracks certify at register, so one found is complete.
-        let content = inline_content_address(tape, name, data, flags);
+        let content = inline_content_address(tape, contents.tape_number(), name, data, flags);
         return match contents.find(&content) {
             Some(existing) => Ok(existing),
             None => write_track_only(client, tape_key, name, content_type, data, None, flags).await,
@@ -1917,7 +1948,7 @@ async fn resume_track<Blockchain: Rpc, Cluster: Api>(
     }
 
     let plan = encode_blob(client, data.to_vec(), Operation::Write).await?;
-    let content = coded_content_address(tape, name, &plan, flags)?;
+    let content = coded_content_address(tape, contents.tape_number(), name, &plan, flags)?;
     match contents.find(&content) {
         Some(existing) => {
             finish_coded_track(client, tape_key, existing, &plan, Operation::Write).await
@@ -2095,6 +2126,30 @@ async fn certify_with_mirror<Blockchain: Rpc, Cluster: Api>(
     }
 }
 
+/// End a write whose track is no longer on its tape. The tape was closed,
+/// rewound or renewed after the track was registered, so no retry can store or
+/// certify it. The retry loops ask after a failed attempt.
+///
+/// Only the chain's answer counts. A failed read of the tape leaves the
+/// caller to its retry.
+async fn ensure_on_tape<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    track: &CompressedTrack,
+) -> Result<(), TapedriveError> {
+    let has_left = match client.get_tape(&track.tape).await {
+        Ok(tape) => {
+            tape.id != track.tape_number || track.track_number < tape.tracks.tree_start()
+        }
+        Err(TapedriveError::Rpc(RpcError::AccountNotFound(_))) => true,
+        Err(_) => false,
+    };
+
+    match has_left {
+        true => Err(TapedriveError::TrackLeftTape),
+        false => Ok(()),
+    }
+}
+
 pub(crate) async fn upload_with_retry<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     written: &WrittenTrack,
@@ -2108,6 +2163,7 @@ pub(crate) async fn upload_with_retry<Blockchain: Rpc, Cluster: Api>(
         match upload(client, written, plan, operation, &mut progress).await {
             Ok(receipts) => return Ok(receipts),
             Err(err) if should_retry_upload(&err) => {
+                ensure_on_tape(client, &written.track).await?;
                 warn!(error = %err, track = %written.address, "upload attempt failed; retrying");
                 match backoff.next_delay() {
                     Some(delay) => sleep(delay).await,
@@ -2158,6 +2214,7 @@ pub(crate) async fn certify_submit_with_retry<Blockchain: Rpc, Cluster: Api>(
         match certify_once(client, tape_key, written, operation, &mut collected, banked).await {
             Ok(()) => return Ok(()),
             Err(err) if should_retry_certification(&err) => {
+                ensure_on_tape(client, &written.track).await?;
                 if needs_fresh_signatures(&err) {
                     // An epoch roll invalidates the cached committee along
                     // with the signatures; force the next collect to verify.
@@ -2305,18 +2362,54 @@ mod tests {
 
     use super::{
         check_plan_matches, coded_key, content_etag, content_etag_named, hash, inline_write_fits,
-        is_epoch_changed, needs_fresh_signatures, plan_blob, prepare_plan, read_after_confirmation,
-        should_retry_certification, ErasureCode, Hash, RpcError, TapeError, MAX_INLINE_WRITE,
+        is_epoch_changed, listed_root, needs_fresh_signatures, plan_blob, prepare_plan,
+        read_after_confirmation, should_retry_certification, CompressedTrack, ErasureCode, Hash,
+        RpcError, StorageUnits, TapeError, TapeNumber, TrackArchive, TrackNumber, TrackState,
+        VirtualGroup, MAX_INLINE_WRITE,
     };
+    use bytemuck::Zeroable;
     use tape_api::instruction::build_track_write_ix;
     use tape_core::encoding::{RSParams, TAPENET_PROFILE};
     use tape_core::track::data::{BlobData, BlobInfo};
     use tape_core::erasure::SUB_LEAF_BYTES;
-    use tape_core::track::types::TrackFlags;
+    use tape_core::track::types::{TrackFlags, TrackKind};
     use tape_crypto::prelude::Address;
 
     fn blob(len: usize) -> Vec<u8> {
         (0..len).map(|i| (i * 31 + 7) as u8).collect()
+    }
+
+    fn listed(number: u64) -> CompressedTrack {
+        CompressedTrack {
+            tape: Address::default(),
+            tape_number: TapeNumber(1),
+            track_number: TrackNumber(number),
+            key: Hash::from([number as u8; 32]),
+            kind: TrackKind::Inline as u64,
+            state: TrackState::Certified as u64,
+            flags: TrackFlags::NONE,
+            size: StorageUnits::from_bytes(1),
+            group: VirtualGroup(0),
+            value_hash: Hash::default(),
+        }
+    }
+
+    // a listing rebuilds the root of a tree that was cleared, where track
+    // numbers run ahead of positions
+    #[test]
+    fn listed_root_after_clear() {
+        let mut archive = TrackArchive::zeroed();
+        archive.next_number = TrackNumber(41);
+        let tracks = [listed(41), listed(42), listed(43)];
+        for track in &tracks {
+            archive.append(track).expect("append");
+        }
+        let root = Some(archive.tree.root());
+
+        assert_eq!(listed_root(&tracks, &archive), root);
+        assert_ne!(listed_root(&tracks[..2], &archive), root);
+        assert_eq!(listed_root(&[listed(40)], &archive), None);
+        assert_eq!(listed_root(&[listed(44)], &archive), None);
     }
 
     fn rejected(error: TapeError) -> TapedriveError {

@@ -82,9 +82,10 @@ pub fn persist_snapshot_metadata<Db: Store>(
                 flags: TapeFlags::SYSTEM,
                 end_epoch: EpochNumber(u64::MAX),
                 next_track_number: TrackNumber(decoded.tracks.len() as u64),
+                tree_start: TrackNumber(0),
                 authority: SYSTEM_ADDRESS,
                 delegate: Address::default(),
-                share_nonce: Hash::default(),
+                nonce: Hash::default(),
             },
         )
         .map_err(store_err)?;
@@ -131,7 +132,7 @@ mod tests {
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
-        EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
+        EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -165,6 +166,7 @@ mod tests {
         let blob = blob();
         let track = CompressedTrack {
             tape: snapshot_tape,
+            tape_number: TapeNumber(1),
             key: Hash::new_unique(),
             track_number,
             kind: TrackKind::Coded as u64,
@@ -194,9 +196,10 @@ mod tests {
                 flags: tape_core::tape::TapeFlags::SYSTEM,
                 end_epoch: EpochNumber(u64::MAX),
                 next_track_number: TrackNumber(1),
+                tree_start: TrackNumber(0),
                 authority: SYSTEM_ADDRESS,
                 delegate: Address::default(),
-                share_nonce: Hash::default(),
+                nonce: Hash::default(),
             })
         );
         assert_eq!(store.get_track(track_address).unwrap(), Some(track));

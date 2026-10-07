@@ -214,6 +214,7 @@ mod tests {
     ) -> (Tape, PoolRate) {
         let track = CompressedTrack {
             tape: history_address,
+            tape_number: history_tape_number(node_id),
             key: span.key(),
             track_number: TrackNumber(0),
             kind: TrackKind::Inline as u64,

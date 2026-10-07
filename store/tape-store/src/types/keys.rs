@@ -6,7 +6,8 @@
 //! - UnitKey: empty (0 bytes)
 //! - SpoolIndexKey: spool_id BE (2 bytes)
 //! - SliceKey: (spool_id BE, track_address) (34 bytes)
-//! - TrackLookupKey: (tape, track_number BE, key) (72 bytes)
+//! - TrackLookupKey: (tape, tape_number BE, track_number BE) (48 bytes)
+//! - RemovalKey: (tape, tape_number BE, epoch BE) (48 bytes)
 //! - SnapshotArtifactKey: (epoch BE, group BE, chunk BE) (24 bytes)
 //! - VoteSigKey: (voting_epoch BE, kind BE, target_epoch BE, hash, group BE, signer) (96 bytes)
 
@@ -15,7 +16,7 @@ use std::mem::MaybeUninit;
 use serde::{Deserialize, Serialize};
 use tape_core::spooler::{GroupIndex, VirtualGroup};
 use tape_core::system::{VoteCandidate, VoteKind};
-use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex, TrackNumber};
+use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use wincode::error::write_length_encoding_overflow;
@@ -349,53 +350,39 @@ impl<'de> SchemaRead<'de> for TrackSampleKey {
     }
 }
 
-/// Key for tape-local ordered track lookup (72 bytes).
+/// Key for tape-local ordered track lookup (48 bytes).
 ///
-/// Format: [tape 32 bytes][track_number BE 8 bytes][key 32 bytes]
+/// Format: [tape 32 bytes][tape_number BE 8 bytes][track_number BE 8 bytes]
 ///
 /// Tape-first ordering enables efficient prefix iteration by tape, while
 /// track_number ordering enables ordered tape scans for list/proof generation.
+/// A tape reserved again at its old address has a new tape number, so its
+/// entries sit apart from the old tape's. The address comes first, so a wrong
+/// or repeated tape number never reaches another tape's entries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TrackLookupKey {
     pub tape: Address,
+    pub tape_number: TapeNumber,
     pub track_number: TrackNumber,
-    pub key: Hash,
 }
 
 impl TrackLookupKey {
-    pub const SIZE: usize = 72;
+    pub const SIZE: usize = 48;
 
-    pub fn new(tape: Address, track_number: TrackNumber, key: Hash) -> Self {
+    pub fn new(tape: Address, tape_number: TapeNumber, track_number: TrackNumber) -> Self {
         Self {
             tape,
+            tape_number,
             track_number,
-            key,
         }
     }
 
-    /// Create prefix bytes for tape-based iteration.
-    pub fn tape_prefix(tape: Address) -> [u8; 32] {
-        tape.to_bytes()
-    }
-
-    /// Create a start key that sorts immediately after all entries for the
-    /// given track number under the tape.
-    pub fn after_track_number(tape: Address, track_number: TrackNumber) -> Self {
-        Self {
-            tape,
-            track_number,
-            key: Hash([u8::MAX; 32]),
-        }
-    }
-
-    /// Create a start key that sorts before every entry for the given track
-    /// number under the tape.
-    pub fn at_track_number(tape: Address, track_number: TrackNumber) -> Self {
-        Self {
-            tape,
-            track_number,
-            key: Hash([0u8; 32]),
-        }
+    /// Create prefix bytes for iteration over one tape's entries.
+    pub fn tape_prefix(tape: Address, tape_number: TapeNumber) -> [u8; 40] {
+        let mut prefix = [0u8; 40];
+        prefix[..32].copy_from_slice(&tape.to_bytes());
+        prefix[32..].copy_from_slice(&tape_number.0.to_be_bytes());
+        prefix
     }
 }
 
@@ -408,8 +395,8 @@ impl SchemaWrite for TrackLookupKey {
 
     fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
         writer.write_exact(src.tape.as_ref())?;
+        writer.write_exact(&src.tape_number.0.to_be_bytes())?;
         writer.write_exact(&src.track_number.0.to_be_bytes())?;
-        writer.write_exact(&src.key.0)?;
         Ok(())
     }
 }
@@ -419,12 +406,69 @@ impl<'de> SchemaRead<'de> for TrackLookupKey {
 
     fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<TrackLookupKey>) -> ReadResult<()> {
         let tape: [u8; 32] = unsafe { reader.get_t()? };
+        let tape_number: [u8; 8] = unsafe { reader.get_t()? };
         let track_number: [u8; 8] = unsafe { reader.get_t()? };
-        let key: [u8; 32] = unsafe { reader.get_t()? };
         dst.write(TrackLookupKey {
             tape: Address::from(tape),
+            tape_number: TapeNumber(u64::from_be_bytes(tape_number)),
             track_number: TrackNumber(u64::from_be_bytes(track_number)),
-            key: Hash(key),
+        });
+        Ok(())
+    }
+}
+
+/// Key for one tape's removals in one epoch (48 bytes).
+///
+/// Format: [tape 32 bytes][tape_number BE 8 bytes][epoch BE 8 bytes]
+///
+/// A close or a rewind removes every track of a tape at once. The address
+/// comes first, as in `TrackLookupKey`, so a wrong or repeated tape number
+/// never reaches another tape's entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RemovalKey {
+    pub tape: Address,
+    pub tape_number: TapeNumber,
+    pub epoch: EpochNumber,
+}
+
+impl RemovalKey {
+    pub const SIZE: usize = 48;
+
+    pub fn new(tape: Address, tape_number: TapeNumber, epoch: EpochNumber) -> Self {
+        Self {
+            tape,
+            tape_number,
+            epoch,
+        }
+    }
+}
+
+impl SchemaWrite for RemovalKey {
+    type Src = Self;
+
+    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
+        Ok(Self::SIZE)
+    }
+
+    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
+        writer.write_exact(src.tape.as_ref())?;
+        writer.write_exact(&src.tape_number.0.to_be_bytes())?;
+        writer.write_exact(&src.epoch.0.to_be_bytes())?;
+        Ok(())
+    }
+}
+
+impl<'de> SchemaRead<'de> for RemovalKey {
+    type Dst = Self;
+
+    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<RemovalKey>) -> ReadResult<()> {
+        let tape: [u8; 32] = unsafe { reader.get_t()? };
+        let tape_number: [u8; 8] = unsafe { reader.get_t()? };
+        let epoch: [u8; 8] = unsafe { reader.get_t()? };
+        dst.write(RemovalKey {
+            tape: Address::from(tape),
+            tape_number: TapeNumber(u64::from_be_bytes(tape_number)),
+            epoch: EpochNumber(u64::from_be_bytes(epoch)),
         });
         Ok(())
     }
@@ -1323,36 +1367,53 @@ mod tests {
     fn test_track_lookup_key_size() {
         let key = TrackLookupKey::new(
             Address::new([0xAA; 32]),
+            TapeNumber(7),
             TrackNumber(42),
-            Hash([0xBB; 32]),
         );
         let bytes = wincode::serialize(&key).unwrap();
         assert_eq!(bytes.len(), TrackLookupKey::SIZE);
+        assert!(bytes.starts_with(&TrackLookupKey::tape_prefix(key.tape, key.tape_number)));
     }
 
+    // keys sort by tape address, then tape number, then track number
     #[test]
     fn test_track_lookup_key_ordering() {
-        let key1 = TrackLookupKey::new(Address::new([1u8; 32]), TrackNumber(1), Hash([0u8; 32]));
-        let key2 = TrackLookupKey::new(Address::new([1u8; 32]), TrackNumber(2), Hash([0u8; 32]));
-        let key3 = TrackLookupKey::new(Address::new([2u8; 32]), TrackNumber(0), Hash([0u8; 32]));
+        let tape = Address::new([1u8; 32]);
+        // 256 has a zero low byte, so a little-endian number would sort it first
+        let keys = [
+            TrackLookupKey::new(tape, TapeNumber(1), TrackNumber(1)),
+            TrackLookupKey::new(tape, TapeNumber(1), TrackNumber(256)),
+            TrackLookupKey::new(tape, TapeNumber(256), TrackNumber(0)),
+            TrackLookupKey::new(Address::new([2u8; 32]), TapeNumber(0), TrackNumber(0)),
+        ];
 
-        let bytes1 = wincode::serialize(&key1).unwrap();
-        let bytes2 = wincode::serialize(&key2).unwrap();
-        let bytes3 = wincode::serialize(&key3).unwrap();
+        let bytes: Vec<Vec<u8>> = keys
+            .iter()
+            .map(|key| wincode::serialize(key).unwrap())
+            .collect();
 
-        assert!(bytes1 < bytes2);
-        assert!(bytes2 < bytes3);
+        assert!(bytes.is_sorted());
     }
 
     #[test]
     fn test_track_lookup_key_roundtrip() {
         let key = TrackLookupKey::new(
             Address::new([0xCD; 32]),
+            TapeNumber(0xEF),
             TrackNumber(77),
-            Hash([0xEF; 32]),
         );
         let bytes = wincode::serialize(&key).unwrap();
         let decoded: TrackLookupKey = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(key, decoded);
+    }
+
+    #[test]
+    fn removal_key_roundtrip() {
+        let key = RemovalKey::new(Address::new([0xCD; 32]), TapeNumber(0xEF), EpochNumber(77));
+        let bytes = wincode::serialize(&key).unwrap();
+        let decoded: RemovalKey = wincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(bytes.len(), RemovalKey::SIZE);
         assert_eq!(key, decoded);
     }
 

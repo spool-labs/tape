@@ -4,7 +4,7 @@ use tape_store_api::Store;
 use tape_core::tape::{tape_index, tape_namespace, TapeFlags, TapeNamespace};
 use tape_core::types::{EpochNumber, TapeNumber};
 use tape_crypto::Address;
-use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps, track_has_left};
 use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 use tape_store::TapeStore;
 use tracing::debug;
@@ -46,10 +46,6 @@ pub fn validate_bootstrap_store<Db: Store>(
         {
             stats.tracks_scanned += 1;
 
-            let tape = held_tape.ok_or_else(|| {
-                violation(*track, metadata.tape, "missing parent tape metadata")
-            })?;
-
             let object = held_object
                 .ok_or_else(|| {
                     violation(
@@ -60,6 +56,15 @@ pub fn validate_bootstrap_store<Db: Store>(
                 })?;
 
             validate_object_track_address(*track, metadata.tape, &object)?;
+
+            // A track that has left its tape waits for the sweep. The row at
+            // its tape's address is gone once the tape is closed, and is
+            // another tape's once the address is reserved again.
+            let tape = match held_tape {
+                Some(tape) if !track_has_left(Some(&tape), metadata) => tape,
+                Some(_) | None => continue,
+            };
+
             validate_tape_classification(*track, metadata.tape, &tape, &object, &mut stats)?;
         }
 
@@ -200,8 +205,17 @@ mod tests {
     }
 
     fn track_for(tape: Address, track_number: TrackNumber) -> (Address, CompressedTrack) {
+        track_on(tape, user_tape_info().id, track_number)
+    }
+
+    fn track_on(
+        tape: Address,
+        tape_number: TapeNumber,
+        track_number: TrackNumber,
+    ) -> (Address, CompressedTrack) {
         let track = CompressedTrack {
             tape,
+            tape_number,
             track_number,
             key: Hash::default(),
             kind: TrackKind::Inline as u64,
@@ -220,9 +234,10 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(10),
             next_track_number: TrackNumber(0),
+            tree_start: TrackNumber(0),
             authority: Address::default(),
             delegate: Address::default(),
-            share_nonce: Hash::default(),
+            nonce: Hash::default(),
         }
     }
 
@@ -251,34 +266,43 @@ mod tests {
         assert_eq!(stats.system_tracks, 0);
     }
 
+    // a track of a closed tape has no tape row, and a track from before a
+    // rewind sits below the tree's start. Both wait for the sweep and pass.
     #[test]
-    fn rejects_missing_parent_tape() {
+    fn accepts_tracks_that_left() {
         let store = test_store();
-        let tape = Address::new_unique();
-        let (track, metadata) = track_for(tape, TrackNumber(0));
-
-        store.put_track(track, metadata).unwrap();
+        let closed = Address::new_unique();
+        let rewound = Address::new_unique();
         store
-            .put_object_info(
-                track,
-                ObjectInfo::Valid {
-                    track_address: track,
-                    registered_epoch: EpochNumber(1),
-                    certified_epoch: Some(EpochNumber(2)),
-                    slot: SlotNumber(10),
-                },
-            )
+            .put_tape(rewound, TapeInfo { tree_start: TrackNumber(1), ..user_tape_info() })
             .unwrap();
 
-        let error = validate_bootstrap_store(&store).unwrap_err();
-        assert!(error.to_string().contains("missing parent tape metadata"));
+        for tape in [closed, rewound] {
+            let (track, metadata) = track_for(tape, TrackNumber(0));
+            store.put_track(track, metadata).unwrap();
+            store
+                .put_object_info(
+                    track,
+                    ObjectInfo::Valid {
+                        track_address: track,
+                        registered_epoch: EpochNumber(1),
+                        certified_epoch: Some(EpochNumber(2)),
+                        slot: SlotNumber(10),
+                    },
+                )
+                .unwrap();
+        }
+
+        let stats = validate_bootstrap_store(&store).unwrap();
+        assert_eq!(stats.tracks_scanned, 2);
     }
 
     #[test]
     fn rejects_system_track_marked_valid() {
         let store = test_store();
         let tape = Address::new_unique();
-        let (track, metadata) = track_for(tape, TrackNumber(0));
+        let (track, metadata) =
+            track_on(tape, snapshot_tape_number(EpochNumber(3)), TrackNumber(0));
 
         store
             .put_tape(
@@ -288,9 +312,10 @@ mod tests {
                     flags: TapeFlags::SYSTEM,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(0),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .unwrap();
@@ -329,9 +354,10 @@ mod tests {
             flags: TapeFlags::SYSTEM,
             end_epoch: EpochNumber(u64::MAX),
             next_track_number: TrackNumber(0),
+            tree_start: TrackNumber(0),
             authority: Address::default(),
             delegate: Address::default(),
-            share_nonce: Hash::default(),
+            nonce: Hash::default(),
         }
     }
 
@@ -342,7 +368,8 @@ mod tests {
         let user_tape = Address::new_unique();
         let blacklist = Address::new_unique();
         let (track, metadata) = track_for(user_tape, TrackNumber(0));
-        let (entry, entry_metadata) = track_for(blacklist, TrackNumber(0));
+        let (entry, entry_metadata) =
+            track_on(blacklist, blacklist_tape_info().id, TrackNumber(0));
 
         store.put_tape(user_tape, user_tape_info()).unwrap();
         store.put_tape(blacklist, blacklist_tape_info()).unwrap();
@@ -363,7 +390,8 @@ mod tests {
     fn rejects_deleted_user_track_on_system_tape() {
         let store = test_store();
         let blacklist = Address::new_unique();
-        let (entry, entry_metadata) = track_for(blacklist, TrackNumber(0));
+        let (entry, entry_metadata) =
+            track_on(blacklist, blacklist_tape_info().id, TrackNumber(0));
 
         store.put_tape(blacklist, blacklist_tape_info()).unwrap();
         store.put_track(entry, entry_metadata).unwrap();

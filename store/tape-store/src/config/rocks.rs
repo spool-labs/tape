@@ -41,7 +41,7 @@ const TOTAL_WRITE_BUFFER_BYTES: usize = 128 * 1024 * 1024;
 /// - `meta` - String keys, arbitrary values
 /// - `tape` - 32-byte Address keys
 /// - `track` - 32-byte Address keys, packed compressed-track values
-/// - `track_lookup` - 72-byte ordered tape track index with 32-byte tape prefix
+/// - `track_lookup` - 48-byte ordered tape track index with 32-byte tape prefix
 /// - `track_data` - 32-byte Address keys, local track payload values
 /// - `object_info` - 32-byte Address keys
 /// - `object_metadata` - 32-byte Address keys, named object reverse lookup
@@ -102,7 +102,7 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
         ColumnFamilyConfig::new("track")
             .with_block_based(cache),
 
-        // Track lookup - ordered by (tape, track_number, key)
+        // Track lookup - ordered by (tape, tape_number, track_number)
         // 32-byte tape prefix for efficient per-tape scans
         ColumnFamilyConfig::new("track_lookup")
             .with_block_based(cache)
@@ -239,6 +239,12 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
             .with_block_based(cache)
             .with_blob_db(256 * 1024)
             .with_prefix_extractor(32),
+
+        // Removal log - 48-byte RemovalKey ([tape 32B][tape_number 8B][epoch 8B]),
+        // a row per tape closed or rewound in an epoch.
+        // The prune walks the whole column, so no prefix extractor.
+        ColumnFamilyConfig::new("removal_log")
+            .with_block_based(cache),
     ]
 }
 
@@ -329,7 +335,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 30);
+        assert_eq!(configs.len(), 31);
     }
 
     #[test]
@@ -368,6 +374,7 @@ mod tests {
             "s3_multipart_upload",
             "s3_multipart_part",
             "s3_multipart_part_data",
+            "removal_log",
         ];
 
         assert_eq!(names, expected);

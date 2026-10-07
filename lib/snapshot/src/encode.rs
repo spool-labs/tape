@@ -7,6 +7,7 @@ use tape_core::encoding::ErasureCode;
 use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
 use tape_core::snapshot::replay::SnapshotLog;
 use tape_core::spooler::VirtualGroup;
+use tape_core::tape::snapshot_tape_number;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
 use tape_core::types::{ChunkNumber, EpochNumber, StorageUnits, StripeCount, TrackNumber};
@@ -95,6 +96,7 @@ where
 
             let track = CompressedTrack {
                 tape: snapshot_tape,
+                tape_number: snapshot_tape_number(epoch),
                 track_number,
                 key: snapshot_chunk_key(epoch, group, chunk),
                 kind: TrackKind::Coded as u64,

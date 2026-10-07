@@ -17,6 +17,7 @@ use crate::track::types::CompressedTrack;
 use crate::types::coin::{Coin, TAPE};
 use crate::types::{
     ContentType, EpochNumber, NodeId, SlotNumber, SpoolIndex, StorageUnits, TapeNumber,
+    TrackNumber,
 };
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
@@ -91,13 +92,14 @@ pub enum ReplayableEvent {
         cost: Coin<TAPE>,
         burned: Coin<TAPE>,
         scheduled: Coin<TAPE>,
-        share_nonce: Hash,
+        nonce: Hash,
     },
 
-    /// Tape was destroyed: reserved while snapshots on chain still hold it,
-    /// removed at the next chain reset.
-    DestroyTape {
+    /// Tape account was closed. Every track on it is gone, and its tape number
+    /// is never given out again.
+    CloseTape {
         tape: Address,
+        id: TapeNumber,
         epoch: EpochNumber,
     },
 
@@ -208,9 +210,34 @@ pub enum ReplayableEvent {
         delegate: Address,
     },
 
-    /// Tape's share nonce advanced, revoking every outstanding share token.
-    AdvanceShareNonce {
+    /// Tape's nonce advanced, revoking every outstanding share token.
+    AdvanceTapeNonce {
         tape: Address,
+        nonce: Hash,
+    },
+
+    /// Tape was rewound. Every track numbered below `tree_start` is gone and
+    /// the reservation stays.
+    RewindTape {
+        tape: Address,
+        id: TapeNumber,
+        epoch: EpochNumber,
+        tree_start: TrackNumber,
+        nonce: Hash,
+    },
+
+    /// Expired tape was reserved again under its tape number. Every track
+    /// numbered below `tree_start` is gone.
+    RenewTape {
+        tape: Address,
+        id: TapeNumber,
+        capacity: StorageUnits,
+        active_epoch: EpochNumber,
+        expiry_epoch: EpochNumber,
+        cost: Coin<TAPE>,
+        burned: Coin<TAPE>,
+        scheduled: Coin<TAPE>,
+        tree_start: TrackNumber,
         nonce: Hash,
     },
 }
@@ -383,6 +410,7 @@ mod tests {
         ReplayTrack {
             state: CompressedTrack {
                 tape: Address::from([1u8; 32]),
+                tape_number: 1u64.into(),
                 key: Hash::default(),
                 track_number: 0u64.into(),
                 kind: TrackKind::Inline as u64,
@@ -411,6 +439,7 @@ mod tests {
         ReplayTrack {
             state: CompressedTrack {
                 tape: Address::from([2u8; 32]),
+                tape_number: 2u64.into(),
                 key: Hash::from([3u8; 32]),
                 track_number: 1u64.into(),
                 kind: TrackKind::Coded as u64,
@@ -475,10 +504,11 @@ mod tests {
                 cost: TAPE(0),
                 burned: TAPE(0),
                 scheduled: TAPE(0),
-                share_nonce: Hash::default(),
+                nonce: Hash::default(),
             },
-            ReplayableEvent::DestroyTape {
+            ReplayableEvent::CloseTape {
                 tape: Address::from([8u8; 32]),
+                id: TapeNumber(1),
                 epoch: EpochNumber(10),
             },
             ReplayableEvent::RegisterNode {

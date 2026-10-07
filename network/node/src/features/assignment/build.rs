@@ -408,9 +408,10 @@ mod tests {
                     flags: 0,
                     end_epoch,
                     next_track_number: TrackNumber(0),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .unwrap();
@@ -428,6 +429,7 @@ mod tests {
         let entry_hash = entry.key();
         let state = CompressedTrack {
             tape: blacklist,
+            tape_number: TapeNumber(1),
             key: entry_hash,
             track_number,
             kind: TrackKind::Inline as u64,
@@ -595,6 +597,8 @@ mod tests {
     }
 
     /// A certified inline track of `bytes` in a virtual group, old enough to count.
+    const USER_TAPE_NUMBER: TapeNumber = TapeNumber(7);
+
     fn put_counted_track(
         store: &TapeStore<MemoryStore>,
         tape: Address,
@@ -603,6 +607,7 @@ mod tests {
     ) -> Address {
         let state = CompressedTrack {
             tape,
+            tape_number: USER_TAPE_NUMBER,
             key: Hash::new_unique(),
             track_number: TrackNumber(group),
             kind: TrackKind::Inline as u64,
@@ -636,13 +641,14 @@ mod tests {
             .put_tape(
                 tape,
                 TapeInfo {
-                    id: TapeNumber(7),
+                    id: USER_TAPE_NUMBER,
                     flags: 0,
                     end_epoch: EpochNumber(50),
                     next_track_number: TrackNumber(0),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .unwrap();
@@ -749,6 +755,79 @@ mod tests {
             .expect("a candidate");
 
         assert_eq!(candidate.groups[1].payload.size, StorageUnits::zero());
+    }
+
+    fn close_user_tape(tape: Address, epoch: EpochNumber) -> ReplayableEvent {
+        ReplayableEvent::CloseTape { tape, id: USER_TAPE_NUMBER, epoch }
+    }
+
+    /// A rewind of the user tape past the two tracks the tests below write.
+    fn rewind_user_tape(tape: Address, epoch: EpochNumber) -> ReplayableEvent {
+        ReplayableEvent::RewindTape {
+            tape,
+            id: USER_TAPE_NUMBER,
+            epoch,
+            tree_start: TrackNumber(2),
+            nonce: Hash::new_unique(),
+        }
+    }
+
+    const TAPE_REMOVALS: [fn(Address, EpochNumber) -> ReplayableEvent; 2] =
+        [close_user_tape, rewind_user_tape];
+
+    // a close or a rewind that lands in the voting epoch leaves the candidate as it was
+    #[test]
+    fn removal_in_voting_epoch() {
+        for removal in TAPE_REMOVALS {
+            let store = test_store();
+            let tape = user_tape(&store);
+            put_counted_track(&store, tape, 0, 10);
+            put_counted_track(&store, tape, 1, 100);
+
+            let (state, holders) = narrow_state(2);
+            let state = with_next_epoch(state, &holders, 2);
+
+            let before = build_assignment_blocking(&store, &state, NARROW)
+                .expect("build")
+                .expect("a candidate");
+
+            let removal = removal(tape, EpochNumber(10));
+            apply_event(&store, SlotNumber(100), None, &removal, NARROW, DeletePolicy::NextEpoch)
+                .expect("removal applied");
+
+            let after = build_assignment_blocking(&store, &state, NARROW)
+                .expect("build")
+                .expect("a candidate");
+
+            assert_eq!(after.groups[0].payload.size, StorageUnits::from_bytes(10));
+            assert_eq!(after.groups[1].payload.size, StorageUnits::from_bytes(100));
+            assert_eq!(before.hash, after.hash);
+        }
+    }
+
+    // a close or a rewind from an earlier epoch takes the tape's tracks out of the candidate
+    #[test]
+    fn removal_before_voting_epoch() {
+        for removal in TAPE_REMOVALS {
+            let store = test_store();
+            let tape = user_tape(&store);
+            put_counted_track(&store, tape, 0, 10);
+            put_counted_track(&store, tape, 1, 100);
+
+            let (state, holders) = narrow_state(2);
+            let state = with_next_epoch(state, &holders, 2);
+
+            let removal = removal(tape, EpochNumber(9));
+            apply_event(&store, SlotNumber(100), None, &removal, NARROW, DeletePolicy::NextEpoch)
+                .expect("removal applied");
+
+            let candidate = build_assignment_blocking(&store, &state, NARROW)
+                .expect("build")
+                .expect("a candidate");
+
+            assert_eq!(candidate.groups[0].payload.size, StorageUnits::zero());
+            assert_eq!(candidate.groups[1].payload.size, StorageUnits::zero());
+        }
     }
 
     // two groups doubling to four: each new group starts on the nodes that
@@ -906,6 +985,7 @@ mod tests {
         let entry = BlacklistEntry::track(track);
         let state = CompressedTrack {
             tape: blacklist,
+            tape_number: TapeNumber(1),
             key: entry.key(),
             track_number,
             kind: TrackKind::Inline as u64,

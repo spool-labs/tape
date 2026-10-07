@@ -15,6 +15,7 @@ use tape_store::{ops::*, types::*, TapeStore};
 fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
     CompressedTrack {
         tape,
+        tape_number: TapeNumber(1),
         key: Hash::new_unique(),
         track_number: TrackNumber(track_number),
         kind: TrackKind::Inline as u64,
@@ -79,9 +80,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         flags: 0,
         end_epoch: EpochNumber(200),
         next_track_number: TrackNumber(0),
+        tree_start: TrackNumber(0),
         authority: Address::default(),
         delegate: Address::default(),
-        share_nonce: Hash::default(),
+        nonce: Hash::default(),
     };
     store.put_tape(tape_address, tape_info)?;
     println!("Stored tape info");

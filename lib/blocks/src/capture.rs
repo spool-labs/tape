@@ -309,13 +309,61 @@ fn capture_instruction(
             ),
             raw_track: None,
         },
-        ParsedInstruction::AdvanceShareNonce { event, .. } => Captured {
+        ParsedInstruction::AdvanceTapeNonce { event, .. } => Captured {
             event: captured_event(
                 *current_epoch,
                 tx_id,
                 actor,
-                ReplayableEvent::AdvanceShareNonce {
+                ReplayableEvent::AdvanceTapeNonce {
                     tape: event.tape,
+                    nonce: event.nonce,
+                },
+            ),
+            raw_track: None,
+        },
+        ParsedInstruction::CloseTape { event, .. } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::CloseTape {
+                    tape: event.tape,
+                    id: event.id,
+                    epoch: event.epoch,
+                },
+            ),
+            raw_track: None,
+        },
+        ParsedInstruction::RewindTape { event, .. } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::RewindTape {
+                    tape: event.tape,
+                    id: event.id,
+                    epoch: event.epoch,
+                    tree_start: event.tree_start,
+                    nonce: event.nonce,
+                },
+            ),
+            raw_track: None,
+        },
+        ParsedInstruction::RenewTape { event, .. } => Captured {
+            event: captured_event(
+                *current_epoch,
+                tx_id,
+                actor,
+                ReplayableEvent::RenewTape {
+                    tape: event.tape,
+                    id: event.id,
+                    capacity: event.capacity,
+                    active_epoch: event.active_epoch,
+                    expiry_epoch: event.expiry_epoch,
+                    cost: event.cost,
+                    burned: event.burned,
+                    scheduled: event.scheduled,
+                    tree_start: event.tree_start,
                     nonce: event.nonce,
                 },
             ),
@@ -430,6 +478,7 @@ fn capture_track(
 
     let state = CompressedTrack {
         tape: event.tape,
+        tape_number: event.tape_number,
         key,
         track_number: event.track_number,
         kind: meta.kind as u64,
@@ -496,7 +545,7 @@ fn capture_tape(
                 cost: event.cost,
                 burned: event.burned,
                 scheduled: event.scheduled,
-                share_nonce: event.share_nonce,
+                nonce: event.nonce,
             },
         ),
         raw_track: None,
@@ -557,7 +606,10 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::StakeWithPool { authority, .. }
         | ParsedInstruction::RequestStakeUnlock { authority, .. }
         | ParsedInstruction::UnstakeFromPool { authority, .. }
-        | ParsedInstruction::ClaimCommission { authority, .. } => Some(*authority),
+        | ParsedInstruction::ClaimCommission { authority, .. }
+        | ParsedInstruction::CloseTape { authority, .. }
+        | ParsedInstruction::RewindTape { authority, .. }
+        | ParsedInstruction::RenewTape { authority, .. } => Some(*authority),
 
         ParsedInstruction::DeleteTrack { owner, .. }
         | ParsedInstruction::ReserveTape { owner, .. } => Some(*owner),
@@ -587,7 +639,7 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
         | ParsedInstruction::SetNetworkTls { .. }
         | ParsedInstruction::SetBlsPubkey { .. }
         | ParsedInstruction::SetTapeDelegate { .. }
-        | ParsedInstruction::AdvanceShareNonce { .. }
+        | ParsedInstruction::AdvanceTapeNonce { .. }
         | ParsedInstruction::StartNetwork => None,
     }
 }
@@ -596,8 +648,8 @@ fn actor_for(instruction: &ParsedInstruction) -> Option<Address> {
 mod tests {
     use bytemuck::{bytes_of, Zeroable};
     use tape_api::event::{
-        EpochAdvanced, SnapshotFinalized, TapeExtended, TapeReserved, TrackCertified,
-        TrackWritten,
+        EpochAdvanced, SnapshotFinalized, TapeClosed, TapeExtended, TapeRenewed, TapeReserved,
+        TapeRewound, TrackCertified, TrackWritten,
     };
     use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress};
     use tape_core::encoding::TAPENET_PROFILE;
@@ -620,7 +672,7 @@ mod tests {
     use super::{capture_block, CaptureOutput};
     use crate::ParsedInstruction;
 
-    const SHARE_NONCE: Hash = Hash([7u8; 32]);
+    const TAPE_NONCE: Hash = Hash([7u8; 32]);
 
     fn blob_encoding(slices: &[Vec<u8>]) -> BlobEncoding {
         let leaves =
@@ -653,6 +705,7 @@ mod tests {
         let meta = value.meta(TAPENET_PROFILE).unwrap();
         let state = CompressedTrack {
             tape,
+            tape_number: TapeNumber(1),
             key,
             track_number,
             kind: meta.kind as u64,
@@ -668,6 +721,7 @@ mod tests {
             epoch,
             track,
             tape,
+            tape_number: state.tape_number,
             track_number,
             group,
             flags,
@@ -756,7 +810,7 @@ mod tests {
                 cost: TAPE(11),
                 burned: TAPE(1),
                 scheduled: TAPE(10),
-                share_nonce: SHARE_NONCE,
+                nonce: TAPE_NONCE,
             },
         }
     }
@@ -825,7 +879,7 @@ mod tests {
         ));
         assert!(matches!(
             captured.events[2].record.event,
-            ReplayableEvent::ReserveTape { share_nonce, .. } if share_nonce == SHARE_NONCE
+            ReplayableEvent::ReserveTape { nonce, .. } if nonce == TAPE_NONCE
         ));
     }
 
@@ -987,6 +1041,90 @@ mod tests {
         assert_eq!(captured.raw_tracks[0].track, address);
         assert_eq!(u64::from(captured.raw_tracks[0].group), 6);
         assert_eq!(captured.raw_tracks[0].data, bytes_of(&entry).to_vec());
+    }
+
+    // a close, a rewind and a renew capture their event's fields in block
+    // order and record the authority as actor
+    #[test]
+    fn captures_tape_removals() {
+        let authority = Address::new_unique();
+        let tape = Address::new_unique();
+        let id = TapeNumber(3);
+        let nonce = Hash::new_unique();
+
+        let captured = capture(
+            EpochNumber(7),
+            SlotNumber(42),
+            vec![
+                ParsedInstruction::RewindTape {
+                    authority,
+                    tape,
+                    event: TapeRewound {
+                        tape,
+                        id,
+                        epoch: EpochNumber(7),
+                        tree_start: TrackNumber(9),
+                        nonce,
+                    },
+                },
+                ParsedInstruction::CloseTape {
+                    authority,
+                    tape,
+                    event: TapeClosed { tape, id, epoch: EpochNumber(7) },
+                },
+                ParsedInstruction::RenewTape {
+                    authority,
+                    tape,
+                    event: TapeRenewed {
+                        tape,
+                        id,
+                        capacity: StorageUnits::mb(20),
+                        active_epoch: EpochNumber(7),
+                        expiry_epoch: EpochNumber(15),
+                        cost: TAPE(11),
+                        burned: TAPE(1),
+                        scheduled: TAPE(10),
+                        tree_start: TrackNumber(9),
+                        nonce,
+                    },
+                },
+            ],
+        );
+
+        let events: Vec<ReplayableEvent> = captured
+            .events
+            .iter()
+            .map(|captured| {
+                assert_eq!(captured.record.actor, Some(authority));
+                captured.record.event.clone()
+            })
+            .collect();
+
+        assert_eq!(
+            events,
+            vec![
+                ReplayableEvent::RewindTape {
+                    tape,
+                    id,
+                    epoch: EpochNumber(7),
+                    tree_start: TrackNumber(9),
+                    nonce,
+                },
+                ReplayableEvent::CloseTape { tape, id, epoch: EpochNumber(7) },
+                ReplayableEvent::RenewTape {
+                    tape,
+                    id,
+                    capacity: StorageUnits::mb(20),
+                    active_epoch: EpochNumber(7),
+                    expiry_epoch: EpochNumber(15),
+                    cost: TAPE(11),
+                    burned: TAPE(1),
+                    scheduled: TAPE(10),
+                    tree_start: TrackNumber(9),
+                    nonce,
+                },
+            ]
+        );
     }
 
     // An extend captures the replay fields and records the payer as actor.

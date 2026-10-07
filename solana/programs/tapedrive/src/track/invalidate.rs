@@ -132,13 +132,15 @@ mod tests {
 
     const NARROW: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
 
-    // a seeded track and the group that signs for it
+    // a seeded track and the group that signs for it. The track sits at the
+    // tree's first position whatever its number.
     struct Case {
         base: System,
         kind: TrackKind,
         state: TrackState,
         size: StorageUnits,
         virtual_group: VirtualGroup,
+        track_number: TrackNumber,
     }
 
     impl Case {
@@ -149,6 +151,7 @@ mod tests {
                 state: TrackState::Certified,
                 size: StorageUnits::mb(250),
                 virtual_group: VirtualGroup(0),
+                track_number: TrackNumber(0),
             }
         }
 
@@ -176,7 +179,7 @@ mod tests {
 
     // invalidation of one seeded track by the given signer bits
     fn invalidate_case(case: Case, signed: &[usize], error: Option<ProgramError>) {
-        let Case { base, kind, state, size, virtual_group } = case;
+        let Case { base, kind, state, size, virtual_group, track_number } = case;
         let profile = base.code().unwrap();
 
         let fee_payer = Pubkey::new_unique();
@@ -197,9 +200,10 @@ mod tests {
             ..base
         };
 
-        let track_number = TrackNumber(0);
+        let position = 0;
         let track = CompressedTrack {
             tape: tape_address,
+            tape_number: TapeNumber(0),
             key: bucket_hash,
             track_number,
             kind: kind as u64,
@@ -214,7 +218,7 @@ mod tests {
         track_tree.add_leaf_hash(old_track_hash).unwrap();
         let proof: [Hash; TRACK_TREE_HEIGHT] = create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
                 &[old_track_hash],
-                track_number.0 as usize,
+                position,
             )
             .expect("track proof is valid")
             .try_into()
@@ -225,7 +229,7 @@ mod tests {
         updated_track.state = TrackState::Invalidated as u64;
         let new_track_hash = updated_track.get_hash();
         expected_tree
-            .update_leaf_hash(track_number.0, &proof, old_track_hash, new_track_hash)
+            .update_leaf_hash(position as u64, &proof, old_track_hash, new_track_hash)
             .unwrap();
 
         let tape = Tape {
@@ -234,7 +238,7 @@ mod tests {
             used: track.size,
             tracks: TrackArchive {
                 tree: track_tree,
-                next_number: TrackNumber(1),
+                next_number: track_number.next(),
                 num_tracks: 1,
             },
             ..Tape::zeroed()
@@ -290,13 +294,24 @@ mod tests {
                         used: StorageUnits(0),
                         tracks: TrackArchive {
                             tree: expected_tree,
-                            next_number: TrackNumber(1),
+                            next_number: track_number.next(),
                             num_tracks: 1,
                         },
                         ..tape
                     }.pack().as_ref()
                 ).build(),
             ],
+        );
+    }
+
+    // a track written after a rewind is invalidated at its position in the
+    // tree, which its number is ahead of
+    #[test]
+    fn after_rewind() {
+        invalidate_case(
+            Case { track_number: TrackNumber(41), ..Case::permissionless() },
+            &signers(14),
+            None,
         );
     }
 
@@ -378,6 +393,7 @@ mod tests {
         let track_number = TrackNumber(0);
         let track = CompressedTrack {
             tape: tape_address,
+            tape_number: TapeNumber(0),
             key: bucket_hash,
             track_number,
             kind: TrackKind::Coded as u64,
@@ -472,6 +488,7 @@ mod tests {
         let track_number = TrackNumber(0);
         let track = CompressedTrack {
             tape: tape_address,
+            tape_number: TapeNumber(0),
             key: bucket_hash,
             track_number,
             kind: TrackKind::Coded as u64,

@@ -20,6 +20,8 @@ use crate::types::TrackNumber;
 pub struct ArchiveMirror {
     // First track number appended through the mirror
     base_number: TrackNumber,
+    // That track's position in the tree
+    base_index: u64,
     // Frontier snapshot taken at seed time, before any mirrored appends
     base_subtrees: [Hash; TRACK_TREE_HEIGHT],
 
@@ -45,6 +47,7 @@ impl ArchiveMirror {
 
         Self {
             base_number: archive.next_number(),
+            base_index: tree.next_index,
             base_subtrees: tree.filled_subtrees,
             tree,
             next_number: archive.next_number(),
@@ -55,19 +58,16 @@ impl ArchiveMirror {
 
     /// Mirror the on-chain append for a track this client registers
     pub fn append(&mut self, track: &CompressedTrack) -> Result<(), MerkleError> {
-        if self.next_number.as_u64() != self.tree.next_index {
-            return Err(MerkleError::InvalidIndex);
-        }
         if track.track_number != self.next_number {
             return Err(MerkleError::InvalidIndex);
         }
 
         let leaf = track.get_hash();
-        self.tree.add_leaf_hash(leaf)?;
+        let leaf_index = self.tree.add_leaf_hash(leaf)?;
         self.tracks.push(*track);
         self.next_number.increment();
         self.levels[0].push(leaf);
-        self.refresh_path(track.track_number.as_u64());
+        self.refresh_path(leaf_index);
 
         Ok(())
     }
@@ -77,11 +77,13 @@ impl ArchiveMirror {
         &self,
         track_number: TrackNumber,
     ) -> Result<CompressedTrackProof, MerkleError> {
-        let state = self.tracks[self.offset_of(track_number)?];
+        let offset = self.offset_of(track_number)?;
+        let state = self.tracks[offset];
+        let leaf_index = self.leaf_index(offset);
 
         let mut proof = [Hash::default(); TRACK_TREE_HEIGHT];
         for (level, sibling) in proof.iter_mut().enumerate() {
-            let sibling_index = (track_number.as_u64() >> level) ^ 1;
+            let sibling_index = (leaf_index >> level) ^ 1;
             *sibling = self.node_hash(level, sibling_index);
         }
 
@@ -118,15 +120,16 @@ impl ArchiveMirror {
         }
 
         let leaf = updated.get_hash();
+        let leaf_index = self.leaf_index(offset);
         self.tree.update_leaf_hash(
-            track_number.as_u64(),
+            leaf_index,
             &proof.proof,
             current.get_hash(),
             leaf,
         )?;
         self.tracks[offset] = *updated;
         self.levels[0][offset] = leaf;
-        self.refresh_path(track_number.as_u64());
+        self.refresh_path(leaf_index);
 
         Ok(())
     }
@@ -159,6 +162,13 @@ impl ArchiveMirror {
         Ok((track_number.as_u64() - self.base_number.as_u64()) as usize)
     }
 
+    // Position in the tree of the mirrored track at this offset. A tape's track
+    // counter keeps counting when its tree is cleared, so a track's number may
+    // be ahead of its position.
+    fn leaf_index(&self, offset: usize) -> u64 {
+        self.base_index + offset as u64
+    }
+
     // Hash of the tree node at the given level and node index. Nodes right of
     // the appended range are empty-subtree constants. The only pre-seed node
     // a lookup can reference at each level is the completed left sibling on
@@ -169,7 +179,7 @@ impl ArchiveMirror {
     fn node_hash(&self, level: usize, node_index: u64) -> Hash {
         let start = node_index << level;
         let end = start + (1u64 << level);
-        let base = self.base_number.as_u64();
+        let base = self.base_index;
 
         if start >= self.tree.next_index {
             return empty_subtree_root(level);
@@ -185,7 +195,7 @@ impl ArchiveMirror {
     // leaf. Each level rehashes one pair, so appends and certifies stay
     // linear in tree height.
     fn refresh_path(&mut self, leaf_index: u64) {
-        let base = self.base_number.as_u64();
+        let base = self.base_index;
 
         for level in 1..TRACK_TREE_HEIGHT {
             let node_index = leaf_index >> level;
@@ -216,7 +226,7 @@ mod tests {
 
     use crate::spooler::VirtualGroup;
     use crate::track::types::{TrackFlags, TrackKind, TrackState};
-    use crate::types::StorageUnits;
+    use crate::types::{StorageUnits, TapeNumber};
 
     use super::*;
 
@@ -227,6 +237,7 @@ mod tests {
     fn registered(track_number: TrackNumber) -> CompressedTrack {
         CompressedTrack {
             tape: tape_address(),
+            tape_number: TapeNumber(1),
             track_number,
             key: hashv(&[b"key", &track_number.pack()]),
             kind: TrackKind::Coded.into(),
@@ -255,8 +266,19 @@ mod tests {
                 .expect("proof for mirrored track");
             assert_eq!(proof.state, *track);
             archive.verify(&proof).expect("archive accepts proof");
-            proof.verify(&mirror.tree).expect("mirror accepts proof");
+
+            let position = archive.position(track.track_number).expect("track has a position");
+            proof
+                .verify(&mirror.tree, position)
+                .expect("mirror accepts proof");
         }
+    }
+
+    // an archive whose tree was cleared once its counter reached `start`
+    fn cleared_at(start: u64) -> TrackArchive {
+        let mut archive = TrackArchive::zeroed();
+        archive.next_number = TrackNumber(start);
+        archive
     }
 
     fn append_both(
@@ -298,6 +320,37 @@ mod tests {
                 append_both(&mut archive, &mut mirror, &track);
                 assert_lockstep(&archive, &mirror);
             }
+        }
+    }
+
+    // proofs stay valid on a cleared tree, where track numbers run ahead of positions
+    #[test]
+    fn cleared_tree() {
+        const START: u64 = 41;
+
+        for pre_count in 0..=17u64 {
+            let mut archive = cleared_at(START);
+            for number in START..START + pre_count {
+                archive
+                    .append(&registered(TrackNumber(number)))
+                    .expect("pre-seed append");
+            }
+
+            let mut mirror = ArchiveMirror::new(&archive);
+            let mut appended = Vec::new();
+            for number in START + pre_count..START + pre_count + 5 {
+                let track = registered(TrackNumber(number));
+                append_both(&mut archive, &mut mirror, &track);
+                appended.push(track);
+                assert_lockstep(&archive, &mirror);
+            }
+
+            for track in &appended {
+                certify_both(&mut archive, &mut mirror, track);
+                assert_lockstep(&archive, &mirror);
+            }
+
+            assert!(!mirror.covers(TrackNumber(START + pre_count).prev()));
         }
     }
 

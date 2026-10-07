@@ -11,7 +11,7 @@ use tape_crypto::address::Address;
 use tape_node::features::block::pending_tracks::{PendingNamedObject, PendingTracks};
 use tape_store::TapeStore;
 use tape_store::error::TapeStoreError;
-use tape_store::ops::ObjectListOps;
+use tape_store::ops::{ObjectListOps, TapeOps, object_has_left, track_has_left};
 use tape_store::types::{ObjectListEntry, PendingOp, PendingState};
 
 use crate::staging::StagingStore;
@@ -41,6 +41,12 @@ pub fn resolve_object<Db: Store>(
         return Ok(None);
     };
 
+    // The entry of an object whose track left the tape stays until the sweep.
+    let tape_row = store.get_tape(tape)?;
+    if object_has_left(tape_row.as_ref(), &entry) {
+        return Ok(None);
+    }
+
     Ok(Some(ResolvedObject {
         track_address: entry.track,
         size: entry.size.to_bytes(),
@@ -57,10 +63,19 @@ pub fn resolve_object_with_pending<Db: Store>(
     tape: Address,
     name: &[u8],
 ) -> Result<Option<ResolvedObject>, TapeStoreError> {
-    let stored = store.get_object_entry(tape, name)?;
-    let pending = pending.named_object(tape, name);
+    // An object whose track left the tape resolves to nothing, whether the
+    // close, rewind or renew is in the store or still pending.
+    let tape_row = pending.apply_to_tape(tape, store.get_tape(tape)?);
+    let stored = store
+        .get_object_entry(tape, name)?
+        .filter(|entry| !object_has_left(tape_row.as_ref(), entry));
+    let confirmed = pending.named_object(tape, name).filter(|object| {
+        pending
+            .apply_to_track(object.track_address, None)
+            .is_some_and(|track| !track_has_left(tape_row.as_ref(), &track))
+    });
 
-    if let Some(entry) = pending.filter(|pending| pending_is_newer(stored.as_ref(), pending)) {
+    if let Some(entry) = confirmed.filter(|object| pending_is_newer(stored.as_ref(), object)) {
         return Ok(Some(ResolvedObject {
             track_address: entry.track_address,
             size: entry.size,
@@ -205,8 +220,8 @@ mod tests {
 
     use tape_store_memory::MemoryStore;
     use tape_core::track::types::TrackKind;
-    use tape_core::types::{SlotNumber, StorageUnits, TrackNumber};
-    use tape_store::types::ObjectListEntry;
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
+    use tape_store::types::{ObjectListEntry, TapeInfo};
 
     use super::*;
 
@@ -217,6 +232,7 @@ mod tests {
             block_time: None,
             slot: SlotNumber(1),
             data_tape: Address::default(),
+            tape_number: TapeNumber(1),
             track_number: TrackNumber(track_number),
             track: Address::default(),
             kind: TrackKind::Inline as u64,
@@ -249,19 +265,56 @@ mod tests {
         (store, staging)
     }
 
+    /// The tape the indexed objects are written to
+    const TAPE_NUMBER: TapeNumber = TapeNumber(1);
+
+    fn put_tape_row(store: &TapeStore<MemoryStore>, tape: Address, tree_start: TrackNumber) {
+        let row = TapeInfo {
+            tree_start,
+            ..TapeInfo::new(TAPE_NUMBER, 0, EpochNumber(100), TrackNumber(0))
+        };
+        store.put_tape(tape, row).expect("tape row");
+    }
+
     fn index(store: &TapeStore<MemoryStore>, tape: Address, name: &[u8], size: u64) {
+        put_tape_row(store, tape, TrackNumber(0));
         let entry = ObjectListEntry {
             size: StorageUnits::from_bytes(size),
             etag: Hash([1u8; 32]),
             block_time: Some(1),
             slot: Default::default(),
             data_tape: tape,
+            tape_number: TAPE_NUMBER,
             track_number: TrackNumber(1),
             track: Address::new_unique(),
             kind: 0,
             content_type: ContentType::TextHtml,
         };
         store.put_object_entry(tape, name, entry).expect("index entry");
+    }
+
+    // an indexed object stops resolving once its tape is rewound past its
+    // track, closed, or reserved again under another number
+    #[test]
+    fn left_object_hidden() {
+        let (store, _) = parts();
+        let pending = PendingTracks::new();
+        let tape = Address::new([5u8; 32]);
+        index(&store, tape, b"index.html", 42);
+        assert!(resolve_object(&store, tape, b"index.html").expect("resolve").is_some());
+
+        put_tape_row(&store, tape, TrackNumber(2));
+        assert!(resolve_object(&store, tape, b"index.html").expect("resolve").is_none());
+        assert!(resolve_object_with_pending(&store, &pending, tape, b"index.html")
+            .expect("resolve")
+            .is_none());
+
+        store.delete_tape(tape).expect("close tape");
+        assert!(resolve_object(&store, tape, b"index.html").expect("resolve").is_none());
+
+        let reserved = TapeInfo::new(TapeNumber(2), 0, EpochNumber(100), TrackNumber(0));
+        store.put_tape(tape, reserved).expect("tape row");
+        assert!(resolve_object(&store, tape, b"index.html").expect("resolve").is_none());
     }
 
     async fn queue(staging: &StagingStore<MemoryStore>, tape: Address, name: &[u8], body: &[u8]) {

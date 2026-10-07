@@ -6,6 +6,8 @@ use tape_crypto::address::Address;
 use crate::columns::ObjectListCol;
 use crate::error::{Result, TapeStoreError};
 use crate::ops::object_info::ObjectInfoOps;
+use crate::ops::removal::object_has_left;
+use crate::ops::tape::TapeOps;
 use crate::types::{ObjectListEntry, ObjectListKey};
 use crate::TapeStore;
 
@@ -45,6 +47,10 @@ pub trait ObjectListOps {
     /// - `start` is an inclusive resume token (the `next` from a prior page);
     ///   `None` begins at the prefix.
     /// - `max_keys` caps `objects.len() + common_prefixes.len()`.
+    ///
+    /// An object whose track has left the tape is left out, and so is a folder
+    /// that holds only such objects. Their entries stay in the index until the
+    /// sweep takes the tracks.
     fn list_objects(
         &self,
         bucket: Address,
@@ -92,6 +98,9 @@ impl<S: Store> ObjectListOps for TapeStore<S> {
 
         let mut page = ObjectListPage::default();
 
+        // The row says which of the bucket's entries the tape holds now.
+        let tape = self.get_tape(bucket)?;
+
         'scan: loop {
             let mut seek = Vec::with_capacity(32 + start_name.len());
             seek.extend_from_slice(&bucket_prefix);
@@ -126,6 +135,11 @@ impl<S: Store> ObjectListOps for TapeStore<S> {
                     // New folder? (sorted order groups them; we skip folders so
                     // this is also belt-and-suspenders against duplicates.)
                     if page.common_prefixes.last().map(|v| v.as_slice()) != Some(cp) {
+                        // A folder is listed for an object the tape still
+                        // holds, so the scan goes on to the folder's next one.
+                        if object_has_left(tape.as_ref(), &decode_entry(&value_bytes)?) {
+                            continue;
+                        }
                         if page.objects.len() + page.common_prefixes.len() >= max_keys {
                             page.is_truncated = true;
                             page.next = Some(name.to_vec());
@@ -143,6 +157,9 @@ impl<S: Store> ObjectListOps for TapeStore<S> {
                     }
                 } else {
                     let entry = decode_entry(&value_bytes)?;
+                    if object_has_left(tape.as_ref(), &entry) {
+                        continue;
+                    }
                     // Hide uncertified objects: the track is registered but not
                     // yet servable, so listing it would return a key that 404s on
                     // GET. Skipped entries do not count against max_keys, so pages
@@ -205,12 +222,26 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
     use tape_store_memory::MemoryStore;
-    use tape_core::types::{ContentType, EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{
+        ContentType, EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber,
+    };
     use tape_crypto::Hash;
-    use crate::types::ObjectInfo;
+    use crate::types::{ObjectInfo, TapeInfo};
+
+    /// The tape every `entry` is written to
+    const TAPE_NUMBER: TapeNumber = TapeNumber(1);
 
     fn store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    /// The row of the tape at `bucket`, with its tree starting at `tree_start`
+    fn put_tape_row(s: &TapeStore<MemoryStore>, bucket: Address, tree_start: TrackNumber) {
+        let row = TapeInfo {
+            tree_start,
+            ..TapeInfo::new(TAPE_NUMBER, 0, EpochNumber(100), TrackNumber(0))
+        };
+        s.put_tape(bucket, row).unwrap();
     }
 
     fn entry(n: u64) -> ObjectListEntry {
@@ -220,6 +251,7 @@ mod tests {
             block_time: Some(1_700_000_000 + n as i64),
             slot: SlotNumber(n),
             data_tape: Address::new_unique(),
+            tape_number: TAPE_NUMBER,
             track_number: TrackNumber(n),
             track: Address::new_unique(),
             kind: 1,
@@ -227,9 +259,13 @@ mod tests {
         }
     }
 
-    // Mirror production: a listed object has both an entry and a certified
-    // ObjectInfo. `put_object_entry` alone leaves it uncertified (hidden).
+    // Mirror production: a listed object has an entry, a certified ObjectInfo
+    // and a tape that holds its track. `put_object_entry` alone leaves it
+    // uncertified (hidden).
     fn put_certified(s: &TapeStore<MemoryStore>, bucket: Address, name: &[u8], e: ObjectListEntry) {
+        if s.get_tape(bucket).unwrap().is_none() {
+            put_tape_row(s, bucket, TrackNumber(0));
+        }
         let track = e.track;
         s.put_object_info(
             track,
@@ -422,5 +458,46 @@ mod tests {
         s.put_object_entry(b, b"pending", entry(2)).unwrap();
         let page = s.list_objects(b, b"", None, None, 100).unwrap();
         assert_eq!(names(&page), vec![b"live".to_vec()]);
+    }
+
+    // after a rewind the listing holds the objects written since, and a folder
+    // shows only when one of them is in it
+    #[test]
+    fn hides_left() {
+        let s = store();
+        let b = Address::new_unique();
+        put_certified(&s, b, b"old", entry(0));
+        put_certified(&s, b, b"gone/a", entry(1));
+        put_certified(&s, b, b"mixed/a", entry(2));
+        put_certified(&s, b, b"mixed/b", entry(5));
+        put_certified(&s, b, b"new", entry(6));
+        put_tape_row(&s, b, TrackNumber(5));
+
+        let flat = s.list_objects(b, b"", None, None, 100).unwrap();
+        assert_eq!(names(&flat), vec![b"mixed/b".to_vec(), b"new".to_vec()]);
+
+        let folded = s.list_objects(b, b"", Some(b"/"), None, 100).unwrap();
+        assert_eq!(names(&folded), vec![b"new".to_vec()]);
+        assert_eq!(folded.common_prefixes, vec![b"mixed/".to_vec()]);
+        assert!(!folded.is_truncated);
+    }
+
+    // a closed tape lists nothing, and neither does the tape reserved at its
+    // address until something is written to it
+    #[test]
+    fn hides_other_tape() {
+        let s = store();
+        let b = Address::new_unique();
+        put_certified(&s, b, b"docs/a", entry(0));
+
+        s.delete_tape(b).unwrap();
+        let closed = s.list_objects(b, b"", Some(b"/"), None, 100).unwrap();
+        assert!(closed.objects.is_empty());
+        assert!(closed.common_prefixes.is_empty());
+
+        let next = TapeInfo::new(TapeNumber(2), 0, EpochNumber(100), TrackNumber(0));
+        s.put_tape(b, next).unwrap();
+        let reserved = s.list_objects(b, b"", None, None, 100).unwrap();
+        assert!(reserved.objects.is_empty());
     }
 }

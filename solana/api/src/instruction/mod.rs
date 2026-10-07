@@ -118,13 +118,14 @@ pub enum TapeInstruction {
 
     // Tape
     ReserveTape = 0xA0,
-    // 0xA1 held DestroyTape, whose number stays reserved while the deployed
-    // program still has it
-    ExtendTapeCapacity = 0xA2,
+    CloseTape,
+    ExtendTapeCapacity,
     ExtendTapeExpiry,
     SetTapeDelegate,
     RevokeTapeDelegate,
-    AdvanceShareNonce,
+    AdvanceTapeNonce,
+    RewindTape,
+    RenewTape,
 
     // Track
     TrackWrite = 0xB0,
@@ -205,11 +206,14 @@ tape_solana::instruction!(TapeInstruction, AddToBlacklist);
 tape_solana::instruction!(TapeInstruction, RemoveFromBlacklist);
 
 tape_solana::instruction!(TapeInstruction, ReserveTape);
+tape_solana::instruction!(TapeInstruction, CloseTape);
 tape_solana::instruction!(TapeInstruction, ExtendTapeCapacity);
 tape_solana::instruction!(TapeInstruction, ExtendTapeExpiry);
 tape_solana::instruction!(TapeInstruction, SetTapeDelegate);
 tape_solana::instruction!(TapeInstruction, RevokeTapeDelegate);
-tape_solana::instruction!(TapeInstruction, AdvanceShareNonce);
+tape_solana::instruction!(TapeInstruction, AdvanceTapeNonce);
+tape_solana::instruction!(TapeInstruction, RewindTape);
+tape_solana::instruction!(TapeInstruction, RenewTape);
 
 tape_solana::instruction!(TapeInstruction, TrackWrite);
 tape_solana::instruction!(TapeInstruction, DeleteTrack);

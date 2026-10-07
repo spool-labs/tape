@@ -68,7 +68,6 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             payer.pubkey().into(),
             tape_key.pubkey().into(),
             capacity,
-            activation,
             expiry,
             flags,
         ));

@@ -181,8 +181,26 @@ mod tests {
             ..permissionless_system()
         };
 
-        certify_track(system, VirtualGroup(7), &signers(14), None);
-        certify_track(system, VirtualGroup(7), &signers(13), Some(TapeError::NoQuorum.into()));
+        certify_track(system, VirtualGroup(7), TrackNumber(0), &signers(14), None);
+        certify_track(
+            system,
+            VirtualGroup(7),
+            TrackNumber(0),
+            &signers(13),
+            Some(TapeError::NoQuorum.into()),
+        );
+    }
+
+    // a track written after a rewind certifies at its position in the tree,
+    // which its number is ahead of
+    #[test]
+    fn after_rewind() {
+        let system = System {
+            live_group_count: 1,
+            ..permissionless_system()
+        };
+
+        certify_track(system, VirtualGroup(0), TrackNumber(41), &signers(14), None);
     }
 
     fn signers(count: usize) -> Vec<usize> {
@@ -195,12 +213,15 @@ mod tests {
             ..base
         };
 
-        certify_track(system, VirtualGroup(0), signed, error);
+        certify_track(system, VirtualGroup(0), TrackNumber(0), signed, error);
     }
 
+    // Certify the one track of a tape. It sits at the tree's first position
+    // whatever its number.
     fn certify_track(
         base: System,
         virtual_group: VirtualGroup,
+        track_number: TrackNumber,
         signed: &[usize],
         error: Option<ProgramError>,
     ) {
@@ -224,9 +245,10 @@ mod tests {
             ..base
         };
 
-        let track_number = TrackNumber(0);
+        let position = 0;
         let track = CompressedTrack {
             tape: tape_address,
+            tape_number: TapeNumber(0),
             key: bucket_hash,
             track_number,
             kind: TrackKind::Coded as u64,
@@ -242,7 +264,7 @@ mod tests {
         track_tree.add_leaf_hash(old_track_hash).unwrap();
         let proof: [Hash; TRACK_TREE_HEIGHT] = create_proof_from_leaf_hashes::<TRACK_TREE_HEIGHT>(
                 &[old_track_hash],
-                track_number.0 as usize,
+                position,
             )
             .expect("track proof is valid")
             .try_into()
@@ -253,7 +275,7 @@ mod tests {
         updated_track.state = TrackState::Certified as u64;
         let new_track_hash = updated_track.get_hash();
         expected_tree
-            .update_leaf_hash(track_number.0, &proof, old_track_hash, new_track_hash)
+            .update_leaf_hash(position as u64, &proof, old_track_hash, new_track_hash)
             .unwrap();
 
         let tape = Tape {
@@ -261,7 +283,7 @@ mod tests {
             delegate: delegate.into(),
             tracks: TrackArchive {
                 tree: track_tree,
-                next_number: TrackNumber(1),
+                next_number: track_number.next(),
                 num_tracks: 1,
             },
             ..Tape::zeroed()
@@ -314,7 +336,7 @@ mod tests {
                     Tape {
                         tracks: TrackArchive {
                             tree: expected_tree,
-                            next_number: TrackNumber(1),
+                            next_number: track_number.next(),
                             num_tracks: 1,
                         },
                         ..tape
@@ -350,6 +372,7 @@ mod tests {
         let track_number = TrackNumber(0);
         let track = CompressedTrack {
             tape: tape_address,
+            tape_number: TapeNumber(0),
             key: bucket_hash,
             track_number,
             kind: TrackKind::Coded as u64,

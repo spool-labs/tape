@@ -222,9 +222,10 @@ where
                 flags: TapeFlags::SYSTEM,
                 end_epoch: EpochNumber(u64::MAX),
                 next_track_number: candidate.tape.tracks.next_number(),
+                tree_start: candidate.tape.tracks.tree_start(),
                 authority: SYSTEM_ADDRESS,
                 delegate: Address::default(),
-                share_nonce: Hash::default(),
+                nonce: Hash::default(),
             },
         )
         .map_err(store_err("put_tape"))?;

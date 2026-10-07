@@ -198,7 +198,7 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
         node_id = context.node_id().0,
         epoch = epoch.0,
         at_tip,
-        tapes_deleted = sweep_stats.tapes_deleted,
+        tapes_cleared = sweep_stats.tapes_cleared,
         tracks_deleted = sweep_stats.tracks_deleted,
         slices_deleted = sweep_stats.slices_deleted,
         "gc sweep complete"
@@ -322,7 +322,10 @@ mod tests {
     use tape_store_memory::MemoryStore;
     use tape_core::challenge::PeerRecord;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent};
+    use tape_api::program::tapedrive::TrackAddress;
+    use tape_core::spooler::VirtualGroup;
     use tape_core::system::NodePreferences;
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
         EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
@@ -330,7 +333,7 @@ mod tests {
     use tape_crypto::tx::Txid;
     use tape_crypto::{Address, Hash};
     use tape_store::types::TapeInfo;
-    use tape_store::{TapeStore, ops::{ChallengeOps, MetaOps, TapeOps}};
+    use tape_store::{TapeStore, ops::{ChallengeOps, MetaOps, TapeOps, TrackOps}};
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
@@ -520,24 +523,46 @@ mod tests {
         assert_eq!(reached_epoch(&context), Some(epoch));
     }
 
-    fn put_tape(context: &TestContext, end_epoch: EpochNumber) -> Address {
+    /// A tape ending at `end_epoch` holding one track, returned as (tape, track)
+    fn put_tape(
+        context: &TestContext,
+        tape_number: TapeNumber,
+        end_epoch: EpochNumber,
+    ) -> (Address, Address) {
         let tape = Address::new_unique();
         context
             .store
             .put_tape(
                 tape,
                 TapeInfo {
-                    id: TapeNumber(1),
+                    id: tape_number,
                     flags: 0,
                     end_epoch,
-                    next_track_number: TrackNumber(0),
+                    next_track_number: TrackNumber(1),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .expect("put tape");
-        tape
+
+        let info = CompressedTrack {
+            tape,
+            tape_number,
+            key: Hash::new_unique(),
+            track_number: TrackNumber(0),
+            kind: TrackKind::Coded as u64,
+            state: TrackState::Certified as u64,
+            flags: TrackFlags::NONE,
+            size: StorageUnits::mb(1),
+            group: VirtualGroup(1),
+            value_hash: Hash::new_unique(),
+        };
+        let track = info.address();
+        context.store.put_track(track, info).expect("put track");
+
+        (tape, track)
     }
 
     fn record(event: ReplayableEvent) -> ReplayRecord {
@@ -556,8 +581,8 @@ mod tests {
         put_at_durable_tip(&context);
         context.store_epoch.reach(before);
 
-        let extended = put_tape(&context, epoch);
-        let expired = put_tape(&context, epoch);
+        let (extended, extended_track) = put_tape(&context, TapeNumber(1), epoch);
+        let (_, expired_track) = put_tape(&context, TapeNumber(2), epoch);
 
         let (batch_tx, batch_rx) = mpsc::channel(1);
         let store = tokio::spawn(
@@ -574,8 +599,8 @@ mod tests {
         context.set_state(state).expect("publish");
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        assert!(context.store.get_tape(extended).expect("get tape").is_some());
-        assert!(context.store.get_tape(expired).expect("get tape").is_some());
+        assert!(context.store.get_track(extended_track).expect("get track").is_some());
+        assert!(context.store.get_track(expired_track).expect("get track").is_some());
 
         // The block holds the extension and then the advance.
         let block = ReplayBatch {
@@ -608,7 +633,7 @@ mod tests {
         batch_tx.send(block).await.expect("send the block");
 
         for _ in 0..40 {
-            if context.store.get_tape(expired).expect("get tape").is_none() {
+            if context.store.get_track(expired_track).expect("get track").is_none() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -617,7 +642,8 @@ mod tests {
         store.await.expect("store joins").expect("store ok");
         cleanup.await.expect("cleanup joins").expect("cleanup ok");
 
-        assert!(context.store.get_tape(expired).expect("get tape").is_none());
+        assert!(context.store.get_track(expired_track).expect("get track").is_none());
+        assert!(context.store.get_track(extended_track).expect("get track").is_some());
         let kept = context.store.get_tape(extended).expect("get tape").expect("tape kept");
         assert_eq!(kept.end_epoch, later);
     }

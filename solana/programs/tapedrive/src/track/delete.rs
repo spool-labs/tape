@@ -80,6 +80,7 @@ mod tests {
         let size = StorageUnits::mb(250);
         let track = CompressedTrack {
             tape: tape_address,
+            tape_number: TapeNumber(0),
             key: bucket_hash,
             track_number,
             kind: TrackKind::Coded as u64,
@@ -162,6 +163,7 @@ mod tests {
             let track_number = TrackNumber(0);
             let track = CompressedTrack {
                 tape: tape_address,
+                tape_number: TapeNumber(0),
                 key: Hash::new_unique(),
                 track_number,
                 kind: TrackKind::Coded as u64,
@@ -235,6 +237,7 @@ mod tests {
         let live_size = StorageUnits::mb(100);
         let track = CompressedTrack {
             tape: tape_address,
+            tape_number: TapeNumber(0),
             key: bucket_hash,
             track_number,
             kind: TrackKind::Coded as u64,

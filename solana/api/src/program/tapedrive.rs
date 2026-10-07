@@ -318,7 +318,7 @@ pub fn eviction_vote_pda(voting: EpochNumber, target: EpochNumber, node: Address
 mod tests {
     use solana_program::pubkey::Pubkey;
     use tape_core::spooler::VirtualGroup;
-    use tape_core::types::TrackNumber;
+    use tape_core::types::{TapeNumber, TrackNumber};
 
     use super::*;
 
@@ -394,6 +394,7 @@ mod tests {
     fn track() -> CompressedTrack {
         CompressedTrack {
             tape: Address::new([1u8; 32]),
+            tape_number: TapeNumber(6),
             track_number: TrackNumber(3),
             key: Hash([2u8; 32]),
             kind: 1,
@@ -433,6 +434,7 @@ mod tests {
 
         let changed = [
             CompressedTrack { tape: Address::new([7u8; 32]), ..track },
+            CompressedTrack { tape_number: TapeNumber(7), ..track },
             CompressedTrack { track_number: TrackNumber(4), ..track },
             CompressedTrack { key: Hash([7u8; 32]), ..track },
             CompressedTrack { kind: 0, ..track },

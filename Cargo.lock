@@ -11634,6 +11634,7 @@ dependencies = [
  "solana-instruction",
  "solana-keypair",
  "solana-program",
+ "solana-system-interface 3.2.0",
  "spl-token",
  "tape-api",
  "tape-blocks",

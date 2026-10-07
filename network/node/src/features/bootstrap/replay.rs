@@ -95,6 +95,7 @@ mod tests {
         ReplayableEvent::Track(ReplayTrack {
             state: CompressedTrack {
                 tape,
+                tape_number: TapeNumber(1),
                 key: track_key(b"", &BlobDataSlice::Coded(blob)),
                 track_number,
                 kind: TrackKind::Coded as u64,
@@ -121,6 +122,7 @@ mod tests {
         ReplayableEvent::Track(ReplayTrack {
             state: CompressedTrack {
                 tape,
+                tape_number: TapeNumber(1),
                 key: track_key(&name, &BlobDataSlice::Coded(blob)),
                 track_number,
                 kind: TrackKind::Coded as u64,
@@ -154,6 +156,7 @@ mod tests {
         ReplayableEvent::Track(ReplayTrack {
             state: CompressedTrack {
                 tape,
+                tape_number: TapeNumber(1),
                 key: track_key(&name, &data),
                 track_number,
                 kind: meta.kind as u64,
@@ -247,7 +250,7 @@ mod tests {
                         cost: TAPE(0),
                         burned: TAPE(0),
                         scheduled: TAPE(0),
-                        share_nonce: Hash::default(),
+                        nonce: Hash::default(),
                     }),
                     record(written),
                 ],
@@ -263,9 +266,10 @@ mod tests {
                 flags: 0,
                 end_epoch: EpochNumber(12),
                 next_track_number: TrackNumber(4),
+                tree_start: TrackNumber(0),
                 authority,
                 delegate: Address::default(),
-                share_nonce: Hash::default(),
+                nonce: Hash::default(),
             })
         );
 
@@ -309,7 +313,7 @@ mod tests {
                             cost: TAPE(0),
                             burned: TAPE(0),
                             scheduled: TAPE(0),
-                            share_nonce: Hash::default(),
+                            nonce: Hash::default(),
                         }),
                         record(written_a),
                     ],
@@ -369,7 +373,7 @@ mod tests {
                         cost: TAPE(0),
                         burned: TAPE(0),
                         scheduled: TAPE(0),
-                        share_nonce: Hash::default(),
+                        nonce: Hash::default(),
                     }),
                     record(written),
                     record(ReplayableEvent::CertifyTrack {
@@ -423,7 +427,7 @@ mod tests {
                 records: vec![
                     record(ReplayableEvent::ReserveTape {
                         tape,
-                        id: TapeNumber(4),
+                        id: TapeNumber(1),
                         flags: 0,
                         authority: Address::new_unique(),
                         capacity: StorageUnits::mb(10),
@@ -432,7 +436,7 @@ mod tests {
                         cost: TAPE(0),
                         burned: TAPE(0),
                         scheduled: TAPE(0),
-                        share_nonce: Hash::default(),
+                        nonce: Hash::default(),
                     }),
                     record(written),
                 ],
@@ -519,7 +523,7 @@ mod tests {
                         cost: TAPE(0),
                         burned: TAPE(0),
                         scheduled: TAPE(0),
-                        share_nonce: Hash::default(),
+                        nonce: Hash::default(),
                     }),
                     record(inline_event),
                     record(sliced_event),

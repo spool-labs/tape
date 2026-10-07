@@ -110,6 +110,7 @@ const fn tape_columns(track_data_codec: Codec) -> [ColumnSpec; ALL_COLUMN_FAMILI
     plain(32, "s3_multipart_part_data"),
     plain(33, "s3_pending_write"),
     plain(34, "s3_pending_write_data"),
+    plain(35, "removal_log"),
     ]
 }
 

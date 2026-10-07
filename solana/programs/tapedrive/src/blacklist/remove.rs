@@ -77,6 +77,7 @@ mod tests {
         let track_number = TrackNumber(0);
         let track = CompressedTrack {
             tape: blacklist_address,
+            tape_number: blacklist_tape_number(NodeId(9)),
             key: entry.key(),
             track_number,
             kind: TrackKind::Inline as u64,

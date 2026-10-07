@@ -173,7 +173,7 @@ async fn hidden_tracks_inner() {
     harness
         .wait_ingest_current(VISIBILITY_TIMEOUT)
         .await
-        .expect("nodes ingested the share nonce advance");
+        .expect("nodes ingested the tape nonce advance");
     assert!(reader.get_object(&bucket.address(), name).await.is_err());
     assert!(tape_reader.get_object(&bucket.address(), tiny_name).await.is_err());
 

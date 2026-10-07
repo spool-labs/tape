@@ -47,13 +47,14 @@ mod tests {
 
     use tape_core::spooler::VirtualGroup;
     use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
-    use tape_core::types::{StorageUnits, TrackNumber};
+    use tape_core::types::{StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
     fn track(n: u64) -> CompressedTrack {
         CompressedTrack {
             tape: Address::from([7u8; 32]),
+            tape_number: TapeNumber(7),
             key: Hash::default(),
             track_number: TrackNumber(n),
             kind: TrackKind::Coded as u64,

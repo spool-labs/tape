@@ -4,8 +4,9 @@ use tape_api::event::{
     AssignmentFinalized, CommitteeCreated, CommitteeResized, EpochAdvanced, EpochCommitted,
     EpochCreated, EventType, CommissionClaimed, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
-    ShareNonceAdvanced, StakeUnlockRequested, StakeWithdrawn, TapeExtended, TapeReserved,
-    TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
+    StakeUnlockRequested, StakeWithdrawn, TapeClosed, TapeExtended, TapeNonceAdvanced,
+    TapeRenewed, TapeReserved, TapeRewound, TrackCertified, TrackDeleted, TrackInvalidated,
+    TrackWritten, VoteProposed, VoteRecorded,
 };
 
 use crate::error::ParseError;
@@ -33,7 +34,10 @@ pub enum TapedriveEvent {
     TrackWritten(TrackWritten),
     TapeReserved(TapeReserved),
     TapeExtended(TapeExtended),
-    ShareNonceAdvanced(ShareNonceAdvanced),
+    TapeClosed(TapeClosed),
+    TapeRewound(TapeRewound),
+    TapeRenewed(TapeRenewed),
+    TapeNonceAdvanced(TapeNonceAdvanced),
     NodeRegistered(NodeRegistered),
     NodeJoinedCommittee(NodeJoinedCommittee),
     NodeEvicted(NodeEvicted),
@@ -149,10 +153,10 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::TapeExtended(*event)))
         }
-        EventType::ShareNonceAdvanced => {
-            let event = bytemuck::try_from_bytes::<ShareNonceAdvanced>(event_data)
+        EventType::TapeNonceAdvanced => {
+            let event = bytemuck::try_from_bytes::<TapeNonceAdvanced>(event_data)
                 .map_err(|_| ParseError::InvalidEvent)?;
-            Ok(Some(TapedriveEvent::ShareNonceAdvanced(*event)))
+            Ok(Some(TapedriveEvent::TapeNonceAdvanced(*event)))
         }
         EventType::NodeRegistered => {
             let event = bytemuck::try_from_bytes::<NodeRegistered>(event_data)
@@ -199,6 +203,21 @@ pub fn parse_event_data(log: &str) -> Result<Option<TapedriveEvent>, ParseError>
                 .map_err(|_| ParseError::InvalidEvent)?;
             Ok(Some(TapedriveEvent::CommissionClaimed(*event)))
         }
+        EventType::TapeClosed => {
+            let event = bytemuck::try_from_bytes::<TapeClosed>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::TapeClosed(*event)))
+        }
+        EventType::TapeRewound => {
+            let event = bytemuck::try_from_bytes::<TapeRewound>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::TapeRewound(*event)))
+        }
+        EventType::TapeRenewed => {
+            let event = bytemuck::try_from_bytes::<TapeRenewed>(event_data)
+                .map_err(|_| ParseError::InvalidEvent)?;
+            Ok(Some(TapedriveEvent::TapeRenewed(*event)))
+        }
         EventType::Unknown => Ok(None),
     }
 }
@@ -210,7 +229,7 @@ mod tests {
     use tape_core::prelude::*;
     use tape_core::spooler::{GroupIndex, VirtualGroup};
     use tape_core::system::{NodePreferences, VoteKind};
-    use tape_core::types::{BasisPoints, EpochDuration, SpoolBitmap, TrackNumber};
+    use tape_core::types::{BasisPoints, EpochDuration, SpoolBitmap, TapeNumber, TrackNumber};
     use tape_core::types::coin::TAPE;
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
@@ -309,6 +328,7 @@ mod tests {
             epoch: EpochNumber(3),
             track,
             tape,
+            tape_number: TapeNumber(9),
             group: VirtualGroup(5),
             track_number: TrackNumber(7),
             flags: 0b11,
@@ -452,7 +472,7 @@ mod tests {
             cost: TAPE(100),
             burned: TAPE(10),
             scheduled: TAPE(90),
-            share_nonce: Hash::default(),
+            nonce: Hash::default(),
         };
 
         let log = encode_event(EventType::TapeReserved, &event);

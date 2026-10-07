@@ -8,7 +8,7 @@ use tape_core::system::{BlacklistEntry, Member};
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{CompressedTrack, TrackFlags};
 use tape_core::types::coin::TAPE;
-use tape_core::types::{BasisPoints, EpochNumber, StorageUnits, TrackNumber};
+use tape_core::types::{BasisPoints, EpochNumber, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::Address;
 use tape_e2e_simnet::{
     NodeRuntimeMode, SimnetBuilder, SimnetHarness, SimnetScenario, TAPENET_GROUP_SIZE,
@@ -219,8 +219,9 @@ async fn write_data(harness: &SimnetHarness, with_blacklist: bool) -> WrittenObj
             .await
             .expect("add tape blacklist entry");
 
-        blacklist_tracks.push(blacklist_track(blacklist, TrackNumber(0), entries[0]));
-        blacklist_tracks.push(blacklist_track(blacklist, TrackNumber(1), entries[1]));
+        let number = sdk.get_tape(&blacklist).await.expect("blacklist tape").id;
+        blacklist_tracks.push(blacklist_track(blacklist, number, TrackNumber(0), entries[0]));
+        blacklist_tracks.push(blacklist_track(blacklist, number, TrackNumber(1), entries[1]));
     }
 
     WrittenObject {
@@ -231,10 +232,16 @@ async fn write_data(harness: &SimnetHarness, with_blacklist: bool) -> WrittenObj
 }
 
 /// The address of the track the program writes for a blacklist entry
-fn blacklist_track(blacklist: Address, track_number: TrackNumber, entry: BlacklistEntry) -> Address {
+fn blacklist_track(
+    blacklist: Address,
+    tape_number: TapeNumber,
+    track_number: TrackNumber,
+    entry: BlacklistEntry,
+) -> Address {
     let meta = TrackMeta::inline(bytes_of(&entry));
     let track = CompressedTrack {
         tape: blacklist,
+        tape_number,
         track_number,
         key: entry.key(),
         kind: meta.kind as u64,

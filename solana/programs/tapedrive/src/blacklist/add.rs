@@ -145,6 +145,7 @@ mod tests {
             .expect("a virtual group");
         let track = CompressedTrack {
             tape: blacklist_address,
+            tape_number: tape.id,
             key: entry.key(),
             track_number,
             kind: TrackKind::Inline as u64,

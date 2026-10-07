@@ -297,7 +297,8 @@ fn preflight(
         });
     }
 
-    let used_tracks = tape.tracks.next_number();
+    // A deleted track keeps its slot, and clearing the tree frees them all.
+    let used_tracks = TrackNumber(tape.tracks.tree.next_index);
     let available_tracks = MAX_TRACKS.saturating_sub(used_tracks);
 
     if tracks_needed > available_tracks {
@@ -553,7 +554,13 @@ async fn resume_stream_chunk<Blockchain: Rpc, Cluster: Api>(
     let logical_size = StorageUnits::from_bytes(chunk_data.len() as u64);
     let flags = contents.track_flags(client.write_options.flags);
     let plan = encode_blob(client, chunk_data, Operation::WriteStream).await?;
-    let content = coded_content_address(tape_key.address(), UNNAMED_TRACK, &plan, flags)?;
+    let content = coded_content_address(
+        tape_key.address(),
+        contents.tape_number(),
+        UNNAMED_TRACK,
+        &plan,
+        flags,
+    )?;
 
     if let Some(existing) = contents.find(&content) {
         return finish_coded_track(client, tape_key, existing, &plan, Operation::WriteStream).await;
@@ -592,7 +599,8 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
 
     match manifest_write_mode(name, manifest_bytes) {
         ManifestWriteMode::Inline => {
-            let content = inline_content_address(tape, name, manifest_bytes, flags);
+            let content =
+                inline_content_address(tape, contents.tape_number(), name, manifest_bytes, flags);
             let Some(existing) = contents.find(&content) else {
                 return store_manifest(client, tape_key, name, content_type, size, manifest_bytes).await;
             };
@@ -608,7 +616,8 @@ async fn ensure_stream_manifest<Blockchain: Rpc, Cluster: Api>(
         }
         ManifestWriteMode::Coded => {
             let plan = encode_blob(client, manifest_bytes.to_vec(), Operation::WriteStream).await?;
-            let content = coded_content_address(tape, name, &plan, flags)?;
+            let content =
+                coded_content_address(tape, contents.tape_number(), name, &plan, flags)?;
             let Some(existing) = contents.find(&content) else {
                 return store_manifest(client, tape_key, name, content_type, size, manifest_bytes).await;
             };
@@ -1709,6 +1718,7 @@ mod tests {
         tape.active_epoch = EpochNumber(1);
         tape.expiry_epoch = EpochNumber(2);
         tape.tracks.next_number = TrackNumber(next_track_number);
+        tape.tracks.tree.next_index = next_track_number;
         tape
     }
 
@@ -1827,6 +1837,7 @@ mod tests {
             .expect("valid manifest metadata");
         let track = CompressedTrack {
             tape: tape_key.address(),
+            tape_number: TapeNumber(1),
             track_number: TrackNumber(chunk_count),
             key: track_key(name, &data),
             kind: metadata.kind as u64,
@@ -1837,7 +1848,7 @@ mod tests {
             value_hash: metadata.value_hash,
         };
         let client = manifest_client(track);
-        let contents = TapeContents::from_tracks(vec![track], tape_flags);
+        let contents = TapeContents::from_tracks(vec![track], tape_flags, track.tape_number);
 
         let manifest = ensure_stream_manifest(
             &client,
@@ -1885,6 +1896,21 @@ mod tests {
             }
             other => panic!("expected insufficient capacity, got {other}"),
         }
+    }
+
+    // a tape's free track slots come from its tree, so clearing the tree
+    // frees them while the track counter keeps counting
+    #[test]
+    fn track_slots() {
+        let size = StorageUnits::from_bytes(1);
+        let mut tape = make_tape(size.to_bytes(), 0, MAX_TRACKS_PER_TAPE - 1);
+
+        let error = preflight(&tape, size, TrackNumber(2)).expect_err("one slot is left");
+        assert!(matches!(error, TapedriveError::Stream(_)));
+
+        tape.tracks.tree = Zeroable::zeroed();
+
+        preflight(&tape, size, TrackNumber(2)).expect("every slot is free");
     }
 
     // empty streams are rejected before chunk planning.

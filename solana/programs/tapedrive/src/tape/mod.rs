@@ -1,10 +1,16 @@
+pub mod close;
 pub mod create;
 pub mod delegate;
 pub mod extend;
 pub mod helpers;
-pub mod share;
+pub mod nonce;
+pub mod renew;
+pub mod rewind;
 
+pub use close::*;
 pub use create::*;
 pub use delegate::*;
 pub use extend::*;
-pub use share::*;
+pub use nonce::*;
+pub use renew::*;
+pub use rewind::*;

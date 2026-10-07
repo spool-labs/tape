@@ -139,7 +139,10 @@ fn transition(now: ChainPhase, instruction: &ParsedInstruction) -> Option<ChainP
         | ParsedInstruction::ReserveTape { .. }
         | ParsedInstruction::ExtendTape { .. }
         | ParsedInstruction::SetTapeDelegate { .. }
-        | ParsedInstruction::AdvanceShareNonce { .. }
+        | ParsedInstruction::AdvanceTapeNonce { .. }
+        | ParsedInstruction::CloseTape { .. }
+        | ParsedInstruction::RewindTape { .. }
+        | ParsedInstruction::RenewTape { .. }
         | ParsedInstruction::RegisterNode { .. }
         | ParsedInstruction::SetName { .. }
         | ParsedInstruction::SetNetworkAddress { .. }

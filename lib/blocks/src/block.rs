@@ -285,7 +285,7 @@ mod tests {
     use tape_core::types::coin::TAPE;
     use tape_core::track::data::{BlobData, BlobInfo};
     use tape_core::track::types::TrackFlags;
-    use tape_core::types::{EpochNumber, SpoolIndex, StorageUnits, StripeCount};
+    use tape_core::types::{EpochNumber, SpoolIndex, StorageUnits, StripeCount, TapeNumber};
     use tape_crypto::address::Address;
     use tape_crypto::hash::hash;
     use tape_crypto::tx::Txid;
@@ -386,6 +386,7 @@ mod tests {
             epoch: 2.into(),
             track: tx2_track,
             tape: Address::new_unique(),
+            tape_number: 1.into(),
             group: VirtualGroup(0),
             track_number: 0u64.into(),
             flags: TrackFlags::NONE,
@@ -612,6 +613,7 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
+                            tape_number: TapeNumber(1),
                             group: VirtualGroup(1),
                             track_number: 7u64.into(),
                             flags: TrackFlags::NONE,
@@ -627,6 +629,7 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
+                            tape_number: TapeNumber(1),
                             group: VirtualGroup(2),
                             track_number: 8u64.into(),
                             flags: TrackFlags::NONE,
@@ -766,6 +769,7 @@ mod tests {
                             epoch: EpochNumber(3),
                             track: Address::new_unique(),
                             tape,
+                            tape_number: TapeNumber(1),
                             group: VirtualGroup(1),
                             track_number: 21u64.into(),
                             flags: TrackFlags::NONE,

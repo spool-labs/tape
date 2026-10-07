@@ -240,6 +240,7 @@ mod tests {
 
         let info = CompressedTrack {
             tape: Address::new_unique(),
+            tape_number: TapeNumber(1),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,
@@ -265,9 +266,10 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(200),
             next_track_number: TrackNumber(0),
+            tree_start: TrackNumber(0),
             authority: Address::default(),
             delegate: Address::default(),
-            share_nonce: Hash::default(),
+            nonce: Hash::default(),
         };
 
         store.put_tape(address, info.clone()).unwrap();
@@ -381,6 +383,7 @@ mod tests {
             let track = Address::new_unique();
             let info = CompressedTrack {
                 tape: Address::new_unique(),
+                tape_number: TapeNumber(1),
                 key: Hash::new_unique(),
                 track_number: TrackNumber(0),
                 kind: TrackKind::Coded as u64,
@@ -421,6 +424,7 @@ mod tests {
             let track = Address::new_unique();
             let info = CompressedTrack {
                 tape: Address::new_unique(),
+                tape_number: TapeNumber(1),
                 key: Hash::new_unique(),
                 track_number: TrackNumber(0),
                 kind: TrackKind::Coded as u64,
@@ -453,6 +457,7 @@ mod tests {
     fn certified_track(tape: Address, number: u64) -> CompressedTrack {
         CompressedTrack {
             tape,
+            tape_number: TapeNumber(1),
             key: Hash::new_unique(),
             track_number: TrackNumber(number),
             kind: TrackKind::Coded as u64,
@@ -485,9 +490,10 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(60),
                     next_track_number: TrackNumber(5),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .unwrap();
@@ -620,9 +626,10 @@ mod tests {
                         flags: 0,
                         end_epoch: EpochNumber(20),
                         next_track_number: TrackNumber(4),
+                        tree_start: TrackNumber(0),
                         authority: Address::default(),
                         delegate: Address::default(),
-                        share_nonce: Hash::default(),
+                        nonce: Hash::default(),
                     },
                 )
                 .unwrap();

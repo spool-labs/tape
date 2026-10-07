@@ -137,16 +137,11 @@ fn collect_blacklist_entries<Db: Store>(
     active_epoch: EpochNumber,
     cutoff_epoch: Option<EpochNumber>,
 ) -> Result<BlacklistEntries, NodeError> {
-    let is_live = match tape {
-        Some(tape) => tape.end_epoch > active_epoch,
-        None => false,
+    let Some(tape) = tape.filter(|tape| tape.end_epoch > active_epoch) else {
+        return Ok(BlacklistEntries::Ready(HashSet::new()));
     };
 
-    if !is_live {
-        return Ok(BlacklistEntries::Ready(HashSet::new()));
-    }
-
-    let mut scan = TapeTrackScan::new(blacklist, BLACKLIST_SCAN_BATCH);
+    let mut scan = TapeTrackScan::new(blacklist, tape.id, BLACKLIST_SCAN_BATCH);
     let mut entries = HashSet::new();
     while let Some(scanned) = scan
         .next_track(store)
@@ -307,6 +302,7 @@ mod tests {
         let blacklist = blacklist_pda(node).0;
         let track = CompressedTrack {
             tape: blacklist,
+            tape_number: TapeNumber(1),
             track_number,
             key: entry.key(),
             kind: TrackKind::Inline as u64,

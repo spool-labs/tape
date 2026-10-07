@@ -6,7 +6,7 @@ use tape_store_api::Store;
 use tape_blacklist::blacklists::Changes;
 use tape_crypto::address::Address;
 use tape_store::TapeStore;
-use tape_store::ops::{TapeTrackScan, TrackDataOps, TrackOps};
+use tape_store::ops::{TapeTrackScan, TrackDataOps, TrackOps, tape_numbers_at};
 
 use crate::cache::{GatewayCacheError, GatewaySliceCache};
 
@@ -48,11 +48,16 @@ fn purge_tape<Db: Store>(
     slice_cache: &GatewaySliceCache<Db>,
     tape: Address,
 ) -> Result<(), GatewayCacheError> {
-    let mut scan = TapeTrackScan::new(tape, PURGE_SCAN_BATCH);
-    while let Some(scanned) = scan.next_track(store).map_err(store_error)? {
-        slice_cache.purge_track(scanned.address, scanned.track.group)?;
-        if scanned.data.is_some() {
-            store.delete_track_data(scanned.address).map_err(store_error)?;
+    // An unlist follows the address through a close and a new reservation,
+    // and a closed tape's tracks stay in the store until the sweep. Every tape
+    // that has tracks at the address is walked.
+    for tape_number in tape_numbers_at(store, tape).map_err(store_error)? {
+        let mut scan = TapeTrackScan::new(tape, tape_number, PURGE_SCAN_BATCH);
+        while let Some(scanned) = scan.next_track(store).map_err(store_error)? {
+            slice_cache.purge_track(scanned.address, scanned.track.group)?;
+            if scanned.data.is_some() {
+                store.delete_track_data(scanned.address).map_err(store_error)?;
+            }
         }
     }
     Ok(())
@@ -70,19 +75,26 @@ mod tests {
     use tape_api::program::tapedrive::TrackAddress;
     use tape_core::spooler::VirtualGroup;
     use tape_core::system::BlacklistEntry;
+    use tape_core::tape::TapeFlags;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::CompressedTrack;
-    use tape_core::types::{StorageUnits, TrackNumber};
+    use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::Hash;
     use tape_node::config::gateway::GatewayCacheConfig;
-    use tape_store::ops::SliceOps;
+    use tape_store::ops::{SliceOps, TapeOps};
+    use tape_store::types::TapeInfo;
 
     use super::*;
     use crate::blacklist::denials::GatewayBlacklists;
 
-    fn put_track(store: &TapeStore<MemoryStore>, tape: Address) -> Address {
+    // a tape's row and one track on it
+    fn put_track(store: &TapeStore<MemoryStore>, tape: Address, tape_number: TapeNumber) -> Address {
+        let info = TapeInfo::new(tape_number, TapeFlags::NONE, EpochNumber(10), TrackNumber(1));
+        store.put_tape(tape, info).expect("put tape");
+
         let track = CompressedTrack {
             tape,
+            tape_number,
             track_number: TrackNumber(0),
             key: Hash::new_unique(),
             kind: 0,
@@ -116,9 +128,9 @@ mod tests {
     fn purged_content() {
         let store = Arc::new(TapeStore::new(MemoryStore::new()));
         let unlisted = Address::new_unique();
-        let removed = put_track(&store, Address::new_unique());
-        let on_unlisted = put_track(&store, unlisted);
-        let kept = put_track(&store, Address::new_unique());
+        let removed = put_track(&store, Address::new_unique(), TapeNumber(1));
+        let on_unlisted = put_track(&store, unlisted, TapeNumber(2));
+        let kept = put_track(&store, Address::new_unique(), TapeNumber(3));
         let config = GatewayCacheConfig {
             max_bytes: 1024,
             eviction_batch: 16,
@@ -135,6 +147,34 @@ mod tests {
 
         assert!(!is_held(&store, removed));
         assert!(!is_held(&store, on_unlisted));
+        assert!(is_held(&store, kept));
+    }
+
+    // an unlisted address that was closed and reserved again loses the local
+    // copies of both tapes' tracks
+    #[test]
+    fn purges_closed_tape() {
+        let store = Arc::new(TapeStore::new(MemoryStore::new()));
+        let unlisted = Address::new_unique();
+        let on_closed = put_track(&store, unlisted, TapeNumber(2));
+        let on_reserved = put_track(&store, unlisted, TapeNumber(5));
+        let kept = put_track(&store, Address::new_unique(), TapeNumber(3));
+        let config = GatewayCacheConfig {
+            max_bytes: 1024,
+            eviction_batch: 16,
+            reclaim_after_deleted_slices: 0,
+        };
+        let cache = GatewaySliceCache::new(store.clone(), config, Arc::new(GatewayBlacklists::default()))
+            .expect("open cache");
+        let changes = Changes {
+            denied: vec![BlacklistEntry::tape(unlisted)],
+            allowed: Vec::new(),
+        };
+
+        purge_denied(&store, &cache, &changes).expect("purge");
+
+        assert!(!is_held(&store, on_closed));
+        assert!(!is_held(&store, on_reserved));
         assert!(is_held(&store, kept));
     }
 }

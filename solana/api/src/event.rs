@@ -24,8 +24,11 @@ pub enum EventType {
 
     // Tape
     TapeReserved = 0x20,
+    TapeClosed = 0x21,
     TapeExtended = 0x22,
-    ShareNonceAdvanced = 0x23,
+    TapeRewound = 0x23,
+    TapeRenewed = 0x24,
+    TapeNonceAdvanced = 0x25,
 
     // Node
     NodeRegistered = 0x30,
@@ -122,6 +125,9 @@ pub struct TrackWritten {
     /// Parent tape address
     pub tape: Address,
 
+    /// The tape's number, which is part of the track's address
+    pub tape_number: TapeNumber,
+
     /// Track account address
     pub track: Address,
 
@@ -174,8 +180,8 @@ pub struct TapeReserved {
     /// TAPE flux units scheduled into epoch rewards.
     pub scheduled: Coin<TAPE>,
 
-    /// Share nonce the tape starts on
-    pub share_nonce: Hash,
+    /// The tape starts on this nonce
+    pub nonce: Hash,
 }
 
 tape_solana::event!(EventType, TapeReserved);
@@ -211,18 +217,93 @@ pub struct TapeExtended {
 
 tape_solana::event!(EventType, TapeExtended);
 
-/// Emitted when a tape's share nonce advances, revoking every outstanding share token.
+/// Emitted when a tape account is closed. Every track on it is gone.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct ShareNonceAdvanced {
+pub struct TapeClosed {
     /// Tape account address
     pub tape: Address,
 
-    /// Share nonce after the advance
+    /// Unique tape identifier, which is never given out again
+    pub id: TapeNumber,
+
+    /// Epoch of the close
+    pub epoch: EpochNumber,
+}
+
+tape_solana::event!(EventType, TapeClosed);
+
+/// Emitted when a tape is rewound: its tracks are removed and its reservation stays.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct TapeRewound {
+    /// Tape account address
+    pub tape: Address,
+
+    /// Unique tape identifier
+    pub id: TapeNumber,
+
+    /// Epoch of the rewind
+    pub epoch: EpochNumber,
+
+    /// The next track written gets this number, and every track numbered below it is gone
+    pub tree_start: TrackNumber,
+
+    /// The tape's nonce after the rewind
     pub nonce: Hash,
 }
 
-tape_solana::event!(EventType, ShareNonceAdvanced);
+tape_solana::event!(EventType, TapeRewound);
+
+/// Emitted when an expired tape is reserved again under its tape number.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct TapeRenewed {
+    /// Tape account address
+    pub tape: Address,
+
+    /// Unique tape identifier
+    pub id: TapeNumber,
+
+    /// Reserved capacity in bytes
+    pub capacity: StorageUnits,
+
+    /// First active epoch
+    pub active_epoch: EpochNumber,
+
+    /// Expiration epoch
+    pub expiry_epoch: EpochNumber,
+
+    /// TAPE flux units paid
+    pub cost: Coin<TAPE>,
+
+    /// TAPE flux units burned immediately
+    pub burned: Coin<TAPE>,
+
+    /// TAPE flux units scheduled into epoch rewards
+    pub scheduled: Coin<TAPE>,
+
+    /// The next track written gets this number, and every track numbered below it is gone
+    pub tree_start: TrackNumber,
+
+    /// The tape's nonce after the renew
+    pub nonce: Hash,
+}
+
+tape_solana::event!(EventType, TapeRenewed);
+
+/// Emitted when a tape's nonce advances, revoking every outstanding share token.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct TapeNonceAdvanced {
+    /// Tape account address
+    pub tape: Address,
+
+    /// The tape's nonce after the advance
+    pub nonce: Hash,
+}
+
+tape_solana::event!(EventType, TapeNonceAdvanced);
 
 /// Emitted when a storage node registers.
 #[repr(C)]
@@ -614,8 +695,11 @@ mod tests {
     fn test_event_type_values() {
         assert_eq!(EventType::TrackCertified as u8, 0x13);
         assert_eq!(EventType::TapeReserved as u8, 0x20);
+        assert_eq!(EventType::TapeClosed as u8, 0x21);
         assert_eq!(EventType::TapeExtended as u8, 0x22);
-        assert_eq!(EventType::ShareNonceAdvanced as u8, 0x23);
+        assert_eq!(EventType::TapeRewound as u8, 0x23);
+        assert_eq!(EventType::TapeRenewed as u8, 0x24);
+        assert_eq!(EventType::TapeNonceAdvanced as u8, 0x25);
         assert_eq!(EventType::NodeRegistered as u8, 0x30);
         assert_eq!(EventType::EpochCommitted as u8, 0x40);
         assert_eq!(EventType::EpochAdvanced as u8, 0x41);
@@ -634,7 +718,10 @@ mod tests {
         assert!(TrackDeleted::size_of() < 1024);
         assert!(TapeReserved::size_of() < 1024);
         assert!(TapeExtended::size_of() < 1024);
-        assert!(ShareNonceAdvanced::size_of() < 1024);
+        assert!(TapeClosed::size_of() < 1024);
+        assert!(TapeRewound::size_of() < 1024);
+        assert!(TapeRenewed::size_of() < 1024);
+        assert!(TapeNonceAdvanced::size_of() < 1024);
         assert!(EpochCommitted::size_of() < 1024);
         assert!(EpochAdvanced::size_of() < 1024);
         assert!(SpoolSynced::size_of() < 1024);

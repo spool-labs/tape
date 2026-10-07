@@ -19,7 +19,7 @@ use tape_crypto::hash::{hashv, Hash};
 use tape_crypto::merkle::{MerkleError, MerkleTree};
 
 use crate::spooler::VirtualGroup;
-use crate::types::{StorageUnits, TrackNumber};
+use crate::types::{StorageUnits, TapeNumber, TrackNumber};
 use super::archive::TRACK_TREE_HEIGHT;
 
 pub const TRACK_LEAF: &[u8; 8] = b"TRACK\0\0\0";
@@ -70,6 +70,7 @@ impl TrackFlags {
 #[cfg_attr(feature = "wincode", derive(Serialize, Deserialize))]
 pub struct CompressedTrack {
     pub tape: Address,
+    pub tape_number: TapeNumber,
     pub track_number: TrackNumber,
     pub key: Hash,
     pub kind: u64,
@@ -142,6 +143,7 @@ impl CompressedTrack {
         hashv(&[
             TRACK_CONTENT,
             &self.tape.to_bytes(),
+            &self.tape_number.pack(),
             &self.key.to_bytes(),
             &self.kind.to_le_bytes(),
             &self.flags.to_le_bytes(),
@@ -203,13 +205,18 @@ pub type PackedTrack = [u8; size_of::<CompressedTrack>()];
 pub type PackedTrackProof = [u8; size_of::<CompressedTrackProof>()];
 
 impl CompressedTrackProof {
+    /// Check the leaf against the tree at `position`, which `TrackArchive::position` gives
     #[inline(always)]
-    pub fn verify(&self, tree: &MerkleTree<TRACK_TREE_HEIGHT>) -> Result<Hash, MerkleError> {
+    pub fn verify(
+        &self,
+        tree: &MerkleTree<TRACK_TREE_HEIGHT>,
+        position: u64,
+    ) -> Result<Hash, MerkleError> {
         let mut tree = *tree;
         tree.ensure_initialized();
 
         let track_hash = self.state.get_hash();
-        if tree.verify_hash(self.state.track_number.0, &self.proof, track_hash)? {
+        if tree.verify_hash(position, &self.proof, track_hash)? {
             Ok(track_hash)
         } else {
             Err(MerkleError::InvalidProof)
@@ -238,6 +245,7 @@ mod tests {
     fn public_track() -> CompressedTrack {
         CompressedTrack {
             tape: Address::new_unique(),
+            tape_number: TapeNumber(5),
             track_number: TrackNumber(7),
             key: Hash::new_unique(),
             kind: TrackKind::Coded as u64,
@@ -323,6 +331,7 @@ mod tests {
 
         let changed = [
             CompressedTrack { tape: Address::new_unique(), ..track },
+            CompressedTrack { tape_number: TapeNumber(6), ..track },
             CompressedTrack { key: Hash::new_unique(), ..track },
             CompressedTrack { kind: TrackKind::Inline as u64, ..track },
             CompressedTrack { flags: TrackFlags::HIDDEN, ..track },

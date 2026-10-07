@@ -1,4 +1,4 @@
-use tape_api::event::ShareNonceAdvanced;
+use tape_api::event::TapeNonceAdvanced;
 use tape_api::program::prelude::*;
 
 use crate::tape::helpers::{
@@ -7,8 +7,8 @@ use crate::tape::helpers::{
 };
 use crate::track::helpers::slot_hash_seed;
 
-pub fn process_advance_share_nonce(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
-    let _args = AdvanceShareNonce::try_from_bytes(data)?;
+pub fn process_advance_tape_nonce(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
+    let _args = AdvanceTapeNonce::try_from_bytes(data)?;
     let [
         fee_payer_info,
         signer_info,
@@ -36,11 +36,11 @@ pub fn process_advance_share_nonce(accounts: &[AccountInfo<'_>], data: &[u8]) ->
     verified_tape_address(tape_info, tape)?;
     authorize_tape_operator(tape, (*signer_info.key).into())?;
 
-    tape.advance_share_nonce(slot_hash_seed(slot_hashes_info)?);
+    tape.advance_nonce(slot_hash_seed(slot_hashes_info)?);
 
-    ShareNonceAdvanced {
+    TapeNonceAdvanced {
         tape: (*tape_info.key).into(),
-        nonce: tape.share_nonce,
+        nonce: tape.nonce,
     }
     .log();
 
@@ -70,7 +70,7 @@ mod tests {
         })
     }
 
-    // the delegate can advance the share nonce, chaining the latest slot hash
+    // the delegate can advance the tape's nonce, chaining the latest slot hash
     #[test]
     fn advance_nonce() {
         let fee_payer = Pubkey::new_unique();
@@ -82,11 +82,11 @@ mod tests {
             authority: authority.into(),
             delegate: delegate.into(),
             capacity: StorageUnits::mb(1000),
-            share_nonce: Hash([0x04; 32]),
+            nonce: Hash([0x04; 32]),
             ..Tape::zeroed()
         };
 
-        let instruction = build_advance_share_nonce_ix(
+        let instruction = build_advance_tape_nonce_ix(
             fee_payer.into(),
             delegate.into(),
             tape_address,
@@ -107,7 +107,7 @@ mod tests {
                 Check::success(),
                 Check::account(&Pubkey::from(tape_address))
                     .data(Tape {
-                        share_nonce: hashv(&[&[0x04; 32], &SLOT_HASH.to_bytes()]),
+                        nonce: hashv(&[&[0x04; 32], &SLOT_HASH.to_bytes()]),
                         ..tape
                     }.pack().as_ref())
                     .build(),
@@ -115,7 +115,7 @@ mod tests {
         );
     }
 
-    // an unrelated signer cannot advance the share nonce
+    // an unrelated signer cannot advance the tape's nonce
     #[test]
     fn rejects_stranger() {
         let fee_payer = Pubkey::new_unique();
@@ -129,7 +129,7 @@ mod tests {
             ..Tape::zeroed()
         };
 
-        let instruction = build_advance_share_nonce_ix(
+        let instruction = build_advance_tape_nonce_ix(
             fee_payer.into(),
             stranger.into(),
             tape_address,

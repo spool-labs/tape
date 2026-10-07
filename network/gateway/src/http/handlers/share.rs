@@ -50,7 +50,7 @@ pub fn authorize_signed_read<Db: Store, Cluster: Api, Blockchain: Rpc>(
         tape: track.tape,
         tape_authority: tape.authority,
         tape_delegate: tape.delegate,
-        nonce: tape.share_nonce,
+        nonce: tape.nonce,
         track_key: track.key,
         reader: token.reader,
         now,
@@ -105,7 +105,7 @@ pub fn node_share_token<Db: Store, Cluster: Api, Blockchain: Rpc>(
             track.tape,
             ALL_TRACKS,
             state.context.tls_pubkey(),
-            tape.share_nonce,
+            tape.nonce,
             unix_now().saturating_add(SELF_SHARE_TTL.as_secs() as i64),
         )
         .ok()

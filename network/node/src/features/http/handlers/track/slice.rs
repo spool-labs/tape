@@ -364,15 +364,17 @@ mod tests {
                     flags: TapeFlags::SYSTEM,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(track_number.0 + 1),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .expect("seed snapshot tape");
 
         let track = CompressedTrack {
             tape: snapshot_tape,
+            tape_number: TapeNumber(1),
             key: snapshot_chunk_key(epoch, group, ChunkNumber(0)),
             track_number,
             kind: TrackKind::Coded as u64,
@@ -453,9 +455,10 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(track_number.0 + 1),
+                    tree_start: TrackNumber(0),
                     authority,
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .expect("seed tape");
@@ -472,6 +475,7 @@ mod tests {
 
         let track = CompressedTrack {
             tape,
+            tape_number: TapeNumber(1),
             key,
             track_number,
             kind: TrackKind::Coded as u64,
@@ -605,7 +609,7 @@ mod tests {
         assert!(matches!(result, Err(RouteError::Forbidden(_))));
     }
 
-    // advancing the tape's share nonce revokes a token already issued
+    // advancing the tape's nonce revokes a token already issued
     #[tokio::test]
     async fn revoked_token() {
         let ctx = test_context().await;
@@ -621,8 +625,8 @@ mod tests {
         );
 
         let mut info = ctx.store.get_tape(tape).expect("tape").expect("tape");
-        info.share_nonce = Hash::new_unique();
-        ctx.store.put_tape(tape, info).expect("advance share nonce");
+        info.nonce = Hash::new_unique();
+        ctx.store.put_tape(tape, info).expect("advance tape nonce");
 
         let result = hidden_read(
             &ctx,
@@ -710,6 +714,7 @@ mod tests {
 
         let track = CompressedTrack {
             tape,
+            tape_number: TapeNumber(1),
             key: Hash::new_unique(),
             track_number,
             kind: TrackKind::Coded as u64,
@@ -806,6 +811,7 @@ mod tests {
         let tape = Address::new_unique();
         let track = CompressedTrack {
             tape,
+            tape_number: TapeNumber(1),
             key: Hash::from([0x22; 32]),
             track_number,
             kind: TrackKind::Coded as u64,
@@ -825,9 +831,10 @@ mod tests {
                     flags: 0,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(track_number.0 + 1),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .expect("seed tape");

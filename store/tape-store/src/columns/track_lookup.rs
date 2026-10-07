@@ -6,7 +6,7 @@ use tape_store_api::Column;
 
 /// Tape-local ordered track lookup index.
 ///
-/// Key: TrackLookupKey (tape, track_number, key)
+/// Key: TrackLookupKey (tape, tape_number, track_number)
 /// Value: the track's address (main track data lives in `track`)
 pub struct TrackLookupCol;
 

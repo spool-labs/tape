@@ -37,6 +37,7 @@ pub fn append_track(
 
     let track = CompressedTrack {
         tape: tape_address,
+        tape_number: tape.id,
         track_number,
         key,
         kind: meta.kind as u64,
@@ -56,6 +57,7 @@ pub fn append_track(
         epoch: curr,
         track: track_address,
         tape: tape_address,
+        tape_number: tape.id,
         group,
         track_number,
         flags,

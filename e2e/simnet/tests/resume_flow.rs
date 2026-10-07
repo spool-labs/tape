@@ -12,7 +12,8 @@
 // written and the old one deleted, and a multi-track stream is deleted
 // whole. Both assert the tape returns to its live track count once the old
 // chunks and manifest are gone. Case K deletes an object as the delegate of
-// two tapes and asserts the second tape keeps its track.
+// two tapes and asserts the second tape keeps its track. Case L rewinds a tape
+// in the middle of a stream write.
 
 use std::time::{Duration, Instant};
 
@@ -27,6 +28,7 @@ use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair;
 use tape_e2e_simnet::{run_simnet_test, NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE};
 use tape_protocol::Api;
+use tape_sdk::error::TapedriveError;
 use tape_sdk::keys::operator::TapeDelegate;
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::stream::manifest::{ChunkEntry, ChunkManifest, MANIFEST_VERSION, MAX_TRACK_SIZE};
@@ -39,6 +41,8 @@ const OBJECT_NAME: &str = "resume/obj";
 // Simnet epochs auto-advance on wall-clock, so a multi-case run crosses several
 // boundaries; reserve well past the whole run so no tape expires mid-test.
 const EPOCHS: u64 = 40;
+// A stream write that crosses a rewind has to end within this, whatever it returns.
+const STRADDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[test]
 fn resume_flow() {
@@ -441,6 +445,41 @@ async fn resume_flow_inner() {
         assert_eq!(read_track(&sdk, &kept, active_timeout).await, data, "K: the kept track still reads");
     }
 
+    // Case L: the owner rewinds the tape while a stream write is under way.
+    // The chunks registered before the rewind leave with it, so they can
+    // never certify. The write ends with an error that says so, and the tape
+    // then takes the whole stream and reads it back.
+    {
+        let key = TapeKey::generate();
+        let tape = key.address();
+        let stream_data = random_bytes(&mut rng, MAX_TRACK_SIZE + 4096);
+        // Room for what the first write lands after the rewind and for the second write.
+        let capacity = StorageUnits::from_bytes(2 * stream_data.len() as u64) + StorageUnits::mb(4);
+        sdk.reserve(&key, capacity, EPOCHS).await.expect("L reserve");
+
+        let write = sdk.write_named_bytes(&key, OBJECT_NAME, ContentType::Unknown, &stream_data);
+        let rewind = async {
+            wait_first_track(&sdk, &tape, active_timeout).await;
+            sdk.rewind_tape(&key).await.expect("L rewind");
+        };
+        let (straddled, ()) =
+            tokio::time::timeout(STRADDLE_TIMEOUT, async { tokio::join!(write, rewind) })
+                .await
+                .expect("L: the stream write comes to an end");
+        assert!(
+            matches!(straddled, Err(TapedriveError::TrackLeftTape)),
+            "L: the write across the rewind ended with {:?}",
+            straddled.map(|receipt| receipt.manifest)
+        );
+
+        let receipt = sdk
+            .write_named_bytes(&key, OBJECT_NAME, ContentType::Unknown, &stream_data)
+            .await
+            .expect("L write the stream after the rewind");
+        let got = read_bytes_retry(&sdk, &receipt.manifest, active_timeout).await;
+        assert_eq!(got, stream_data, "L: stream roundtrips after the rewind");
+    }
+
     harness.stop_all().await.expect("stop runtimes");
 }
 
@@ -480,6 +519,22 @@ async fn wait_track_state<B: Rpc, C: Api>(
             panic!("timed out waiting for track 0 on {tape} to reach {want:?}");
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// Wait until the tape lists a track
+async fn wait_first_track<B: Rpc, C: Api>(sdk: &Tapedrive<B, C>, tape: &Address, timeout: Duration) {
+    let start = Instant::now();
+    loop {
+        if let Ok((tracks, _)) = sdk.list_tracks_by_tape(tape, None, 16).await {
+            if !tracks.is_empty() {
+                return;
+            }
+        }
+        if start.elapsed() >= timeout {
+            panic!("no track appeared on {tape}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 

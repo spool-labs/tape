@@ -391,7 +391,7 @@ where
             let Some(track) = self
                 .context
                 .store
-                .track_address_by_number(snapshot_tape, TrackNumber(number))
+                .track_address_by_number(snapshot_tape, tape.id, TrackNumber(number))
                 .map_err(|error| NodeError::Store(format!("track_address_by_number: {error}")))?
             else {
                 return Ok(false);

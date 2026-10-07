@@ -136,6 +136,9 @@ pub enum TapedriveError {
     #[error("track is immutable and can't be deleted")]
     Immutable,
 
+    #[error("the track left its tape: the tape was closed, rewound or renewed")]
+    TrackLeftTape,
+
     #[error("insufficient capacity: need {need}, available {available}")]
     InsufficientCapacity {
         need: StorageUnits,

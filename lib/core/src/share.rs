@@ -31,7 +31,7 @@ pub const ALL_TRACKS: Hash = Hash([0u8; HASH_BYTES]);
 /// The signature covers the domain tag and every field ahead of it
 pub const SHARE_MESSAGE_BYTES: usize = SHARE_V1.len() + size_of::<ShareToken>() - ED25519_SIG_LEN;
 
-/// Share token bound to one reader identity, one track key, and one tape share nonce
+/// Share token bound to one reader identity, one track key, and one tape nonce
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Pod, Zeroable)]
 pub struct ShareToken {
@@ -312,7 +312,7 @@ mod tests {
         assert_eq!(token.verify(&context), Ok(()));
     }
 
-    // advancing the share nonce revokes outstanding tokens
+    // advancing the tape's nonce revokes outstanding tokens
     #[test]
     fn revoked() {
         let token = sample(Hash([0x42; 32]));

@@ -58,7 +58,7 @@ pub fn check_share_token<Db: Store, Cluster: Api, Blockchain: Rpc>(
         tape: track.tape,
         tape_authority: tape.authority,
         tape_delegate: tape.delegate,
-        nonce: tape.share_nonce,
+        nonce: tape.nonce,
         track_key: track.key,
         reader,
         now: unix_now(),

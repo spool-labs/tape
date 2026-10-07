@@ -10,7 +10,7 @@ use tape_core::system::BlacklistEntry;
 use tape_core::track::data::TrackMeta;
 use tape_core::track::types::{CompressedTrack, TrackFlags};
 use tape_core::types::coin::{SOL, TAPE};
-use tape_core::types::{EpochNumber, StorageUnits, TrackNumber};
+use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_rack::source::MemorySource;
 use tape_sdk::keys::tape_key::TapeKey;
@@ -283,6 +283,7 @@ fn inline_track(tape: Address, track_number: TrackNumber, bytes: &[u8]) -> Compr
     let meta = TrackMeta::inline(bytes);
     CompressedTrack {
         tape,
+        tape_number: TapeNumber(1),
         track_number,
         key: inline_key(bytes),
         kind: meta.kind as u64,

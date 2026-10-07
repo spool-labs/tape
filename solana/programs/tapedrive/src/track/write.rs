@@ -271,6 +271,7 @@ mod tests {
 
         let track = CompressedTrack {
             tape: tape_address,
+            tape_number: tape.id,
             key,
             track_number,
             kind: TrackKind::Coded as u64,

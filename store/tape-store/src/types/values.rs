@@ -91,6 +91,9 @@ pub struct TapeInfo {
     /// Next monotonic track number expected for this tape
     pub next_track_number: TrackNumber,
 
+    /// The track at position 0 of the tape's tree has this number
+    pub tree_start: TrackNumber,
+
     /// Authority that owns the tape
     pub authority: Address,
 
@@ -98,7 +101,7 @@ pub struct TapeInfo {
     pub delegate: Address,
 
     /// Every shared token on this tape uses this nonce
-    pub share_nonce: Hash,
+    pub nonce: Hash,
 }
 
 impl TapeInfo {
@@ -109,9 +112,10 @@ impl TapeInfo {
             flags,
             end_epoch,
             next_track_number,
+            tree_start: TrackNumber(0),
             authority: Address::default(),
             delegate: Address::default(),
-            share_nonce: Hash::default(),
+            nonce: Hash::default(),
         }
     }
 }
@@ -140,6 +144,8 @@ pub struct ObjectListEntry {
     pub slot: SlotNumber,
     /// Data tape holding the object-representing track
     pub data_tape: Address,
+    /// Number of the tape that was at `data_tape` when the object was written
+    pub tape_number: TapeNumber,
     /// Track number of the object-representing track on `data_tape`
     pub track_number: TrackNumber,
     /// Address of the object-representing track
@@ -543,6 +549,7 @@ mod tests {
             block_time: Some(1_700_000_123),
             slot: SlotNumber(42),
             data_tape: Address::new([9u8; 32]),
+            tape_number: TapeNumber(1),
             track_number: TrackNumber(3),
             track: Address::new([8u8; 32]),
             kind: 1,
@@ -837,9 +844,10 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(200),
             next_track_number: TrackNumber(0),
+            tree_start: TrackNumber(0),
             authority: Address::new_unique(),
             delegate: Address::default(),
-            share_nonce: Hash::new_unique(),
+            nonce: Hash::new_unique(),
         };
 
         let bytes = wincode::serialize(&info).unwrap();

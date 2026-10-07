@@ -162,7 +162,8 @@ mod tests {
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
-        ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
+        ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber,
+        TrackNumber,
     };
     use tape_crypto::Hash;
     use tape_crypto::address::Address;
@@ -213,14 +214,16 @@ mod tests {
                     flags: TapeFlags::SYSTEM,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(track_number.0 + 1),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .expect("seed snapshot tape");
         let track = CompressedTrack {
             tape: snapshot_tape,
+            tape_number: TapeNumber(1),
             key: snapshot_chunk_key(epoch, group, ChunkNumber(0)),
             track_number,
             kind: TrackKind::Coded as u64,

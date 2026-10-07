@@ -254,7 +254,7 @@ mod tests {
     use tape_core::spooler::VirtualGroup;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_core::system::{SpoolState, SpoolStatus};
     use tape_crypto::address::Address;
     use tape_crypto::tx::Txid;
@@ -304,6 +304,7 @@ mod tests {
             records: vec![record(ReplayableEvent::Track(ReplayTrack {
                 state: CompressedTrack {
                     tape: Address::from([0x11; 32]),
+                    tape_number: TapeNumber(1),
                     key: Hash::default(),
                     track_number: TrackNumber(0),
                     kind: TrackKind::Inline as u64,

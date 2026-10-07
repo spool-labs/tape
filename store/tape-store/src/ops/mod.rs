@@ -9,6 +9,7 @@
 //! - `TapeTrackScan`: Ordered walk of a tape's tracks with their payloads
 //! - `ObjectInfoOps`: Object info (blacklisted, invalid, valid)
 //! - `ObjectMetadataOps`: Named-object reverse lookup
+//! - `RemovalOps`: Tapes closed or rewound in the current epoch
 //! - `SpoolOps`: Spool status, sync progress, pending recovery (NOT epoch-namespaced)
 //! - `SliceOps`: Slice data storage
 //! - `ChallengeOps`: Per-peer record of answers to storage challenges
@@ -32,6 +33,7 @@ mod object_info;
 mod object_list;
 mod object_metadata;
 mod policy;
+mod removal;
 mod s3_multipart;
 mod s3_pending;
 mod sample;
@@ -56,6 +58,7 @@ pub use object_info::ObjectInfoOps;
 pub use object_list::{ObjectListOps, ObjectListPage};
 pub use object_metadata::ObjectMetadataOps;
 pub use policy::{PolicyDecision, PolicyOps};
+pub use removal::{RemovalOps, object_has_left, track_has_left};
 pub use s3_multipart::MultipartOps;
 pub use s3_pending::PendingWriteOps;
 pub use sample::SampleOps;
@@ -63,7 +66,7 @@ pub use snapshot::SnapshotOps;
 pub use slice::SliceOps;
 pub use spool::SpoolOps;
 pub use tape::TapeOps;
-pub use track::{TrackOps, tape_track_numbers};
+pub use track::{TrackOps, tape_numbers_at, tape_track_numbers};
 pub use track_data::TrackDataOps;
 pub use track_scan::{ScannedTrack, TapeTrackScan};
 pub use vote::VoteOps;

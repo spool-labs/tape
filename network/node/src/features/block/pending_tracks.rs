@@ -4,15 +4,23 @@
 //! the pending queue, so SDK reads, peer queries, `put_slice`, and `certify`
 //! see new tracks at confirmed latency rather than waiting for finalization.
 //!
-//! Only `Reserve`, `Register` and `Certify` flow through pending state.
-//! `Invalidate` and `Delete` are destructive and remain on the finalized path —
-//! exposing them from confirmed state risks showing a track as gone when the
-//! block that removed it gets reorged out.
+//! Only `Reserve`, `Register`, `Certify` and a tape's `Close`, `Rewind` and
+//! `Renew` flow through pending state. `Invalidate` and `Delete` are
+//! destructive and remain on the finalized path — exposing them from confirmed
+//! state risks showing a track as gone when the block that removed it gets
+//! reorged out.
 //!
 //! Reservations are here because a track without its tape is not servable: a
 //! proof needs the tape's track set, so a fresh tape's first track would be
 //! not-found on every peer for a whole finality window while the overlay
 //! resolved the track and the tape read fell through to disk.
+//!
+//! Close, rewind and renew are here for the same reason. A track written after
+//! one of them sits in the tape's new tree, and its proof needs the tape number
+//! and tree start the tape has now. Reads by tape stop listing the earlier
+//! tracks at confirmed latency, and nothing is deleted until the block is
+//! finalized: if it is reorged out, `drop_slot` drops the change and the tracks
+//! list again.
 //!
 //! Read paths fold pending events on top of the disk-backed `TapeStore` via
 //! `apply_to_track`. Once a slot is finalized (and the corresponding events
@@ -28,7 +36,7 @@ use tape_core::object::object_etag;
 use tape_core::snapshot::replay::ReplayTrackObject;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::{CompressedTrack, TrackState};
-use tape_core::types::{ContentType, SlotNumber, TrackNumber};
+use tape_core::types::{ContentType, EpochNumber, SlotNumber, TapeNumber, TrackNumber};
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_store::types::TapeInfo;
@@ -39,15 +47,8 @@ use crate::features::block::ingestor::ParsedBlock;
 enum EventKind {
     Register {
         state: CompressedTrack,
-        /// Track payload — `BlobData::Coded(blob_encoding)` for blob tracks
-        /// (matches what `store.get_track_data` returns) or
-        /// `BlobData::Inline(bytes)` for inline raw tracks. Read paths consult
-        /// this via [`PendingTracks::track_data`].
         data: Box<BlobData>,
-        /// Name-addressed object metadata carried by this registration.
         object: Option<ReplayTrackObject>,
-        /// Block time used for the same response metadata as the finalized
-        /// object index.
         block_time: Option<i64>,
     },
     Certify,
@@ -59,10 +60,31 @@ struct Event {
     kind: EventKind,
 }
 
+/// A change to a tape seen at confirmed commitment
+#[derive(Debug)]
+enum TapeChange {
+    /// The tape's whole row, from a reservation or from an update to a pending one
+    Row(TapeInfo),
+    Close {
+        id: TapeNumber,
+    },
+    Rewind {
+        id: TapeNumber,
+        tree_start: TrackNumber,
+        nonce: Hash,
+    },
+    Renew {
+        id: TapeNumber,
+        end_epoch: EpochNumber,
+        tree_start: TrackNumber,
+        nonce: Hash,
+    },
+}
+
 #[derive(Debug)]
 struct TapeEvent {
     slot: SlotNumber,
-    info: TapeInfo,
+    change: TapeChange,
 }
 
 /// A certified name-addressed object visible in confirmed pending state.
@@ -99,10 +121,10 @@ struct Inner {
     /// Reverse index for removing name registrations on promotion or rollback.
     objects_by_slot: BTreeMap<SlotNumber, Vec<(Address, Vec<u8>, u64)>>,
 
-    /// Per-tape reservation log, in append order.
-    reservations: HashMap<Address, Vec<TapeEvent>>,
+    /// Per-tape log of pending changes, in append order.
+    tape_changes: HashMap<Address, Vec<TapeEvent>>,
 
-    /// Reverse index for dropping a slot's reservations.
+    /// Reverse index for dropping a slot's tape changes.
     tapes_by_slot: BTreeMap<SlotNumber, Vec<Address>>,
 }
 
@@ -147,12 +169,47 @@ impl PendingTracks {
 
     /// Record a tape reservation seen at confirmed commitment.
     pub fn apply_reserve(&self, slot: SlotNumber, tape: Address, info: TapeInfo) {
+        self.apply_tape_change(slot, tape, TapeChange::Row(info));
+    }
+
+    /// Record a tape closed at confirmed commitment.
+    pub fn apply_close(&self, slot: SlotNumber, tape: Address, id: TapeNumber) {
+        self.apply_tape_change(slot, tape, TapeChange::Close { id });
+    }
+
+    /// Record a tape rewound at confirmed commitment.
+    pub fn apply_rewind(
+        &self,
+        slot: SlotNumber,
+        tape: Address,
+        id: TapeNumber,
+        tree_start: TrackNumber,
+        nonce: Hash,
+    ) {
+        self.apply_tape_change(slot, tape, TapeChange::Rewind { id, tree_start, nonce });
+    }
+
+    /// Record an expired tape renewed at confirmed commitment.
+    pub fn apply_renew(
+        &self,
+        slot: SlotNumber,
+        tape: Address,
+        id: TapeNumber,
+        end_epoch: EpochNumber,
+        tree_start: TrackNumber,
+        nonce: Hash,
+    ) {
+        let change = TapeChange::Renew { id, end_epoch, tree_start, nonce };
+        self.apply_tape_change(slot, tape, change);
+    }
+
+    fn apply_tape_change(&self, slot: SlotNumber, tape: Address, change: TapeChange) {
         let mut inner = self.inner.write().expect("pending-tracks lock poisoned");
         inner
-            .reservations
+            .tape_changes
             .entry(tape)
             .or_default()
-            .push(TapeEvent { slot, info });
+            .push(TapeEvent { slot, change });
         inner.tapes_by_slot.entry(slot).or_default().push(tape);
     }
 
@@ -163,22 +220,12 @@ impl PendingTracks {
         tape: Address,
         update: impl FnOnce(&mut TapeInfo),
     ) {
-        let mut inner = self.inner.write().expect("pending-tracks lock poisoned");
-        let Some(mut info) = inner
-            .reservations
-            .get(&tape)
-            .and_then(|events| events.last())
-            .map(|event| event.info.clone())
-        else {
+        // Only a tape whose reservation is still pending has a row here.
+        let Some(mut info) = self.apply_to_tape(tape, None) else {
             return;
         };
         update(&mut info);
-        inner
-            .reservations
-            .entry(tape)
-            .or_default()
-            .push(TapeEvent { slot, info });
-        inner.tapes_by_slot.entry(slot).or_default().push(tape);
+        self.apply_tape_change(slot, tape, TapeChange::Row(info));
     }
 
     pub fn apply_certify(&self, slot: SlotNumber, track: Address) {
@@ -212,6 +259,7 @@ impl PendingTracks {
                     };
                     let state = CompressedTrack {
                         tape: event.tape,
+                        tape_number: event.tape_number,
                         track_number: event.track_number,
                         key: *key,
                         kind: meta.kind as u64,
@@ -242,17 +290,40 @@ impl PendingTracks {
                             flags: event.flags,
                             end_epoch: event.expiry_epoch,
                             next_track_number: TrackNumber(0),
+                            tree_start: TrackNumber(0),
                             authority: event.authority,
                             delegate: Address::default(),
-                            share_nonce: event.share_nonce,
+                            nonce: event.nonce,
                         },
                     );
                 }
                 ParsedInstruction::SetTapeDelegate { tape, delegate } => {
                     self.apply_tape_update(block.slot, *tape, |info| info.delegate = *delegate);
                 }
-                ParsedInstruction::AdvanceShareNonce { tape, event } => {
-                    self.apply_tape_update(block.slot, *tape, |info| info.share_nonce = event.nonce);
+                ParsedInstruction::AdvanceTapeNonce { tape, event } => {
+                    self.apply_tape_update(block.slot, *tape, |info| info.nonce = event.nonce);
+                }
+                ParsedInstruction::CloseTape { tape, event, .. } => {
+                    self.apply_close(block.slot, *tape, event.id);
+                }
+                ParsedInstruction::RewindTape { tape, event, .. } => {
+                    self.apply_rewind(
+                        block.slot,
+                        *tape,
+                        event.id,
+                        event.tree_start,
+                        event.nonce,
+                    );
+                }
+                ParsedInstruction::RenewTape { tape, event, .. } => {
+                    self.apply_renew(
+                        block.slot,
+                        *tape,
+                        event.id,
+                        event.expiry_epoch,
+                        event.tree_start,
+                        event.nonce,
+                    );
                 }
                 _ => {}
             }
@@ -287,7 +358,7 @@ impl PendingTracks {
 
         if let Some(tapes) = inner.tapes_by_slot.remove(&slot) {
             for tape in tapes {
-                let drained_empty = match inner.reservations.get_mut(&tape) {
+                let drained_empty = match inner.tape_changes.get_mut(&tape) {
                     Some(events) => {
                         events.retain(|event| event.slot != slot);
                         events.is_empty()
@@ -295,7 +366,7 @@ impl PendingTracks {
                     None => false,
                 };
                 if drained_empty {
-                    inner.reservations.remove(&tape);
+                    inner.tape_changes.remove(&tape);
                 }
             }
         }
@@ -318,21 +389,54 @@ impl PendingTracks {
         }
     }
 
-    /// Fold a pending reservation for `tape` on top of what the store holds.
+    /// Fold the pending changes to `tape` on top of the row the store holds.
     ///
-    /// A reservation is the whole tape record, so the newest one wins outright
-    /// rather than merging field by field.
+    /// A pending reservation is the tape's whole row. The store's row for the
+    /// same tape number wins over it, since the store has then applied that
+    /// reservation and whatever followed. A close, a rewind and a renew change
+    /// the row of the tape number they were made on.
     pub fn apply_to_tape(&self, tape: Address, in_store: Option<TapeInfo>) -> Option<TapeInfo> {
-        if in_store.is_some() {
+        let inner = self.inner.read().expect("pending-tracks lock poisoned");
+        let Some(events) = inner.tape_changes.get(&tape) else {
             return in_store;
+        };
+
+        let mut is_stored = in_store.is_some();
+        let mut row = in_store;
+        for event in events {
+            match &event.change {
+                TapeChange::Row(info) => {
+                    let is_applied = is_stored && row.as_ref().is_some_and(|row| row.id == info.id);
+                    if !is_applied {
+                        row = Some(info.clone());
+                        is_stored = false;
+                    }
+                }
+                TapeChange::Close { id } => {
+                    if row.as_ref().is_some_and(|row| row.id == *id) {
+                        row = None;
+                        is_stored = false;
+                    }
+                }
+                TapeChange::Rewind { id, tree_start, nonce } => {
+                    if let Some(row) = row.as_mut().filter(|row| row.id == *id) {
+                        row.tree_start = row.tree_start.max(*tree_start);
+                        row.next_track_number = row.next_track_number.max(*tree_start);
+                        row.nonce = *nonce;
+                    }
+                }
+                TapeChange::Renew { id, end_epoch, tree_start, nonce } => {
+                    if let Some(row) = row.as_mut().filter(|row| row.id == *id) {
+                        row.end_epoch = *end_epoch;
+                        row.tree_start = row.tree_start.max(*tree_start);
+                        row.next_track_number = row.next_track_number.max(*tree_start);
+                        row.nonce = *nonce;
+                    }
+                }
+            }
         }
 
-        let inner = self.inner.read().expect("pending-tracks lock poisoned");
-        inner
-            .reservations
-            .get(&tape)
-            .and_then(|events| events.last())
-            .map(|event| event.info.clone())
+        row
     }
 
     /// Fold pending events for `track` on top of `in_store` (the value
@@ -384,15 +488,19 @@ impl PendingTracks {
         tracks
     }
 
-    /// Return the address of the pending registered track at one number on `tape`.
+    /// Return the address of the pending registered track at one number on
+    /// the tape numbered `tape_number` at `tape`.
     pub fn track_address_by_number(
         &self,
         tape: Address,
+        tape_number: TapeNumber,
         track_number: TrackNumber,
     ) -> Option<Address> {
         self.registered_tracks_by_tape(tape)
             .into_iter()
-            .find(|(_, track)| track.track_number == track_number)
+            .find(|(_, track)| {
+                track.tape_number == tape_number && track.track_number == track_number
+            })
             .map(|(address, _)| address)
     }
 
@@ -508,7 +616,7 @@ mod tests {
     use tape_core::spooler::VirtualGroup;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{TrackFlags, TrackKind};
-    use tape_core::types::{StorageUnits, StripeCount, TrackNumber};
+    use tape_core::types::{StorageUnits, StripeCount, TapeNumber, TrackNumber};
     use tape_crypto::Hash;
 
     use super::*;
@@ -516,6 +624,7 @@ mod tests {
     fn registered_blob(tape: Address) -> CompressedTrack {
         CompressedTrack {
             tape,
+            tape_number: TapeNumber(1),
             track_number: TrackNumber(0),
             key: Hash::new_unique(),
             kind: TrackKind::Coded as u64,
@@ -853,15 +962,93 @@ mod tests {
         let state = registered_blob(tape);
 
         pending.apply_register(SlotNumber(10), track, state, BlobData::Coded(sample_blob()));
+        let by_number = |tape, tape_number, number| {
+            pending.track_address_by_number(tape, tape_number, TrackNumber(number))
+        };
 
-        assert_eq!(pending.track_address_by_number(tape, TrackNumber(0)), Some(track));
-        assert_eq!(pending.track_address_by_number(tape, TrackNumber(1)), None);
-        assert_eq!(
-            pending.track_address_by_number(Address::new_unique(), TrackNumber(0)),
-            None
-        );
+        assert_eq!(by_number(tape, state.tape_number, 0), Some(track));
+        assert_eq!(by_number(tape, state.tape_number, 1), None);
+        assert_eq!(by_number(tape, state.tape_number.next(), 0), None);
+        assert_eq!(by_number(Address::new_unique(), state.tape_number, 0), None);
 
         pending.drop_slot(SlotNumber(10));
-        assert_eq!(pending.track_address_by_number(tape, TrackNumber(0)), None);
+        assert_eq!(by_number(tape, state.tape_number, 0), None);
+    }
+
+    fn tape_row(id: u64) -> TapeInfo {
+        TapeInfo::new(TapeNumber(id), 0, EpochNumber(10), TrackNumber(3))
+    }
+
+    // a pending rewind moves the stored row's tree start and nonce, and
+    // dropping its slot puts the row back
+    #[test]
+    fn pending_rewind() {
+        let pending = PendingTracks::new();
+        let tape = Address::new_unique();
+        let nonce = Hash::from([7u8; 32]);
+
+        pending.apply_rewind(SlotNumber(10), tape, TapeNumber(1), TrackNumber(3), nonce);
+
+        let row = pending.apply_to_tape(tape, Some(tape_row(1))).expect("tape row");
+        assert_eq!(row.tree_start, TrackNumber(3));
+        assert_eq!(row.nonce, nonce);
+
+        // A rewind of another tape number at the address leaves the row alone.
+        assert_eq!(pending.apply_to_tape(tape, Some(tape_row(2))), Some(tape_row(2)));
+        assert_eq!(pending.apply_to_tape(tape, None), None);
+
+        pending.drop_slot(SlotNumber(10));
+        assert_eq!(pending.apply_to_tape(tape, Some(tape_row(1))), Some(tape_row(1)));
+    }
+
+    // a pending close hides the stored row, and a reservation pending after
+    // it shows the new tape at the address
+    #[test]
+    fn pending_close_and_reserve() {
+        let pending = PendingTracks::new();
+        let tape = Address::new_unique();
+
+        pending.apply_close(SlotNumber(10), tape, TapeNumber(1));
+        assert_eq!(pending.apply_to_tape(tape, Some(tape_row(1))), None);
+
+        pending.apply_reserve(SlotNumber(11), tape, tape_row(2));
+        assert_eq!(pending.apply_to_tape(tape, Some(tape_row(1))), Some(tape_row(2)));
+
+        // Once the store has applied both, its row for the new tape wins.
+        let stored = TapeInfo { next_track_number: TrackNumber(9), ..tape_row(2) };
+        assert_eq!(pending.apply_to_tape(tape, Some(stored.clone())), Some(stored));
+    }
+
+    // a pending renew gives the stored row its new expiry and tree start
+    #[test]
+    fn pending_renew() {
+        let pending = PendingTracks::new();
+        let tape = Address::new_unique();
+        let nonce = Hash::from([7u8; 32]);
+
+        pending.apply_renew(SlotNumber(10), tape, TapeNumber(1), EpochNumber(20), TrackNumber(3), nonce);
+
+        let row = pending.apply_to_tape(tape, Some(tape_row(1))).expect("tape row");
+        assert_eq!(row.end_epoch, EpochNumber(20));
+        assert_eq!(row.tree_start, TrackNumber(3));
+        assert_eq!(row.nonce, nonce);
+    }
+
+    // an update to a tape whose reservation is pending keeps a rewind that is
+    // pending too
+    #[test]
+    fn pending_update_after_rewind() {
+        let pending = PendingTracks::new();
+        let tape = Address::new_unique();
+        let nonce = Hash::from([7u8; 32]);
+        let delegate = Address::new_unique();
+
+        pending.apply_reserve(SlotNumber(10), tape, tape_row(1));
+        pending.apply_rewind(SlotNumber(11), tape, TapeNumber(1), TrackNumber(5), nonce);
+        pending.apply_tape_update(SlotNumber(12), tape, |info| info.delegate = delegate);
+
+        let row = pending.apply_to_tape(tape, None).expect("tape row");
+        assert_eq!(row.tree_start, TrackNumber(5));
+        assert_eq!(row.delegate, delegate);
     }
 }

@@ -242,7 +242,9 @@ mod tests {
         use crate::ops::{SliceOps, TrackOps};
         use crate::TapeStore;
         use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-        use tape_core::types::{VirtualGroup, SpoolIndex, StorageUnits, TrackNumber};
+        use tape_core::types::{
+            VirtualGroup, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
+        };
         use tape_crypto::address::Address;
         use tape_crypto::Hash;
         use tempfile::TempDir;
@@ -253,6 +255,7 @@ mod tests {
         fn certified_track(tape: Address) -> CompressedTrack {
             CompressedTrack {
                 tape,
+                tape_number: TapeNumber(1),
                 key: Hash::new_unique(),
                 track_number: TrackNumber(0),
                 kind: TrackKind::Coded as u64,

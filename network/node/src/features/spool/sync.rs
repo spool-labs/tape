@@ -433,7 +433,7 @@ mod tests {
     use tape_core::erasure::{SLICE_TREE_HEIGHT, slice_root};
     use tape_core::spooler::VirtualGroup;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TrackNumber};
+    use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
@@ -508,6 +508,7 @@ mod tests {
 
         CompressedTrack {
             tape: Address::from([0; 32]),
+            tape_number: TapeNumber(1),
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,

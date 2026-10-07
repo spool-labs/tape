@@ -13,7 +13,9 @@ use tape_protocol::Api;
 use tape_protocol::api::ops::GetSliceReq;
 use tape_retry::RetryConfig;
 use tape_slicer::{ErasureCoder, SliceIndex, Slicer, StripedCoder};
-use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackDataOps, TrackOps};
+use tape_store::ops::{
+    ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps, track_has_left,
+};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn, Instrument};
@@ -152,6 +154,21 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             if !track_info.is_coded() {
                 warn!(spool = %spool, track = %track_addr, "non-blob track in recovery queue");
                 continue;
+            }
+
+            // A track that has left its tape is deleted by the sweep, so
+            // nothing recovers it.
+            match ctx.store.get_tape(track_info.tape) {
+                Ok(tape) if track_has_left(tape.as_ref(), &track_info) => {
+                    let _ = ctx.store.remove_pending_recovery(spool, track_addr);
+                    made_progress = true;
+                    continue;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    warn!(spool = %spool, track = %track_addr, %error, "get_tape failed");
+                    continue;
+                }
             }
 
             let track_data = match ctx.store.get_track_data(track_addr) {
@@ -456,19 +473,22 @@ mod tests {
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
-        ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TrackNumber,
+        ChunkNumber, EpochNumber, SlotNumber, StorageUnits, StripeCount, TapeNumber,
+        TrackNumber,
     };
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
     use tape_protocol::api::ops::{GetSliceRes, PeerReq, PeerRes};
     use tape_slicer::SliceMetadata;
+    use tape_core::tape::TapeFlags;
     use tape_store::ops::ObjectInfoOps;
-    use tape_store::types::ObjectInfo;
+    use tape_store::types::{ObjectInfo, TapeInfo};
 
     use crate::harness::{NodeHarness, TestContext};
 
     const SPOOL: SpoolIndex = SpoolIndex(5);
+    const TAPE_NUMBER: TapeNumber = TapeNumber(1);
 
     /// The slicer a tapenet node encodes and recovers with.
     fn tapenet_slicer() -> Slicer<StripedCoder> {
@@ -483,15 +503,20 @@ mod tests {
         test_context_with_api(MemoryApi::noop()).await
     }
 
+    // a node that holds the row of the tape every test track is on
     async fn test_context_with_api(api: MemoryApi) -> TestContext {
-        NodeHarness::builder()
+        let ctx = NodeHarness::builder()
             .nodes(25)
             .no_prev_snapshot_tape()
             .api(api)
             .build()
             .await
             .expect("build harness")
-            .ctx_for(SPOOL.as_usize())
+            .ctx_for(SPOOL.as_usize());
+
+        let tape = TapeInfo::new(TAPE_NUMBER, TapeFlags::NONE, EpochNumber(u64::MAX), TrackNumber(1));
+        ctx.store.put_tape(addr(0), tape).expect("put tape");
+        ctx
     }
 
     fn clay_blob(size: u64, slices: &[Vec<u8>]) -> BlobEncoding {
@@ -512,7 +537,8 @@ mod tests {
     fn clay_track(size: u64, slices: &[Vec<u8>]) -> CompressedTrack {
         let blob = clay_blob(size, slices);
         CompressedTrack {
-            tape: Address::from([0; 32]),
+            tape: addr(0),
+            tape_number: TAPE_NUMBER,
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,

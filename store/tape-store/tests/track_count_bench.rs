@@ -20,7 +20,7 @@ use tape_store_reel::{scaled, BenchArm, MetaBulkStore, ReelStore};
 use tape_store_api::{Column, Direction};
 use tape_store_rocks::SplitStore;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-use tape_core::types::{VirtualGroup, StorageUnits, TrackNumber};
+use tape_core::types::{VirtualGroup, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
 use tape_store::columns::TrackCol;
@@ -32,6 +32,7 @@ const COUNTS: &[usize] = &[10_000, 50_000, 200_000];
 fn sample_track() -> CompressedTrack {
     CompressedTrack {
         tape: Address::new_unique(),
+        tape_number: TapeNumber(1),
         key: Hash::new_unique(),
         track_number: TrackNumber(0),
         kind: TrackKind::Coded as u64,

@@ -10,7 +10,7 @@ use tape_core::types::TrackNumber;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_rpc::Rpc;
-use tape_store::ops::{ObjectInfoOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, TapeOps, TrackOps};
 use tape_store::types::ObjectInfo;
 use tape_store_api::Store;
 
@@ -49,13 +49,34 @@ pub(crate) fn resolve_tape_track<Db: Store, Cluster: Api, Blockchain: Rpc>(
     tape: Address,
     track_number: TrackNumber,
 ) -> Result<Option<CompressedTrack>, RouteError> {
+    // The row has the number of the tape at this address now, with a pending
+    // reservation, close, rewind or renew folded in.
+    let in_store = state
+        .context
+        .store
+        .get_tape(tape)
+        .map_err(|error| RouteError::Internal(error.to_string()))?;
+    let Some(tape_row) = state.context.pending.apply_to_tape(tape, in_store) else {
+        return Ok(None);
+    };
+
+    // A track numbered below the tree's start left when the tape was rewound.
+    if track_number < tape_row.tree_start {
+        return Ok(None);
+    }
+
     let stored = state
         .context
         .store
-        .track_address_by_number(tape, track_number)
+        .track_address_by_number(tape, tape_row.id, track_number)
         .map_err(|error| RouteError::Internal(error.to_string()))?;
     // A registration that is confirmed but not finalized is only in the pending overlay.
-    let pending = || state.context.pending.track_address_by_number(tape, track_number);
+    let pending = || {
+        state
+            .context
+            .pending
+            .track_address_by_number(tape, tape_row.id, track_number)
+    };
     let Some(track) = stored.or_else(pending) else {
         return Ok(None);
     };

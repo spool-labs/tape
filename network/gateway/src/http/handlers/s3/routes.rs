@@ -34,7 +34,7 @@ use tape_protocol::Api;
 use tape_protocol::api::{with_share_token, ApiError};
 use tape_sdk::error::{TapedriveError, UploadError};
 use tape_sdk::track::write::content_etag_named;
-use tape_store::ops::{CredentialOps, ObjectListOps, ObjectListPage, TapeOps};
+use tape_store::ops::{CredentialOps, ObjectListOps, ObjectListPage, TapeOps, object_has_left};
 use tape_store::types::{CredentialScope, ObjectListEntry, PendingOp, PendingWrite};
 
 use crate::http::handlers::object::{
@@ -208,6 +208,8 @@ where
             .collect(),
         Some((principal, CredentialScope::AnyOwned)) => {
             let (tape, _) = tape_pda(principal);
+            // A tape's row outlives its expiry, and an expired tape is no bucket.
+            let current_epoch = state.context.state().epoch();
             let reserved = state
                 .context
                 .store
@@ -216,7 +218,7 @@ where
                     tracing::warn!(%error, "s3 ListBuckets: tape store unavailable");
                     S3Error::Internal("tape store unavailable".to_string())
                 })?
-                .is_some();
+                .is_some_and(|info| info.end_epoch > current_epoch);
             if reserved {
                 vec![BucketEntry {
                     name: bucket_name(tape),
@@ -390,11 +392,21 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let page = state
+    let mut page = state
         .context
         .store
         .list_objects(bucket, prefix, delimiter, start, max_keys)
         .map_err(|error| S3Error::Internal(error.to_string()))?;
+
+    // The store's listing follows the stored row. A close, rewind or renew
+    // that is still pending takes its objects out here.
+    let in_store = state
+        .context
+        .store
+        .get_tape(bucket)
+        .map_err(|error| S3Error::Internal(error.to_string()))?;
+    let tape_row = state.context.pending.apply_to_tape(bucket, in_store);
+    page.objects.retain(|(_, entry)| !object_has_left(tape_row.as_ref(), entry));
 
     // The index treats `start` as inclusive and never seeks before the prefix.
     // Queued keys have to be filtered the same way or the two halves paginate
@@ -710,11 +722,13 @@ where
     )))
 }
 
-/// `DELETE /{bucket}` -> DeleteBucket
+/// `DELETE /{bucket}` -> DeleteBucket. The program lets only a tape's owner
+/// close it, and the gateway writes with a delegate key.
 async fn delete_bucket(Path(bucket): Path<String>) -> Result<Response, S3Error> {
     parse_bucket(&bucket)?;
     Err(S3Error::NotImplemented(
-        "DeleteBucket: a bucket is a tape, and tapes are never closed".to_string(),
+        "DeleteBucket: a bucket is a tape, and only its owner can close it, with `tape close`"
+            .to_string(),
     ))
 }
 
@@ -1472,6 +1486,7 @@ fn s3_write_error(error: TapedriveError) -> S3Error {
         | TapedriveError::Encoding(_)
         | TapedriveError::CommitmentMismatch
         | TapedriveError::InsufficientCapacity { .. }
+        | TapedriveError::TrackLeftTape
         | TapedriveError::Io(_)
         | TapedriveError::Stream(_)) => S3Error::Internal(other.to_string()),
     }
@@ -1495,6 +1510,7 @@ fn is_operator_auth_failure(error: &TapedriveError) -> bool {
         | TapedriveError::CommitmentMismatch
         | TapedriveError::NotFound
         | TapedriveError::Immutable
+        | TapedriveError::TrackLeftTape
         | TapedriveError::RateLimited { .. }
         | TapedriveError::InsufficientCapacity { .. }
         | TapedriveError::InvalidArgument(_)
@@ -2111,7 +2127,7 @@ where
 #[cfg(test)]
 mod tests {
     use axum::http::HeaderValue;
-    use tape_core::types::StorageUnits;
+    use tape_core::types::{StorageUnits, TapeNumber};
     use tape_store::types::PendingState;
 
     use crate::http::handlers::s3::sigv4::ChunkVerification;
@@ -2264,6 +2280,7 @@ mod tests {
                             block_time: Some(1),
                             slot: Default::default(),
                             data_tape: Address::default(),
+                            tape_number: TapeNumber(1),
                             track_number: Default::default(),
                             track: Address::default(),
                             kind: 0,

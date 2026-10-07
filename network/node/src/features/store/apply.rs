@@ -14,8 +14,8 @@ use tape_core::types::{EpochNumber, SlotNumber, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_store::ops::{
-    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps, TrackDataOps,
-    TrackOps,
+    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, RemovalOps, SliceOps, SpoolOps, TapeOps,
+    TrackDataOps, TrackOps,
 };
 use tape_store::types::{ObjectInfo, ObjectListEntry, ObjectMetadata, SystemObjectKind, TapeInfo};
 use tape_store::TapeStore;
@@ -24,10 +24,8 @@ use tracing::{error, warn};
 use crate::core::error::NodeError;
 use crate::features::store::sample::put_sample;
 use crate::features::store::cleanup::{
-    cleanup_track_slices, delete_tape_local, delete_track_local, remove_object_listing_for_track,
+    cleanup_track_slices, delete_track_local, remove_object_listing_for_track,
 };
-
-const DELETE_TAPE_BATCH_SIZE: usize = 100;
 
 /// A slice missing at certification waits this many slots before the repair path takes it
 const REPAIR_GRACE_SLOTS: SlotNumber = SlotNumber(12);
@@ -91,7 +89,7 @@ pub fn apply_event<Db: Store>(
             flags,
             authority,
             expiry_epoch,
-            share_nonce,
+            nonce,
             ..
         } => {
             store
@@ -102,16 +100,35 @@ pub fn apply_event<Db: Store>(
                         flags: *flags,
                         end_epoch: *expiry_epoch,
                         next_track_number: TrackNumber(0),
+                        tree_start: TrackNumber(0),
                         authority: *authority,
                         delegate: Address::default(),
-                        share_nonce: *share_nonce,
+                        nonce: *nonce,
                     },
                 )
                 .map_err(store_error)?;
         }
-        // The deployed program can still close an expired tape
-        ReplayableEvent::DestroyTape { tape, .. } => {
-            delete_tape_local(store, *tape, DELETE_TAPE_BATCH_SIZE, slot, profile)?;
+        ReplayableEvent::CloseTape { tape, id, epoch } => {
+            close_tape(store, *tape, *id, *epoch, deletes)?;
+        }
+        ReplayableEvent::RewindTape {
+            tape,
+            id,
+            epoch,
+            tree_start,
+            nonce,
+        } => {
+            rewind_tape(store, *tape, *id, *epoch, *tree_start, *nonce, deletes)?;
+        }
+        ReplayableEvent::RenewTape {
+            tape,
+            id,
+            expiry_epoch,
+            tree_start,
+            nonce,
+            ..
+        } => {
+            renew_tape(store, *tape, *id, *expiry_epoch, *tree_start, *nonce)?;
         }
         ReplayableEvent::ExtendTape {
             tape,
@@ -127,8 +144,8 @@ pub fn apply_event<Db: Store>(
                     store.put_tape(*tape, info).map_err(store_error)?;
                 }
                 Some(_) => {}
-                // The cleanup removes a tape only once it can no longer be
-                // extended, so a missing row means the store has lost a tape.
+                // A tape's row goes only when the tape is closed, so a missing
+                // row means the store has lost a tape.
                 None => {
                     error!(tape = %tape, "extend for a tape the store does not hold");
                 }
@@ -137,8 +154,8 @@ pub fn apply_event<Db: Store>(
         ReplayableEvent::SetTapeDelegate { tape, delegate } => {
             update_tape(store, *tape, "set delegate", |info| info.delegate = *delegate)?;
         }
-        ReplayableEvent::AdvanceShareNonce { tape, nonce } => {
-            update_tape(store, *tape, "advance share nonce", |info| info.share_nonce = *nonce)?;
+        ReplayableEvent::AdvanceTapeNonce { tape, nonce } => {
+            update_tape(store, *tape, "advance tape nonce", |info| info.nonce = *nonce)?;
         }
         ReplayableEvent::RegisterNode { node, id, .. } => {
             let (history, _) = history_pda(*node);
@@ -150,9 +167,10 @@ pub fn apply_event<Db: Store>(
                         flags: TapeFlags::SYSTEM,
                         end_epoch: EpochNumber(u64::MAX),
                         next_track_number: TrackNumber(0),
+                        tree_start: TrackNumber(0),
                         authority: SYSTEM_ADDRESS,
                         delegate: Address::default(),
-                        share_nonce: Hash::default(),
+                        nonce: Hash::default(),
                     },
                 )
                 .map_err(store_error)?;
@@ -166,9 +184,10 @@ pub fn apply_event<Db: Store>(
                         flags: TapeFlags::SYSTEM,
                         end_epoch: EpochNumber(u64::MAX),
                         next_track_number: TrackNumber(0),
+                        tree_start: TrackNumber(0),
                         authority: SYSTEM_ADDRESS,
                         delegate: Address::default(),
-                        share_nonce: Hash::default(),
+                        nonce: Hash::default(),
                     },
                 )
                 .map_err(store_error)?;
@@ -195,9 +214,10 @@ pub fn apply_event<Db: Store>(
                         flags: TapeFlags::SYSTEM,
                         end_epoch: EpochNumber(u64::MAX),
                         next_track_number,
+                        tree_start: TrackNumber(0),
                         authority: SYSTEM_ADDRESS,
                         delegate: Address::default(),
-                        share_nonce: Hash::default(),
+                        nonce: Hash::default(),
                     },
                 )
                 .map_err(store_error)?;
@@ -215,6 +235,116 @@ pub fn apply_event<Db: Store>(
     }
 
     Ok(())
+}
+
+/// The row of the tape an event is about. An event for a tape number the
+/// address no longer holds changes nothing, which is the case when a block
+/// that closed a tape and reserved its address again is applied a second time.
+fn tape_for_event<Db: Store>(
+    store: &TapeStore<Db>,
+    tape: Address,
+    id: TapeNumber,
+    what: &str,
+) -> Result<Option<TapeInfo>, NodeError> {
+    let Some(info) = store.get_tape(tape).map_err(store_error)? else {
+        warn!(tape = %tape, what, "tape event for a tape the store does not hold, skipping");
+        return Ok(None);
+    };
+
+    if info.id != id {
+        warn!(tape = %tape, what, held = info.id.0, event = id.0, "tape event for another tape number, skipping");
+        return Ok(None);
+    }
+
+    Ok(Some(info))
+}
+
+/// Record that a tape's tracks from `tree_start` on left in `epoch`, so the
+/// epoch's assignment round still counts them.
+///
+/// A gateway and a replay of closed epochs have no round to wait for and
+/// record nothing. An expired tape's tracks were out of the round already.
+fn record_live_removal<Db: Store>(
+    store: &TapeStore<Db>,
+    tape: Address,
+    info: &TapeInfo,
+    epoch: EpochNumber,
+    deletes: DeletePolicy,
+) -> Result<(), NodeError> {
+    let is_live = info.end_epoch > epoch;
+    if deletes == DeletePolicy::NextEpoch && is_live {
+        store
+            .record_removal(tape, info.id, epoch, info.tree_start)
+            .map_err(store_error)?;
+    }
+
+    Ok(())
+}
+
+// A close removes every track of the tape in one event, and nothing here
+// walks them. With the row gone each one reads as having left its tape, and
+// the sweep deletes them once the round is over.
+fn close_tape<Db: Store>(
+    store: &TapeStore<Db>,
+    tape: Address,
+    id: TapeNumber,
+    epoch: EpochNumber,
+    deletes: DeletePolicy,
+) -> Result<(), NodeError> {
+    let Some(info) = tape_for_event(store, tape, id, "close")? else {
+        return Ok(());
+    };
+
+    record_live_removal(store, tape, &info, epoch, deletes)?;
+    store.delete_tape(tape).map_err(store_error)
+}
+
+// A rewind moves the tree's start up to the track counter, so every track
+// written before it reads as having left.
+fn rewind_tape<Db: Store>(
+    store: &TapeStore<Db>,
+    tape: Address,
+    id: TapeNumber,
+    epoch: EpochNumber,
+    tree_start: TrackNumber,
+    nonce: Hash,
+    deletes: DeletePolicy,
+) -> Result<(), NodeError> {
+    let Some(mut info) = tape_for_event(store, tape, id, "rewind")? else {
+        return Ok(());
+    };
+
+    // The same block applied again finds the start already moved and no
+    // tracks between the two, so it records nothing new.
+    if info.tree_start < tree_start {
+        record_live_removal(store, tape, &info, epoch, deletes)?;
+    }
+
+    info.tree_start = info.tree_start.max(tree_start);
+    info.next_track_number = info.next_track_number.max(tree_start);
+    info.nonce = nonce;
+    store.put_tape(tape, info).map_err(store_error)
+}
+
+// A renew brings an expired tape back under its row. Its old tracks were out
+// of the round already, so nothing is recorded for them.
+fn renew_tape<Db: Store>(
+    store: &TapeStore<Db>,
+    tape: Address,
+    id: TapeNumber,
+    expiry_epoch: EpochNumber,
+    tree_start: TrackNumber,
+    nonce: Hash,
+) -> Result<(), NodeError> {
+    let Some(mut info) = tape_for_event(store, tape, id, "renew")? else {
+        return Ok(());
+    };
+
+    info.end_epoch = expiry_epoch;
+    info.tree_start = info.tree_start.max(tree_start);
+    info.next_track_number = info.next_track_number.max(tree_start);
+    info.nonce = nonce;
+    store.put_tape(tape, info).map_err(store_error)
 }
 
 fn put_track_object<Db: Store>(
@@ -341,6 +471,7 @@ fn put_named_object_entry<Db: Store>(
         block_time,
         slot,
         data_tape: replay.state.tape,
+        tape_number: replay.state.tape_number,
         track_number: replay.state.track_number,
         track,
         kind: replay.state.kind,
@@ -416,7 +547,6 @@ fn update_tape<Db: Store, Edit: FnOnce(&mut TapeInfo)>(
     edit: Edit,
 ) -> Result<(), NodeError> {
     let Some(mut info) = store.get_tape(tape).map_err(store_error)? else {
-        // An expired tape is swept, and its owner can still change it on chain.
         warn!(tape = %tape, what, "tape update for unknown tape, skipping");
         return Ok(());
     };
@@ -633,8 +763,8 @@ mod tests {
     use tape_crypto::Hash;
     use tape_store::columns::ALL_COLUMN_FAMILIES;
     use tape_store::ops::{
-        MetaOps, ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps,
-        TrackDataOps, TrackOps,
+        MetaOps, ObjectInfoOps, ObjectListOps, ObjectMetadataOps, RemovalOps, SliceOps, SpoolOps,
+        TapeOps, TrackDataOps, TrackOps, track_has_left,
     };
     use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
     use tape_store::TapeStore;
@@ -692,6 +822,7 @@ mod tests {
         ReplayableEvent::Track(ReplayTrack {
             state: CompressedTrack {
                 tape,
+                tape_number: TapeNumber(1),
                 key: Hash::new_unique(),
                 track_number,
                 kind: TrackKind::Coded as u64,
@@ -711,6 +842,7 @@ mod tests {
         ReplayableEvent::Track(ReplayTrack {
             state: CompressedTrack {
                 tape,
+                tape_number: TapeNumber(1),
                 key: Hash::new_unique(),
                 track_number,
                 kind: TrackKind::Inline as u64,
@@ -785,6 +917,7 @@ mod tests {
     fn track_info(tape: Address, track_number: TrackNumber, group: VirtualGroup) -> CompressedTrack {
         CompressedTrack {
             tape,
+            tape_number: TapeNumber(1),
             key: Hash::new_unique(),
             track_number,
             kind: TrackKind::Coded as u64,
@@ -802,7 +935,7 @@ mod tests {
         let slot = SlotNumber(55);
         let tape = Address::new_unique();
         let authority = Address::new_unique();
-        let share_nonce = Hash::new_unique();
+        let nonce = Hash::new_unique();
         let track_number = TrackNumber(9);
         let track_event = make_blob_track(tape, track_number, EpochNumber(6));
         let track = track_address(&track_event);
@@ -819,7 +952,7 @@ mod tests {
                 cost: TAPE(0),
                 burned: TAPE(0),
                 scheduled: TAPE(0),
-                share_nonce,
+                nonce,
             },
             track_event,
             ReplayableEvent::CertifyTrack {
@@ -837,9 +970,10 @@ mod tests {
                 flags: 0,
                 end_epoch: EpochNumber(12),
                 next_track_number: TrackNumber(10),
+                tree_start: TrackNumber(0),
                 authority,
                 delegate: Address::default(),
-                share_nonce,
+                nonce,
             })
         );
 
@@ -911,7 +1045,7 @@ mod tests {
                 cost: TAPE(0),
                 burned: TAPE(0),
                 scheduled: TAPE(0),
-                share_nonce: Hash::default(),
+                nonce: Hash::default(),
             },
             track_event,
         ];
@@ -1125,9 +1259,10 @@ mod tests {
                     flags: TapeFlags::SYSTEM,
                     end_epoch: EpochNumber(u64::MAX),
                     next_track_number: TrackNumber(0),
+                    tree_start: TrackNumber(0),
                     authority: Address::default(),
                     delegate: Address::default(),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 },
             )
             .unwrap();
@@ -1276,7 +1411,7 @@ mod tests {
                 cost: TAPE(0),
                 burned: TAPE(0),
                 scheduled: TAPE(0),
-                share_nonce: Hash::default(),
+                nonce: Hash::default(),
             },
             make_blob_track(tape, TrackNumber(4), EpochNumber(6)),
             ReplayableEvent::ExtendTape {
@@ -1298,9 +1433,10 @@ mod tests {
                 flags: 0,
                 end_epoch: EpochNumber(30),
                 next_track_number: TrackNumber(5),
+                tree_start: TrackNumber(0),
                 authority,
                 delegate: Address::default(),
-                share_nonce: Hash::default(),
+                nonce: Hash::default(),
             })
         );
     }
@@ -1490,5 +1626,252 @@ mod tests {
             let spool = group.spool_at(slice);
             assert!(!store.has_pending_repair(spool, track).expect("has pending repair"));
         }
+    }
+
+    /// The number of the tape the test tracks are written to
+    const TAPE_NUMBER: TapeNumber = TapeNumber(1);
+    const NEXT_TAPE_NUMBER: TapeNumber = TapeNumber(2);
+    /// The epoch the tape events land in
+    const EPOCH: EpochNumber = EpochNumber(5);
+    const LIVE_UNTIL: EpochNumber = EpochNumber(9);
+
+    fn reserve(tape: Address, id: TapeNumber, expiry_epoch: EpochNumber) -> ReplayableEvent {
+        ReplayableEvent::ReserveTape {
+            tape,
+            id,
+            flags: TapeFlags::NONE,
+            authority: Address::default(),
+            capacity: StorageUnits::mb(10),
+            active_epoch: EpochNumber(1),
+            expiry_epoch,
+            cost: TAPE(0),
+            burned: TAPE(0),
+            scheduled: TAPE(0),
+            nonce: Hash::default(),
+        }
+    }
+
+    fn rewind(tape: Address, epoch: EpochNumber, tree_start: u64) -> ReplayableEvent {
+        ReplayableEvent::RewindTape {
+            tape,
+            id: TAPE_NUMBER,
+            epoch,
+            tree_start: TrackNumber(tree_start),
+            nonce: Hash::from([tree_start as u8; 32]),
+        }
+    }
+
+    /// The same track event on another tape number
+    fn on_tape_number(event: &ReplayableEvent, tape_number: TapeNumber) -> ReplayableEvent {
+        match event {
+            ReplayableEvent::Track(replay) => {
+                let mut copy = replay.clone();
+                copy.state.tape_number = tape_number;
+                ReplayableEvent::Track(copy)
+            }
+            _ => panic!("expected track event"),
+        }
+    }
+
+    /// A reserved tape holding one track per number given, with their addresses
+    fn tape_with_tracks(
+        store: &TapeStore<MemoryStore>,
+        expiry_epoch: EpochNumber,
+        numbers: &[u64],
+    ) -> (Address, Vec<Address>) {
+        let tape = Address::new_unique();
+        let mut events = vec![reserve(tape, TAPE_NUMBER, expiry_epoch)];
+        let mut tracks = Vec::new();
+        for number in numbers {
+            let written = make_raw_track(tape, TrackNumber(*number), EpochNumber(4));
+            tracks.push(track_address(&written));
+            events.push(written);
+        }
+        apply(store, SlotNumber(1), None, &events).expect("apply slot");
+
+        (tape, tracks)
+    }
+
+    fn has_left(store: &TapeStore<MemoryStore>, track: Address) -> bool {
+        let info = store.get_track(track).expect("get track").expect("track row");
+        let tape = store.get_tape(info.tape).expect("get tape");
+        track_has_left(tape.as_ref(), &info)
+    }
+
+    fn removal(store: &TapeStore<MemoryStore>, tape: Address, epoch: EpochNumber) -> Option<TrackNumber> {
+        store.get_removal(tape, TAPE_NUMBER, epoch).expect("get removal")
+    }
+
+    // a close deletes the tape's row and no track. The tracks read as having
+    // left, and the epoch's entry covers them.
+    #[test]
+    fn close_tape() {
+        let store = test_store();
+        let (tape, tracks) = tape_with_tracks(&store, LIVE_UNTIL, &[0, 1]);
+        assert!(!has_left(&store, tracks[0]));
+
+        let close = ReplayableEvent::CloseTape { tape, id: TAPE_NUMBER, epoch: EPOCH };
+        apply(&store, SlotNumber(2), None, &[close]).expect("apply slot");
+
+        assert!(store.get_tape(tape).expect("get tape").is_none());
+        for track in tracks {
+            assert!(has_left(&store, track));
+            assert!(store.get_object_info(track).expect("get info").is_some_and(|info| info.is_live()));
+        }
+        assert_eq!(removal(&store, tape, EPOCH), Some(TrackNumber(0)));
+    }
+
+    // closing an expired tape records nothing, since its tracks were out of
+    // the round already. A store with no round to wait for records nothing either.
+    #[test]
+    fn close_without_entry() {
+        let store = test_store();
+        let (expired, _) = tape_with_tracks(&store, EPOCH, &[0]);
+        let (live, _) = tape_with_tracks(&store, LIVE_UNTIL, &[0]);
+
+        let close = |tape| ReplayableEvent::CloseTape { tape, id: TAPE_NUMBER, epoch: EPOCH };
+        apply(&store, SlotNumber(2), None, &[close(expired)]).expect("apply slot");
+        apply_slot(&store, SlotNumber(2), None, &[close(live)], TAPENET_PROFILE, DeletePolicy::AtOnce)
+            .expect("apply slot");
+
+        for tape in [expired, live] {
+            assert!(store.get_tape(tape).expect("get tape").is_none());
+            assert_eq!(removal(&store, tape, EPOCH), None);
+        }
+    }
+
+    // a rewind keeps the row, moves the tree's start to the counter and takes
+    // the new nonce. The entry holds the start the tape had before its
+    // first removal in the epoch.
+    #[test]
+    fn rewind_tape() {
+        let store = test_store();
+        let (tape, tracks) = tape_with_tracks(&store, LIVE_UNTIL, &[0, 1]);
+
+        apply(&store, SlotNumber(2), None, &[rewind(tape, EPOCH, 2)]).expect("apply slot");
+
+        let row = store.get_tape(tape).expect("get tape").expect("tape row");
+        assert_eq!(row.tree_start, TrackNumber(2));
+        assert_eq!(row.next_track_number, TrackNumber(2));
+        assert_eq!(row.nonce, Hash::from([2u8; 32]));
+        assert_eq!(row.end_epoch, LIVE_UNTIL);
+        assert!(tracks.iter().all(|track| has_left(&store, *track)));
+        assert_eq!(removal(&store, tape, EPOCH), Some(TrackNumber(0)));
+
+        // A track written after the rewind is on the tape, and a second rewind
+        // in the epoch keeps the first entry.
+        let written = make_raw_track(tape, TrackNumber(2), EPOCH);
+        let third = track_address(&written);
+        apply(&store, SlotNumber(3), None, &[written]).expect("apply slot");
+        assert!(!has_left(&store, third));
+
+        apply(&store, SlotNumber(4), None, &[rewind(tape, EPOCH, 3)]).expect("apply slot");
+        assert!(has_left(&store, third));
+        assert_eq!(removal(&store, tape, EPOCH), Some(TrackNumber(0)));
+
+        // A rewind in a later epoch records the start the tape had by then, so
+        // the tracks from before it are not counted as that epoch's.
+        let later = EPOCH.next();
+        apply(&store, SlotNumber(5), None, &[make_raw_track(tape, TrackNumber(3), EPOCH)])
+            .expect("apply slot");
+        apply(&store, SlotNumber(6), None, &[rewind(tape, later, 4)]).expect("apply slot");
+        assert_eq!(removal(&store, tape, later), Some(TrackNumber(3)));
+    }
+
+    // a rewind applied twice, as after a restart, leaves the entry it wrote first
+    #[test]
+    fn rewind_applied_twice() {
+        let store = test_store();
+        let (tape, _) = tape_with_tracks(&store, LIVE_UNTIL, &[0, 1]);
+
+        apply(&store, SlotNumber(2), None, &[rewind(tape, EPOCH, 2)]).expect("apply slot");
+        let row = store.get_tape(tape).expect("get tape");
+        apply(&store, SlotNumber(2), None, &[rewind(tape, EPOCH, 2)]).expect("apply slot");
+
+        assert_eq!(store.get_tape(tape).expect("get tape"), row);
+        assert_eq!(removal(&store, tape, EPOCH), Some(TrackNumber(0)));
+    }
+
+    // a tape closed and reserved again in one block: the address holds the new
+    // tape, the old tape's tracks have left under their own entry, and the
+    // block applied again changes nothing
+    #[test]
+    fn reserve_again() {
+        let store = test_store();
+        let (tape, tracks) = tape_with_tracks(&store, LIVE_UNTIL, &[0]);
+        let written = on_tape_number(&make_raw_track(tape, TrackNumber(0), EPOCH), NEXT_TAPE_NUMBER);
+        let new_track = track_address(&written);
+        let block = [
+            ReplayableEvent::CloseTape { tape, id: TAPE_NUMBER, epoch: EPOCH },
+            reserve(tape, NEXT_TAPE_NUMBER, LIVE_UNTIL),
+            written,
+        ];
+
+        for _ in 0..2 {
+            apply(&store, SlotNumber(2), None, &block).expect("apply slot");
+
+            let row = store.get_tape(tape).expect("get tape").expect("tape row");
+            assert_eq!(row.id, NEXT_TAPE_NUMBER);
+            assert!(has_left(&store, tracks[0]));
+            assert!(!has_left(&store, new_track));
+            assert_eq!(removal(&store, tape, EPOCH), Some(TrackNumber(0)));
+            assert_eq!(store.get_removal(tape, NEXT_TAPE_NUMBER, EPOCH).expect("get removal"), None);
+        }
+    }
+
+    // a renew brings an expired tape back under its row, with a new expiry and
+    // tree start, and records nothing for the tracks it had
+    #[test]
+    fn renew_tape() {
+        let store = test_store();
+        let (tape, tracks) = tape_with_tracks(&store, EPOCH, &[0]);
+        let delegate = Address::new_unique();
+        let set_delegate = ReplayableEvent::SetTapeDelegate { tape, delegate };
+        let renew = ReplayableEvent::RenewTape {
+            tape,
+            id: TAPE_NUMBER,
+            capacity: StorageUnits::mb(20),
+            active_epoch: EPOCH,
+            expiry_epoch: LIVE_UNTIL,
+            cost: TAPE(0),
+            burned: TAPE(0),
+            scheduled: TAPE(0),
+            tree_start: TrackNumber(1),
+            nonce: Hash::from([7u8; 32]),
+        };
+
+        apply(&store, SlotNumber(2), None, &[set_delegate, renew]).expect("apply slot");
+
+        let row = store.get_tape(tape).expect("get tape").expect("tape row");
+        assert_eq!(row.id, TAPE_NUMBER);
+        assert_eq!(row.end_epoch, LIVE_UNTIL);
+        assert_eq!(row.tree_start, TrackNumber(1));
+        assert_eq!(row.nonce, Hash::from([7u8; 32]));
+        assert_eq!(row.delegate, delegate);
+        assert!(has_left(&store, tracks[0]));
+        assert_eq!(removal(&store, tape, EPOCH), None);
+    }
+
+    // an event for a tape the store does not hold, or for another tape number
+    // at the address, changes nothing
+    #[test]
+    fn stale_tape_event() {
+        let store = test_store();
+        let (tape, tracks) = tape_with_tracks(&store, LIVE_UNTIL, &[0]);
+        let row = store.get_tape(tape).expect("get tape");
+        let unknown = Address::new_unique();
+
+        let events = [
+            ReplayableEvent::CloseTape { tape, id: NEXT_TAPE_NUMBER, epoch: EPOCH },
+            ReplayableEvent::CloseTape { tape: unknown, id: TAPE_NUMBER, epoch: EPOCH },
+            rewind(unknown, EPOCH, 1),
+        ];
+        apply(&store, SlotNumber(2), None, &events).expect("apply slot");
+
+        assert_eq!(store.get_tape(tape).expect("get tape"), row);
+        assert!(!has_left(&store, tracks[0]));
+        assert!(store.get_tape(unknown).expect("get tape").is_none());
+        assert_eq!(removal(&store, tape, EPOCH), None);
+        assert_eq!(removal(&store, unknown, EPOCH), None);
     }
 }

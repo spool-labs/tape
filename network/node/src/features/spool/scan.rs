@@ -3,10 +3,11 @@ use std::sync::Arc;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::spooler::VirtualGroup;
+use tape_core::track::types::CompressedTrack;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
-use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, SliceOps, SpoolOps, TapeOps, TrackOps, track_has_left};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -64,12 +65,31 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
             }
         };
 
-        let mut considered: Vec<Address> = Vec::with_capacity(tracks.len());
+        let mut in_group: Vec<(Address, &CompressedTrack)> = Vec::with_capacity(tracks.len());
         for (track_addr, track_info) in &tracks {
             // Tracks outside this spool's group belong to another node, and a raw
             // track has no slice semantics to repair.
             if track_info.group == group && track_info.is_coded() {
-                considered.push(*track_addr);
+                in_group.push((*track_addr, track_info));
+            }
+        }
+
+        // A track that has left its tape is deleted by the sweep, so no gap of
+        // its is repaired. The batch's tape rows come in one call.
+        let parents: Vec<Address> = in_group.iter().map(|(_, track_info)| track_info.tape).collect();
+        let tapes = match ctx.store.get_tapes(&parents) {
+            Ok(tapes) => tapes,
+            Err(error) => {
+                warn!(spool = %spool, %error, "scan get_tapes failed");
+                had_error = true;
+                break;
+            }
+        };
+
+        let mut considered: Vec<Address> = Vec::with_capacity(in_group.len());
+        for ((track_addr, track_info), tape) in in_group.into_iter().zip(tapes) {
+            if !track_has_left(tape.as_ref(), track_info) {
+                considered.push(track_addr);
             }
         }
 
@@ -136,25 +156,33 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tape_core::tape::TapeFlags;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+    use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_store::ops::ObjectInfoOps;
-    use tape_store::types::{ObjectInfo, SystemObjectKind};
+    use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 
     use crate::harness::{NodeHarness, TestContext};
 
     const SPOOL: SpoolIndex = SpoolIndex(5);
 
+    const TAPE_NUMBER: TapeNumber = TapeNumber(1);
+
+    // a node that holds the row of the tape every test track is on
     async fn test_context() -> TestContext {
-        NodeHarness::builder()
+        let ctx = NodeHarness::builder()
             .nodes(25)
             .no_prev_snapshot_tape()
             .build()
             .await
             .expect("build harness")
-            .ctx_for(SPOOL.as_usize())
+            .ctx_for(SPOOL.as_usize());
+
+        let tape = TapeInfo::new(TAPE_NUMBER, TapeFlags::NONE, EpochNumber(u64::MAX), TrackNumber(1));
+        ctx.store.put_tape(addr(0), tape).expect("put tape");
+        ctx
     }
 
     fn addr(n: u8) -> Address {
@@ -163,7 +191,8 @@ mod tests {
 
     fn track(group: VirtualGroup) -> CompressedTrack {
         CompressedTrack {
-            tape: Address::from([0; 32]),
+            tape: addr(0),
+            tape_number: TAPE_NUMBER,
             key: Hash::new_unique(),
             track_number: TrackNumber(0),
             kind: TrackKind::Coded as u64,

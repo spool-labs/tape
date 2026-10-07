@@ -365,7 +365,6 @@ mod tests {
             payer,
             tape_key,
             StorageUnits(1 << 20),
-            EpochNumber(1),
             EpochNumber(2),
             TapeFlags::NONE,
         ));

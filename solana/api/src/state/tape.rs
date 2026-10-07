@@ -40,7 +40,7 @@ pub struct Tape {
     pub expiry_epoch: EpochNumber,
 
     /// Every shared token on this tape uses this nonce; advancing it revokes them all.
-    pub share_nonce: Hash,
+    pub nonce: Hash,
 
     /// A merkle tree of compressed tracks that store the tape data
     pub tracks: TrackArchive,
@@ -153,13 +153,32 @@ impl Tape {
         Ok(())
     }
 
-    /// Every tape starts on its own share nonce.
-    pub fn seed_share_nonce(&mut self, slot_hash: Hash) {
-        self.share_nonce = hashv(&[&slot_hash.to_bytes(), &self.id.pack()]);
+    /// Every tape starts on its own nonce.
+    pub fn seed_nonce(&mut self, slot_hash: Hash) {
+        self.nonce = hashv(&[&slot_hash.to_bytes(), &self.id.pack()]);
     }
 
-    pub fn advance_share_nonce(&mut self, slot_hash: Hash) {
-        self.share_nonce = hashv(&[&self.share_nonce.to_bytes(), &slot_hash.to_bytes()]);
+    pub fn advance_nonce(&mut self, slot_hash: Hash) {
+        self.nonce = hashv(&[&self.nonce.to_bytes(), &slot_hash.to_bytes()]);
+    }
+
+    /// Remove every track and revoke every share token. The reservation stays
+    /// as it is.
+    pub fn rewind(&mut self, slot_hash: Hash) {
+        self.tracks.clear();
+        self.used = StorageUnits::zero();
+        self.advance_nonce(slot_hash);
+    }
+
+    #[inline(always)]
+    pub fn is_immutable(&self) -> bool {
+        TapeFlags::is_immutable(self.flags)
+    }
+
+    /// Expired means the current epoch is at or past the expiry.
+    #[inline(always)]
+    pub fn is_expired(&self, current: EpochNumber) -> bool {
+        current >= self.expiry_epoch
     }
 
     pub fn invalidate_track(&mut self, proof: &CompressedTrackProof) -> ProgramResult {

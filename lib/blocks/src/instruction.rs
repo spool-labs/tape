@@ -3,7 +3,8 @@ use tape_api::event::{
     AssignmentFinalized, CommissionClaimed, CommitteeCreated, CommitteeResized,
     EpochAdvanced, EpochCommitted, EpochCreated, NodeEvicted, NodeJoinedCommittee, NodeRegistered,
     PeerSetResized, PoolAdvanced, SnapshotFinalized, SpoolSynced, StakeDeposited,
-    ShareNonceAdvanced, StakeUnlockRequested, StakeWithdrawn, TapeExtended, TapeReserved,
+    StakeUnlockRequested, StakeWithdrawn, TapeClosed, TapeExtended, TapeNonceAdvanced,
+    TapeRenewed, TapeReserved, TapeRewound,
     TrackCertified, TrackDeleted, TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
 };
 use tape_api::instruction::{self as ix, TapeInstruction};
@@ -128,7 +129,19 @@ pub enum RawInstruction {
         tape: Address,
         delegate: Address,
     },
-    AdvanceShareNonce {
+    AdvanceTapeNonce {
+        tape: Address,
+    },
+    CloseTape {
+        authority: Address,
+        tape: Address,
+    },
+    RewindTape {
+        authority: Address,
+        tape: Address,
+    },
+    RenewTape {
+        authority: Address,
         tape: Address,
     },
     RegisterNode {
@@ -302,9 +315,24 @@ pub enum ParsedInstruction {
         tape: Address,
         delegate: Address,
     },
-    AdvanceShareNonce {
+    AdvanceTapeNonce {
         tape: Address,
-        event: ShareNonceAdvanced,
+        event: TapeNonceAdvanced,
+    },
+    CloseTape {
+        authority: Address,
+        tape: Address,
+        event: TapeClosed,
+    },
+    RewindTape {
+        authority: Address,
+        tape: Address,
+        event: TapeRewound,
+    },
+    RenewTape {
+        authority: Address,
+        tape: Address,
+        event: TapeRenewed,
     },
 
     // Node management
@@ -591,9 +619,27 @@ pub fn parse_raw_instruction(
             }))
         }
 
-        TapeInstruction::AdvanceShareNonce => {
+        TapeInstruction::AdvanceTapeNonce => {
             let tape = get_account(2)?;
-            Ok(Some(RawInstruction::AdvanceShareNonce { tape }))
+            Ok(Some(RawInstruction::AdvanceTapeNonce { tape }))
+        }
+
+        TapeInstruction::CloseTape => {
+            let authority = get_account(1)?;
+            let tape = get_account(2)?;
+            Ok(Some(RawInstruction::CloseTape { authority, tape }))
+        }
+
+        TapeInstruction::RewindTape => {
+            let authority = get_account(1)?;
+            let tape = get_account(2)?;
+            Ok(Some(RawInstruction::RewindTape { authority, tape }))
+        }
+
+        TapeInstruction::RenewTape => {
+            let authority = get_account(1)?;
+            let tape = get_account(3)?;
+            Ok(Some(RawInstruction::RenewTape { authority, tape }))
         }
 
         TapeInstruction::RegisterNode => {

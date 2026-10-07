@@ -161,7 +161,7 @@ mod tests {
     use tape_core::snapshot::replay::{ReplayRecord, ReplayTrack, ReplayableEvent};
     use tape_core::spooler::{GroupIndex, VirtualGroup};
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-    use tape_core::types::{SpoolIndex, StorageUnits, TrackNumber};
+    use tape_core::types::{SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::hash::Hash;
     use tape_crypto::tx::Txid;
@@ -210,6 +210,7 @@ mod tests {
                 &record(ReplayableEvent::Track(ReplayTrack {
                     state: CompressedTrack {
                         tape: Address::new([2u8; 32]),
+                        tape_number: TapeNumber(2),
                         key: Hash::default(),
                         track_number: TrackNumber(1),
                         kind: TrackKind::Inline as u64,

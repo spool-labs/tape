@@ -19,8 +19,8 @@ pub use enums::{
 pub use keys::{
     AuditKey, ChallengeRoundKey, EpochKey, EventLogKey, LedgerReservationKey,
     MultipartPartChunkKey, MultipartPartKey, PeerRecordKey, PendingWriteChunkKey, PendingWriteKey,
-    ObjectListKey, PolicyRuleKey, SliceKey, SnapshotArtifactKey, SpoolIndexKey, TrackLookupKey,
-    TrackSampleKey, UnitKey, VoteSigKey,
+    ObjectListKey, PolicyRuleKey, RemovalKey, SliceKey, SnapshotArtifactKey, SpoolIndexKey,
+    TrackLookupKey, TrackSampleKey, UnitKey, VoteSigKey,
 };
 
 // Re-export value types

@@ -327,19 +327,64 @@ pub fn merge(
                 ParsedInstruction::SetTapeDelegate { tape, delegate }
             }
 
-            RawInstruction::AdvanceShareNonce { tape } => {
+            RawInstruction::AdvanceTapeNonce { tape } => {
                 let event = match events.pop_front() {
-                    Some(TapedriveEvent::ShareNonceAdvanced(e)) => e,
+                    Some(TapedriveEvent::TapeNonceAdvanced(e)) => e,
                     _ => {
                         return Err(ParseError::EventMismatch(
-                            "expected ShareNonceAdvanced event",
+                            "expected TapeNonceAdvanced event",
                         ))
                     }
                 };
                 if event.tape != tape {
-                    return Err(ParseError::EventMismatch("unexpected ShareNonceAdvanced event"));
+                    return Err(ParseError::EventMismatch("unexpected TapeNonceAdvanced event"));
                 }
-                ParsedInstruction::AdvanceShareNonce { tape, event }
+                ParsedInstruction::AdvanceTapeNonce { tape, event }
+            }
+
+            RawInstruction::CloseTape { authority, tape } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TapeClosed(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected TapeClosed event",
+                        ))
+                    }
+                };
+                if event.tape != tape {
+                    return Err(ParseError::EventMismatch("unexpected TapeClosed event"));
+                }
+                ParsedInstruction::CloseTape { authority, tape, event }
+            }
+
+            RawInstruction::RewindTape { authority, tape } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TapeRewound(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected TapeRewound event",
+                        ))
+                    }
+                };
+                if event.tape != tape {
+                    return Err(ParseError::EventMismatch("unexpected TapeRewound event"));
+                }
+                ParsedInstruction::RewindTape { authority, tape, event }
+            }
+
+            RawInstruction::RenewTape { authority, tape } => {
+                let event = match events.pop_front() {
+                    Some(TapedriveEvent::TapeRenewed(e)) => e,
+                    _ => {
+                        return Err(ParseError::EventMismatch(
+                            "expected TapeRenewed event",
+                        ))
+                    }
+                };
+                if event.tape != tape {
+                    return Err(ParseError::EventMismatch("unexpected TapeRenewed event"));
+                }
+                ParsedInstruction::RenewTape { authority, tape, event }
             }
 
             // The metadata setters emit no events; the parsed args are the payload.
@@ -512,8 +557,9 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::event::{
         AssignmentFinalized, EpochAdvanced, EpochCommitted, NodeEvicted, NodeJoinedCommittee,
-        NodeRegistered, PoolAdvanced, ShareNonceAdvanced, SnapshotFinalized, SpoolSynced, TapeExtended, TapeReserved, TrackCertified, TrackDeleted, TrackInvalidated,
-        TrackWritten, VoteProposed, VoteRecorded,
+        NodeRegistered, PoolAdvanced, SnapshotFinalized, SpoolSynced, TapeClosed, TapeExtended,
+        TapeNonceAdvanced, TapeRenewed, TapeReserved, TapeRewound, TrackCertified, TrackDeleted,
+        TrackInvalidated, TrackWritten, VoteProposed, VoteRecorded,
     };
     use tape_core::bls::BlsPubkey;
     use tape_core::erasure::MAX_GROUP_SIZE;
@@ -526,7 +572,7 @@ mod tests {
     use tape_core::types::coin::TAPE;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::tls::NetworkTlsPubkey;
-    use tape_core::types::{SpoolBitmap, SpoolIndex, StorageUnits, TrackNumber};
+    use tape_core::types::{SpoolBitmap, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
 
@@ -877,6 +923,7 @@ mod tests {
             epoch: EpochNumber(2),
             track: track1,
             tape: Address::new_unique(),
+            tape_number: TapeNumber(1),
             group: VirtualGroup(0),
             track_number: TrackNumber(0),
             flags: TrackFlags::NONE,
@@ -963,7 +1010,7 @@ mod tests {
                     leaves: [Hash::default(); MAX_GROUP_SIZE],
                 }),
             },
-            RawInstruction::AdvanceShareNonce {
+            RawInstruction::AdvanceTapeNonce {
                 tape: Address::new_unique(),
             },
             RawInstruction::DeleteTrack {
@@ -1031,6 +1078,7 @@ mod tests {
                     epoch: EpochNumber(2),
                     track: register_track,
                     tape: register_tape,
+                    tape_number: TapeNumber(1),
                     group: VirtualGroup(0),
                     track_number: TrackNumber(0),
                     flags: TrackFlags::NONE,
@@ -1074,7 +1122,7 @@ mod tests {
                     cost: TAPE(0),
                     burned: TAPE(0),
                     scheduled: TAPE(0),
-                    share_nonce: Hash::default(),
+                    nonce: Hash::default(),
                 }),
             ),
             (
@@ -1147,28 +1195,97 @@ mod tests {
         }
     }
 
-    // Pairing a share nonce advance with its event keeps the new nonce.
+    // Pairing a tape nonce advance with its event keeps the new nonce.
     #[test]
-    fn merge_share_nonce() {
+    fn merge_tape_nonce() {
         let tape = Address::new_unique();
-        let event = ShareNonceAdvanced {
+        let event = TapeNonceAdvanced {
             tape,
             nonce: Hash::new_unique(),
         };
 
         let merged = merge(
-            vec![RawInstruction::AdvanceShareNonce { tape }],
-            vec![TapedriveEvent::ShareNonceAdvanced(event)],
+            vec![RawInstruction::AdvanceTapeNonce { tape }],
+            vec![TapedriveEvent::TapeNonceAdvanced(event)],
         )
         .expect("merge succeeds");
 
         match &merged[..] {
-            [ParsedInstruction::AdvanceShareNonce { tape: t, event: e }] => {
+            [ParsedInstruction::AdvanceTapeNonce { tape: t, event: e }] => {
                 assert_eq!(*t, tape);
                 assert_eq!(e.nonce, event.nonce);
             }
-            _ => panic!("Expected AdvanceShareNonce"),
+            _ => panic!("Expected AdvanceTapeNonce"),
         }
+    }
+
+    // a close, a rewind and a renew each pair with the event for their tape
+    #[test]
+    fn merge_tape_removals() {
+        let authority = Address::new_unique();
+        let tape = Address::new_unique();
+        let closed = TapeClosed { tape, id: TapeNumber(3), epoch: EpochNumber(5) };
+        let rewound = TapeRewound {
+            tape,
+            id: TapeNumber(3),
+            epoch: EpochNumber(5),
+            tree_start: TrackNumber(9),
+            nonce: Hash::new_unique(),
+        };
+        let renewed = TapeRenewed {
+            tape,
+            id: TapeNumber(3),
+            expiry_epoch: EpochNumber(8),
+            tree_start: TrackNumber(9),
+            ..TapeRenewed::zeroed()
+        };
+
+        let merged = merge(
+            vec![
+                RawInstruction::RewindTape { authority, tape },
+                RawInstruction::CloseTape { authority, tape },
+                RawInstruction::RenewTape { authority, tape },
+            ],
+            vec![
+                TapedriveEvent::TapeRewound(rewound),
+                TapedriveEvent::TapeClosed(closed),
+                TapedriveEvent::TapeRenewed(renewed),
+            ],
+        )
+        .expect("merge succeeds");
+
+        match &merged[..] {
+            [
+                ParsedInstruction::RewindTape { event: rewind, .. },
+                ParsedInstruction::CloseTape { authority: closer, event: close, .. },
+                ParsedInstruction::RenewTape { event: renew, .. },
+            ] => {
+                assert_eq!(rewind.tree_start, TrackNumber(9));
+                assert_eq!(rewind.nonce, rewound.nonce);
+                assert_eq!(*closer, authority);
+                assert_eq!(close.id, TapeNumber(3));
+                assert_eq!(renew.expiry_epoch, EpochNumber(8));
+            }
+            _ => panic!("Expected a rewind, a close and a renew"),
+        }
+    }
+
+    // a tape event for another tape than its instruction named is refused
+    #[test]
+    fn tape_removal_mismatch() {
+        let authority = Address::new_unique();
+        let event = TapeClosed {
+            tape: Address::new_unique(),
+            id: TapeNumber(3),
+            epoch: EpochNumber(5),
+        };
+
+        let merged = merge(
+            vec![RawInstruction::CloseTape { authority, tape: Address::new_unique() }],
+            vec![TapedriveEvent::TapeClosed(event)],
+        );
+
+        assert!(matches!(merged, Err(ParseError::EventMismatch(_))));
     }
 
     // Pairing an extend with its event keeps the payer, tape and event fields.

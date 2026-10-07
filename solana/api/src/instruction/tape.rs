@@ -10,7 +10,6 @@ use crate::program::token::mint_pda;
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct ReserveTape {
     pub storage_units: StorageUnits,
-    pub activation_epoch: EpochNumber,
     pub expiry_epoch: EpochNumber,
     pub flags: u64,
 }
@@ -39,13 +38,27 @@ pub struct RevokeTapeDelegate {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct AdvanceShareNonce {}
+pub struct AdvanceTapeNonce {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct CloseTape {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct RewindTape {}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct RenewTape {
+    pub storage_units: StorageUnits,
+    pub expiry_epoch: EpochNumber,
+}
 
 pub fn build_reserve_tape_ix(
     fee_payer: Address,
     authority: Address,
     storage_units: StorageUnits,
-    activation_epoch: EpochNumber,
     expiry_epoch: EpochNumber,
     flags: u64,
 ) -> Instruction {
@@ -78,7 +91,6 @@ pub fn build_reserve_tape_ix(
         ],
         data: ReserveTape {
             storage_units,
-            activation_epoch,
             expiry_epoch,
             flags,
         }.to_bytes(),
@@ -170,7 +182,7 @@ pub fn build_revoke_tape_delegate_ix(
     }
 }
 
-pub fn build_advance_share_nonce_ix(
+pub fn build_advance_tape_nonce_ix(
     fee_payer: Address,
     signer: Address,
     tape: Address,
@@ -183,6 +195,81 @@ pub fn build_advance_share_nonce_ix(
             AccountMeta::new(tape.into(), false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
         ],
-        data: AdvanceShareNonce {}.to_bytes(),
+        data: AdvanceTapeNonce {}.to_bytes(),
+    }
+}
+
+pub fn build_close_tape_ix(
+    fee_payer: Address,
+    authority: Address,
+    tape: Address,
+) -> Instruction {
+    let (system_address, _) = system_pda();
+
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new(authority.into(), true),
+            AccountMeta::new(tape.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
+        ],
+        data: CloseTape {}.to_bytes(),
+    }
+}
+
+pub fn build_rewind_tape_ix(
+    fee_payer: Address,
+    authority: Address,
+    tape: Address,
+) -> Instruction {
+    let (system_address, _) = system_pda();
+
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(tape.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
+        ],
+        data: RewindTape {}.to_bytes(),
+    }
+}
+
+pub fn build_renew_tape_ix(
+    fee_payer: Address,
+    authority: Address,
+    tape: Address,
+    storage_units: StorageUnits,
+    expiry_epoch: EpochNumber,
+) -> Instruction {
+    let authority_ata = ata(&authority);
+    let (system_address, _) = system_pda();
+    let (archive_address, _) = archive_pda();
+    let (archive_ata, _) = archive_ata();
+    let (mint_address, _) = mint_pda();
+
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(authority_ata.into(), false),
+
+            AccountMeta::new(tape.into(), false),
+            AccountMeta::new_readonly(system_address.into(), false),
+            AccountMeta::new(archive_address.into(), false),
+            AccountMeta::new(archive_ata.into(), false),
+            AccountMeta::new(mint_address.into(), false),
+
+            AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
+        ],
+        data: RenewTape {
+            storage_units,
+            expiry_epoch,
+        }.to_bytes(),
     }
 }

@@ -253,7 +253,7 @@ where
                 continue;
             }
 
-            let mut scan = TapeTrackScan::new(blacklist, BLACKLIST_BATCH);
+            let mut scan = TapeTrackScan::new(blacklist, tape.id, BLACKLIST_BATCH);
             while let Some(scanned) = scan
                 .next_track(&self.context.store)
                 .map_err(store_error("blacklist track scan"))?

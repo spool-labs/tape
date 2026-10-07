@@ -71,9 +71,10 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(200),
             next_track_number: TrackNumber(0),
+            tree_start: TrackNumber(0),
             authority: Address::default(),
             delegate: Address::default(),
-            share_nonce: Hash::default(),
+            nonce: Hash::default(),
         };
 
         assert!(store.get_tape(tape).unwrap().is_none());
@@ -113,9 +114,10 @@ mod tests {
             flags: 0,
             end_epoch: EpochNumber(150),
             next_track_number: TrackNumber(0),
+            tree_start: TrackNumber(0),
             authority: Address::default(),
             delegate: Address::default(),
-            share_nonce: Hash::default(),
+            nonce: Hash::default(),
         };
 
         store.put_tape(tape, info).unwrap();

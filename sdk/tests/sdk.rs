@@ -23,7 +23,9 @@ use tape_core::track::types::{
 use tape_core::types::coin::TAPE;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
-use tape_core::types::{ContentType, EpochNumber, SlotNumber, StorageUnits, TrackNumber};
+use tape_core::types::{
+    ContentType, EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber,
+};
 use tape_crypto::{hash, Hash};
 use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair;
@@ -414,6 +416,7 @@ fn make_raw_track(
     let bytes = raw.to_vec();
     let track = CompressedTrack {
         tape,
+        tape_number: TapeNumber(1),
         key,
         track_number: TrackNumber(track_number),
         kind: TrackKind::Inline as u64,

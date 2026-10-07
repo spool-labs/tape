@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use tape_store_api::Store;
 use tape_core::track::data::BlobData;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::TrackNumber;
+use tape_core::types::{TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 
 use crate::error::{Result, TapeStoreError};
@@ -27,6 +27,7 @@ pub struct ScannedTrack {
 #[derive(Clone, Debug)]
 pub struct TapeTrackScan {
     tape: Address,
+    tape_number: TapeNumber,
     batch_size: usize,
     cursor: Option<TrackNumber>,
     buffered: VecDeque<ScannedTrack>,
@@ -34,9 +35,10 @@ pub struct TapeTrackScan {
 }
 
 impl TapeTrackScan {
-    pub fn new(tape: Address, batch_size: usize) -> Self {
+    pub fn new(tape: Address, tape_number: TapeNumber, batch_size: usize) -> Self {
         Self {
             tape,
+            tape_number,
             batch_size: batch_size.max(1),
             cursor: None,
             buffered: VecDeque::new(),
@@ -53,7 +55,13 @@ impl TapeTrackScan {
     }
 
     fn read_batch<S: Store>(&mut self, store: &TapeStore<S>) -> Result<()> {
-        let addresses = tape_track_addresses(store, self.tape, self.cursor, self.batch_size)?;
+        let addresses = tape_track_addresses(
+            store,
+            self.tape,
+            self.tape_number,
+            self.cursor,
+            self.batch_size,
+        )?;
         if addresses.is_empty() {
             self.is_exhausted = true;
             return Ok(());
@@ -85,10 +93,12 @@ mod tests {
 
     const BATCH_SIZE: usize = 2;
     const PAYLOAD: &[u8] = b"payload";
+    const TAPE_NUMBER: TapeNumber = TapeNumber(1);
 
     fn put_track(store: &TapeStore<MemoryStore>, tape: Address, number: u64, is_held: bool) -> Address {
         let track = CompressedTrack {
             tape,
+            tape_number: TAPE_NUMBER,
             key: Hash::new_unique(),
             track_number: TrackNumber(number),
             kind: 0,
@@ -109,7 +119,7 @@ mod tests {
     }
 
     fn scan_all(store: &TapeStore<MemoryStore>, tape: Address) -> Vec<ScannedTrack> {
-        let mut scan = TapeTrackScan::new(tape, BATCH_SIZE);
+        let mut scan = TapeTrackScan::new(tape, TAPE_NUMBER, BATCH_SIZE);
         let mut scanned = Vec::new();
         while let Some(track) = scan.next_track(store).expect("scan") {
             scanned.push(track);
@@ -161,7 +171,7 @@ mod tests {
     fn unknown_tape() {
         let store = TapeStore::new(MemoryStore::new());
         put_track(&store, Address::new_unique(), 0, true);
-        let mut scan = TapeTrackScan::new(Address::new_unique(), BATCH_SIZE);
+        let mut scan = TapeTrackScan::new(Address::new_unique(), TAPE_NUMBER, BATCH_SIZE);
 
         let first = scan.next_track(&store).expect("scan");
         let second = scan.next_track(&store).expect("scan");

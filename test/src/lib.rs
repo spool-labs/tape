@@ -307,6 +307,19 @@ impl TestEnv {
         result.run_checks(checks, &CheckConfig::default(), &self.mollusk);
     }
 
+    /// Run instructions one after another over the same accounts, checking each
+    pub fn process_chain(
+        &self,
+        instructions: &[(&Instruction, &[Check])],
+        accounts: &[(Pubkey, Account)],
+    ) {
+        for (instruction, _) in instructions {
+            self.print_instruction(instruction);
+        }
+
+        self.mollusk.process_and_validate_instruction_chain(instructions, accounts);
+    }
+
     fn print_instruction(&self, instruction: &Instruction) {
         println!("\n");
         println!("--------------------------------------------------------------------------------");

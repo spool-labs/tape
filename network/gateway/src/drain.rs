@@ -17,6 +17,8 @@ use tape_protocol::Api;
 use tape_sdk::error::TapedriveError;
 use tape_sdk::object::{MAX_OBJECT_BATCH_BYTES, MAX_OBJECT_BATCH_ITEMS, ObjectBatchItem};
 use tape_sdk::stream::manifest::max_track_size;
+use tape_store::TapeStore;
+use tape_store::ops::{TapeOps, TrackOps, track_has_left};
 use tape_store::types::{PendingOp, PendingState, PendingWrite};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -94,6 +96,7 @@ fn classify(error: &TapedriveError) -> Failure {
         TapedriveError::Download(_) => Failure::Transient,
         TapedriveError::NotFound => Failure::Transient,
         TapedriveError::Immutable => Failure::Permanent,
+        TapedriveError::TrackLeftTape => Failure::Permanent,
         TapedriveError::InsufficientCapacity { .. } => Failure::Permanent,
         TapedriveError::CommitmentMismatch => Failure::Permanent,
         TapedriveError::MissingPayer => Failure::Permanent,
@@ -497,6 +500,12 @@ where
                     self.delete_old_track(tape, *old_track, receipt.address).await;
                 }
             }
+            // The whole batch was in flight when its tape was cleared.
+            Err(TapedriveError::TrackLeftTape) => {
+                for (key, write, _) in &entries {
+                    self.drop_left(tape, key, write);
+                }
+            }
             Err(error) if entries.len() == 1 || !matches!(classify(&error), Failure::Permanent) => {
                 for (key, write, _) in &entries {
                     self.record_failure(tape, key, write, &error);
@@ -536,7 +545,7 @@ where
             }
             PendingOp::Delete { .. } => indexed.is_none(),
         };
-        if !is_visible {
+        if !is_visible && !is_stranded(self.context.store.as_ref(), tape, write) {
             return false;
         }
 
@@ -557,6 +566,7 @@ where
         match self.write_chain(tape, key, write).await {
             Ok(track) => self.landed(tape, key, write, track),
             Err(TapedriveError::Immutable) => return self.drop_refused(tape, key, write),
+            Err(TapedriveError::TrackLeftTape) => return self.drop_left(tape, key, write),
             Err(error) => self.record_failure(tape, key, write, &error),
         }
         // The index has not seen the write yet, so the entry stays.
@@ -573,6 +583,23 @@ where
         );
         if let Err(error) = self.staging.remove(tape, key, write.seq) {
             warn!(%error, %tape, "s3 drain: dropping a refused delete failed");
+            return false;
+        }
+        self.retries.clear(tape, key);
+        true
+    }
+
+    /// Drop a queued write whose tape was closed, rewound or renewed while the
+    /// write was in flight. Its track left the tape before it certified, and
+    /// the write was accepted for the tape as it was.
+    fn drop_left(&self, tape: Address, key: &[u8], write: &PendingWrite) -> bool {
+        warn!(
+            %tape,
+            key = %String::from_utf8_lossy(key),
+            "s3 drain: write dropped, its tape was closed, rewound or renewed in mid-write"
+        );
+        if let Err(error) = self.staging.remove(tape, key, write.seq) {
+            warn!(%error, %tape, "s3 drain: dropping a write its tape left behind failed");
             return false;
         }
         self.retries.clear(tape, key);
@@ -741,6 +768,19 @@ impl Candidate {
     }
 }
 
+/// Whether a landed entry's track has left its tape: the tape was rewound,
+/// renewed or closed after the write landed. The index will never show the
+/// object, so the entry would wait for good.
+fn is_stranded<Db: Store>(store: &TapeStore<Db>, tape: Address, write: &PendingWrite) -> bool {
+    let PendingState::Landed { track } = write.state else {
+        return false;
+    };
+    let (Ok(Some(track)), Ok(tape_row)) = (store.get_track(track), store.get_tape(tape)) else {
+        return false;
+    };
+    track_has_left(tape_row.as_ref(), &track)
+}
+
 /// Cut consecutive puts into runs within the batch's item and byte limits, in queue order
 fn split_runs(sizes: &[u64]) -> Vec<Range<usize>> {
     let mut runs = Vec::new();
@@ -773,11 +813,61 @@ fn retry_delay(steps: u32, is_parked: bool) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use tape_core::types::StorageUnits;
+    use tape_api::program::tapedrive::TrackAddress;
+    use tape_core::spooler::VirtualGroup;
+    use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
+    use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_sdk::error::UploadError;
     use tape_sdk::stream::manifest::MAX_TRACK_SIZE;
+    use tape_store::types::TapeInfo;
+    use tape_store_memory::MemoryStore;
 
     use super::*;
+
+    // a landed write is stranded once its tape is rewound past its track or
+    // closed, and a queued write never is
+    #[test]
+    fn stranded_by_rewind() {
+        let store = TapeStore::new(MemoryStore::new());
+        let tape = Address::new_unique();
+        let tape_number = TapeNumber(1);
+        let row = TapeInfo::new(tape_number, 0, EpochNumber(100), TrackNumber(1));
+        store.put_tape(tape, row.clone()).expect("tape row");
+
+        let written = CompressedTrack {
+            tape,
+            tape_number,
+            key: Hash::new_unique(),
+            track_number: TrackNumber(0),
+            kind: TrackKind::Coded as u64,
+            state: TrackState::Certified as u64,
+            flags: TrackFlags::NONE,
+            size: StorageUnits::from_bytes(1024),
+            group: VirtualGroup(0),
+            value_hash: Hash::new_unique(),
+        };
+        let track = written.address();
+        store.put_track(track, written).expect("track");
+
+        let put = PendingOp::Put {
+            content_type: ContentType::Unknown,
+            etag: Hash::new_unique(),
+            size: 1024,
+            block_time: 1_700_000_000,
+            old_track: None,
+        };
+        let landed = PendingWrite { seq: 1, op: put.clone(), state: PendingState::Landed { track } };
+        let queued = PendingWrite { seq: 2, op: put, state: PendingState::Queued };
+        assert!(!is_stranded(&store, tape, &landed));
+
+        let rewound = TapeInfo { tree_start: TrackNumber(1), ..row };
+        store.put_tape(tape, rewound).expect("tape row");
+        assert!(is_stranded(&store, tape, &landed));
+        assert!(!is_stranded(&store, tape, &queued));
+
+        store.delete_tape(tape).expect("close tape");
+        assert!(is_stranded(&store, tape, &landed));
+    }
 
     // backoff doubles from a second to a minute, and a parked entry gets the slow beat
     // a burst of small puts goes out in runs of the batch's item limit
@@ -865,6 +955,7 @@ mod tests {
         );
         assert_eq!(classify(&TapedriveError::MissingPayer), Failure::Permanent);
         assert_eq!(classify(&TapedriveError::Immutable), Failure::Permanent);
+        assert_eq!(classify(&TapedriveError::TrackLeftTape), Failure::Permanent);
         assert_eq!(
             classify(&TapedriveError::Rpc(RpcError::SlotSkipped)),
             Failure::Permanent

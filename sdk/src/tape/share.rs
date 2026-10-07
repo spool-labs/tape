@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use tape_rpc::Rpc;
-use tape_api::instruction::build_advance_share_nonce_ix;
+use tape_api::instruction::build_advance_tape_nonce_ix;
 use tape_core::share::{unix_now, ShareToken};
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::hash::Hash;
@@ -28,18 +28,18 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             operator.address(),
             track_key,
             reader,
-            tape.share_nonce,
+            tape.nonce,
             expiry,
         ))
     }
 
-    /// Revoke every shared token on a tape by advancing its share nonce
+    /// Revoke every shared token on a tape by advancing its nonce
     pub async fn revoke_shared_tokens(
         &self,
         operator: &impl TapeOperator,
     ) -> Result<(), TapedriveError> {
         let payer = self.payer()?;
-        let ix = build_advance_share_nonce_ix(
+        let ix = build_advance_tape_nonce_ix(
             payer.pubkey().into(),
             operator.pubkey().into(),
             operator.address(),

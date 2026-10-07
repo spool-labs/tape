@@ -605,6 +605,26 @@ async fn read_write_inner() {
     assert_s3_get_object(&s3_base, &immutable_label, IMMUTABLE_KEY, &entry, PUT_CONTENT_TYPE).await;
     eprintln!("s3_gateway: immutable bucket refused DeleteObject and DeleteObjects (403) and kept the object");
 
+    // (2g) Rewind the bucket's tape. Every object it held leaves the S3 read
+    // surface and the listing, and the bucket takes new writes, since a rewind
+    // keeps the delegate.
+    let owner = harness.scenario().sdk(harness.admin());
+    owner.rewind_tape(&tape_key).await.expect("rewind the bucket tape");
+    for key in [OBJECT_KEY, PUT_KEY, overwrite_key] {
+        wait_s3_head_status(&s3_base, &bucket_label, key, gone, Duration::from_secs(180)).await;
+    }
+    assert_s3_bucket_empty(&s3_base, &bucket_label).await;
+    eprintln!("s3_gateway: rewound bucket serves and lists nothing");
+
+    let rewritten = deterministic_bytes(16 * 1024);
+    assert_s3_signed_put(&s3_base, &host, &bucket_label, OBJECT_KEY, &rewritten, PUT_CONTENT_TYPE)
+        .await;
+    wait_pending_drained(&admin_base, OPERATOR_TOKEN, Duration::from_secs(180)).await;
+    wait_s3_get_size(&s3_base, &bucket_label, OBJECT_KEY, rewritten.len(), Duration::from_secs(180))
+        .await;
+    assert_s3_get_object(&s3_base, &bucket_label, OBJECT_KEY, &rewritten, PUT_CONTENT_TYPE).await;
+    eprintln!("s3_gateway: rewound bucket took a new object under an old key");
+
     // (3) Revoke the credential; the same signed PutObject is now denied (the
     // credential resolves but is no longer usable — step 3 of the chokepoint).
     admin_revoke_credential(&admin_base, OPERATOR_TOKEN).await;
@@ -1766,6 +1786,21 @@ async fn assert_s3_list_objects_v2(base: &str, bucket: &str, expected_key: &str)
         body.contains("<StorageClass>STANDARD</StorageClass>"),
         "object should report the STANDARD storage class, got: {body}"
     );
+}
+
+/// Assert `GET /{bucket}?list-type=2&delimiter=/` lists no key and no folder.
+async fn assert_s3_bucket_empty(base: &str, bucket: &str) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .expect("build s3 client");
+    let url = format!("{base}/{bucket}?list-type=2&delimiter=/");
+    let response = client.get(&url).send().await.expect("list-objects-v2 send");
+    assert_eq!(response.status(), StatusCode::OK, "ListObjectsV2 should return 200");
+    let body = response.text().await.expect("list-objects-v2 body");
+
+    assert!(!body.contains("<Key>"), "listing should hold no key, got: {body}");
+    assert!(!body.contains("<CommonPrefixes>"), "listing should hold no folder, got: {body}");
 }
 
 /// Assert `GET /{bucket}/{key}` returns the exact object bytes plus the expected

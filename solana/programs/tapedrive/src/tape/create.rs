@@ -80,7 +80,6 @@ pub fn process_reserve_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progra
         authority: (*authority_info.key).into(),
         flags: args.flags,
         capacity: args.storage_units,
-        active_epoch: args.activation_epoch,
         expiry_epoch: args.expiry_epoch,
     };
 
@@ -169,15 +168,7 @@ mod tests {
     fn reserve_mid_row() {
         let refused = Err(TapeError::MidRow.into());
 
-        reserve_range(TapeFlags::NONE, EpochNumber(0), EpochNumber(129), MAX_RESERVATION_EPOCHS, refused);
-    }
-
-    // an activation inside a schedule row is refused too
-    #[test]
-    fn activate_mid_row() {
-        let refused = Err(TapeError::MidRow.into());
-
-        reserve_range(TapeFlags::NONE, EpochNumber(129), EpochNumber(256), MAX_RESERVATION_EPOCHS, refused);
+        reserve_range(TapeFlags::NONE, EpochNumber(129), MAX_RESERVATION_EPOCHS, refused);
     }
 
     // a reservation to the end of the schedule covers every row and pays for each epoch
@@ -185,46 +176,37 @@ mod tests {
     fn reserve_long() {
         let end_epoch = EpochSchedule::new().layout().expect("layout").end();
 
-        reserve_range(TapeFlags::NONE, EpochNumber(0), end_epoch, MAX_RESERVATION_EPOCHS, Ok(end_epoch));
+        reserve_range(TapeFlags::NONE, end_epoch, MAX_RESERVATION_EPOCHS, Ok(end_epoch));
     }
 
     // a request past the longest reservation gets the longest one and pays for that
     #[test]
     fn reserve_shortened() {
-        reserve_range(TapeFlags::NONE, EpochNumber(0), EpochNumber(700_000), 100, Ok(EpochNumber(100)));
-        reserve_range(TapeFlags::NONE, EpochNumber(0), EpochNumber(700_000), 131, Ok(EpochNumber(130)));
-    }
-
-    // an activation at or past the longest reservation leaves nothing to reserve
-    #[test]
-    fn activate_too_late() {
-        let refused = Err(ProgramError::InvalidArgument);
-
-        reserve_range(TapeFlags::NONE, EpochNumber(100), EpochNumber(120), 100, refused);
+        reserve_range(TapeFlags::NONE, EpochNumber(700_000), 100, Ok(EpochNumber(100)));
+        reserve_range(TapeFlags::NONE, EpochNumber(700_000), 131, Ok(EpochNumber(130)));
     }
 
     fn reserve_case(flags: u64, error: Option<ProgramError>) {
-        let start_epoch = EpochNumber(43);         // In the future
-        let end_epoch = EpochNumber(45);           // Two epochs duration
+        let end_epoch = EpochNumber(2);            // Two epochs duration
         let outcome = match error {
             Some(error) => Err(error),
             None => Ok(end_epoch),
         };
 
-        reserve_range(flags, start_epoch, end_epoch, MAX_RESERVATION_EPOCHS, outcome);
+        reserve_range(flags, end_epoch, MAX_RESERVATION_EPOCHS, outcome);
     }
 
-    // Reserve `[start_epoch, end_epoch)` from epoch zero. The outcome is the
-    // expiry the tape gets, or the error.
+    // Reserve from epoch zero, the current one, to `end_epoch`. The outcome is
+    // the expiry the tape gets, or the error.
     fn reserve_range(
         flags: u64,
-        start_epoch: EpochNumber,
         end_epoch: EpochNumber,
         max_reservation_epochs: u64,
         outcome: Result<EpochNumber, ProgramError>,
     ) {
         let fee_payer = Pubkey::new_unique();
         let authority = Pubkey::new_unique();
+        let start_epoch = EpochNumber(0);
 
         let storage_units = StorageUnits::mb(100);   // 100 MB
         let price_per_unit = TAPE::from("0.0001"); // 0.0001 TAPE per MB
@@ -233,7 +215,6 @@ mod tests {
             fee_payer.into(),
             authority.into(),
             storage_units,
-            start_epoch,
             end_epoch,
             flags,
         );
@@ -311,7 +292,7 @@ mod tests {
                         used: StorageUnits::zero(),
                         active_epoch: start_epoch,
                         expiry_epoch: end_epoch,
-                        share_nonce: hashv(&[&SLOT_HASH.to_bytes(), &TapeNumber(1).pack()]),
+                        nonce: hashv(&[&SLOT_HASH.to_bytes(), &TapeNumber(1).pack()]),
                         ..Tape::zeroed()
                     }.pack().as_ref()
                 ).build(),
@@ -326,58 +307,6 @@ mod tests {
                 ).build(),
             ]
         );
-    }
-
-    // no tape instruction closes an expired tape, given the accounts closing one took
-    #[test]
-    fn expired_stays_open() {
-        let fee_payer = Pubkey::new_unique();
-        let authority = Pubkey::new_unique();
-        let (tape_address, _) = tape_pda(authority.into());
-        let (system_address, _) = system_pda();
-        let tape = expired_tape(authority);
-        let system = System {
-            current_epoch: EpochNumber(60),
-            ..System::zeroed()
-        };
-
-        let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
-            sol(authority, 0),
-
-            pda(tape_address, tape.pack(), tapedrive::ID),
-            pda(system_address, system.pack(), tapedrive::ID),
-
-            system_program(),
-        ];
-
-        let env = test_env();
-        for discriminator in TapeInstruction::ReserveTape as u8..TapeInstruction::TrackWrite as u8 {
-            let instruction = Instruction {
-                program_id: tapedrive::ID,
-                accounts: vec![
-                    AccountMeta::new(fee_payer, true),
-                    AccountMeta::new_readonly(authority, true),
-
-                    AccountMeta::new(tape_address.into(), false),
-                    AccountMeta::new_readonly(system_address.into(), false),
-
-                    AccountMeta::new_readonly(system_program::ID, false),
-                ],
-                data: vec![discriminator],
-            };
-
-            env.process_instruction(
-                &instruction,
-                &accounts,
-                &[
-                    Check::account(&Pubkey::from(tape_address))
-                        .owner(&tapedrive::ID)
-                        .data(tape.pack().as_ref())
-                        .build(),
-                ],
-            );
-        }
     }
 
     // reserving an expired tape's address fails, since that tape is still open
@@ -407,7 +336,6 @@ mod tests {
             fee_payer.into(),
             authority.into(),
             StorageUnits::mb(100),
-            EpochNumber(60),
             EpochNumber(62),
             TapeFlags::NONE,
         );

@@ -11,7 +11,9 @@ use tape_store_memory::MemoryStore;
 use tape_core::spooler::VirtualGroup;
 use tape_core::system::{SpoolState, SpoolStatus};
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TrackNumber};
+use tape_core::types::{
+    EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
+};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_store::{ops::*, TapeStore};
@@ -19,6 +21,7 @@ use tape_store::{ops::*, TapeStore};
 fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
     CompressedTrack {
         tape,
+        tape_number: TapeNumber(1),
         key: Hash::new_unique(),
         track_number: TrackNumber(track_number),
         kind: TrackKind::Inline as u64,

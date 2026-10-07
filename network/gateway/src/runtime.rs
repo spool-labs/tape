@@ -175,6 +175,7 @@ where
             store_rx,
             slice_cache.clone(),
             blacklists.clone(),
+            staging.clone(),
             cancel.clone(),
         )
         .run(),
