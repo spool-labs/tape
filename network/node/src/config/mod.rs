@@ -1,4 +1,4 @@
-pub mod eviction;
+pub mod challenge;
 pub mod gateway;
 pub mod http;
 mod helpers;

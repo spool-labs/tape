@@ -114,6 +114,12 @@ pub struct SetMaxReservationEpochs {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SetChallengeCadence {
+    pub challenge_cadence: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SetCommissionRate {
     pub commission_rate: BasisPoints,
 }
@@ -444,6 +450,25 @@ pub fn build_set_max_reservation_epochs_ix(
         ],
         data: SetMaxReservationEpochs {
             max_reservation_epochs,
+        }.to_bytes(),
+    }
+}
+
+pub fn build_set_challenge_cadence_ix(
+    fee_payer: Address,
+    authority: Address,
+    node_address: Address,
+    challenge_cadence: u64,
+) -> Instruction {
+    Instruction {
+        program_id: tapedrive::ID,
+        accounts: vec![
+            AccountMeta::new(fee_payer.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
+            AccountMeta::new(node_address.into(), false),
+        ],
+        data: SetChallengeCadence {
+            challenge_cadence,
         }.to_bytes(),
     }
 }

@@ -1,3 +1,4 @@
+pub mod challenge;
 pub mod cluster;
 pub mod control_plane;
 pub mod data_plane;

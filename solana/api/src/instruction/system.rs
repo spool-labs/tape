@@ -50,6 +50,9 @@ pub struct StartNetwork {
     /// system.min_epoch_duration <= epoch_duration <= system.max_epoch_duration.
     pub epoch_duration: EpochDuration,
 
+    /// Initial challenge cadence written to epoch.preferences.
+    pub challenge_cadence: u64,
+
     /// TAPE flux units transferred into the subsidy vault.
     pub subsidy_amount: Coin<TAPE>,
 }
@@ -193,6 +196,7 @@ pub fn build_start_network_ix(
         accounts,
         data: StartNetwork {
             epoch_duration: config.epoch_duration,
+            challenge_cadence: config.challenge_cadence,
             subsidy_amount: config.subsidy_amount,
         }.to_bytes(),
     }

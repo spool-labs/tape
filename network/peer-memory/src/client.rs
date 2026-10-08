@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tape_protocol::api::{
-    Api, ApiError, CertifyReq, CertifyRes, FindTrackReq, FindTrackRes,
+    Api, ApiError, CertifyReq, CertifyRes, ChallengeReq, ChallengeRes, FindTrackReq, FindTrackRes,
     GetHealthReq, GetHealthRes, GetSliceReq, GetSliceRes, GetStatsReq, GetStatsRes,
     GetTrackByNumberReq, GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq,
     GetTrackProofRes, GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListObjectsReq,
@@ -40,6 +40,7 @@ impl MemoryApi {
             PeerReq::Certify(_) => PeerRes::Certify(Err(not_impl())),
             PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(not_impl())),
             PeerReq::Vote(_) => PeerRes::Vote(Err(not_impl())),
+            PeerReq::Challenge(_) => PeerRes::Challenge(Err(not_impl())),
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
             PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
         })
@@ -139,6 +140,19 @@ impl Api for MemoryApi {
         )
     }
 
+    async fn challenge(&self, node: Address, req: &ChallengeReq) -> Result<ChallengeRes, ApiError> {
+        dispatch!(
+            self,
+            node,
+            ChallengeReq {
+                epoch: req.epoch,
+                round: req.round,
+                proofs: req.proofs.clone(),
+            },
+            Challenge
+        )
+    }
+
     async fn invalidate(&self, node: Address, req: &InvalidateReq) -> Result<InvalidateRes, ApiError> {
         dispatch!(self, node, InvalidateReq { track: req.track, proof: req.proof.clone() }, Invalidate)
     }
@@ -163,9 +177,9 @@ mod tests {
     use tape_core::bls::BlsSignature;
     use tape_core::spooler::GroupIndex;
     use tape_core::system::VoteKind;
-    use tape_core::types::EpochNumber;
+    use tape_core::types::{EpochNumber, RoundNumber, SpoolIndex};
     use tape_crypto::Hash;
-    use tape_protocol::api::VoteCandidate;
+    use tape_protocol::api::{ChallengeData, ChallengeProof, VoteCandidate};
 
     fn address(byte: u8) -> Address {
         let mut bytes = [0u8; 32];
@@ -237,6 +251,38 @@ mod tests {
                     candidate: expected_candidate,
                     group: GroupIndex(4),
                     signature,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn challenge_dispatches() {
+        let proof = ChallengeProof {
+            spool: SpoolIndex(64),
+            track: address(3),
+            data: ChallengeData::Inline(vec![1, 2, 3]),
+        };
+        let expected = proof.clone();
+        let client = MemoryApi::new(move |node, req| match req {
+            PeerReq::Challenge(req) => {
+                assert_eq!(node, address(7));
+                assert_eq!(req.epoch, EpochNumber(11));
+                assert_eq!(req.round, RoundNumber(40));
+                assert_eq!(req.proofs, vec![expected.clone()]);
+                PeerRes::Challenge(Ok(ChallengeRes))
+            }
+            _ => PeerRes::Challenge(Err(ApiError::Other("unexpected".into()))),
+        });
+
+        client
+            .challenge(
+                address(7),
+                &ChallengeReq {
+                    epoch: EpochNumber(11),
+                    round: RoundNumber(40),
+                    proofs: vec![proof],
                 },
             )
             .await

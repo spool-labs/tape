@@ -36,7 +36,7 @@ use crate::core::store_epoch::StoreEpoch;
 use crate::core::write_signatures::WriteSignatures;
 use crate::features::blacklist::BlacklistCache;
 use crate::features::block::pending_tracks::PendingTracks;
-use crate::features::eviction::EvictionQueue;
+use crate::features::challenge::handle::ChallengeHandle;
 use crate::features::http::admission::AdmissionLimiter;
 
 /// The store the node was built against, the reel unless `rocks` was asked for
@@ -61,7 +61,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub peer_manager: Arc<PeerManager>,
     pub api: Arc<Cluster>,
     pub admission: Arc<AdmissionLimiter>,
-    pub eviction_queue: Arc<EvictionQueue>,
+    pub challenge: Arc<ChallengeHandle>,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
 
@@ -339,6 +339,12 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             .set_node_address(node_address)
             .map_err(|error| NodeError::Store(format!("set_node_address: {error}")))?;
 
+        let challenge = ChallengeHandle::new(
+            node_address,
+            params.profile,
+            self.config.challenge_enabled(),
+        );
+
         Ok(Arc::new(NodeContext {
             node_id,
             node_address,
@@ -359,7 +365,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             peer_manager: self.peer_manager,
             api: self.api,
             admission,
-            eviction_queue: Arc::new(EvictionQueue::default()),
+            challenge: Arc::new(challenge),
             metrics: NodeMetrics,
             atlas: self.atlas,
             reclaim_pending: AtomicBool::new(false),

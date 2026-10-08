@@ -224,6 +224,7 @@ mod tests {
             epoch_duration: TEST_EPOCH_DURATION,
             spool_size: StorageUnits::zero(),
             max_reservation_epochs: 520,
+            challenge_cadence: TEST_CHALLENGE_CADENCE,
         };
         let node = Node {
             authority: authority.into(),
@@ -589,6 +590,7 @@ mod tests {
             epoch_duration: TEST_EPOCH_DURATION,
             spool_size: StorageUnits::zero(),
             max_reservation_epochs: 520,
+            challenge_cadence: TEST_CHALLENGE_CADENCE,
         };
         // Suspension expired below the target epoch: next > suspended_until.
         let node = Node {

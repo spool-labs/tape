@@ -1,6 +1,6 @@
 use tape_api::program::tapedrive::DEFAULT_SUBSIDY_DECAY_BPS;
 
-use crate::TEST_EPOCH_DURATION;
+use crate::{TEST_CHALLENGE_CADENCE, TEST_EPOCH_DURATION};
 use tape_core::encoding::ErasureCode;
 use tape_core::system::{EpochPhase, EpochState};
 use tape_core::thresholds::TrustModel;
@@ -56,6 +56,7 @@ pub struct HarnessNodeSpec {
     pub burn_fee_bps: BasisPoints,
     pub subsidy_decay_bps: BasisPoints,
     pub max_reservation_epochs: u64,
+    pub challenge_cadence: u64,
 }
 
 impl HarnessNodeSpec {
@@ -71,6 +72,7 @@ impl HarnessNodeSpec {
             burn_fee_bps: BasisPoints(1_000),
             subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
             max_reservation_epochs: 520,
+            challenge_cadence: TEST_CHALLENGE_CADENCE,
         }
     }
 }

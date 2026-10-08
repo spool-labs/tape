@@ -160,6 +160,35 @@ fn active_track_footprint<Db: Store>(
     target: GroupFold,
     profile: ErasureCode,
 ) -> Result<TrackWeight, AssignmentSizeError> {
+    if !is_active_track(store, track, metadata, info, voting_epoch, target_epoch)? {
+        return Ok(TrackWeight::Excluded);
+    }
+
+    let Some(footprint) = track_footprint(store, track, metadata, profile)? else {
+        return Ok(TrackWeight::Pending);
+    };
+
+    Ok(TrackWeight::Counted(ActiveTrackFootprint {
+        track,
+        tape: metadata.tape,
+        group: target.live_group(metadata.group),
+        footprint,
+    }))
+}
+
+/// Whether the voting epoch's round counts a track
+///
+/// The challenge picks from the same set, so the two can never count
+/// different tracks. The object info is handed in, and the parent tape is
+/// read here.
+pub fn is_active_track<Db: Store>(
+    store: &TapeStore<Db>,
+    track: Address,
+    metadata: &CompressedTrack,
+    info: Option<ObjectInfo>,
+    voting_epoch: EpochNumber,
+    target_epoch: EpochNumber,
+) -> Result<bool, AssignmentSizeError> {
     // Only user tracks are accounted. System-owned tracks are kept live for
     // repair/GC without entering assignment sizing.
     let (track_address, registered_epoch, certified_epoch) = match info {
@@ -186,7 +215,7 @@ fn active_track_footprint<Db: Store>(
             | ObjectInfo::Invalid { .. }
             | ObjectInfo::Blacklisted,
         )
-        | None => return Ok(TrackWeight::Excluded),
+        | None => return Ok(false),
     };
 
     if track_address != track {
@@ -196,16 +225,16 @@ fn active_track_footprint<Db: Store>(
     // A certificate landing between the two reads shows one record ahead of the
     // other; the track counts on the next pass either way
     let Some(certified_epoch) = certified_epoch else {
-        return Ok(TrackWeight::Excluded);
+        return Ok(false);
     };
 
     if !metadata.is_certified() {
-        return Ok(TrackWeight::Excluded);
+        return Ok(false);
     }
 
     if registered_epoch >= voting_epoch
        || certified_epoch >= voting_epoch {
-        return Ok(TrackWeight::Excluded);
+        return Ok(false);
     }
 
     let tape = store.get_tape(metadata.tape).map_err(store_error)?;
@@ -222,7 +251,7 @@ fn active_track_footprint<Db: Store>(
             .is_some_and(|tree_start| metadata.track_number >= tree_start);
 
         if !left_in_voting_epoch {
-            return Ok(TrackWeight::Excluded);
+            return Ok(false);
         }
     } else if tape.is_some_and(|tape| tape.end_epoch < target_epoch) {
         // A tape counts when it was live in the voting epoch, which is an end at
@@ -230,19 +259,10 @@ fn active_track_footprint<Db: Store>(
         // the program refuses to extend an expired tape, and an end only moves
         // later. A renew moves the tree's start too, so the expired tape's
         // tracks have left.
-        return Ok(TrackWeight::Excluded);
+        return Ok(false);
     }
 
-    let Some(footprint) = track_footprint(store, track, metadata, profile)? else {
-        return Ok(TrackWeight::Pending);
-    };
-
-    Ok(TrackWeight::Counted(ActiveTrackFootprint {
-        track,
-        tape: metadata.tape,
-        group: target.live_group(metadata.group),
-        footprint,
-    }))
+    Ok(true)
 }
 
 /// One track's footprint, or nothing while its blob metadata is missing

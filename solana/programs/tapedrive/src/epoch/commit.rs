@@ -135,6 +135,7 @@ fn aggregate_preferences(
         epoch_duration: system.min_epoch_duration,
         spool_size: StorageUnits::zero(),
         max_reservation_epochs: 1,
+        challenge_cadence: 1,
     };
 
     aggregate_node_preferences(members, peers, current, bounds).map_err(|error| match error {
@@ -195,6 +196,7 @@ mod tests {
             epoch_duration: TEST_EPOCH_DURATION,
             spool_size: StorageUnits::zero(),
             max_reservation_epochs: 520,
+            challenge_cadence: TEST_CHALLENGE_CADENCE,
         }
     }
 

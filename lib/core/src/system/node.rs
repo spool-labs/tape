@@ -63,6 +63,9 @@ pub struct NodePreferences {
 
     /// The longest reservation this node accepts, in epochs from the current one.
     pub max_reservation_epochs: u64,
+
+    /// The preferred number of slots between challenge rounds; zero means no rounds.
+    pub challenge_cadence: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +91,7 @@ pub fn aggregate_node_preferences(
     let mut epoch_durations: Vec<(u64, u64)> = Vec::new();
     let mut spool_sizes: Vec<(u64, u64)> = Vec::new();
     let mut max_reservation_epochs: Vec<(u64, u64)> = Vec::new();
+    let mut challenge_cadences: Vec<(u64, u64)> = Vec::new();
 
     for member in members.iter() {
         let peer = peers
@@ -106,6 +110,7 @@ pub fn aggregate_node_preferences(
         epoch_durations.push((peer.preferences.epoch_duration.0, weight));
         spool_sizes.push((peer.preferences.spool_size.0, weight));
         max_reservation_epochs.push((peer.preferences.max_reservation_epochs, weight));
+        challenge_cadences.push((peer.preferences.challenge_cadence, weight));
 
         total_weight = total_weight.saturating_add(weight);
     }
@@ -155,6 +160,9 @@ pub fn aggregate_node_preferences(
         // The longest reservation two thirds of the weight accept.
         max_reservation_epochs: quorum_above(&max_reservation_epochs, total_weight)
             .max(bounds.max_reservation_epochs),
+        // The longest interval two thirds of the weight voted at or above.
+        challenge_cadence: quorum_above(&challenge_cadences, total_weight)
+            .max(bounds.challenge_cadence),
     })
 }
 
@@ -300,5 +308,51 @@ mod tests {
     fn max_reservation_unset() {
         assert_eq!(max_reservation(&[(0, 100)]), 1);
         assert_eq!(max_reservation(&[(520, 66), (0, 34)]), 1);
+    }
+
+    // spool weight per voted challenge cadence, in slots
+    fn challenge_cadence(votes: &[(u64, u64)]) -> u64 {
+        let mut members = Vec::new();
+        let mut peers = Vec::new();
+
+        for (index, (slots, weight)) in votes.iter().enumerate() {
+            let node = Address::from([index as u8 + 1; 32]);
+
+            members.push(Member { spools: *weight, ..Member::new(node, TAPE(1)) });
+            peers.push(Peer {
+                preferences: NodePreferences {
+                    challenge_cadence: *slots,
+                    ..NodePreferences::zeroed()
+                },
+                ..Peer::new(node)
+            });
+        }
+
+        let current = NodePreferences { spool_groups: 1, ..NodePreferences::zeroed() };
+        let bounds = NodePreferences {
+            spool_groups: 1,
+            challenge_cadence: 1,
+            ..NodePreferences::zeroed()
+        };
+
+        aggregate_node_preferences(&members, &peers, current, bounds)
+            .expect("aggregate")
+            .challenge_cadence
+    }
+
+    // the voted cadence is the longest one two thirds of the weight voted at or above
+    #[test]
+    fn cadence_two_thirds() {
+        assert_eq!(challenge_cadence(&[(5, 100)]), 5);
+        assert_eq!(challenge_cadence(&[(10, 67), (5, 33)]), 10);
+        assert_eq!(challenge_cadence(&[(10, 66), (5, 34)]), 5);
+        assert_eq!(challenge_cadence(&[(20, 40), (10, 30), (5, 30)]), 10);
+    }
+
+    // a vote under the floor lands on the floor
+    #[test]
+    fn cadence_floor() {
+        assert_eq!(challenge_cadence(&[(0, 100)]), 1);
+        assert_eq!(challenge_cadence(&[(5, 66), (0, 34)]), 1);
     }
 }

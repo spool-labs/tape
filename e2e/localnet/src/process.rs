@@ -478,10 +478,6 @@ https:
   listen: "0.0.0.0:{port}"
   identity_keypair: "{tls}"
 
-# Off on the harness: the rig should not condemn its own nodes.
-eviction:
-  enabled: false
-
 store:
   path: "{store}"
   # Twenty nodes on one laptop: the shipped shape would reserve a gibibyte per

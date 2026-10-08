@@ -8,7 +8,7 @@ use axum::response::IntoResponse;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::bls::BlsPubkey;
-use tape_core::cert::{AssignmentVoteMessage, NodeEvictMessage, SnapshotSignMessage, eviction_vote_node};
+use tape_core::cert::{AssignmentVoteMessage, SnapshotSignMessage};
 use tape_core::system::{VoteCandidate, VoteKind};
 use tape_core::types::EpochNumber;
 use tape_crypto::Hash;
@@ -30,12 +30,6 @@ pub async fn vote<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     if active_peer.node != request.signer {
         return Err(RouteError::Forbidden("vote signer does not match peer identity".into()));
-    }
-
-    // An operator that has turned eviction off signs nobody's proposal. The
-    // proposer needs q of the group, so declining is a vote against by omission.
-    if request.candidate.kind == VoteKind::Eviction && !state.context.config.eviction_enabled() {
-        return Err(RouteError::Forbidden("eviction disabled on this node".into()));
     }
 
     let protocol = state.context.state();
@@ -109,21 +103,8 @@ fn validate_candidate(
             .to_bytes()
             .to_vec())
         }
-        VoteKind::Eviction => {
-            let Some(next_epoch) = protocol.next_epoch.as_ref() else {
-                return Err(RouteError::BadRequest("eviction target epoch missing".into()));
-            };
-            if next_epoch.id != candidate.target_epoch {
-                return Err(RouteError::BadRequest(format!(
-                    "eviction vote target epoch {} does not match next epoch {}",
-                    candidate.target_epoch.0, next_epoch.id.0
-                )));
-            }
-            let node = eviction_vote_node(candidate.hash);
-            Ok(NodeEvictMessage::new(candidate.target_epoch, next_epoch.nonce, node)
-                .to_bytes()
-                .to_vec())
-        }
+        // Nodes take no part in an eviction. Its vote is signed and submitted by hand.
+        VoteKind::Eviction => Err(RouteError::BadRequest("nodes take no eviction votes".into())),
     }
 }
 

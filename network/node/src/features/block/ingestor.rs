@@ -318,6 +318,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     async fn fanout(&self, block: &Arc<ParsedBlock>) -> Result<(), NodeError> {
         let slot = block.slot;
 
+        // The feed goes first and never waits. With no reader the send fails,
+        // which is the case on every node that has nothing subscribed.
+        let _ = self.senders.feed.send(Arc::clone(block));
+
         if let Err(error) = send_block(
             &self.senders.state,
             ChannelName::StateManager,
@@ -345,22 +349,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                 slot = slot.0,
                 error = %error,
                 "block_ingestor: send to AssignmentManager failed: {}",
-                error
-            );
-            return Err(error);
-        }
-
-        if let Err(error) = send_block(
-            &self.senders.eviction,
-            ChannelName::EvictionManager,
-            Arc::clone(block),
-        )
-        .await
-        {
-            error!(
-                slot = slot.0,
-                error = %error,
-                "block_ingestor: send to EvictionManager failed: {}",
                 error
             );
             return Err(error);

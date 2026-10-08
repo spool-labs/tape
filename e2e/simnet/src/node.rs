@@ -113,6 +113,12 @@ impl TestNode {
         self.app_config.https.observers.push(key);
     }
 
+    /// Turn challenge rounds on or off for this node alone. Takes effect on
+    /// its first start.
+    pub fn set_challenge(&mut self, enabled: bool) {
+        self.app_config.challenge.enabled = enabled;
+    }
+
     pub fn id(&self) -> usize {
         self.id
     }
@@ -280,7 +286,7 @@ impl TestNode {
 fn test_app_config(bind_addr: SocketAddr, simnet: &SimnetConfig) -> Result<NodeConfig> {
     let mut config = NodeConfig::default();
     config.genesis_preset = GenesisPreset::Simnet;
-    config.eviction = simnet.eviction.clone();
+    config.challenge = simnet.challenge.clone();
     config.node.node_keypair = PathBuf::from("/dev/null");
     config.node.bls_keypair = PathBuf::from("/dev/null");
     config.solana.rpc = vec!["http://127.0.0.1:8899".into()];

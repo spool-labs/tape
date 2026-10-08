@@ -54,9 +54,9 @@ impl SimnetBuilder {
         self
     }
 
-    /// Whether nodes propose and sign evictions, off by default.
-    pub fn eviction(mut self, enabled: bool) -> Self {
-        self.config.eviction.enabled = enabled;
+    /// Whether nodes run challenge rounds, off by default.
+    pub fn challenge(mut self, enabled: bool) -> Self {
+        self.config.challenge.enabled = enabled;
         self
     }
 

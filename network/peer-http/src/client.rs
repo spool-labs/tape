@@ -19,6 +19,9 @@ use crate::metrics::ApiMetrics;
 /// Per-request timeout for vote calls.
 const VOTE_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Per-request timeout for a challenge round's proofs.
+const CHALLENGE_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Connections a peer's slice bodies spread over; one h2 client holds one socket.
 const SLICE_CONNECTIONS: usize = 8;
 
@@ -675,6 +678,33 @@ impl Api for HttpApi {
         Ok(VoteRes)
     }
 
+    async fn challenge(&self, node: Address, req: &ChallengeReq) -> Result<ChallengeRes, ApiError> {
+        let (client, base) = self.resolve(node)?;
+        let url = format!("{base}{CHALLENGE_PATH}");
+        let wire_req = ChallengeRequest {
+            epoch: req.epoch,
+            round: req.round,
+            proofs: req.proofs.clone(),
+        };
+        let body = wincode::serialize(&wire_req)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        let bytes_sent = body.len() as u64;
+        let start = Instant::now();
+        let resp = client
+            .post(&url)
+            .timeout(CHALLENGE_TIMEOUT)
+            .header("content-type", BINARY_CONTENT)
+            .body(body)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record(node, "challenge", &resp, start, bytes_sent);
+        check_status(resp).await?;
+        Ok(ChallengeRes)
+    }
+
     async fn invalidate(
         &self,
         node: Address,
@@ -897,6 +927,7 @@ mod tests {
             access_threshold: TAPE(0),
             spool_size: StorageUnits::zero(),
             max_reservation_epochs: 0,
+            challenge_cadence: 0,
         }
     }
 

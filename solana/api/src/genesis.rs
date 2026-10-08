@@ -26,6 +26,7 @@ pub struct GenesisConfig {
     pub subsidy_decay_bps: BasisPoints,
     pub subsidy_amount: Coin<TAPE>,
     pub max_reservation_epochs: u64,
+    pub challenge_cadence: u64,
 }
 
 impl GenesisConfig {
@@ -81,6 +82,7 @@ const MAINNET: GenesisConfig = GenesisConfig {
     subsidy_decay_bps: DEFAULT_SUBSIDY_DECAY_BPS,
     subsidy_amount: TAPE(0),
     max_reservation_epochs: 520,                   // 10 years
+    challenge_cadence: 5,                          // 5 slots
 };
 
 const DEVNET: GenesisConfig = GenesisConfig {
@@ -120,6 +122,7 @@ impl From<&GenesisConfig> for NodePreferences {
             access_threshold: TAPE(0),
             spool_size: StorageUnits::zero(),
             max_reservation_epochs: config.max_reservation_epochs,
+            challenge_cadence: config.challenge_cadence,
         }
     }
 }

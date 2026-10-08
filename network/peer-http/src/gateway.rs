@@ -354,6 +354,10 @@ impl Api for GatewayApi {
         Err(unsupported("vote"))
     }
 
+    async fn challenge(&self, _node: Address, _req: &ChallengeReq) -> Result<ChallengeRes, ApiError> {
+        Err(unsupported("challenge"))
+    }
+
     async fn get_health(
         &self,
         _node: Address,

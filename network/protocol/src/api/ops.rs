@@ -3,13 +3,13 @@
 use bytes::Bytes;
 use tape_core::bls::BlsSignature;
 use tape_core::prelude::{BlobData, CompressedTrack, EpochNumber, SpoolIndex, TrackNumber};
-use tape_core::types::StorageUnits;
+use tape_core::types::{RoundNumber, StorageUnits};
 use tape_core::spooler::GroupIndex;
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 
 use crate::api::types::{
-    InconsistencyProof, NodeStats, StripeSubChunkRequest, SyncSliceEntry,
+    ChallengeProof, InconsistencyProof, NodeStats, StripeSubChunkRequest, SyncSliceEntry,
     VoteCandidate, ObjectListItem,
 };
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -209,6 +209,16 @@ pub struct VoteReq {
 pub struct VoteRes;
 
 #[derive(Clone, Debug)]
+pub struct ChallengeReq {
+    pub epoch: EpochNumber,
+    pub round: RoundNumber,
+    pub proofs: Vec<ChallengeProof>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChallengeRes;
+
+#[derive(Clone, Debug)]
 pub struct GetHealthReq;
 
 #[derive(Clone, Debug)]
@@ -240,6 +250,7 @@ pub enum PeerReq {
     Certify(CertifyReq),
     Invalidate(InvalidateReq),
     Vote(VoteReq),
+    Challenge(ChallengeReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
 }
@@ -259,6 +270,7 @@ pub enum PeerRes {
     Certify(Result<CertifyRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
     Vote(Result<VoteRes, ApiError>),
+    Challenge(Result<ChallengeRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),
 }

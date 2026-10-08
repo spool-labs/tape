@@ -101,6 +101,10 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 get(handlers::health::stats::<Db, Cluster, Blockchain>),
             )
             .route(
+                api_routes::CHALLENGE_BOARD_PATH,
+                get(handlers::challenge::challenge_board::<Db, Cluster, Blockchain>),
+            )
+            .route(
                 api_routes::OBSERVE_ATLAS_PATH,
                 get(handlers::atlas::recent::<Db, Cluster, Blockchain>),
             );
@@ -251,6 +255,15 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             .route(
                 api_routes::VOTE_PATH,
                 post(handlers::vote::vote::<Db, Cluster, Blockchain>)
+                    .layer(peer_body_limit)
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
+            )
+            .route(
+                api_routes::CHALLENGE_PATH,
+                post(handlers::challenge::challenge::<Db, Cluster, Blockchain>)
                     .layer(peer_body_limit)
                     .layer(from_fn_with_state(
                         state.clone(),

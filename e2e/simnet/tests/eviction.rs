@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::spooler::GroupIndex;
 use tape_core::system::NodeStatus;
 use tape_core::types::{BasisPoints, EpochNumber};
 use tape_crypto::Address;
@@ -19,6 +20,9 @@ const EVICT_NODE: usize = 0;
 const SEATED_STAKE: u64 = 1_000;
 const SPARE_STAKE: u64 = 500;
 const STEADY_EPOCH: u64 = 3;
+const VOTE_GROUP: GroupIndex = GroupIndex(0);
+// Long enough for a node that signed proposals on its own to have landed one.
+const UNSIGNED_WAIT: Duration = Duration::from_secs(5);
 
 #[test]
 fn eviction() {
@@ -28,7 +32,6 @@ fn eviction() {
 async fn eviction_inner() {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
-        .eviction(true)
         .runtime_mode(NodeRuntimeMode::Full)
         .file_log(true)
         .build()
@@ -40,7 +43,7 @@ async fn eviction_inner() {
     let active_timeout = Duration::from_secs(60);
     let epoch_timeout = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
     // Nothing has to be waited out: the vote opens on the proposal and lands
-    // as fast as the signatures gather.
+    // with the group's signatures.
     let evict_timeout = Duration::from_secs(90);
 
     {
@@ -86,7 +89,27 @@ async fn eviction_inner() {
 
     let target = Address::from(harness.scenario().node_address(EVICT_NODE));
 
-    // The target stays up and answers everything asked of it.
+    // No node acts on a proposal. With the vote open and nobody signing by
+    // hand, the target is not suspended.
+    harness
+        .scenario()
+        .propose_eviction(EVICT_NODE)
+        .await
+        .expect("propose the eviction");
+    tokio::time::sleep(UNSIGNED_WAIT).await;
+    let untouched = harness
+        .scenario()
+        .read_node(EVICT_NODE)
+        .await
+        .expect("read target node");
+    assert_eq!(
+        untouched.suspended_until,
+        EpochNumber(0),
+        "a node signed an eviction on its own"
+    );
+
+    // The test now casts the vote itself, with the holders' keys. The target
+    // stays up and answers everything asked of it.
     let target_epoch = wait_eviction_landed(&harness, evict_timeout).await;
 
     // The target is absent from the committee the vote targeted.
@@ -161,14 +184,16 @@ async fn advance_to_epoch(harness: &SimnetHarness, target: EpochNumber, epoch_ti
     }
 }
 
-// Propose the eviction and poll the target node account until its suspension
-// lands, returning the epoch it is suspended through. A proposal expires with
-// its voting epoch, so the poll re-proposes each round; a duplicate proposal
-// is the same PDA and is rejected, which the poll ignores.
+// Propose the eviction, cast the group's vote by hand, and poll the target
+// node account until its suspension lands, returning the epoch it is suspended
+// through. A proposal expires with its voting epoch, so the poll proposes and
+// votes again each round; a duplicate of either is rejected, which the poll
+// ignores.
 async fn wait_eviction_landed(harness: &SimnetHarness, timeout: Duration) -> EpochNumber {
     let start = Instant::now();
     loop {
         let _ = harness.scenario().propose_eviction(EVICT_NODE).await;
+        let _ = harness.scenario().vote_eviction(EVICT_NODE, VOTE_GROUP).await;
 
         let suspended = harness
             .scenario()

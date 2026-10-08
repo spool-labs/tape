@@ -42,9 +42,21 @@ const VOLUME_SUBDIR: &str = "simnet";
 /// Environment variable that leaves this run's volumes on disk, off by default
 pub const KEEP_VOLUMES_VAR: &str = "SIMNET_KEEP_VOLUMES";
 
+/// Environment variable that turns challenge rounds on for every cluster, off by default
+pub const FORCE_CHALLENGE_VAR: &str = "SIMNET_CHALLENGE";
+
 /// Whether this run keeps its volumes rather than deleting them
 fn keep_volumes() -> bool {
-    match std::env::var(KEEP_VOLUMES_VAR) {
+    env_flag(KEEP_VOLUMES_VAR)
+}
+
+/// Whether every cluster of this run starts with challenge rounds on
+pub(crate) fn force_challenge() -> bool {
+    env_flag(FORCE_CHALLENGE_VAR)
+}
+
+fn env_flag(name: &str) -> bool {
+    match std::env::var(name) {
         Ok(value) => matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"

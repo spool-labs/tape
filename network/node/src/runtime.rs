@@ -15,14 +15,14 @@ use crate::config::node::NodeConfig;
 use crate::config::logs::{LoggingConfig, LoggingFormat};
 use crate::context::NodeContext;
 use crate::core::startup::{build_context, checkpoint_primary_store};
-use crate::core::channels::{downstream_channels, drain_block_channel, store_channel};
+use crate::core::channels::{downstream_channels, store_channel};
 use crate::core::error::NodeError;
-use crate::core::types::{ChannelName, ServiceName};
+use crate::core::types::ServiceName;
 use crate::features::block::ingest_monitor;
 use crate::features::block::ingestor::BlockIngestor;
 use crate::features::bootstrap::{self, LiveStart};
 use crate::features::assignment::manager::AssignmentManager;
-use crate::features::eviction::manager::EvictionManager;
+use crate::features::challenge::manager::ChallengeManager;
 use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
 use crate::features::lifecycle::manager::LifecycleManager;
@@ -252,6 +252,11 @@ where
     let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
 
+    // Subscribed before ingest starts, so the task sees every block from the first.
+    let challenge_blocks = config
+        .challenge_enabled()
+        .then(|| senders.feed.subscribe());
+
     #[cfg(feature = "metrics")]
     if config.metrics.enabled {
         register_core_collectors(context.clone());
@@ -334,19 +339,12 @@ where
         .run(),
     );
 
-    // Off, the node proposes no eviction and signs no peer's proposal.
-    if config.eviction_enabled() {
+    // Off, the node sends no proofs, and its challenge route refuses its peers'.
+    if let Some(blocks) = challenge_blocks {
+        let arrivals = context.challenge.attach();
         supervisor.spawn(
-            ServiceName::EvictionManager,
-            EvictionManager::new(context.clone(), receivers.eviction, cancel.clone()).run(),
-        );
-    } else {
-        // The lane is bounded and the ingestor writes to it regardless, so it
-        // still has to be read or block ingest stops at the first full buffer.
-        info!("eviction disabled by config: proposing nothing, signing no eviction vote");
-        supervisor.spawn(
-            ServiceName::EvictionManager,
-            drain_block_channel(receivers.eviction, cancel.clone(), ChannelName::EvictionManager),
+            ServiceName::ChallengeManager,
+            ChallengeManager::new(context.clone(), blocks, arrivals, cancel.clone()).run(),
         );
     }
 

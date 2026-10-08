@@ -69,6 +69,8 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         return Err(ProgramError::InvalidArgument);
     }
 
+    let challenge_cadence = args.challenge_cadence;
+
     archive_info
         .is_writable()?
         .is_archive()?;
@@ -92,6 +94,7 @@ pub fn process_start_network(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
         epoch_duration,
         spool_size: StorageUnits::zero(),
         max_reservation_epochs: archive.max_reservation_epochs,
+        challenge_cadence,
     };
 
     subsidy_info

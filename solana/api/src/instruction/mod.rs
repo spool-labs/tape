@@ -102,6 +102,7 @@ pub enum TapeInstruction {
     SetEpochDuration,
     SetSpoolSize,
     SetMaxReservationEpochs,
+    SetChallengeCadence,
     ClaimCommission,
 
     // Blacklist
@@ -201,6 +202,7 @@ tape_solana::instruction!(TapeInstruction, SetSpoolGroups);
 tape_solana::instruction!(TapeInstruction, SetEpochDuration);
 tape_solana::instruction!(TapeInstruction, SetSpoolSize);
 tape_solana::instruction!(TapeInstruction, SetMaxReservationEpochs);
+tape_solana::instruction!(TapeInstruction, SetChallengeCadence);
 
 tape_solana::instruction!(TapeInstruction, AddToBlacklist);
 tape_solana::instruction!(TapeInstruction, RemoveFromBlacklist);

@@ -1,16 +1,21 @@
 use anyhow::{Context, Result};
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
-use tape_api::compute::MAX_COMPUTE_UNIT_LIMIT;
+use tape_api::compute::{MAX_COMPUTE_UNIT_LIMIT, VOTE_EVICTION_CU};
 use tape_api::helpers::{build_authority_with_tokens_ix, build_close_ata_ix};
 use tape_api::instruction::{
     build_add_to_blacklist_ix, build_advance_pool_ix, build_join_committee_ix,
     build_propose_eviction_ix, build_set_committee_size_ix, build_set_access_threshold_ix,
-    build_set_spool_groups_ix, build_stake_with_pool_ix,
+    build_set_spool_groups_ix, build_stake_with_pool_ix, build_vote_eviction_ix,
 };
 use tape_api::program::tapedrive::{node_pda, stake_pda};
+use tape_core::bls::BlsSignature;
+use tape_core::cert::NodeEvictMessage;
+use tape_core::spooler::GroupIndex;
 use tape_core::system::{BlacklistEntry, NodeStatus};
 use tape_core::types::coin::TAPE;
+use tape_core::types::SpoolBitmap;
+use tape_crypto::Address;
 use tracing::trace;
 
 use crate::fixtures::err::adv_done;
@@ -190,8 +195,64 @@ impl SimnetScenario<'_> {
         Ok(())
     }
 
-    /// Open an eviction vote against the node. The proposal is permissionless;
-    /// committee nodes with eviction on observe it and sign.
+    /// Sign and submit one group's eviction vote against the node, the way
+    /// operators would by hand: each holder of the group signs with its own
+    /// key, and anyone submits the aggregate. No node takes part.
+    pub async fn vote_eviction(&self, node_index: usize, group: GroupIndex) -> Result<()> {
+        let payer = self.harness.admin();
+        let system = self.read_system().await?;
+        let voting_epoch = system.current_epoch;
+        let target_epoch = self.read_epoch_at(voting_epoch.next()).await?;
+        let holders = self.read_group(voting_epoch, group).await?;
+        let target: Address = self.node_address(node_index).into();
+        let message = NodeEvictMessage::new(target_epoch.id, target_epoch.nonce, target).to_bytes();
+
+        let mut indices = Vec::new();
+        let mut partials = Vec::new();
+        for (position, spool) in holders.spools.iter().enumerate() {
+            let signer = self
+                .harness
+                .nodes()
+                .iter()
+                .enumerate()
+                .find(|(index, _)| Address::from(self.node_address(*index)) == spool.node);
+            if let Some((_, node)) = signer {
+                let signature = node
+                    .bls_keypair()
+                    .sign(&message)
+                    .map_err(|error| anyhow::anyhow!("sign eviction vote: {error:?}"))?;
+                indices.push(position);
+                partials.push(signature);
+            }
+        }
+        let aggregate = BlsSignature::aggregate(&partials)
+            .map_err(|error| anyhow::anyhow!("aggregate eviction votes: {error:?}"))?;
+
+        let ix = build_vote_eviction_ix(
+            payer.pubkey().into(),
+            voting_epoch,
+            target,
+            group,
+            SpoolBitmap::from_indices(&indices),
+            aggregate,
+        );
+
+        self.harness
+            .chain()
+            .send_capped_and_advance(
+                payer,
+                VOTE_EVICTION_CU,
+                vec![ix],
+                self.harness.config().slot_advance_per_tx,
+            )
+            .await
+            .with_context(|| format!("vote eviction of node {node_index} in group {}", group.0))?;
+
+        Ok(())
+    }
+
+    /// Open an eviction vote against the node. The proposal is permissionless,
+    /// and the vote is cast with `vote_eviction`.
     pub async fn propose_eviction(&self, node_index: usize) -> Result<()> {
         trace!(node_index, "submitting propose_eviction instruction");
         let payer = self.harness.admin();

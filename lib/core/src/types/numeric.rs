@@ -8,6 +8,7 @@ define_numeric_type!(TrackNumber, "track");
 define_numeric_type!(ChunkNumber, "chunk");
 define_numeric_type!(NodeId, "node");
 define_numeric_type!(ShareAmount, "shares");
+define_numeric_type!(RoundNumber, "round");
 
 // Generic types
 define_numeric_type!(BasisPoints, "bps");

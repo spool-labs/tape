@@ -153,6 +153,7 @@ impl NodeHarness {
 pub struct NodeHarnessBuilder {
     chain: ChainHarnessBuilder,
     api: Option<Arc<MemoryApi>>,
+    is_challenge_enabled: bool,
 }
 
 impl NodeHarnessBuilder {
@@ -274,9 +275,17 @@ impl NodeHarnessBuilder {
         self
     }
 
+    /// Whether every node runs challenge rounds, off by default.
+    pub fn challenge(mut self, is_enabled: bool) -> Self {
+        self.is_challenge_enabled = is_enabled;
+        self
+    }
+
     pub async fn build(self) -> Result<NodeHarness> {
         let chain = self.chain.build().await?;
-        NodeHarness::from_chain_with_config(chain, self.api, test_config()).await
+        let mut config = test_config();
+        config.challenge.enabled = self.is_challenge_enabled;
+        NodeHarness::from_chain_with_config(chain, self.api, config).await
     }
 }
 

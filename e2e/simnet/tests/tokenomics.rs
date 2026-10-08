@@ -7,7 +7,7 @@ use solana_program_pack::Pack;
 use solana_pubkey::Pubkey;
 use solana_signer::Signer;
 use spl_token::instruction::transfer_checked;
-use tape_chain_harness::{TEST_EPOCH_DURATION, TEST_MAX_EPOCH_DURATION};
+use tape_chain_harness::{TEST_CHALLENGE_CADENCE, TEST_EPOCH_DURATION, TEST_MAX_EPOCH_DURATION};
 use tape_api::helpers::build_authority_with_tokens_ix;
 use tape_api::program::tapedrive::{
     ARCHIVE_ATA, DEFAULT_SUBSIDY_DECAY_BPS, SUBSIDY_ATA, TrackAddress,
@@ -562,6 +562,7 @@ async fn assert_start_policy(harness: &SimnetHarness, expected_epoch: EpochNumbe
         epoch_duration: TEST_EPOCH_DURATION,
         spool_size: StorageUnits::zero(),
         max_reservation_epochs: archive.max_reservation_epochs,
+        challenge_cadence: TEST_CHALLENGE_CADENCE,
     };
 
     assert_eq!(

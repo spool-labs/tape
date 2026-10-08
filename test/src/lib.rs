@@ -47,6 +47,10 @@ pub const TEST_MIN_EPOCH_DURATION: EpochDuration = EpochDuration(10);
 /// in test flows. Production picks its own (e.g. 14 days).
 pub const TEST_MAX_EPOCH_DURATION: EpochDuration = EpochDuration(200);
 
+/// Slots between challenge rounds used by tests. Stored in
+/// `Epoch.preferences.challenge_cadence` (via test fixtures).
+pub const TEST_CHALLENGE_CADENCE: u64 = 5;
+
 // Helpers for constructing test accounts.
 
 pub fn sol(key: impl Into<Pubkey>, lamports: u64) -> (Pubkey, Account) {

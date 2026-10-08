@@ -10,7 +10,7 @@ use tape_core::{
 pub use tape_core::system::VoteCandidate;
 use tape_core::prelude::{BlobData, EpochNumber, SpoolIndex, TrackNumber};
 use tape_core::track::types::{PackedTrack, PackedTrackProof};
-use tape_core::types::{ContentType, SlotNumber, SpoolBitmap, StorageUnits};
+use tape_core::types::{ContentType, RoundNumber, SlotNumber, SpoolBitmap, StorageUnits};
 use bytes::Bytes;
 use tape_crypto::prelude::{Address, Hash};
 use wincode::containers::{Pod, Vec as WincodeVec};
@@ -361,6 +361,73 @@ pub struct TrackProofResponse {
     pub proof: PackedTrackProof,
 }
 
+/// Body of a challenge round's proofs from one holder to one group peer.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ChallengeRequest {
+    pub epoch: EpochNumber,
+    pub round: RoundNumber,
+    pub proofs: Vec<ChallengeProof>,
+}
+
+/// One spool's proof. `spool` is the holder's live spool.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ChallengeProof {
+    pub spool: SpoolIndex,
+    pub track: Address,
+    pub data: ChallengeData,
+}
+
+/// A leaf of a coded track's slice, or the whole payload of an inline track.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub enum ChallengeData {
+    Coded(ChallengeLeaf),
+    Inline(Vec<u8>),
+}
+
+/// A sampled leaf and its path to the slice root.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ChallengeLeaf {
+    pub sub_leaf: Vec<u8>,
+    pub sub_proof: Vec<Hash>,
+}
+
+/// Response from the challenge board endpoint: the node's rounds after the
+/// slot asked for, oldest first.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ChallengeBoard {
+    pub is_enabled: bool,
+    pub rounds: Vec<ChallengeRound>,
+}
+
+/// One round as a node saw it. A round the node sat out has no entries.
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ChallengeRound {
+    pub slot: SlotNumber,
+    pub is_observed: bool,
+    pub entries: Vec<ChallengeEntry>,
+}
+
+/// One peer spool in a round. `seen` is empty while nothing has arrived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ChallengeEntry {
+    pub spool: SpoolIndex,
+    pub seen: Option<ChallengeSeen>,
+}
+
+/// A proof's outcome and the milliseconds from the round opening to its arrival.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct ChallengeSeen {
+    pub outcome: ChallengeOutcome,
+    pub ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub enum ChallengeOutcome {
+    Ok,
+    Invalid,
+    WrongTrack,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +597,34 @@ mod tests {
         };
         let bytes = wincode::serialize(&req).unwrap();
         let decoded: VoteRequest = wincode::deserialize(&bytes).unwrap();
+        assert_eq!(req, decoded);
+    }
+
+    // a coded leaf and an inline payload both survive the wire
+    #[test]
+    fn challenge_request_roundtrip() {
+        let leaf = ChallengeLeaf {
+            sub_leaf: vec![0x5A; 1024],
+            sub_proof: vec![Hash::from([0x22; 32]); 16],
+        };
+        let req = ChallengeRequest {
+            epoch: EpochNumber(12),
+            round: RoundNumber(40),
+            proofs: vec![
+                ChallengeProof {
+                    spool: SpoolIndex(64),
+                    track: address(7),
+                    data: ChallengeData::Coded(leaf),
+                },
+                ChallengeProof {
+                    spool: SpoolIndex(84),
+                    track: address(8),
+                    data: ChallengeData::Inline(vec![1, 2, 3]),
+                },
+            ],
+        };
+        let bytes = wincode::serialize(&req).unwrap();
+        let decoded: ChallengeRequest = wincode::deserialize(&bytes).unwrap();
         assert_eq!(req, decoded);
     }
 

@@ -281,6 +281,7 @@ mod tests {
                 epoch_duration: EpochDuration(0),
                 spool_size: StorageUnits::zero(),
                 max_reservation_epochs: 0,
+                challenge_cadence: 0,
             },
             nonce: Hash::default(),
             subsidy: TAPE(0),

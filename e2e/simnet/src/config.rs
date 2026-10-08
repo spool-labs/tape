@@ -3,7 +3,9 @@ use solana_pubkey::Pubkey;
 use tape_api::genesis::GenesisConfig;
 use tape_core::encoding::{ErasureCode, TAPENET_PROFILE};
 use tape_core::thresholds::{validate_profile, ThresholdError, TrustModel};
-use tape_node::config::eviction::EvictionConfig;
+use tape_node::config::challenge::ChallengeConfig;
+
+use crate::force_challenge;
 
 /// A serialized account payload to seed into the simulated on-chain state.
 #[derive(Debug, Clone)]
@@ -58,8 +60,8 @@ pub struct SimnetConfig {
     pub file_log: bool,
     /// Arbitrary serialized accounts to inject into LiteSVM before nodes start.
     pub seed_accounts: Vec<SeededAccount>,
-    /// Eviction participation, shared by every node.
-    pub eviction: EvictionConfig,
+    /// Challenge rounds, shared by every node unless a node is set otherwise.
+    pub challenge: ChallengeConfig,
 }
 
 impl SimnetConfig {
@@ -89,7 +91,22 @@ impl Default for SimnetConfig {
             slot_advance_per_tx: 1,
             file_log: false,
             seed_accounts: Vec::new(),
-            eviction: Default::default(),
+            challenge: ChallengeConfig { enabled: force_challenge() },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::FORCE_CHALLENGE_VAR;
+
+    use super::*;
+
+    // a cluster starts with challenge rounds on exactly when the run forces them on
+    #[test]
+    fn challenge_switch() {
+        let is_forced = std::env::var(FORCE_CHALLENGE_VAR).is_ok_and(|value| value == "1");
+
+        assert_eq!(SimnetConfig::default().challenge.enabled, is_forced);
     }
 }

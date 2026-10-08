@@ -278,7 +278,7 @@ fn mirror_eviction() {
 async fn eviction_inner(profile: ErasureCode) {
     let group_size = usize::from(profile.n());
     let node_count = group_size + 1;
-    let mut harness = start(cluster(profile, node_count).eviction(true), 1).await;
+    let mut harness = start(cluster(profile, node_count), 1).await;
 
     let data = payload(256 * 1024);
     let (track, written) = write(&harness, &data).await;
@@ -565,12 +565,14 @@ async fn wait_stalled_epoch(harness: &SimnetHarness) -> u64 {
     panic!("the epoch kept advancing without a full committee");
 }
 
-/// Propose the eviction until it lands, and return the epoch the node is suspended through
+/// Propose the eviction and cast the group's vote by hand until it lands, and
+/// return the epoch the node is suspended through
 async fn wait_eviction(harness: &SimnetHarness, target: usize) -> EpochNumber {
     let deadline = Instant::now() + EVICT_TIMEOUT;
     loop {
         // A proposal expires with its epoch, and a repeat inside one epoch is refused.
         let _ = harness.scenario().propose_eviction(target).await;
+        let _ = harness.scenario().vote_eviction(target, GroupIndex(0)).await;
 
         let suspended = harness
             .scenario()

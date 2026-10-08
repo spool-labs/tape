@@ -54,7 +54,7 @@ where
 {
     // Destructure exhaustively: every downstream channel must be consumed or
     // drained, or the ingestor's fan-out fills its buffer and deadlocks.
-    let (senders, DownstreamReceivers { state, assignment, eviction, replay, snapshot }) =
+    let (senders, DownstreamReceivers { state, assignment, replay, snapshot }) =
         downstream_channels();
     let (store_tx, store_rx) = store_channel();
     let mut supervisor = Supervisor::new(cancel.clone());
@@ -184,11 +184,6 @@ where
     supervisor.spawn(
         ServiceName::AssignmentManager,
         drain_block_channel(assignment, cancel.clone(), ChannelName::AssignmentManager),
-    );
-
-    supervisor.spawn(
-        ServiceName::EvictionManager,
-        drain_block_channel(eviction, cancel.clone(), ChannelName::EvictionManager),
     );
 
     supervisor.spawn(

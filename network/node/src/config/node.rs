@@ -11,7 +11,7 @@ use tape_crypto::ed25519::Keypair;
 use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed25519_keypair};
 
 use crate::core::error::NodeError;
-use super::eviction::EvictionConfig;
+use super::challenge::ChallengeConfig;
 use super::{
     gateway::{GatewayConfig, is_valid_origin, is_valid_policy},
     helpers::{deserialize_pathbuf, expand_path},
@@ -61,9 +61,9 @@ pub struct NodeConfig {
     #[serde(default)]
     pub https: HttpsConfig,
 
-    /// Whether this node takes part in evicting its peers.
+    /// Whether this node takes part in challenge rounds.
     #[serde(default)]
-    pub eviction: EvictionConfig,
+    pub challenge: ChallengeConfig,
 
     /// Local reel volume settings.
     #[serde(default)]
@@ -132,9 +132,9 @@ impl GenesisPreset {
 
 
 impl NodeConfig {
-    /// Returns whether eviction participation is enabled.
-    pub fn eviction_enabled(&self) -> bool {
-        self.eviction.enabled
+    /// Returns whether challenge rounds are enabled.
+    pub fn challenge_enabled(&self) -> bool {
+        self.challenge.enabled
     }
 
     /// Load configuration from a YAML file.
@@ -493,7 +493,7 @@ https:
   listen: "0.0.0.0:3430"
   identity_keypair: "/etc/tape/tls.json"
   auto_update: false
-eviction:
+challenge:
   enabled: false
 store:
   path: "/var/lib/tape/data"
@@ -578,7 +578,7 @@ metrics:
         assert_eq!(config.https.listen.to_string(), "0.0.0.0:3430");
         assert_eq!(config.https.identity_keypair, PathBuf::from("/etc/tape/tls.json"));
         assert!(!config.https.auto_update);
-        assert!(!config.eviction.enabled);
+        assert!(!config.challenge.enabled);
         assert_eq!(config.store.path, PathBuf::from("/var/lib/tape/data"));
         assert_eq!(config.store.compaction_mb_per_sec, 80);
         assert_eq!(config.store.sync_bytes, 8 * 1024 * 1024);
@@ -793,32 +793,15 @@ recovery:
         assert_eq!(config.recovery.sync_batch, 100);
     }
 
+    // challenge rounds are off unless the yaml turns them on
     #[test]
-    fn eviction_off_by_default() {
-        let config = NodeConfig::from_yaml_str(
-            r#"
-node:
-  name: "test"
-network:
-  host: "test"
-"#,
-        )
-        .unwrap();
+    fn challenge_flag() {
+        let off = NodeConfig::from_yaml_str("node:\n  name: \"test\"\n").expect("config loads");
+        let on = NodeConfig::from_yaml_str("challenge:\n  enabled: true\n").expect("config loads");
 
-        assert!(!config.eviction.enabled);
-        assert!(!config.eviction_enabled());
-    }
-
-    // a key the eviction section does not have is refused at load
-    #[test]
-    fn rejects_unknown_eviction_key() {
-        let yaml = r#"
-eviction:
-  enabled: true
-  policy:
-    min_opportunities: 60
-"#;
-        assert!(NodeConfig::from_yaml_str(yaml).is_err());
+        assert!(!off.challenge_enabled());
+        assert!(on.challenge_enabled());
+        assert!(NodeConfig::from_yaml_str("challenge:\n  cadence: 5\n").is_err());
     }
 
     // a custom node registers with devnet's preferences, except the committee
