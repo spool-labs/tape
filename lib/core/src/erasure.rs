@@ -16,7 +16,7 @@ pub const MAX_GROUP_SIZE: usize = 20;
 pub const SLICE_TREE_HEIGHT: usize = 5;
 
 /// Bytes covered by one sample leaf beneath a slice root.
-/// Kept small because a challenge response carries one leaf and its path.
+/// Kept small because a proof carries one leaf and its path.
 pub const SUB_LEAF_BYTES: usize = 1024;
 
 /// Merkle tree height for the sub-leaf tree under a single slice.
@@ -39,13 +39,10 @@ pub fn sub_leaf_hashes(slice: &[u8]) -> Vec<Hash> {
     hash_leaves(&slice.chunks(SUB_LEAF_BYTES).collect::<Vec<_>>())
 }
 
-/// Levels of the sub-leaf tree a challenge response rebuilds from slice bytes.
+/// Levels of the sub-leaf tree a proof rebuilds from slice bytes.
 ///
-/// Everything above this comes from the sidecar an owner keeps beside the slice,
-/// so answering reads one window rather than the whole slice. The paper's premise
-/// is that reading retained data is fast. Rebuilding a megabyte-scale tree per
-/// response is not, and a deadline widened to cover it is a deadline a fetching
-/// free-rider fits inside.
+/// Everything above this comes from the sidecar an owner keeps beside the
+/// slice, so a proof reads one window and leaves the rest of the slice alone.
 pub const SAMPLE_WINDOW_HEIGHT: usize = 8;
 
 /// Sample leaves under one sidecar node.
@@ -152,12 +149,6 @@ pub fn leaf_position(spool: SpoolIndex) -> SpoolIndex {
     SpoolIndex(spool.as_u64() % MAX_GROUP_SIZE as u64)
 }
 
-/// Get the group index for a given spool.
-#[inline]
-pub fn group_for_spool(spool: SpoolIndex) -> GroupIndex {
-    GroupIndex::containing(spool)
-}
-
 /// Get the first spool index in a group.
 #[inline]
 pub fn group_start(group: GroupIndex) -> SpoolIndex {
@@ -204,7 +195,10 @@ mod tests {
             let spool = SpoolIndex(spool);
             let position = leaf_position(spool);
             assert!(position.as_usize() < MAX_GROUP_SIZE);
-            assert_eq!(group_for_spool(spool).position_of(spool), Some(position.as_usize()));
+            assert_eq!(
+                GroupIndex::containing(spool).position_of(spool),
+                Some(position.as_usize())
+            );
         }
     }
 
@@ -317,14 +311,6 @@ mod tests {
         const MAX_TRACK_BYTES: usize = 64 * 1024 * 1024;
 
         assert_eq!(SUB_LEAF_BYTES << SUB_TREE_HEIGHT, MAX_TRACK_BYTES);
-    }
-
-    #[test]
-    fn test_group_for_spool() {
-        assert_eq!(group_for_spool(SpoolIndex(0)), GroupIndex(0));
-        assert_eq!(group_for_spool(SpoolIndex(19)), GroupIndex(0));
-        assert_eq!(group_for_spool(SpoolIndex(20)), GroupIndex(1));
-        assert_eq!(group_for_spool(SpoolIndex(999)), GroupIndex(49));
     }
 
     #[test]

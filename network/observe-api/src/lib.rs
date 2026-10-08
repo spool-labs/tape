@@ -29,10 +29,6 @@ pub const ATLAS_PATH: &str = "/v1/observe/atlas";
 /// Path the node streams live board updates from, as server-sent events
 pub const STREAM_PATH: &str = "/v1/observe/stream";
 
-/// How often a live round pushes its new marks, at most; a reader replaying
-/// marks lags by about one interval so a round assembles rather than appears
-pub const PUSH_INTERVAL_MS: u64 = 250;
-
 /// Event names on the stream, so a client dispatches on the event name rather
 /// than sniffing the body
 pub const EVENT_HELLO: &str = "hello";
@@ -41,10 +37,6 @@ pub const EVENT_BOARD: &str = "board";
 pub const EVENT_TOPOLOGY: &str = "topology";
 /// One frame of recent history, so a chart opens full
 pub const EVENT_BACKFILL: &str = "backfill";
-
-/// One round trace, pushed as its evidence arrives rather than waiting for
-/// the next whole board: a round is over in a few slots.
-pub const EVENT_ROUND: &str = "round";
 
 /// How often the node samples counters into a tick
 pub const TICK_PERIOD_MS: u64 = 250;
@@ -61,7 +53,7 @@ pub const BACKFILL_SPAN_MS: u64 = 90_000;
 pub const BACKFILL_STEP_MS: u64 = 1_000;
 
 /// Bumped when a frame changes shape in a way an older client cannot read
-pub const STREAM_PROTOCOL: u32 = 2;
+pub const STREAM_PROTOCOL: u32 = 3;
 
 /// Opening frame, so a client can size its interpolation window from the
 /// producer's own cadences rather than hardcoding them
@@ -155,11 +147,6 @@ pub struct Tick {
     pub decode_p95_ms: f32,
     #[wincode(with = "Pod<f32>")]
     pub cache_hit_pct: f32,
-
-    /// Challenge totals. On the tick rather than the board because a round now
-    /// takes seconds, and on the board they arrive already stale.
-    #[serde(default)]
-    pub challenge: ChallengeRounds,
 }
 
 /// One peer call that moved payload bytes, from the serving node's view.
@@ -546,340 +533,6 @@ pub struct SpoolStat {
     pub bytes: u64,
 }
 
-/// One row of the challenge record: what this node has seen from one peer.
-///
-/// Rounds across, peers down. The strip is read against the grid's `axis`, so a
-/// void round leaves no mark against anyone and a peer only just seen reads as a
-/// short row rather than a wall of misses.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct ChallengeRow {
-    /// Peer address, base58.
-    pub node: String,
-    /// The spool this record is about.
-    ///
-    /// One row per spool rather than per peer, which is the grid the paper
-    /// draws: rounds across, spools down. A peer holding several appears once
-    /// per spool, since each owes its own answer every round.
-    #[serde(default)]
-    pub spool: u64,
-    /// Rounds this peer was challenged in.
-    pub opportunities: u64,
-    /// Rounds it answered with a valid proof.
-    pub successes: u64,
-    /// Misses since its last success.
-    pub consecutive_misses: u64,
-    /// Share of opportunities answered, in basis points.
-    pub success_rate_bps: u64,
-    /// Whether this node's local rule has fired on the peer.
-    pub rule_fired: bool,
-    /// Whether this node currently has the peer queued for eviction.
-    #[serde(default)]
-    pub queued: bool,
-    /// The axis columns this peer was judged in, one bit each, oldest lowest.
-    #[serde(default)]
-    pub judged: u64,
-    /// Of those columns, the ones it answered.
-    pub recent: u64,
-    /// Entries in the peer's own strip; exceeds the judged bits once the round
-    /// store is swept behind the record.
-    #[serde(default)]
-    pub recent_len: u32,
-}
-
-/// The challenge record this node keeps, one row per peer.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct ChallengeGrid {
-    /// Rounds the strip can hold, so a reader can size the grid.
-    pub recent_capacity: u64,
-    /// Rounds a peer has to be judged on before the rate arm applies.
-    #[serde(default)]
-    pub min_opportunities: u64,
-    /// Success rate the rate arm fires below, in basis points.
-    #[serde(default)]
-    pub rate_floor_bps: u64,
-    /// Consecutive misses the fast arm fires at.
-    #[serde(default)]
-    pub max_consecutive_misses: u64,
-    /// Milliseconds from the entropy block to its certificate having gossiped,
-    /// which is the width a timeline draws one round in.
-    #[serde(default)]
-    pub round_span_ms: u64,
-    /// Milliseconds after the block by which a proof must arrive.
-    #[serde(default)]
-    pub proof_deadline_ms: u64,
-    /// Milliseconds after the block by which attestations must be signed: the
-    /// proof deadline and then the signature window, as the round width counts
-    /// them.
-    #[serde(default)]
-    pub attest_deadline_ms: u64,
-    /// Milliseconds between one round opening and the next, so a reader can say
-    /// how long the quiet between them still has to run.
-    #[serde(default)]
-    pub round_cadence_ms: u64,
-    /// Votes a spool's round needs before it certifies.
-    #[serde(default)]
-    pub quorum: u64,
-    /// Measured slot time. Every millisecond field above is this times a slot count.
-    #[serde(default)]
-    pub slot_ms: u64,
-    /// Slots from a round opening to its certificate having gossiped.
-    #[serde(default)]
-    pub round_width_slots: u64,
-    /// Slots between one round opening and the next.
-    #[serde(default)]
-    pub cadence_slots: u64,
-    /// Slots a round waits on its entropy block before it is void.
-    #[serde(default)]
-    pub settle_deadline_slots: u64,
-    /// Slots the sample set is cut behind a round: the furthest a node can sit
-    /// behind the tip and still take part, plus a finality window for its store
-    /// to trail its ingest head.
-    #[serde(default)]
-    pub sample_lookback_slots: u64,
-    /// One row per peer, worst first so an outlier is the top row.
-    pub rows: Vec<ChallengeRow>,
-    /// One row per owner, judged by this node's own rule.
-    #[serde(default)]
-    pub owners: Vec<ChallengeOwner>,
-    /// Which rounds the strip's columns stand for, right-aligned with them.
-    ///
-    /// Every member of a group is judged in the same rounds, so one axis labels
-    /// every row. Shorter than the widest strip when the round store has been
-    /// swept behind it, in which case the oldest columns go unlabelled.
-    #[serde(default)]
-    pub axis: Vec<RoundId>,
-}
-
-/// One owner's spools judged together, as the node judged them.
-///
-/// The rule lives in the node, so a reader draws this rather than deriving its
-/// own. `rate` is pooled across the spools and is for display: a node failing
-/// one spool of five still shows four fifths here while `verdict` has failed it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct ChallengeOwner {
-    /// Peer address, base58.
-    pub node: String,
-    /// Spools this node keeps a record for.
-    pub spools: u64,
-    /// Rounds judged, summed over them.
-    pub opportunities: u64,
-    /// Rounds answered, summed the same way.
-    pub successes: u64,
-    /// Answered over judged, pooled, in basis points.
-    pub rate_bps: u64,
-    /// The longest run any one spool is on.
-    pub worst_run: u64,
-    /// What the node's own rule makes of it.
-    pub verdict: OwnerVerdict,
-    /// Whether this node has it queued for eviction.
-    pub queued: bool,
-}
-
-/// What a node's rule makes of one owner.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub enum OwnerVerdict {
-    /// Nothing has fired.
-    #[default]
-    Healthy,
-    /// Too few rounds on every spool to judge.
-    Unproven,
-    /// A spool has stopped answering. A probe can clear it.
-    RunFailed,
-    /// A spool's lifetime rate is through the floor. A probe cannot.
-    RateFailed,
-}
-
-impl OwnerVerdict {
-    /// Whether the rule has fired, either arm.
-    pub fn fired(self) -> bool {
-        matches!(self, OwnerVerdict::RunFailed | OwnerVerdict::RateFailed)
-    }
-}
-
-/// One round's place in the timeline.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct RoundId {
-    pub epoch: u64,
-    pub round: u64,
-}
-
-/// Lifetime challenge round counters for this node.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct ChallengeRounds {
-    /// Rounds this node took part in, one per group it holds a spool in.
-    pub opened: u64,
-    /// Spool outcomes settled as certified.
-    pub settled_certified: u64,
-    /// Spool outcomes settled as local misses.
-    pub settled_missed: u64,
-    /// Incoming answers refused at the door.
-    pub answers_refused: u64,
-    /// Rounds charged to nobody, one per group this node holds a spool in: an
-    /// unconfirmed block, an empty sample set, or an opening this node reached
-    /// too late to take part in, which it counts here and opens nothing for.
-    #[serde(default)]
-    pub voided: u64,
-    /// Round openings the chain skipped, void on every node alike, one per
-    /// group this node holds a spool in. An opening this node saw on a block
-    /// that lost counts under `discarded` alone.
-    #[serde(default)]
-    pub skipped: u64,
-    /// Rounds dropped because their candidate block lost.
-    #[serde(default)]
-    pub discarded: u64,
-    /// This node's own rounds that the group certified.
-    #[serde(default)]
-    pub own_certified: u64,
-    /// This node's own rounds that gathered no certificate, which is what its
-    /// group-mates each recorded as a miss against it.
-    #[serde(default)]
-    pub own_missed: u64,
-    /// Times this node suspended judging and re-read protocol state.
-    #[serde(default)]
-    pub realigns: u64,
-    /// Realigns that gave up without an answer from the chain.
-    #[serde(default)]
-    pub realign_failures: u64,
-    /// Signed peer reports of a view of the epoch that is not this node's.
-    #[serde(default)]
-    pub divergence_observed: u64,
-    /// Distinct peers behind one such view right now.
-    #[serde(default)]
-    pub divergence_signers: u64,
-}
-
-/// One round as this node watched it happen.
-///
-/// The grid says which rounds a spool answered. This says when the evidence
-/// arrived inside one of them, which is what a timeline draws. Every stamp is an
-/// arrival at this node: no peer's send time is observable from one vantage, so
-/// none is reported.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct RoundTrace {
-    pub epoch: u64,
-    pub round: u64,
-    /// The spool group, since groups open their rounds independently.
-    pub group: u64,
-    /// The slot the entropy block was produced in.
-    pub anchor_slot: u64,
-    /// Entropy blockhash, base58.
-    pub block: String,
-    /// When the round opened here, unix milliseconds.
-    pub opened_at: u64,
-    pub close: TraceClose,
-    /// What each spool did, folded to the shapes a timeline draws.
-    ///
-    /// Every round carries these; only the newest carries the individual marks
-    /// behind them. Twenty votes fold to one window and a count, which is what
-    /// gets drawn anyway, and it is a twentieth of the bytes.
-    #[serde(default)]
-    pub shapes: Vec<SpoolShape>,
-    /// The individual messages, for the rounds recent enough to trace in detail.
-    #[serde(default)]
-    pub marks: Vec<TraceMark>,
-    /// Addresses the marks index into, base58.
-    #[serde(default)]
-    pub nodes: Vec<String>,
-    /// Index `nodes` starts at, so a live round sends only addresses it has not
-    /// sent before. The table only ever grows, so an index stays valid.
-    #[serde(default)]
-    pub node_base: u32,
-    /// Index `marks` starts at, so a live round sends only what is new.
-    ///
-    /// Zero carries the whole list and replaces what a reader holds; anything
-    /// higher appends. A round fills with hundreds of marks, and resending all
-    /// of them every push made a round cost its own length squared.
-    #[serde(default)]
-    pub mark_base: u32,
-    /// How each spool's round ended, decided when the round settles.
-    ///
-    /// Separate from the marks because a verdict is not a moment: settlement
-    /// runs when the next round opens, a whole cadence later, so placing it on
-    /// this round's clock would put it well past the round's own end.
-    #[serde(default)]
-    pub outcomes: Vec<SpoolOutcome>,
-}
-
-/// One spool's round, folded.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct SpoolShape {
-    pub spool: u64,
-    /// When a peer's proof reached this node, milliseconds after the round opened.
-    #[serde(default)]
-    pub proof_in: Option<u64>,
-    #[serde(default)]
-    pub proof_out: Option<u64>,
-    #[serde(default)]
-    pub refused: Option<u64>,
-    /// The voting window: first signature to last.
-    #[serde(default)]
-    pub vote_from: Option<u64>,
-    #[serde(default)]
-    pub vote_to: u64,
-    #[serde(default)]
-    pub votes: u32,
-    #[serde(default)]
-    pub vote_out: Option<u64>,
-    #[serde(default)]
-    pub cert: Option<u64>,
-}
-
-/// What one spool's round settled to.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct SpoolOutcome {
-    pub spool: u64,
-    /// Index into the trace's `nodes`, or `u32::MAX` when unresolved.
-    pub node: u32,
-    pub certified: bool,
-}
-
-/// How a round ended.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub enum TraceClose {
-    /// Still collecting evidence.
-    #[default]
-    Open,
-    /// Settled against every spool in the group.
-    Settled,
-    /// Charged to nobody: the entropy block never confirmed.
-    Unconfirmed,
-    /// Charged to nobody: the group had nothing to be asked about.
-    Nothing,
-}
-
-/// One thing that happened to one spool inside a round.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub struct TraceMark {
-    pub spool: u64,
-    /// Index into the trace's `nodes`, or `u32::MAX` when unresolved.
-    ///
-    /// A round carries hundreds of marks and only a group's worth of distinct
-    /// addresses, so the address itself is held once beside them.
-    pub node: u32,
-    pub kind: MarkKind,
-    /// Milliseconds after the round opened, so a mark is placed without the
-    /// reader having to reconcile two clocks.
-    pub at_ms: u64,
-}
-
-/// What a mark records.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-pub enum MarkKind {
-    /// This node built and broadcast its own answer.
-    AnswerOut,
-    /// A peer's answer arrived and verified.
-    #[default]
-    AnswerIn,
-    /// An answer was turned away at the door.
-    AnswerRefused,
-    /// This node signed an attestation.
-    AttestOut,
-    /// A peer's attestation arrived.
-    AttestIn,
-    /// A certificate assembled for the spool.
-    Certified,
-}
-
 /// One cumulative histogram bucket.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct Bucket {
@@ -1091,13 +744,6 @@ pub struct Board {
     pub current_epoch: LastEpoch,
     #[serde(default)]
     pub lifetime: LastEpoch,
-    #[serde(default)]
-    pub challenge: ChallengeGrid,
-    #[serde(default)]
-    pub challenge_rounds: ChallengeRounds,
-    /// Recent rounds in the order they opened, for the live timeline.
-    #[serde(default)]
-    pub challenge_timeline: Vec<RoundTrace>,
 }
 
 impl Board {
@@ -1159,7 +805,6 @@ pub struct Gauges {
     pub dispatched_slot: u64,
     pub rss_bytes: u64,
     pub queue_depth: u64,
-    pub challenge: ChallengeRounds,
 }
 
 impl Counters {
@@ -1201,7 +846,6 @@ impl Gauges {
             },
             tip_slot: board.ingest.tip_slot,
             dispatched_slot: board.ingest.dispatched_slot,
-            challenge: board.challenge_rounds,
             rss_bytes: board.resources.rss_bytes,
             queue_depth: board.resources.queues.iter().map(|q| q.value).max().unwrap_or(0),
         }
@@ -1302,8 +946,6 @@ pub fn diff(before: &Counters, now: &Counters, gauges: Gauges, at_ms: u64, inter
         } else {
             now.cache_hits.saturating_sub(before.cache_hits) as f32 / lookups as f32 * 100.0
         },
-
-        challenge: gauges.challenge,
     }
 }
 
@@ -1398,28 +1040,11 @@ mod tests {
             interval_secs: 0.25,
             req_per_s: 12.5,
             spool_persisted_per_s: vec![1.0, 2.0, 3.0],
-            challenge: ChallengeRounds { opened: 7, own_certified: 3, ..Default::default() },
             ..Default::default()
         };
         let bytes = wincode::serialize(&tick).expect("encode tick");
         let back: Tick = wincode::deserialize(&bytes).expect("decode tick");
         assert_eq!(tick, back);
-
-        let trace = RoundTrace {
-            epoch: 3,
-            round: 90,
-            group: 4,
-            block: "Ce2caPm2hKodVn5qWCr7tA29MFXLyFmvAen6mpj4MAgd".into(),
-            nodes: vec!["node-a".into(), "node-b".into()],
-            marks: vec![TraceMark { spool: 12, node: 1, kind: MarkKind::AttestIn, at_ms: 219 }],
-            shapes: vec![SpoolShape { spool: 12, vote_to: 57, votes: 19, ..Default::default() }],
-            outcomes: vec![SpoolOutcome { spool: 12, node: 0, certified: true }],
-            mark_base: 4,
-            ..Default::default()
-        };
-        let bytes = wincode::serialize(&trace).expect("encode trace");
-        let back: RoundTrace = wincode::deserialize(&bytes).expect("decode trace");
-        assert_eq!(trace, back);
 
         let board = Board::default();
         let bytes = wincode::serialize(&board).expect("encode board");

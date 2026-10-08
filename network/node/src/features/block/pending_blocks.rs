@@ -114,7 +114,6 @@ mod tests {
     fn block(slot: u64, blockhash: Hash, previous_blockhash: Hash) -> Arc<ParsedBlock> {
         Arc::new(ParsedBlock {
             slot: SlotNumber(slot),
-            parent_slot: SlotNumber(slot.saturating_sub(1)),
             blockhash,
             previous_blockhash,
             block_time: None,

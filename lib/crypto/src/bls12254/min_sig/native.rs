@@ -66,8 +66,8 @@ thread_local! {
 
 /// Parses a pubkey, reusing the curve form if this thread has seen the bytes.
 ///
-/// Committee keys repeat on every certificate and every challenge answer, and
-/// the parse behind them is a subgroup check.
+/// Committee keys repeat on every certificate, and the parse behind them is a
+/// subgroup check.
 pub fn cached_g2(point: &G2Point) -> Result<G2Affine, BLSError> {
     if let Some(hit) = PARSED.with(|c| c.borrow().get(&point.0).copied()) {
         return Ok(hit);
@@ -174,7 +174,7 @@ impl Committee {
         pairing_holds(&[h, s], &[self.summed, self.minus_one])
     }
 
-    /// Verifies one signer's signature, the shape a challenge answer carries.
+    /// Verifies one signer's signature.
     pub fn verify_one<M: AsRef<[u8]>>(
         &self,
         message: M,
@@ -282,7 +282,7 @@ mod tests {
         Committee::parse(&pubkeys).unwrap().verify_all(msg, &agg).unwrap();
     }
 
-    // a single signer is the shape a challenge answer carries
+    // a single signer's signature verifies against its own key
     #[test]
     fn one_signer() {
         let msg = b"native single";

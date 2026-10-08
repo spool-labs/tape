@@ -187,7 +187,7 @@ pub enum RawInstruction {
 /// eliminating the need to query current RPC state during catch-up.
 #[derive(Debug, Clone)]
 pub enum ParsedInstruction {
-    // Epoch boundary
+
     CreateEpoch {
         epoch: EpochNumber,
         event: EpochCreated,
@@ -208,8 +208,6 @@ pub enum ParsedInstruction {
     AdvanceEpoch {
         event: EpochAdvanced,
     },
-    // Genesis epoch transition (epoch 0 -> 1). Emits no event; carries no data
-    // because consumers react by re-fetching protocol state.
     StartNetwork,
     SyncSpool {
         node: Address,
@@ -277,7 +275,6 @@ pub enum ParsedInstruction {
         event: CommissionClaimed,
     },
 
-    // Track management
     TrackWrite {
         authority: Address,
         track: Address,
@@ -300,7 +297,6 @@ pub enum ParsedInstruction {
         event: TrackInvalidated,
     },
 
-    // Tape management
     ReserveTape {
         owner: Address,
         tape: Address,
@@ -365,16 +361,11 @@ pub enum ParsedInstruction {
         node: Address,
         event: NodeJoinedCommittee,
     },
-    // An eviction vote opened against a node. Voters react by probing the
-    // target and joining the vote when their own probe fails.
     ProposeEviction {
         node: Address,
         proposer: Address,
         event: VoteProposed,
     },
-    // A node dropped from the next committee once its eviction vote reached
-    // supermajority. Synthesized from the standalone removal event, since the
-    // landing vote is not itself a node-facing instruction.
     NodeEvicted {
         event: NodeEvicted,
     },

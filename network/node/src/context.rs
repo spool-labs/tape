@@ -1,12 +1,9 @@
 use std::collections::HashSet;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch::Receiver;
-use tokio_util::sync::CancellationToken;
 
 use tape_peer_manager::{PeerManager, PeerManagerError};
 use tape_peer_http::HttpApi;
@@ -20,7 +17,6 @@ use tape_store_api::{DiskVolume, Store};
 use tape_store_rocks::SplitStore;
 use tape_api::program::tapedrive::node_pda;
 use tape_core::bls::{BlsPrivateKey, BlsPubkey, BlsSignature};
-use tape_core::challenge::schedule::MAX_PENDING_ROUNDS;
 use tape_core::prelude::{EpochNumber, EpochPhase, NetworkParams, NodeId, NodeStatus, SpoolIndex};
 use tape_core::types::coin::SOL;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -40,15 +36,8 @@ use crate::core::store_epoch::StoreEpoch;
 use crate::core::write_signatures::WriteSignatures;
 use crate::features::blacklist::BlacklistCache;
 use crate::features::block::pending_tracks::PendingTracks;
-use crate::features::challenge::attest_queue::AttestQueue;
-use crate::features::challenge::sample_cache::SampleSets;
-use crate::features::challenge::schedules::Schedules;
-use crate::features::challenge::{RoundBuffer, TraceRing};
-use crate::features::challenge::counters::ChallengeCounters;
-use crate::features::challenge::tripwire::Tripwire;
 use crate::features::eviction::EvictionQueue;
 use crate::features::http::admission::AdmissionLimiter;
-use crate::features::state::digest::DigestWatch;
 
 /// The store the node was built against, the reel unless `rocks` was asked for
 #[cfg(not(feature = "rocks"))]
@@ -73,21 +62,6 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
     pub api: Arc<Cluster>,
     pub admission: Arc<AdmissionLimiter>,
     pub eviction_queue: Arc<EvictionQueue>,
-    pub round_buffer: Arc<RoundBuffer>,
-    pub round_traces: Arc<TraceRing>,
-    pub sample_sets: Arc<SampleSets<crate::features::challenge::audit::SampleSet>>,
-    pub schedules: Schedules,
-    pub attest_queue: Arc<AttestQueue>,
-    pub certify_slots: Arc<tokio::sync::Semaphore>,
-    certify_stage: OnceLock<mpsc::SyncSender<CertifyJob>>,
-    verify_stage: OnceLock<mpsc::Sender<VerifyRequest>>,
-    pub challenge_counters: ChallengeCounters,
-    pub challenge_tripwire: Arc<Tripwire>,
-    pub epoch_digest: Arc<DigestWatch>,
-
-    // The token of the run currently under way. Work started off a request path
-    // takes a clone, so shutdown winds it up with everything else.
-    shutdown: Mutex<CancellationToken>,
     pub metrics: NodeMetrics,
     pub atlas: Arc<AtlasBuffer>,
 
@@ -107,161 +81,7 @@ pub struct NodeContext<Db: Store, Cluster: Api, Blockchain: Rpc> {
 /// Sentinel for a balance the monitor has not sampled yet
 const UNSAMPLED_BALANCE: u64 = u64::MAX;
 
-/// Certificates aggregated at once; unbounded pairings starve the proof
-/// verifies (last vote 286ms -> 553ms without this)
-const CERTIFY_SLOTS: usize = 4;
-
-/// A self-contained certify task, its context captured at the call site.
-pub type CertifyJob = Box<dyn FnOnce() + Send>;
-
-/// One proof waiting to be checked, and where its verdict goes.
-pub struct VerifyRequest {
-    pub answer: tape_core::challenge::ProofOfAccess,
-    pub protocol: Arc<ProtocolState>,
-    pub reply: tokio::sync::oneshot::Sender<
-        Result<(), crate::features::challenge::refusal::RefusalReason>,
-    >,
-}
-
-/// Certify worker threads; two clear a round inside one cadence
-const CERTIFY_WORKERS: usize = 2;
-
-/// Where a certify job went
-pub enum CertifySubmit {
-    /// The stage took it
-    Queued,
-    /// The stage was full, so it runs on the blocking pool
-    Spilled(tokio::task::JoinHandle<()>),
-    /// Teardown closed the stage and handed the job back
-    Closed(CertifyJob),
-}
-
 impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockchain> {
-    /// The certify stage's intake, its workers spawned on first use
-    pub fn certify_stage(&self) -> &mpsc::SyncSender<CertifyJob> {
-        self.certify_stage.get_or_init(|| {
-            // The stage holds one batch per group peer for every settling round.
-            let queue = self.params.n() * MAX_PENDING_ROUNDS;
-            let (tx, rx) = mpsc::sync_channel::<CertifyJob>(queue);
-            let rx = Arc::new(std::sync::Mutex::new(rx));
-            for n in 0..CERTIFY_WORKERS {
-                let rx = rx.clone();
-                let _ = std::thread::Builder::new()
-                    .name(format!("certify-{n}"))
-                    .spawn(move || loop {
-                        // recv under the lock hands each job to whichever worker is free
-                        let job = match rx.lock() {
-                            Ok(guard) => guard.recv(),
-                            Err(_) => return,
-                        };
-                        let Ok(job) = job else {
-                            return;
-                        };
-                        // A panic would end this worker and leave every later
-                        // claim standing unverified.
-                        let guarded = AssertUnwindSafe(job);
-                        if catch_unwind(guarded).is_err() {
-                            tracing::error!("challenge: certify worker panicked, batch unverified");
-                        }
-                    });
-            }
-            tx
-        })
-    }
-
-    /// Hands one job to the certify stage, spilling to the blocking pool when full
-    pub fn submit_certify(&self, job: CertifyJob) -> CertifySubmit {
-        match self.certify_stage().try_send(job) {
-            Ok(()) => CertifySubmit::Queued,
-            Err(mpsc::TrySendError::Full(job)) => {
-                CertifySubmit::Spilled(tokio::task::spawn_blocking(job))
-            }
-            Err(mpsc::TrySendError::Disconnected(job)) => CertifySubmit::Closed(job),
-        }
-    }
-
-    /// The proof verify stage's intake, its workers spawned on first use
-    ///
-    /// A worker takes everything queued behind the proof that woke it, so a
-    /// round's answers check their signatures in one pairing product.
-    pub fn verify_stage(self: &Arc<Self>) -> &mpsc::Sender<VerifyRequest>
-    where
-        Db: 'static,
-        Cluster: 'static,
-        Blockchain: 'static,
-    {
-        self.verify_stage.get_or_init(|| {
-            let (tx, rx) = mpsc::channel::<VerifyRequest>();
-            let rx = Arc::new(std::sync::Mutex::new(rx));
-            for n in 0..self.config.challenge.verify_workers.max(1) {
-                let rx = rx.clone();
-                let context = self.clone();
-                let _ = std::thread::Builder::new()
-                    .name(format!("verify-{n}"))
-                    .spawn(move || {
-                        loop {
-                            let clump = {
-                                let Ok(guard) = rx.lock() else { return };
-                                let Ok(first) = guard.recv() else { return };
-                                let mut clump = vec![first];
-                                clump.extend(guard.try_iter());
-                                clump
-                            };
-                            // A panic here would otherwise end the only worker
-                            // and leave every later proof refused in silence,
-                            // which reads as dishonesty rather than a fault.
-                            let guarded = AssertUnwindSafe(|| context.verify_clump(clump));
-                            if catch_unwind(guarded).is_err() {
-                                tracing::error!("challenge: verify worker panicked, clump refused");
-                            }
-                        }
-                    });
-            }
-            tx
-        })
-    }
-
-    /// Checks one clump: the per answer work each, then the signatures together.
-    fn verify_clump(&self, clump: Vec<VerifyRequest>) {
-        use crate::features::challenge::audit::answer_signer;
-
-        use crate::features::challenge::refusal::RefusalReason;
-
-        let mut verdict = vec![Err(RefusalReason::BadSignature); clump.len()];
-        let mut batch = Vec::with_capacity(clump.len());
-        for (index, request) in clump.iter().enumerate() {
-            match answer_signer(self, &request.protocol, &request.answer, true) {
-                Ok(pubkey) => {
-                    batch.push((index, request.answer.message().to_bytes(), pubkey, request.answer.signature));
-                }
-                Err(reason) => verdict[index] = Err(reason),
-            }
-        }
-
-        if !batch.is_empty() {
-            let items: Vec<(&[u8], BlsPubkey, BlsSignature)> = batch
-                .iter()
-                .map(|(_, message, pubkey, signature)| (&message[..], *pubkey, *signature))
-                .collect();
-            if BlsSignature::verify_batch(&items).is_ok() {
-                for (index, ..) in &batch {
-                    verdict[*index] = Ok(());
-                }
-            } else {
-                // The batch names no member, so the culprit is found by hand.
-                for (index, message, pubkey, signature) in &batch {
-                    verdict[*index] = signature
-                        .verify_aggregate(message, core::slice::from_ref(pubkey))
-                        .map_err(|_| RefusalReason::BadSignature);
-                }
-            }
-        }
-
-        for (request, result) in clump.into_iter().zip(verdict) {
-            let _ = request.reply.send(result);
-        }
-    }
-
     pub fn node_id(&self) -> NodeId {
         self.node_id
     }
@@ -320,30 +140,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContext<Db, Cluster, Blockcha
         self.state().phase()
     }
 
-    /// The current run's shutdown token.
-    pub fn shutdown(&self) -> CancellationToken {
-        self.lock_shutdown().clone()
-    }
-
-    /// Hands out a fresh token for a run that is starting.
-    ///
-    /// A cancelled token cannot be un-cancelled, so a context that is stopped
-    /// and started again needs a new one rather than the one its last run left
-    /// behind.
-    pub fn rearm_shutdown(&self) -> CancellationToken {
-        let token = CancellationToken::new();
-        *self.lock_shutdown() = token.clone();
-        token
-    }
-
-    fn lock_shutdown(&self) -> MutexGuard<'_, CancellationToken> {
-        self.shutdown.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     pub fn set_state(&self, state: ProtocolState) -> Result<(), NodeError> {
-        // The digest is cached under the epoch, and a join or an eviction
-        // rewrites what it covers without moving the epoch.
-        self.epoch_digest.invalidate();
         self.state.publish(state)
     }
 
@@ -526,8 +323,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             .validate()
             .map_err(|error| NodeError::Config(error.to_string()))?;
 
-        let schedules = Schedules::new(self.config.challenge_interval_slots())
-            .map_err(|error| NodeError::Config(format!("challenge interval: {error:?}")))?;
         let node_id = Self::resolve_node_id(&self.rpc, &self.keypair).await?;
         let params = fetch_network_params(&self.rpc).await?;
         let (node_address, _) = node_pda(self.keypair.address());
@@ -535,9 +330,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         let admitted = self.config.http.admission(chain);
         tracing::info!(?chain, ?admitted, "http admission resolved");
         let admission = Arc::new(AdmissionLimiter::new(admitted));
-        let challenge_tripwire = Arc::new(Tripwire::new(
-            self.config.challenge_realign_after_blank_rounds(),
-        ));
 
         self.store
             .set_node_id(node_id)
@@ -568,18 +360,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
             api: self.api,
             admission,
             eviction_queue: Arc::new(EvictionQueue::default()),
-            round_buffer: Arc::new(RoundBuffer::default()),
-            round_traces: Arc::new(TraceRing::default()),
-            sample_sets: Arc::new(SampleSets::default()),
-            schedules,
-            attest_queue: Arc::new(AttestQueue::default()),
-            certify_slots: Arc::new(tokio::sync::Semaphore::new(CERTIFY_SLOTS)),
-            certify_stage: OnceLock::new(),
-            verify_stage: OnceLock::new(),
-            challenge_counters: ChallengeCounters::default(),
-            challenge_tripwire,
-            epoch_digest: Arc::new(DigestWatch::default()),
-            shutdown: Mutex::new(CancellationToken::new()),
             metrics: NodeMetrics,
             atlas: self.atlas,
             reclaim_pending: AtomicBool::new(false),
@@ -620,32 +400,6 @@ mod tests {
         assert!(volume_below_threshold(&volumes, 1_000));
         assert!(!volume_below_threshold(&volumes, 400));
         assert!(!volume_below_threshold(&[volume(StoreVolume::Bulk, None)], 1_000));
-    }
-
-    // a cancelled token cannot be un-cancelled, so a context that is stopped and
-    // started again has to be handed a new one or the second run shuts itself
-    // down before it begins
-    #[tokio::test]
-    async fn shutdown_rearms_between_runs() {
-        let ctx = crate::harness::NodeHarness::builder()
-            .nodes(25)
-            .no_prev_snapshot_tape()
-            .build()
-            .await
-            .expect("build harness")
-            .ctx_for(0);
-
-        let first = ctx.rearm_shutdown();
-        assert!(!first.is_cancelled());
-        first.cancel();
-        assert!(ctx.shutdown().is_cancelled(), "the run's token is the context's");
-
-        let second = ctx.rearm_shutdown();
-        assert!(!second.is_cancelled(), "the second run started already cancelled");
-        assert!(!ctx.shutdown().is_cancelled());
-
-        // And the old handle stays cancelled, so work from the first run winds up.
-        assert!(first.is_cancelled());
     }
 
     #[tokio::test]
