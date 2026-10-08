@@ -143,8 +143,8 @@ tape-store-api = { version = "0.4.8", path = "./store/store-api" }
 tape-store-memory = { version = "0.4.8", path = "./store/store-memory" }
 tape-store-rocks = { version = "0.4.8", path = "./store/store-rocks" }
 tape-store-reel = { version = "0.4.8", path = "./store/store-reel" }
-reel = { package = "tape-reel", version = "0.3.0", features = ["serde"] }
-reel-core = { package = "tape-reel-core", version = "0.3.0" }
+reel = { package = "tape-reel", version = "0.2.0", features = ["serde"] }
+reel-core = { package = "tape-reel-core", version = "0.2.0" }
 tape-sdk = { version = "0.4.8", path = "./sdk" }
 tape-test = { version = "0.4.8", path = "./test" }
 tape-chain-harness = { version = "0.4.8", path = "./test/harness" }

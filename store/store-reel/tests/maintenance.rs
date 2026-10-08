@@ -6,7 +6,7 @@
 //! the engine and the trait's no-op default takes over, nothing is retired, and
 //! the footprint assertion below fails.
 
-use reel::{ByteCount, CompactRate, IoBackend, ReelConfig, SyncPolicy, ThreadBudget};
+use reel::{ByteCount, CompactRate, IoBackend, Preallocate, ReelConfig, SyncPolicy, ThreadBudget};
 use tape_store_reel::{ReelStore, TAPE_COLUMNS};
 use tape_store_api::{Column, Store};
 use tape_store::columns::SliceCol;
@@ -14,6 +14,9 @@ use tempfile::TempDir;
 
 /// Segment size, small enough that a few mebibytes seal a handful of them
 const SEGMENT_BYTES: u64 = 1024 * 1024;
+
+/// Bytes reserved ahead of the write head, so the footprint tracks the data
+const ALLOC_CHUNK: u64 = 256 * 1024;
 
 /// Bytes per record
 const VALUE_BYTES: usize = 8 * 1024;
@@ -37,6 +40,8 @@ const SLICE_KEY_LEN: usize = 34;
 fn config() -> ReelConfig {
     ReelConfig {
         segment_bytes: ByteCount::from_bytes(SEGMENT_BYTES),
+        alloc_chunk: ByteCount::from_bytes(ALLOC_CHUNK),
+        preallocate: Preallocate::Chunk,
         // Durability is not what this measures, and a sync per put would make a
         // thousand records slow enough to matter.
         sync: SyncPolicy::Never,

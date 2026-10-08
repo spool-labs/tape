@@ -23,7 +23,7 @@ use tape_store::types::{PendingOp, PendingState, PendingWrite};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::http::handlers::resolve::resolve_object;
+use crate::http::handlers::resolve::{ResolvedObject, resolve_object};
 use crate::http::handlers::s3::write::S3WriteContext;
 use crate::metrics;
 use crate::staging::StagingStore;
@@ -539,18 +539,7 @@ where
                 return false;
             }
         };
-        let is_visible = match write.op {
-            PendingOp::Put { etag, .. } => {
-                indexed.is_some_and(|resolved| resolved.etag == etag)
-            }
-            PendingOp::Delete { .. } => indexed.is_none(),
-        };
-        if !is_visible && !is_stranded(self.context.store.as_ref(), tape, write) {
-            return false;
-        }
-
-        if let Err(error) = self.staging.remove(tape, key, write.seq) {
-            warn!(%error, %tape, "s3 drain: dropping a landed entry failed");
+        if !reap_landed(&self.staging, self.context.store.as_ref(), tape, key, write, indexed.as_ref()) {
             return false;
         }
         self.retries.clear(tape, key);
@@ -781,6 +770,39 @@ fn is_stranded<Db: Store>(store: &TapeStore<Db>, tape: Address, write: &PendingW
     track_has_left(tape_row.as_ref(), &track)
 }
 
+/// Drop a landed entry from the queue once the object index agrees with it, which frees its bytes
+///
+/// An entry whose track left its tape goes too, since the index will never show it.
+fn reap_landed<Db: Store>(
+    staging: &StagingStore<Db>,
+    store: &TapeStore<Db>,
+    tape: Address,
+    key: &[u8],
+    write: &PendingWrite,
+    indexed: Option<&ResolvedObject>,
+) -> bool {
+    // A stream's index ETag is its manifest's, so a put also shows once the index binds the key to the track it landed on.
+    let landed = match write.state {
+        PendingState::Landed { track } => Some(track),
+        PendingState::Queued | PendingState::Failed { .. } => None,
+    };
+    let is_visible = match write.op {
+        PendingOp::Put { etag, .. } => indexed.is_some_and(|resolved| {
+            resolved.etag == etag || landed == Some(resolved.track_address)
+        }),
+        PendingOp::Delete { .. } => indexed.is_none(),
+    };
+    if !is_visible && !is_stranded(store, tape, write) {
+        return false;
+    }
+
+    if let Err(error) = staging.remove(tape, key, write.seq) {
+        warn!(%error, %tape, "s3 drain: dropping a landed entry failed");
+        return false;
+    }
+    true
+}
+
 /// Cut consecutive puts into runs within the batch's item and byte limits, in queue order
 fn split_runs(sizes: &[u64]) -> Vec<Range<usize>> {
     let mut runs = Vec::new();
@@ -867,6 +889,35 @@ mod tests {
 
         store.delete_tape(tape).expect("close tape");
         assert!(is_stranded(&store, tape, &landed));
+    }
+
+    // a landed stream is reaped once the index binds its key to the manifest the drain wrote, which frees its bytes
+    #[tokio::test]
+    async fn landed_stream_is_reaped() {
+        let store = Arc::new(TapeStore::new(MemoryStore::new()));
+        let staging = StagingStore::try_new(store.clone()).expect("open queue");
+        let tape = Address::new([5u8; 32]);
+        let manifest = Address::new([6u8; 32]);
+        staging
+            .enqueue_put(tape, b"big", vec![7u8; 16], ContentType::Unknown, Hash([1u8; 32]), 1_700_000_000)
+            .await
+            .expect("enqueue put");
+        let seq = staging.entry(tape, b"big").expect("entry").expect("queued").seq;
+        staging
+            .set_state(tape, b"big", seq, PendingState::Landed { track: manifest })
+            .expect("land");
+        let write = staging.entry(tape, b"big").expect("entry").expect("landed");
+        // The index holds the manifest's ETag, and the queue holds the whole body's.
+        let indexed = ResolvedObject {
+            track_address: manifest,
+            size: 16,
+            etag: Hash([2u8; 32]),
+            block_time: None,
+            content_type: ContentType::Unknown,
+        };
+
+        assert!(reap_landed(&staging, &store, tape, b"big", &write, Some(&indexed)), "the landed stream stays queued");
+        assert_eq!(staging.queued_bytes(), 0);
     }
 
     // backoff doubles from a second to a minute, and a parked entry gets the slow beat
