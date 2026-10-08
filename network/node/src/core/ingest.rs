@@ -7,10 +7,7 @@ use tokio::sync::watch;
 use tape_core::types::SlotNumber;
 
 /// Fallback slot time before ingest has measured the live rate.
-///
-/// Solana's default, and no cluster preset plans a slower slot, so a wait it
-/// bounds runs long until a rate is observed.
-pub const SLOT_MS: u64 = 400;
+pub const SLOT_MS: u64 = 200;
 
 /// Threshold at which a node is considered caught up to the durable ingest
 /// edge. The block ingestor dispatch cursor is allowed to lag the confirmed
