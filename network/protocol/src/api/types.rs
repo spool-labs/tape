@@ -1,22 +1,16 @@
 //! Protocol request/response types for the node API.
 
 use core::mem::size_of;
-use std::collections::BTreeMap;
 
 use tape_core::{
     bls::BlsSignature,
-    erasure::{SLICE_TREE_HEIGHT, SUB_LEAF_BYTES},
+    erasure::SLICE_TREE_HEIGHT,
     spooler::GroupIndex,
-    challenge::ProofOfAccess,
-    challenge::proof::SampleProof,
-    track::blob::SubLeafProof,
 };
 pub use tape_core::system::VoteCandidate;
 use tape_core::prelude::{BlobData, EpochNumber, SpoolIndex, TrackNumber};
-use tape_core::types::RoundNumber;
 use tape_core::track::types::{PackedTrack, PackedTrackProof};
 use tape_core::types::{ContentType, SlotNumber, SpoolBitmap, StorageUnits};
-use tape_api::instruction::MAX_INLINE_WRITE;
 use bytes::Bytes;
 use tape_crypto::prelude::{Address, Hash};
 use wincode::containers::{Pod, Vec as WincodeVec};
@@ -33,12 +27,6 @@ pub const SLICE_BODY_LIMIT: usize = size_of::<u64>()
     + (SLICE_TREE_HEIGHT * Hash::LEN);
 
 type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
-
-/// Fixed-size leaf bound prevents challenge-response payload inflation.
-type SampleLeafBytes = WincodeVec<Pod<u8>, BincodeLen<SUB_LEAF_BYTES>>;
-
-/// Matches the maximum payload accepted by the on-chain write instruction.
-type InlinePayloadBytes = WincodeVec<Pod<u8>, BincodeLen<MAX_INLINE_WRITE>>;
 
 /// Response from the signature endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -168,16 +156,6 @@ pub struct NodeStats {
     pub bootstrap_target_slot: u64,
     #[serde(default)]
     pub fee_payer_lamports: Option<u64>,
-    #[serde(default)]
-    pub challenge_refusals: BTreeMap<String, u64>,
-    #[serde(default)]
-    pub challenge_realigns: u64,
-    #[serde(default)]
-    pub challenge_realign_failures: u64,
-    #[serde(default)]
-    pub challenge_divergence_observed: u64,
-    #[serde(default)]
-    pub challenge_divergence_signers: u64,
     /// Zero from a peer too old to keep the tally, the same as never restarted.
     #[serde(default)]
     pub restarts: u64,
@@ -214,128 +192,6 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
             restarts: s.restarts,
         }
     }
-}
-
-/// Wire representation of a storage-challenge proof.
-///
-/// Coded proofs include leaf bytes to prove access to the data rather than a
-/// cached hash. Inline proofs include the registered payload.
-#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub enum SampleProofPayload {
-    Coded {
-        sub_leaf: u64,
-        #[wincode(with = "SampleLeafBytes")]
-        leaf: Vec<u8>,
-        sub_proof: Vec<Hash>,
-    },
-    Inline {
-        #[wincode(with = "InlinePayloadBytes")]
-        payload: Vec<u8>,
-    },
-}
-
-impl From<SampleProof> for SampleProofPayload {
-    fn from(proof: SampleProof) -> Self {
-        match proof {
-            SampleProof::Coded { sub_leaf, proof } => Self::Coded {
-                sub_leaf,
-                leaf: proof.sub_leaf,
-                sub_proof: proof.sub_proof,
-            },
-            SampleProof::Inline { payload } => Self::Inline { payload },
-        }
-    }
-}
-
-impl From<SampleProofPayload> for SampleProof {
-    fn from(payload: SampleProofPayload) -> Self {
-        match payload {
-            SampleProofPayload::Coded {
-                sub_leaf,
-                leaf,
-                sub_proof,
-            } => Self::Coded {
-                sub_leaf,
-                proof: SubLeafProof {
-                    sub_leaf: leaf,
-                    sub_proof,
-                },
-            },
-            SampleProofPayload::Inline { payload } => Self::Inline { payload },
-        }
-    }
-}
-
-/// Wire representation of a challenged owner's answer for one round.
-#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct ProofOfAccessPayload {
-    pub epoch: EpochNumber,
-    pub group: GroupIndex,
-    pub round: RoundNumber,
-    pub spool: SpoolIndex,
-    pub block: Hash,
-    pub track: Address,
-    pub proof: SampleProofPayload,
-    pub signature: BlsSignature,
-}
-
-impl From<ProofOfAccess> for ProofOfAccessPayload {
-    fn from(answer: ProofOfAccess) -> Self {
-        Self {
-            epoch: answer.epoch,
-            group: answer.group,
-            round: answer.round,
-            spool: answer.spool,
-            block: answer.block,
-            track: answer.track,
-            proof: answer.proof.into(),
-            signature: answer.signature,
-        }
-    }
-}
-
-impl From<ProofOfAccessPayload> for ProofOfAccess {
-    fn from(payload: ProofOfAccessPayload) -> Self {
-        Self {
-            epoch: payload.epoch,
-            group: payload.group,
-            round: payload.round,
-            spool: payload.spool,
-            block: payload.block,
-            track: payload.track,
-            proof: payload.proof.into(),
-            signature: payload.signature,
-        }
-    }
-}
-
-/// One signer's attestations for a round, as one message.
-///
-/// `digest` rides along as the signer's view of the settled epoch, zero while
-/// its epoch is still in transition. It carries its own signature rather than
-/// joining the attestation's: attestations aggregate across a group and only do
-/// so while every signer signs identical bytes.
-///
-/// Batched per round rather than sent per spool: a signer verifies every answer
-/// in its group and the round's fields repeat across all of them, so twenty
-/// separate posts to each of twenty peers is four hundred where twenty will do.
-#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct AttestationPayload {
-    pub epoch: EpochNumber,
-    pub group: GroupIndex,
-    pub round: RoundNumber,
-    pub block: Hash,
-    pub signer: Address,
-    pub digest: Hash,
-    pub digest_signature: BlsSignature,
-    pub attests: Vec<SpoolAttestation>,
-}
-
-/// One spool's signature inside a round's attestation.
-#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SpoolAttestation {
-    pub spool: SpoolIndex,
-    pub signature: BlsSignature,
 }
 
 /// Payload for slice upload requests.
@@ -508,7 +364,6 @@ pub struct TrackProofResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::bls::BlsPrivateKey;
     use tape_core::erasure::{MAX_GROUP_SIZE, SUB_TREE_HEIGHT};
     use tape_core::system::VoteKind;
     use tape_core::track::blob::BlobEncoding;
@@ -557,109 +412,10 @@ mod tests {
             .collect()
     }
 
-    /// Raise a declared length wherever the encoding put it.
-    fn inflate(encoded: &mut [u8], declared: u64) {
-        let claim = declared.to_le_bytes();
-        let at = encoded
-            .windows(claim.len())
-            .position(|window| window == claim)
-            .expect("a length field");
-        encoded[at..at + claim.len()].copy_from_slice(&(declared + 1).to_le_bytes());
-    }
-
-    // a proof of either shape comes back off the wire as what went on it
-    #[test]
-    fn proof_round_trip() {
-        let coded = SampleProof::Coded {
-            sub_leaf: 3,
-            proof: SubLeafProof {
-                sub_leaf: (0..SUB_LEAF_BYTES).map(|byte| byte as u8 ^ 0x5A).collect(),
-                sub_proof: path(),
-            },
-        };
-        let encoded = wincode::serialize(&SampleProofPayload::from(coded.clone())).unwrap();
-        let decoded: SampleProofPayload = wincode::deserialize(&encoded).unwrap();
-        assert_eq!(SampleProof::from(decoded), coded);
-
-        let inline = SampleProof::Inline {
-            payload: b"a small object".to_vec(),
-        };
-        let encoded = wincode::serialize(&SampleProofPayload::from(inline.clone())).unwrap();
-        let decoded: SampleProofPayload = wincode::deserialize(&encoded).unwrap();
-        assert_eq!(SampleProof::from(decoded), inline);
-    }
-
-    // the oversize claim comes from a peer, so a leaf longer than one chunk is
-    // refused on decode, before anything allocates
-    #[test]
-    fn oversize_leaf() {
-        let mut encoded = wincode::serialize(&SampleProofPayload::Coded {
-            sub_leaf: 0,
-            leaf: (0..SUB_LEAF_BYTES).map(|byte| byte as u8 ^ 0x5A).collect(),
-            sub_proof: path(),
-        })
-        .unwrap();
-        inflate(&mut encoded, SUB_LEAF_BYTES as u64);
-
-        assert!(wincode::deserialize::<SampleProofPayload>(&encoded).is_err());
-    }
-
-    // an inline payload is bounded by what the chain accepts, not by what the
-    // SDK chooses to write
-    #[test]
-    fn oversize_inline() {
-        let mut encoded = wincode::serialize(&SampleProofPayload::Inline {
-            payload: vec![0x5A; MAX_INLINE_WRITE],
-        })
-        .unwrap();
-        inflate(&mut encoded, MAX_INLINE_WRITE as u64);
-
-        assert!(wincode::deserialize::<SampleProofPayload>(&encoded).is_err());
-
-        // At the cap it still decodes.
-        let ok = wincode::serialize(&SampleProofPayload::Inline {
-            payload: vec![0x5A; MAX_INLINE_WRITE],
-        })
-        .unwrap();
-        assert!(wincode::deserialize::<SampleProofPayload>(&ok).is_ok());
-    }
-
     fn address(byte: u8) -> Address {
         let mut bytes = [0u8; 32];
         bytes[0] = byte;
         Address::new(bytes)
-    }
-
-    // The #119 batch and #123 view report share one wire message: the digest is
-    // carried once for the signer while each spool keeps its own attestation.
-    #[test]
-    fn attestation_batch_with_digest_roundtrips() {
-        let key = BlsPrivateKey::from_random();
-        let payload = AttestationPayload {
-            epoch: EpochNumber(4),
-            group: GroupIndex(2),
-            round: RoundNumber(9),
-            block: Hash([0x31; 32]),
-            signer: address(7),
-            digest: Hash([0x42; 32]),
-            digest_signature: key.sign(b"view").expect("sign digest"),
-            attests: vec![
-                SpoolAttestation {
-                    spool: SpoolIndex(40),
-                    signature: key.sign(b"spool 40").expect("sign attestation"),
-                },
-                SpoolAttestation {
-                    spool: SpoolIndex(41),
-                    signature: key.sign(b"spool 41").expect("sign attestation"),
-                },
-            ],
-        };
-
-        let bytes = wincode::serialize(&payload).expect("serialize attestation batch");
-        let decoded: AttestationPayload =
-            wincode::deserialize(&bytes).expect("deserialize attestation batch");
-
-        assert_eq!(decoded, payload);
     }
 
     #[test]

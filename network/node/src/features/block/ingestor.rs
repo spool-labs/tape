@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use futures::StreamExt;
-use tape_core::challenge::schedule::SLOT_MS;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -15,9 +14,10 @@ use tape_crypto::Hash;
 use tape_crypto::tx::Txid;
 use tape_protocol::Api;
 
-use crate::core::channels::{DownstreamSenders, send_block, ChainEvent};
+use crate::core::channels::{DownstreamSenders, send_block};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
+use crate::core::ingest::SLOT_MS;
 use crate::core::types::ChannelName;
 use crate::features::block::fetch::{
     FETCH_PIPELINE_DEPTH, fetch_and_parse_block, fetch_blocks_ordered,
@@ -45,7 +45,6 @@ fn rpc_failed(call: &str, error: RpcError) -> NodeError {
 #[derive(Debug, Default)]
 pub struct ParsedBlock {
     pub slot: SlotNumber,
-    pub parent_slot: SlotNumber,
     pub blockhash: Hash,
     pub previous_blockhash: Hash,
     pub block_time: Option<i64>,
@@ -164,7 +163,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
         let mut since_promote = 0usize;
         while let Some((_, fetched)) = blocks.next().await {
             if let Some(block) = fetched? {
-                self.enqueue(block).await?;
+                self.enqueue(block)?;
             }
             since_promote += 1;
             if since_promote >= FETCH_PIPELINE_DEPTH {
@@ -218,7 +217,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             let fetched =
                 fetch_and_parse_block(self.context.clone(), self.cancel.clone(), slot).await?;
             if let Some(block) = fetched {
-                self.enqueue(block).await?;
+                self.enqueue(block)?;
             }
             slot.next()
         };
@@ -231,7 +230,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     /// Append `block` to the pending queue, applying its track events to
     /// pending in-memory state. On a confirmed reorg the rolled-back pending
     /// entries are removed; a break below the promoted head stops the node.
-    async fn enqueue(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
+    fn enqueue(&mut self, block: Arc<ParsedBlock>) -> Result<(), NodeError> {
         let slot = block.slot;
         let outcome = self.queue.append(Arc::clone(&block));
         match outcome {
@@ -247,10 +246,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                     dropped = dropped.len(),
                     "block_ingestor: confirmed reorg, rolled back forked entries"
                 );
-                // Ahead of the replacement, so a round seeded by a losing
-                // candidate is voided before its successor opens.
-                self.rolled(dropped.iter().map(|entry| entry.blockhash).collect())
-                    .await?;
                 self.context.pending.apply_block(&block, self.context.params().profile);
             }
             AppendOutcome::Diverged => {
@@ -265,8 +260,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
                 for entry in &stale {
                     self.context.pending.drop_slot(entry.slot);
                 }
-                self.rolled(stale.iter().map(|entry| entry.blockhash).collect())
-                    .await?;
                 warn!(
                     slot = slot.0,
                     cleared = stale.len(),
@@ -282,26 +275,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
             .progress()
             .record_queue_len(self.queue.len() as u64);
 
-        self.send_chain(ChainEvent::Produced(block)).await
-    }
-
-    /// Tell the challenge lane which candidates lost.
-    async fn rolled(&self, hashes: Vec<Hash>) -> Result<(), NodeError> {
-        if hashes.is_empty() {
-            return Ok(());
-        }
-        self.send_chain(ChainEvent::Rolled(hashes)).await
-    }
-
-    /// One ordered lane, so a rollback always precedes what replaced it.
-    async fn send_chain(&self, event: ChainEvent) -> Result<(), NodeError> {
-        self.senders
-            .challenge
-            .send(event)
-            .await
-            .map_err(|_| NodeError::ChannelClosed {
-                channel: ChannelName::ChallengeManager,
-            })
+        Ok(())
     }
 
     /// Promote every queued block: each was fetched at confirmed commitment,
@@ -343,11 +317,6 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
 
     async fn fanout(&self, block: &Arc<ParsedBlock>) -> Result<(), NodeError> {
         let slot = block.slot;
-
-        // The challenge lane already saw this block when it was produced. What
-        // it needs now is that the block promoted, which is what makes a round's
-        // evidence standing.
-        self.send_chain(ChainEvent::Confirmed(block.blockhash)).await?;
 
         if let Err(error) = send_block(
             &self.senders.state,

@@ -191,7 +191,7 @@ impl SimnetScenario<'_> {
     }
 
     /// Open an eviction vote against the node. The proposal is permissionless;
-    /// committee nodes observe it, probe the target, and vote independently.
+    /// committee nodes with eviction on observe it and sign.
     pub async fn propose_eviction(&self, node_index: usize) -> Result<()> {
         trace!(node_index, "submitting propose_eviction instruction");
         let payer = self.harness.admin();

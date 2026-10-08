@@ -3,7 +3,6 @@ use solana_pubkey::Pubkey;
 use tape_api::genesis::GenesisConfig;
 use tape_core::encoding::{ErasureCode, TAPENET_PROFILE};
 use tape_core::thresholds::{validate_profile, ThresholdError, TrustModel};
-use tape_node::config::challenge::ChallengeConfig;
 use tape_node::config::eviction::EvictionConfig;
 
 /// A serialized account payload to seed into the simulated on-chain state.
@@ -59,10 +58,8 @@ pub struct SimnetConfig {
     pub file_log: bool,
     /// Arbitrary serialized accounts to inject into LiteSVM before nodes start.
     pub seed_accounts: Vec<SeededAccount>,
-    /// Eviction participation and evidence policy, shared by every node.
+    /// Eviction participation, shared by every node.
     pub eviction: EvictionConfig,
-    /// Explicit challenge settings applied to every node in this simulation.
-    pub challenge: ChallengeConfig,
 }
 
 impl SimnetConfig {
@@ -93,7 +90,6 @@ impl Default for SimnetConfig {
             file_log: false,
             seed_accounts: Vec::new(),
             eviction: Default::default(),
-            challenge: Default::default(),
         }
     }
 }

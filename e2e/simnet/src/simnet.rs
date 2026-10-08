@@ -3,10 +3,8 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use solana_keypair::Keypair;
 use solana_pubkey::Pubkey;
-use tape_core::challenge::EvictionPolicy;
 use tape_core::encoding::ErasureCode;
 use tape_core::thresholds::TrustModel;
-use tape_node::config::challenge::ChallengeConfig;
 use tokio::task::JoinHandle;
 
 use crate::chain::ChainFixture;
@@ -59,16 +57,6 @@ impl SimnetBuilder {
     /// Whether nodes propose and sign evictions, off by default.
     pub fn eviction(mut self, enabled: bool) -> Self {
         self.config.eviction.enabled = enabled;
-        self
-    }
-
-    pub fn challenge(mut self, config: ChallengeConfig) -> Self {
-        self.config.challenge = config;
-        self
-    }
-
-    pub fn eviction_policy(mut self, policy: EvictionPolicy) -> Self {
-        self.config.eviction.policy = policy;
         self
     }
 

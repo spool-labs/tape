@@ -198,29 +198,6 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     ),
                 ),
             )
-            // Challenge traffic: an answer and the attestations over it. An
-            // answer is verified before it is kept; an attestation is taken on
-            // trust from the peer its mTLS identity names and settled by the
-            // aggregate. Both must reach every group member, so they sit behind
-            // the peer body limit and the ordinary peer admission.
-            .route(
-                api_routes::CHALLENGE_PROOF_PATH,
-                post(handlers::challenge::proof_of_access::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit)
-                    .layer(from_fn_with_state(
-                        state.clone(),
-                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
-                    )),
-            )
-            .route(
-                api_routes::CHALLENGE_ATTEST_PATH,
-                post(handlers::challenge::attest::<Db, Cluster, Blockchain>)
-                    .layer(peer_body_limit)
-                    .layer(from_fn_with_state(
-                        state.clone(),
-                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
-                    )),
-            )
             // Staked-peer gated POSTs. Snapshot/system tape catalogs are also
             // listable for bootstrap catch-up.
             .route(
@@ -420,8 +397,8 @@ async fn handle_http_error(error: BoxError) -> StatusCode {
 ///
 /// Hyper's defaults are sized against hostile traffic: twenty pending resets
 /// tears the connection down, taking every in-flight request with it. A group's
-/// worth of challenge posts trips that on a busy node, and cancelling on
-/// timeout is what leaves the resets behind.
+/// worth of peer posts trips that on a busy node, and cancelling on timeout is
+/// what leaves the resets behind.
 const H2_MAX_CONCURRENT_STREAMS: u32 = 1024;
 const H2_MAX_PENDING_ACCEPT_RESET_STREAMS: usize = 1024;
 

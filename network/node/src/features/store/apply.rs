@@ -22,9 +22,8 @@ use tape_store::TapeStore;
 use tracing::{error, warn};
 
 use crate::core::error::NodeError;
-use crate::features::store::sample::put_sample;
 use crate::features::store::cleanup::{
-    cleanup_track_slices, delete_track_local, remove_object_listing_for_track,
+    clear_pending_repairs, delete_track_local, remove_object_listing_for_track,
 };
 
 /// A slice missing at certification waits this many slots before the repair path takes it
@@ -67,17 +66,17 @@ pub fn apply_event<Db: Store>(
 ) -> Result<(), NodeError> {
     match event {
         ReplayableEvent::Track(replay) => {
-            put_track_object(store, replay, slot, block_time, profile)?;
+            put_track_object(store, replay, slot, block_time)?;
         }
         ReplayableEvent::CertifyTrack { track, epoch } => {
             set_certified(store, *track, *epoch, slot, profile)?;
         }
         ReplayableEvent::DeleteTrack { track, epoch } => match deletes {
             DeletePolicy::AtOnce => {
-                delete_track_local(store, *track, slot, profile)?;
+                delete_track_local(store, *track, profile)?;
             }
             DeletePolicy::NextEpoch => {
-                defer_track_delete(store, *track, *epoch, slot, profile)?;
+                defer_track_delete(store, *track, *epoch, profile)?;
             }
         },
         ReplayableEvent::InvalidateTrack { track, epoch } => {
@@ -352,7 +351,6 @@ fn put_track_object<Db: Store>(
     replay: &ReplayTrack,
     slot: SlotNumber,
     block_time: Option<i64>,
-    profile: ErasureCode,
 ) -> Result<(), NodeError> {
     validate_replay_track(replay)?;
 
@@ -360,23 +358,6 @@ fn put_track_object<Db: Store>(
 
     store.put_track(track, replay.state)
         .map_err(store_error)?;
-
-    // The challenge sample set, from the registration rather than from what this
-    // node stored. Both kinds are sampled: a coded track by its slice, an inline
-    // track as one bounded entry whose payload every owner keeps.
-    let data = match replay.blob {
-        Some(blob) => BlobData::Coded(blob),
-        None => BlobData::Inline(Vec::new()),
-    };
-    put_sample(
-        store,
-        replay.state.group,
-        track,
-        &data,
-        replay.state.value_hash,
-        slot,
-        profile,
-    )?;
 
     // We need to advance the track cursor so that merkle proofs for this tape don't break due to
     // using the wrong index when tracks are deleted.
@@ -659,7 +640,6 @@ fn defer_track_delete<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
     epoch: EpochNumber,
-    slot: SlotNumber,
     profile: ErasureCode,
 ) -> Result<(), NodeError> {
     let info = store.get_object_info(track).map_err(store_error)?;
@@ -703,12 +683,12 @@ fn defer_track_delete<Db: Store>(
 
     let row = store.get_track(track).map_err(store_error)?;
     let (Some(flag), Some(row)) = (flag, row) else {
-        delete_track_local(store, track, slot, profile)?;
+        delete_track_local(store, track, profile)?;
         return Ok(());
     };
 
     remove_object_listing_for_track(store, track, &row)?;
-    cleanup_track_slices(store, track, row.group, slot, profile)?;
+    clear_pending_repairs(store, track, row.group, profile)?;
 
     store.put_object_info(track, flag).map_err(store_error)
 }
@@ -724,7 +704,7 @@ fn invalidate_track<Db: Store>(
         // Keep object_metadata across invalidation. Delete/GC still use it as
         // the track -> name reverse lookup when the track is eventually removed.
         remove_object_listing_for_track(store, track, &info)?;
-        let _ = cleanup_track_slices(store, track, info.group, slot, profile)?;
+        clear_pending_repairs(store, track, info.group, profile)?;
         info.state = TrackState::Invalidated as u64;
         store.put_track(track, info).map_err(store_error)?;
     }
@@ -1323,8 +1303,7 @@ mod tests {
 
         assert!(store.get_track(track).unwrap().is_none());
         assert!(store.get_object_info(track).unwrap().is_none());
-        // The slices outlive the deletion: a round whose window opened before it
-        // still asks about the track, and the sweep drops both together.
+        // The slices outlive the deletion: the gc's sweep deletes them.
         for slice_index in 0..WIDTH {
             assert!(
                 store
@@ -1380,8 +1359,7 @@ mod tests {
                 slot: SlotNumber(55),
             })
         );
-        // The slices outlive the deletion: a round whose window opened before it
-        // still asks about the track, and the sweep drops both together.
+        // The slices outlive the deletion: the gc's sweep deletes them.
         for slice_index in 0..WIDTH {
             assert!(
                 store

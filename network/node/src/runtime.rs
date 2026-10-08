@@ -5,11 +5,10 @@ use std::sync::Arc;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_protocol::Api;
-use tape_retry::RetryConfig;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, Instrument, info, warn};
+use tracing::{Instrument, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::node::NodeConfig;
@@ -23,7 +22,6 @@ use crate::features::block::ingest_monitor;
 use crate::features::block::ingestor::BlockIngestor;
 use crate::features::bootstrap::{self, LiveStart};
 use crate::features::assignment::manager::AssignmentManager;
-use crate::features::challenge::ChallengeManager;
 use crate::features::eviction::manager::EvictionManager;
 use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
@@ -33,7 +31,6 @@ use crate::features::snapshot::manager::SnapshotManager;
 use crate::features::spool::manager::SpoolManager;
 use crate::features::store::manager::StoreManager;
 use crate::features::state::manager::StateManager;
-use crate::features::state::realign::{EpochFloor, refetch_state};
 #[cfg(feature = "metrics")]
 use crate::observe::{register_block_channels, register_core_collectors, BalanceMonitor};
 use crate::supervisor::Supervisor;
@@ -165,28 +162,6 @@ impl NodeRuntimeHandle {
         status.mark_stopped();
         result
     }
-}
-
-pub async fn initialize_context<Db, Cluster, Blockchain>(
-    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
-    cancel: &CancellationToken,
-) -> Result<(), NodeError>
-where
-    Db: Store,
-    Cluster: Api,
-    Blockchain: Rpc,
-{
-
-    let state = refetch_state(context, Some(cancel), EpochFloor::Any, RetryConfig::infinite()).await?;
-
-    debug!(
-        epoch = state.epoch().0,
-        phase = ?state.phase(),
-        committee_size = state.current.committee.len(),
-        "loaded protocol state from RPC"
-    );
-
-    Ok(())
 }
 
 /// Start the HTTP/HTTPS listeners before bootstrap so health, stats, and
@@ -359,31 +334,7 @@ where
         .run(),
     );
 
-    // Off, the node opens no round and answers none, so its group cannot
-    // certify it. Only safe where the fleet has the challenge off too.
-    if config.challenge.enabled {
-        supervisor.spawn(
-            ServiceName::ChallengeManager,
-            ChallengeManager::new(
-                context.clone(),
-                receivers.challenge,
-                cancel.clone(),
-            )
-            .run(),
-        );
-    } else {
-        // Still drained, or block ingest stops at the first full buffer.
-        info!("challenge disabled by config: opening no round, answering none");
-        supervisor.spawn(
-            ServiceName::ChallengeManager,
-            drain_block_channel(receivers.challenge, cancel.clone(), ChannelName::ChallengeManager),
-        );
-    }
-
-    // An operator that does not want to act on its records says so here. The
-    // records are still kept and still shown, but nothing is proposed and no
-    // peer's proposal is signed. A node with the challenge off lands here too,
-    // having no record of its own to act on.
+    // Off, the node proposes no eviction and signs no peer's proposal.
     if config.eviction_enabled() {
         supervisor.spawn(
             ServiceName::EvictionManager,
@@ -468,10 +419,7 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    // A token of this run's own, published on the context so a realign started
-    // from a request path is wound up by the same shutdown that stops the
-    // managers. A context that is started again gets another.
-    let cancel = context.rearm_shutdown();
+    let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
     let (start, http_server) = match bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),
@@ -502,7 +450,7 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let cancel = context.rearm_shutdown();
+    let cancel = CancellationToken::new();
     let http_server = spawn_http_server(&context, &config, &cancel);
     let (start, http_server) = match bootstrap_with_status_listener(
         bootstrap::run(&context, &config, &cancel),

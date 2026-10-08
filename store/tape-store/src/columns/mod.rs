@@ -24,11 +24,6 @@
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Slice data, sidecar and payload under one key (SliceKey -> stored slice)
 //!
-//! ## Challenge Columns
-//! - `challenge_record`: Per-peer challenge history (Address -> PeerRecord)
-//! - `challenge_round`: Per-round outcomes (peer + epoch + round -> bool)
-//! - `track_sample`: The sample set per group (group + track -> TrackSample)
-//!
 //! ## Event Log Column
 //! - `event_log`: Per-epoch replayable events (EventLogKey -> CapturedEvent)
 //!
@@ -53,8 +48,6 @@
 
 pub mod audit_log;
 pub mod auth_state;
-pub mod challenge_record;
-pub mod challenge_round;
 pub mod credential;
 pub mod event_log;
 pub mod gc;
@@ -75,14 +68,11 @@ pub mod tape;
 pub mod track;
 pub mod track_data;
 pub mod track_lookup;
-pub mod track_sample;
 pub mod vote;
 
 // Re-export all column types
 pub use audit_log::AuditLogCol;
 pub use auth_state::AuthStateCol;
-pub use challenge_record::ChallengeRecordCol;
-pub use challenge_round::ChallengeRoundCol;
 pub use credential::CredentialCol;
 pub use event_log::EventLogCol;
 pub use gc::GcCol;
@@ -103,7 +93,6 @@ pub use tape::TapeCol;
 pub use track::TrackCol;
 pub use track_data::TrackDataCol;
 pub use track_lookup::TrackLookupCol;
-pub use track_sample::TrackSampleCol;
 pub use vote::VoteSigCol;
 
 /// List of all column family names in the store.
@@ -122,9 +111,6 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "spool_pending_repair",
     "spool_pending_recovery",
     "slice",
-    "challenge_record",
-    "challenge_round",
-    "track_sample",
     "event_log",
     "vote_sig",
     "snapshot_artifact",

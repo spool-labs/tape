@@ -49,8 +49,8 @@ pub trait SliceOps {
 
     /// The sidecar of a slice and a window of its payload, in two ranged reads
     ///
-    /// What a storage challenge answers from: the nodes above the sample window
-    /// and the window itself, never the whole slice. Nothing comes back when the
+    /// A range read verifies from these: the nodes above the sample window and
+    /// the window itself, never the whole slice. Nothing comes back when the
     /// slice is absent. A backend with no partial read answers each of the two
     /// with the whole value, which is what it did for the single read before.
     fn slice_window(
@@ -144,8 +144,8 @@ impl<S: Store> SliceOps for TapeStore<S> {
         track_address: Address,
         slice: impl Into<SliceWrite>,
     ) -> Result<()> {
-        // A slice too large for the sub-leaf tree has no sidecar and no provable
-        // sample either, so it is stored without one rather than refused here.
+        // A slice too large for the sub-leaf tree has no sidecar, so it is stored
+        // without one.
         let (data, sidecar) = slice.into().into_parts();
 
         let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
@@ -477,8 +477,7 @@ mod tests {
 
         // Vary the fill. The recorded size is the payload length before any
         // storage-layer encoding, so a constant would pass either way, but a
-        // sample set is read to decide what to challenge and a test that cannot
-        // tell one slice from another is not worth much.
+        // test that cannot tell one slice from another is not worth much.
         let fill = |n: usize, len: usize| -> Vec<u8> {
             (0..len).map(|byte| (byte ^ (n * 37)) as u8).collect()
         };
@@ -491,12 +490,12 @@ mod tests {
                 (track, StorageUnits::from_bytes(len as u64))
             })
             .collect();
-        // A slice in a different spool must not leak into the sample set.
+        // A slice in a different spool must not leak into the listing.
         store
             .put_slice(other, Address::new_unique(), fill(9, 99))
             .unwrap();
 
-        // The order is the challenge's canonical one, so it must be by address.
+        // The listing is ordered by address.
         expected.sort_unstable_by_key(|(track, _)| *track);
         assert_eq!(store.iter_slice_sizes_by_spool(spool).unwrap(), expected);
         assert!(store.iter_slice_sizes_by_spool(SpoolIndex(99)).unwrap().is_empty());

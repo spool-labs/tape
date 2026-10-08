@@ -3,10 +3,8 @@
 use bytes::Bytes;
 use tape_core::bls::BlsSignature;
 use tape_core::prelude::{BlobData, CompressedTrack, EpochNumber, SpoolIndex, TrackNumber};
-use tape_core::types::{RoundNumber, StorageUnits};
+use tape_core::types::StorageUnits;
 use tape_core::spooler::GroupIndex;
-use tape_core::challenge::ProofOfAccess;
-use crate::api::types::SpoolAttestation;
 use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 
@@ -211,30 +209,6 @@ pub struct VoteReq {
 pub struct VoteRes;
 
 #[derive(Clone, Debug)]
-pub struct ProofOfAccessReq {
-    pub answer: ProofOfAccess,
-}
-
-#[derive(Clone, Debug)]
-pub struct ProofOfAccessRes;
-
-#[derive(Clone, Debug)]
-pub struct AttestReq {
-    pub epoch: EpochNumber,
-    pub group: GroupIndex,
-    pub round: RoundNumber,
-    pub block: Hash,
-    pub signer: Address,
-    pub digest: Hash,
-    pub digest_signature: BlsSignature,
-    /// Every spool this signer has verified for the round so far.
-    pub attests: Vec<SpoolAttestation>,
-}
-
-#[derive(Clone, Debug)]
-pub struct AttestRes;
-
-#[derive(Clone, Debug)]
 pub struct GetHealthReq;
 
 #[derive(Clone, Debug)]
@@ -266,8 +240,6 @@ pub enum PeerReq {
     Certify(CertifyReq),
     Invalidate(InvalidateReq),
     Vote(VoteReq),
-    ProofOfAccess(ProofOfAccessReq),
-    Attest(AttestReq),
     GetHealth(GetHealthReq),
     GetStats(GetStatsReq),
 }
@@ -287,8 +259,6 @@ pub enum PeerRes {
     Certify(Result<CertifyRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
     Vote(Result<VoteRes, ApiError>),
-    ProofOfAccess(Result<ProofOfAccessRes, ApiError>),
-    Attest(Result<AttestRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
     GetStats(Result<GetStatsRes, ApiError>),
 }

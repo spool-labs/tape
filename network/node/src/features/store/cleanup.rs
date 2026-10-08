@@ -1,17 +1,13 @@
 use tape_store_api::Store;
 use tape_api::program::tapedrive::TrackAddress;
-use tape_core::challenge::schedule::{
-    SAMPLE_LOOKBACK_SLOTS, SETTLE_DEADLINE_SLOTS, round_width_slots,
-};
 use tape_core::encoding::ErasureCode;
 use tape_core::spooler::VirtualGroup;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
+use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_store::ops::{
-    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SampleOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
+    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
 };
-use tape_store::types::ObjectInfo;
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -20,27 +16,24 @@ use crate::core::error::NodeError;
 pub struct CleanupStats {
     pub tapes_cleared: usize,
     pub tracks_deleted: usize,
-    pub slices_deleted: usize,
 }
 
+/// Delete a track's rows. Its slices stay for the gc's orphan slice sweep.
 pub fn delete_track_local<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
-    deleted_at: SlotNumber,
     profile: ErasureCode,
 ) -> Result<CleanupStats, NodeError> {
     let mut stats = CleanupStats::default();
 
     if let Some(info) = store.get_track(track).map_err(store_error)? {
         remove_object_listing_for_track(store, track, &info)?;
-        stats.slices_deleted +=
-            cleanup_track_slices(store, track, info.group, deleted_at, profile)?;
+        clear_pending_repairs(store, track, info.group, profile)?;
         stats.tracks_deleted += 1;
     }
 
-    // The registration slot stays: the tombstones below reference it until no
-    // round can, and a leftover row is a few bytes.
     store.delete_track(track).map_err(store_error)?;
+    store.delete_track_data(track).map_err(store_error)?;
     store.delete_object_info(track).map_err(store_error)?;
     store.delete_object_metadata(track).map_err(store_error)?;
 
@@ -61,7 +54,6 @@ pub fn delete_tape_tracks<Db: Store>(
     tape: Address,
     current_epoch: EpochNumber,
     track_batch: usize,
-    deleted_at: SlotNumber,
     profile: ErasureCode,
 ) -> Result<CleanupStats, NodeError> {
     let mut stats = CleanupStats::default();
@@ -91,9 +83,9 @@ pub fn delete_tape_tracks<Db: Store>(
 
             let track = info.address();
             remove_object_listing_for_track(store, track, info)?;
-            stats.slices_deleted +=
-                cleanup_track_slices(store, track, info.group, deleted_at, profile)?;
+            clear_pending_repairs(store, track, info.group, profile)?;
             store.delete_track(track).map_err(store_error)?;
+            store.delete_track_data(track).map_err(store_error)?;
             store.delete_object_info(track).map_err(store_error)?;
             store.delete_object_metadata(track).map_err(store_error)?;
             stats.tracks_deleted += 1;
@@ -106,22 +98,13 @@ pub fn delete_tape_tracks<Db: Store>(
     Ok(stats)
 }
 
-pub fn cleanup_track_slices<Db: Store>(
+/// Remove a track's pending repair and recovery entries on every spool of its group
+pub fn clear_pending_repairs<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
     group: VirtualGroup,
-    deleted_at: SlotNumber,
     profile: ErasureCode,
-) -> Result<usize, NodeError> {
-    // A round whose window opened before the deletion still asks about this
-    // track, so the row stays until no round can. The slices stay with it: the
-    // sweep drops both together when the row goes. Deleting them here left the
-    // set asking for bytes every owner had already thrown away, and a whole
-    // group answered nothing for that round.
-    store
-        .mark_track_sample_deleted(group, track, deleted_at)
-        .map_err(store_error)?;
-
+) -> Result<(), NodeError> {
     for slice_index in 0..usize::from(profile.n()) {
         let spool_id = group.spool_at(slice_index);
         store
@@ -132,68 +115,7 @@ pub fn cleanup_track_slices<Db: Store>(
             .map_err(store_error)?;
     }
 
-    Ok(0)
-}
-
-/// Retains deleted slices until every round that sampled them has settled.
-///
-/// Bounded by settlement and independent of cadence: a round opens up to the
-/// lookback after a deletion and then waits on its block rooting, so the last
-/// ask lands that far out and the slice has to outlive it.
-pub const DELETED_SLICE_HORIZON_SLOTS: u64 =
-    SAMPLE_LOOKBACK_SLOTS + SETTLE_DEADLINE_SLOTS + round_width_slots();
-
-/// Drops deleted sample rows, slices, and encodings after the round horizon.
-pub fn sweep_deleted_slices<Db: Store>(
-    store: &TapeStore<Db>,
-    now: SlotNumber,
-    profile: ErasureCode,
-) -> Result<DeletedSweep, NodeError> {
-    let cutoff = SlotNumber(now.as_u64().saturating_sub(DELETED_SLICE_HORIZON_SLOTS));
-    let mut swept = DeletedSweep::default();
-
-    for (group, track) in store
-        .track_samples_deleted_before(cutoff)
-        .map_err(store_error)?
-    {
-        // The assignment round still reads a flagged track's encoding. The
-        // epoch sweep removes the flag, and the next pass here takes the rest.
-        let info = store.get_object_info(track).map_err(store_error)?;
-        if matches!(info, Some(ObjectInfo::Deleted { .. })) {
-            continue;
-        }
-
-        swept.slices += drop_track_slices(store, track, group, profile)?;
-        store
-            .delete_track_sample(group, track)
-            .map_err(store_error)?;
-        swept.tracks += 1;
-    }
-    Ok(swept)
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DeletedSweep {
-    pub tracks: usize,
-    pub slices: usize,
-}
-
-pub fn drop_track_slices<Db: Store>(
-    store: &TapeStore<Db>,
-    track: Address,
-    group: VirtualGroup,
-    profile: ErasureCode,
-) -> Result<usize, NodeError> {
-    let mut deleted = 0usize;
-    for slice_index in 0..usize::from(profile.n()) {
-        let spool_id = group.spool_at(slice_index);
-        if store.has_slice(spool_id, track).map_err(store_error)? {
-            deleted += 1;
-        }
-        store.delete_slice(spool_id, track).map_err(store_error)?;
-    }
-    store.delete_track_data(track).map_err(store_error)?;
-    Ok(deleted)
+    Ok(())
 }
 
 pub fn purge_spool_local<Db: Store>(
@@ -327,11 +249,10 @@ mod tests {
 
         // Batch under the track count, so the tape cursor has to advance.
         let stats =
-            delete_tape_tracks(&store, target, EXPIRY, 2, SlotNumber(10), TAPENET_PROFILE).unwrap();
+            delete_tape_tracks(&store, target, EXPIRY, 2, TAPENET_PROFILE).unwrap();
 
         assert_eq!(stats.tapes_cleared, 1);
         assert_eq!(stats.tracks_deleted, mine.len());
-        assert_eq!(stats.slices_deleted, 0);
 
         for track in mine {
             assert!(!store.has_track(track).unwrap());
@@ -367,7 +288,7 @@ mod tests {
         let theirs = seed_track(&store, other, TARGET, TrackNumber(0), group);
 
         let stats =
-            delete_tape_tracks(&store, target, EXPIRY, 2, SlotNumber(10), TAPENET_PROFILE).unwrap();
+            delete_tape_tracks(&store, target, EXPIRY, 2, TAPENET_PROFILE).unwrap();
 
         assert_eq!(stats.tracks_deleted, 1);
         assert!(!store.has_track(mine).unwrap());
@@ -402,7 +323,7 @@ mod tests {
 
         for tape in [renewed, reserved] {
             let stats =
-                delete_tape_tracks(&store, tape, EXPIRY, 2, SlotNumber(10), TAPENET_PROFILE).unwrap();
+                delete_tape_tracks(&store, tape, EXPIRY, 2, TAPENET_PROFILE).unwrap();
             assert_eq!(stats.tracks_deleted, 0);
         }
 
@@ -427,7 +348,7 @@ mod tests {
         let written_after = seed_track(&store, tape, TARGET, TrackNumber(2), group);
 
         let stats =
-            delete_tape_tracks(&store, tape, EXPIRY, 1, SlotNumber(10), TAPENET_PROFILE).unwrap();
+            delete_tape_tracks(&store, tape, EXPIRY, 1, TAPENET_PROFILE).unwrap();
 
         assert_eq!(stats.tracks_deleted, old.len());
         assert!(store.has_track(written_after).unwrap());

@@ -14,8 +14,7 @@ use tape_solana::*;
 use crate::helpers::read_instruction_pod;
 use crate::program::tapedrive::{self, group_pda, system_pda};
 
-/// Largest inline payload. An owner proves access to an inline track by
-/// sending the whole payload, so this bounds every proof of access.
+/// Largest inline payload.
 pub const MAX_INLINE_WRITE: usize = 1024;
 pub const MAX_NAME_LEN: usize = 1024;
 

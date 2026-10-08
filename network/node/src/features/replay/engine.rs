@@ -156,7 +156,6 @@ mod tests {
     fn block(slot: u64, instructions: Vec<ParsedInstruction>) -> ParsedBlock {
         ParsedBlock {
             slot: SlotNumber(slot),
-            parent_slot: SlotNumber(slot - 1),
             blockhash: Hash::default(),
             previous_blockhash: Hash::default(),
             block_time: None,
