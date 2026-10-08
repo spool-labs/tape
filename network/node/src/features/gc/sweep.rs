@@ -11,7 +11,8 @@ use tape_core::track::types::CompressedTrack;
 use tape_store::{
     TapeStore,
     ops::{
-        ObjectInfoOps, RemovalOps, SliceOps, SpoolOps, TapeOps, TrackOps, track_has_left,
+        ObjectInfoOps, RemovalOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
+        track_has_left,
     },
     types::ObjectInfo,
 };
@@ -49,9 +50,9 @@ pub async fn sweep_epoch<Db: Store>(
         sweep_uncertified_tracks(store, config, current_epoch, owned_spools, at_tip, profile)
             .await?;
     stats += sweep_orphan_tracks(store, config, current_epoch, at_tip, profile).await?;
-    stats += sweep_orphan_slices(store, config, pending, at_tip).await?;
+    stats += sweep_orphan_slices(store, config, current_epoch, pending, at_tip).await?;
 
-    sweep_stale_recoveries(store, pending, at_tip).await?;
+    sweep_stale_recoveries(store, current_epoch, pending, at_tip).await?;
 
     // A removal entry is read by its own epoch's assignment round and by this
     // sweep, and the store only reaches an epoch once the round before it is over.
@@ -285,6 +286,27 @@ async fn sweep_orphan_tracks<Db: Store>(
                 continue;
             }
 
+            // An invalidated track a round counted keeps its data through
+            // its own epoch too. Once that epoch is over the data goes and
+            // the record forgets what it was counted by. The row stays.
+            if let Some(ObjectInfo::Invalid {
+                epoch,
+                slot,
+                counted: Some(_),
+            }) = object
+            {
+                if epoch < current_epoch {
+                    store.delete_track_data(*track).map_err(store_error)?;
+                    let settled = ObjectInfo::Invalid {
+                        epoch,
+                        slot,
+                        counted: None,
+                    };
+                    store.put_object_info(*track, settled).map_err(store_error)?;
+                }
+                continue;
+            }
+
             // The slice sweep after this pass deletes the slices of these tracks.
             let is_dead = match object {
                 Some(object) if object.is_live() => false,
@@ -310,6 +332,7 @@ async fn sweep_orphan_tracks<Db: Store>(
 async fn sweep_orphan_slices<Db: Store>(
     store: &TapeStore<Db>,
     config: &GcConfig,
+    current_epoch: EpochNumber,
     pending: &PendingTracks,
     at_tip: bool,
 ) -> Result<GcSweepStats, NodeError> {
@@ -331,7 +354,7 @@ async fn sweep_orphan_slices<Db: Store>(
             let objects = store.get_object_infos(&addresses).map_err(store_error)?;
 
             for ((track, held), object) in addresses.iter().zip(in_store).zip(objects) {
-                if should_delete_slice(pending, at_tip, spool_id, *track, held, object) {
+                if should_delete_slice(pending, current_epoch, at_tip, spool_id, *track, held, object) {
                     store.delete_slice(spool_id, *track).map_err(store_error)?;
                     stats.slices_deleted += 1;
                 }
@@ -354,6 +377,7 @@ async fn sweep_orphan_slices<Db: Store>(
 
 async fn sweep_stale_recoveries<Db: Store>(
     store: &TapeStore<Db>,
+    current_epoch: EpochNumber,
     pending: &PendingTracks,
     at_tip: bool,
 ) -> Result<(), NodeError> {
@@ -364,7 +388,7 @@ async fn sweep_stale_recoveries<Db: Store>(
             .map_err(store_error)?;
 
         for track in queued {
-            if recovery_is_stale(store, pending, at_tip, spool_id, track)? {
+            if recovery_is_stale(store, pending, current_epoch, at_tip, spool_id, track)? {
                 store
                     .remove_pending_recovery(spool_id, track)
                     .map_err(store_error)?;
@@ -381,10 +405,14 @@ async fn sweep_stale_recoveries<Db: Store>(
 
 /// Whether one slice has outlived the track it belongs to
 ///
+/// A track that was deleted or invalidated keeps its slices through the
+/// epoch a round still counts it in, so its holders can still prove them.
+///
 /// Reads nothing. The page it belongs to read the track and its object info in
 /// one call apiece, so the decision is arithmetic on what came back.
 fn should_delete_slice(
     pending: &PendingTracks,
+    current_epoch: EpochNumber,
     at_tip: bool,
     spool_id: SpoolIndex,
     track: Address,
@@ -405,7 +433,9 @@ fn should_delete_slice(
 
     match object {
         Some(object) if object.is_live() => false,
-        Some(_) => true,
+        Some(object) => object
+            .counted_through()
+            .is_none_or(|epoch| epoch < current_epoch),
         None => at_tip,
     }
 }
@@ -413,6 +443,7 @@ fn should_delete_slice(
 fn recovery_is_stale<Db: Store>(
     store: &TapeStore<Db>,
     pending: &PendingTracks,
+    current_epoch: EpochNumber,
     at_tip: bool,
     spool_id: SpoolIndex,
     track: Address,
@@ -420,7 +451,13 @@ fn recovery_is_stale<Db: Store>(
     let in_store = store.get_track(track).map_err(store_error)?;
     let object = store.get_object_info(track).map_err(store_error)?;
     Ok(should_delete_slice(
-        pending, at_tip, spool_id, track, in_store, object,
+        pending,
+        current_epoch,
+        at_tip,
+        spool_id,
+        track,
+        in_store,
+        object,
     ))
 }
 
@@ -475,7 +512,7 @@ mod tests {
         ops::{
             ObjectInfoOps, RemovalOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
         },
-        types::{ObjectInfo, SystemObjectKind, TapeInfo},
+        types::{CountedTrack, ObjectInfo, SystemObjectKind, TapeInfo},
         TapeStore,
     };
 
@@ -695,6 +732,7 @@ mod tests {
                 ObjectInfo::Invalid {
                     epoch: EpochNumber(3),
                     slot: SlotNumber(30),
+                    counted: None,
                 },
             )
             .unwrap();
@@ -807,6 +845,7 @@ mod tests {
                 ObjectInfo::Invalid {
                     epoch: EpochNumber(3),
                     slot: SlotNumber(30),
+                    counted: None,
                 },
             )
             .unwrap();
@@ -961,6 +1000,7 @@ mod tests {
         // Behind the durable tip: "absent locally" is ambiguous, so defer.
         assert!(!should_delete_slice(
             &pending,
+            EpochNumber(1),
             false,
             spool_id,
             track,
@@ -970,6 +1010,7 @@ mod tests {
         // Caught up: the track is genuinely absent on-chain, so reclaim.
         assert!(should_delete_slice(
             &pending,
+            EpochNumber(1),
             true,
             spool_id,
             track,
@@ -998,6 +1039,7 @@ mod tests {
 
         assert!(!should_delete_slice(
             &pending,
+            EpochNumber(1),
             true,
             spool_id,
             track,
@@ -1020,8 +1062,9 @@ mod tests {
         }
     }
 
-    // a deleted track keeps the encoding the assignment round reads through its
-    // own epoch, and the sweep after that epoch deletes the encoding and slices
+    // a deleted track keeps the encoding the assignment round reads, and the
+    // slices a challenge asks for, through its own epoch; the sweep after that
+    // epoch deletes them
     #[tokio::test]
     async fn deleted_track_bytes_go_after_its_epoch() {
         let store = test_store();
@@ -1050,6 +1093,7 @@ mod tests {
             .unwrap();
 
         assert!(store.get_track_data(track).unwrap().is_some());
+        assert!(store.get_slice(spool, track).unwrap().is_some());
 
         sweep_epoch(&store, &config, EpochNumber(7), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
@@ -1058,6 +1102,53 @@ mod tests {
         assert!(store.get_track(track).unwrap().is_none());
         assert!(store.get_track_data(track).unwrap().is_none());
         assert!(store.get_slice(spool, track).unwrap().is_none());
+    }
+
+    // an invalidated track a round counts keeps its data and slices through
+    // its own epoch too; after it they go, and the row and the record stay
+    #[tokio::test]
+    async fn invalid_track_bytes_go_after_its_epoch() {
+        let store = test_store();
+        let config = test_config();
+        let tape = Address::new_unique();
+        let group = VirtualGroup(1);
+        let info = track_info(tape, TrackNumber(0), group);
+        let track = info.address();
+        let spool = group.spool_at(0);
+        let counted = CountedTrack {
+            track_address: track,
+            registered_epoch: EpochNumber(2),
+            certified_epoch: EpochNumber(2),
+        };
+        let invalid = |counted| ObjectInfo::Invalid { epoch: EpochNumber(6), slot: SlotNumber(60), counted };
+
+        store
+            .set_spool_state(spool, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
+            .unwrap();
+        store.put_tape(tape, live_tape()).unwrap();
+        store.put_track(track, info).unwrap();
+        store.put_slice(spool, track, vec![7u8; 32]).unwrap();
+        store
+            .put_track_data(track, tape_core::track::data::BlobData::Inline(vec![1, 2, 3]))
+            .unwrap();
+        store.put_object_info(track, invalid(Some(counted.clone()))).unwrap();
+
+        sweep_epoch(&store, &config, EpochNumber(6), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
+            .await
+            .unwrap();
+
+        assert!(store.get_track_data(track).unwrap().is_some());
+        assert!(store.get_slice(spool, track).unwrap().is_some());
+        assert_eq!(store.get_object_info(track).unwrap(), Some(invalid(Some(counted))));
+
+        sweep_epoch(&store, &config, EpochNumber(7), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
+            .await
+            .unwrap();
+
+        assert!(store.get_track(track).unwrap().is_some());
+        assert!(store.get_track_data(track).unwrap().is_none());
+        assert!(store.get_slice(spool, track).unwrap().is_none());
+        assert_eq!(store.get_object_info(track).unwrap(), Some(invalid(None)));
     }
 
     fn deleted_object(track: Address, deleted_epoch: EpochNumber) -> ObjectInfo {

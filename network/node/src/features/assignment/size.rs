@@ -197,7 +197,14 @@ pub fn is_active_track<Db: Store>(
             registered_epoch,
             certified_epoch,
             ..
-        }) => (track_address, registered_epoch, certified_epoch),
+        }) => {
+            // A certificate landing between the two reads shows one record
+            // ahead of the other; the track counts on the next pass either way
+            if !metadata.is_certified() {
+                return Ok(false);
+            }
+            (track_address, registered_epoch, certified_epoch)
+        }
         // A delete that landed in the voting epoch reaches each node at its own
         // moment, so the track counts as if it had yet to land.
         Some(ObjectInfo::Deleted {
@@ -209,6 +216,17 @@ pub fn is_active_track<Db: Store>(
         }) if deleted_epoch >= voting_epoch => {
             (track_address, registered_epoch, Some(certified_epoch))
         }
+        // So does an invalidate. The row already says invalidated, so the
+        // track counts by what its record kept from before.
+        Some(ObjectInfo::Invalid {
+            epoch,
+            counted: Some(counted),
+            ..
+        }) if epoch >= voting_epoch => (
+            counted.track_address,
+            counted.registered_epoch,
+            Some(counted.certified_epoch),
+        ),
         Some(
             ObjectInfo::Deleted { .. }
             | ObjectInfo::System { .. }
@@ -222,15 +240,9 @@ pub fn is_active_track<Db: Store>(
         return Err(invalid_track(track, "object info points at a different track"));
     }
 
-    // A certificate landing between the two reads shows one record ahead of the
-    // other; the track counts on the next pass either way
     let Some(certified_epoch) = certified_epoch else {
         return Ok(false);
     };
-
-    if !metadata.is_certified() {
-        return Ok(false);
-    }
 
     if registered_epoch >= voting_epoch
        || certified_epoch >= voting_epoch {

@@ -17,7 +17,9 @@ use tape_store::ops::{
     ObjectInfoOps, ObjectListOps, ObjectMetadataOps, RemovalOps, SliceOps, SpoolOps, TapeOps,
     TrackDataOps, TrackOps,
 };
-use tape_store::types::{ObjectInfo, ObjectListEntry, ObjectMetadata, SystemObjectKind, TapeInfo};
+use tape_store::types::{
+    CountedTrack, ObjectInfo, ObjectListEntry, ObjectMetadata, SystemObjectKind, TapeInfo,
+};
 use tape_store::TapeStore;
 use tracing::{error, warn};
 
@@ -80,7 +82,7 @@ pub fn apply_event<Db: Store>(
             }
         },
         ReplayableEvent::InvalidateTrack { track, epoch } => {
-            invalidate_track(store, *track, *epoch, slot, profile)?;
+            invalidate_track(store, *track, *epoch, slot, profile, deletes)?;
         }
         ReplayableEvent::ReserveTape {
             tape,
@@ -672,6 +674,19 @@ fn defer_track_delete<Db: Store>(
             certified_epoch,
             deleted_epoch: epoch,
         }),
+        // A delete that follows an invalidate in the same epoch. The round
+        // still counts the track, by what its invalid record kept.
+        Some(ObjectInfo::Invalid {
+            epoch: invalidated_epoch,
+            counted: Some(counted),
+            ..
+        }) if invalidated_epoch == epoch => Some(ObjectInfo::Deleted {
+            kind: None,
+            track_address: counted.track_address,
+            registered_epoch: counted.registered_epoch,
+            certified_epoch: counted.certified_epoch,
+            deleted_epoch: epoch,
+        }),
         Some(
             ObjectInfo::Valid { .. }
             | ObjectInfo::System { .. }
@@ -693,13 +708,42 @@ fn defer_track_delete<Db: Store>(
     store.put_object_info(track, flag).map_err(store_error)
 }
 
+/// Invalidate a track. On a storage node the assignment round of `epoch`
+/// counts a track registered and certified before it, so that track keeps its
+/// data, and its record keeps what the round counts it by, until the epoch is
+/// over. Any other track loses its data at once.
 fn invalidate_track<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
     epoch: EpochNumber,
     slot: SlotNumber,
     profile: ErasureCode,
+    deletes: DeletePolicy,
 ) -> Result<(), NodeError> {
+    let counted = match store.get_object_info(track).map_err(store_error)? {
+        // A block applied twice after a crash finds the record already written.
+        Some(ObjectInfo::Invalid { .. }) => return Ok(()),
+        // The chain has no leaf left to invalidate once a track is deleted.
+        Some(ObjectInfo::Deleted { .. }) => return Ok(()),
+        Some(ObjectInfo::Valid {
+            track_address,
+            registered_epoch,
+            certified_epoch: Some(certified_epoch),
+            ..
+        }) if deletes == DeletePolicy::NextEpoch
+            && registered_epoch < epoch
+            && certified_epoch < epoch =>
+        {
+            Some(CountedTrack {
+                track_address,
+                registered_epoch,
+                certified_epoch,
+            })
+        }
+        Some(ObjectInfo::Valid { .. } | ObjectInfo::System { .. } | ObjectInfo::Blacklisted)
+        | None => None,
+    };
+
     if let Some(mut info) = store.get_track(track).map_err(store_error)? {
         // Keep object_metadata across invalidation. Delete/GC still use it as
         // the track -> name reverse lookup when the track is eventually removed.
@@ -709,10 +753,12 @@ fn invalidate_track<Db: Store>(
         store.put_track(track, info).map_err(store_error)?;
     }
 
-    store.delete_track_data(track).map_err(store_error)?;
+    if counted.is_none() {
+        store.delete_track_data(track).map_err(store_error)?;
+    }
 
     store
-        .put_object_info(track, ObjectInfo::Invalid { epoch, slot })
+        .put_object_info(track, ObjectInfo::Invalid { epoch, slot, counted })
         .map_err(store_error)
 }
 
@@ -746,7 +792,7 @@ mod tests {
         MetaOps, ObjectInfoOps, ObjectListOps, ObjectMetadataOps, RemovalOps, SliceOps, SpoolOps,
         TapeOps, TrackDataOps, TrackOps, track_has_left,
     };
-    use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
+    use tape_store::types::{CountedTrack, ObjectInfo, SystemObjectKind, TapeInfo};
     use tape_store::TapeStore;
     use tape_store_api::Store as _;
 
@@ -1357,6 +1403,7 @@ mod tests {
             Some(ObjectInfo::Invalid {
                 epoch: EpochNumber(8),
                 slot: SlotNumber(55),
+                counted: None,
             })
         );
         // The slices outlive the deletion: the gc's sweep deletes them.
@@ -1371,6 +1418,137 @@ mod tests {
     }
 
     // extend updates the expiry while keeping id, flags and track cursor
+    fn invalidate(track: Address) -> ReplayableEvent {
+        ReplayableEvent::InvalidateTrack {
+            track,
+            epoch: EpochNumber(8),
+        }
+    }
+
+    /// A coded track written in epoch 6 and certified in epoch 7, which the
+    /// round of epoch 8 counts
+    fn counted_track(store: &TapeStore<MemoryStore>) -> Address {
+        let written = make_blob_track(Address::new_unique(), TrackNumber(2), EpochNumber(6));
+        let track = track_address(&written);
+
+        apply(store, SlotNumber(40), None, &[written]).unwrap();
+        apply(
+            store,
+            SlotNumber(41),
+            None,
+            &[ReplayableEvent::CertifyTrack { track, epoch: EpochNumber(7) }],
+        )
+        .unwrap();
+
+        track
+    }
+
+    fn kept_by(track: Address) -> CountedTrack {
+        CountedTrack {
+            track_address: track,
+            registered_epoch: EpochNumber(6),
+            certified_epoch: EpochNumber(7),
+        }
+    }
+
+    // a track an earlier epoch certified is marked invalid and keeps its data and what it counts by
+    #[test]
+    fn invalidate_keeps_counted_track() {
+        let store = test_store();
+        let track = counted_track(&store);
+
+        apply(&store, SlotNumber(60), None, &[invalidate(track)]).unwrap();
+
+        assert_eq!(
+            store.get_object_info(track).unwrap(),
+            Some(ObjectInfo::Invalid {
+                epoch: EpochNumber(8),
+                slot: SlotNumber(60),
+                counted: Some(kept_by(track)),
+            })
+        );
+        assert!(store.get_track(track).unwrap().is_some_and(|row| row.is_invalidated()));
+        assert!(store.get_track_data(track).unwrap().is_some());
+    }
+
+    // an invalidate applied twice, as after a crash, leaves the record as it was
+    #[test]
+    fn invalidate_twice() {
+        let store = test_store();
+        let track = counted_track(&store);
+        apply(&store, SlotNumber(60), None, &[invalidate(track)]).unwrap();
+        let recorded = store.get_object_info(track).unwrap();
+
+        apply(&store, SlotNumber(60), None, &[invalidate(track)]).unwrap();
+
+        assert_eq!(store.get_object_info(track).unwrap(), recorded);
+        assert!(store.get_track_data(track).unwrap().is_some());
+    }
+
+    // a delete in the invalidate's own epoch keeps the track counted, as any delete of it would
+    #[test]
+    fn invalidate_then_delete() {
+        let store = test_store();
+        let track = counted_track(&store);
+
+        apply(&store, SlotNumber(60), None, &[invalidate(track)]).unwrap();
+        apply(&store, SlotNumber(61), None, &[delete(track)]).unwrap();
+
+        assert_eq!(
+            store.get_object_info(track).unwrap(),
+            Some(ObjectInfo::Deleted {
+                kind: None,
+                track_address: track,
+                registered_epoch: EpochNumber(6),
+                certified_epoch: EpochNumber(7),
+                deleted_epoch: EpochNumber(8),
+            })
+        );
+        assert!(store.get_track(track).unwrap().is_some());
+        assert!(store.get_track_data(track).unwrap().is_some());
+    }
+
+    // a delete in a later epoch finds a track no round counts any more, and it goes at once
+    #[test]
+    fn invalidate_then_delete_later() {
+        let store = test_store();
+        let track = counted_track(&store);
+        apply(&store, SlotNumber(60), None, &[invalidate(track)]).unwrap();
+
+        let later = ReplayableEvent::DeleteTrack { track, epoch: EpochNumber(9) };
+        apply(&store, SlotNumber(90), None, &[later]).unwrap();
+
+        assert!(store.get_track(track).unwrap().is_none());
+        assert!(store.get_object_info(track).unwrap().is_none());
+    }
+
+    // a store that builds no assignment keeps nothing of an invalidated track's data
+    #[test]
+    fn invalidate_at_once() {
+        let store = test_store();
+        let track = counted_track(&store);
+
+        apply_slot(
+            &store,
+            SlotNumber(60),
+            None,
+            &[invalidate(track)],
+            TAPENET_PROFILE,
+            DeletePolicy::AtOnce,
+        )
+        .unwrap();
+
+        assert_eq!(
+            store.get_object_info(track).unwrap(),
+            Some(ObjectInfo::Invalid {
+                epoch: EpochNumber(8),
+                slot: SlotNumber(60),
+                counted: None,
+            })
+        );
+        assert!(store.get_track_data(track).unwrap().is_none());
+    }
+
     #[test]
     fn extends_tape() {
         let store = test_store();

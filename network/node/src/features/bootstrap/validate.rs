@@ -92,7 +92,11 @@ fn validate_object_track_address(
         ObjectInfo::Valid { track_address, .. }
         | ObjectInfo::System { track_address, .. }
         | ObjectInfo::Deleted { track_address, .. } => Some(*track_address),
-        ObjectInfo::Blacklisted | ObjectInfo::Invalid { .. } => None,
+        ObjectInfo::Invalid {
+            counted: Some(counted),
+            ..
+        } => Some(counted.track_address),
+        ObjectInfo::Blacklisted | ObjectInfo::Invalid { counted: None, .. } => None,
     };
 
     if let Some(object_track) = object_track {

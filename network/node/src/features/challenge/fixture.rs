@@ -300,7 +300,18 @@ pub fn every_case(store: &TapeStore<MemoryStore>) -> Vec<Case> {
     put_tape(store, 16, LIVE_UNTIL, TrackNumber(0));
     let invalidated = certified(store, 16, 0);
     apply(store, ReplayableEvent::InvalidateTrack { track: invalidated.address, epoch: PREVIOUS });
-    cases.push(named("invalidated", false, invalidated));
+    cases.push(named("invalidated last epoch", false, invalidated));
+
+    put_tape(store, 17, LIVE_UNTIL, TrackNumber(0));
+    let invalidated = certified(store, 17, 0);
+    apply(store, ReplayableEvent::InvalidateTrack { track: invalidated.address, epoch: EPOCH });
+    cases.push(named("invalidated this epoch", true, invalidated));
+
+    put_tape(store, 18, LIVE_UNTIL, TrackNumber(0));
+    let invalidated = certified(store, 18, 0);
+    apply(store, ReplayableEvent::InvalidateTrack { track: invalidated.address, epoch: EPOCH });
+    apply(store, ReplayableEvent::DeleteTrack { track: invalidated.address, epoch: EPOCH });
+    cases.push(named("invalidated and deleted this epoch", true, invalidated));
 
     cases
 }

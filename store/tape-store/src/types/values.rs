@@ -119,6 +119,15 @@ impl TapeInfo {
     }
 }
 
+/// What an assignment round counts a track by once the track is no longer
+/// valid: the record it had as a valid track
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, SchemaRead, SchemaWrite, Serialize)]
+pub struct CountedTrack {
+    pub track_address: Address,
+    pub registered_epoch: EpochNumber,
+    pub certified_epoch: EpochNumber,
+}
+
 /// Proof data needed to submit an on-chain track invalidation
 #[derive(Clone, Debug, Deserialize, PartialEq, SchemaRead, SchemaWrite, Serialize)]
 pub struct InvalidationProof {

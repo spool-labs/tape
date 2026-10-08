@@ -120,6 +120,7 @@ mod tests {
         let info = ObjectInfo::Invalid {
             epoch: EpochNumber(10),
             slot: SlotNumber(100),
+            counted: None,
         };
 
         store.put_object_info(addr, info.clone()).unwrap();

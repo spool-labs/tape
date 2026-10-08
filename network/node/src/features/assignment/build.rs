@@ -757,6 +757,67 @@ mod tests {
         assert_eq!(candidate.groups[1].payload.size, StorageUnits::zero());
     }
 
+    // an invalidate that lands in the voting epoch leaves the candidate as it
+    // was, and so does a delete that follows it
+    #[test]
+    fn invalidate_in_voting_epoch() {
+        let store = test_store();
+        let tape = user_tape(&store);
+        put_counted_track(&store, tape, 0, 10);
+        let invalidated = put_counted_track(&store, tape, 1, 100);
+
+        let (state, holders) = narrow_state(2);
+        let state = with_next_epoch(state, &holders, 2);
+
+        let before = build_assignment_blocking(&store, &state, NARROW)
+            .expect("build")
+            .expect("a candidate");
+
+        let events = [
+            ReplayableEvent::InvalidateTrack { track: invalidated, epoch: EpochNumber(10) },
+            ReplayableEvent::DeleteTrack { track: invalidated, epoch: EpochNumber(10) },
+        ];
+        for event in events {
+            apply_event(&store, SlotNumber(100), None, &event, NARROW, DeletePolicy::NextEpoch)
+                .expect("event applied");
+
+            let after = build_assignment_blocking(&store, &state, NARROW)
+                .expect("build")
+                .expect("a candidate");
+
+            assert_eq!(after.groups[1].payload.size, StorageUnits::from_bytes(100));
+            assert_eq!(before.hash, after.hash);
+        }
+    }
+
+    // an invalidate from an earlier epoch takes the track out of the candidate
+    #[test]
+    fn invalidate_before_voting_epoch() {
+        let store = test_store();
+        let tape = user_tape(&store);
+        put_counted_track(&store, tape, 0, 10);
+        let invalidated = put_counted_track(&store, tape, 1, 100);
+
+        let (state, holders) = narrow_state(2);
+        let state = with_next_epoch(state, &holders, 2);
+
+        apply_event(
+            &store,
+            SlotNumber(100),
+            None,
+            &ReplayableEvent::InvalidateTrack { track: invalidated, epoch: EpochNumber(9) },
+            NARROW,
+            DeletePolicy::NextEpoch,
+        )
+        .expect("invalidate applied");
+
+        let candidate = build_assignment_blocking(&store, &state, NARROW)
+            .expect("build")
+            .expect("a candidate");
+
+        assert_eq!(candidate.groups[1].payload.size, StorageUnits::zero());
+    }
+
     fn close_user_tape(tape: Address, epoch: EpochNumber) -> ReplayableEvent {
         ReplayableEvent::CloseTape { tape, id: USER_TAPE_NUMBER, epoch }
     }

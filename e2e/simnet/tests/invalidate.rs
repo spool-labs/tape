@@ -17,6 +17,8 @@ use tape_e2e_simnet::{
 };
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::tapedrive::Tapedrive;
+use tape_store::ops::{ObjectInfoOps, TrackDataOps};
+use tape_store::types::ObjectInfo;
 
 const TARGET_GROUPS: u64 = 5;
 
@@ -164,6 +166,39 @@ async fn invalidate_track_inner() {
         "returned capacity should be reusable"
     );
 
+    // The second track was certified in epoch 3, so the round of epoch 4
+    // counts it. An invalidate in epoch 4 must leave every node counting it,
+    // or the round finds no agreement and the epoch never turns.
+    let epoch4 = scenario
+        .self_advance_epoch(epoch_timeout)
+        .await
+        .expect("advance to epoch 4");
+    assert_eq!(epoch4, 4, "expected epoch 4");
+    scenario
+        .wait_nodes_active(&all, active_timeout)
+        .await
+        .expect("all nodes active at epoch 4");
+
+    let counted_address = track_b.address();
+    let counted_proof = wait_track_proof(&sdk, &counted_address, active_timeout, |proof| {
+        proof.state.is_certified()
+    })
+    .await;
+    submit_invalidate(&harness, &counted_proof)
+        .await
+        .expect("invalidate a counted track");
+    wait_kept_counted(&harness, counted_address, active_timeout).await;
+
+    let epoch5 = scenario
+        .self_advance_epoch(epoch_timeout)
+        .await
+        .expect("advance to epoch 5");
+    assert_eq!(epoch5, 5, "expected epoch 5");
+    scenario
+        .wait_nodes_active(&all, active_timeout)
+        .await
+        .expect("all nodes active at epoch 5");
+
     drop(sdk);
     harness.stop_all().await.expect("stop runtimes");
 }
@@ -232,6 +267,27 @@ async fn submit_invalidate(
         .await?;
 
     Ok(())
+}
+
+// Wait until every node holds the invalid record that keeps the track counted, and its data.
+async fn wait_kept_counted(harness: &SimnetHarness, track: Address, timeout: Duration) {
+    let start = Instant::now();
+    loop {
+        let is_everywhere = harness.nodes().iter().all(|node| {
+            let context = node.context();
+            let info = context.store.get_object_info(track).expect("object info");
+            let data = context.store.get_track_data(track).expect("track data");
+
+            matches!(info, Some(ObjectInfo::Invalid { counted: Some(_), .. })) && data.is_some()
+        });
+        if is_everywhere {
+            return;
+        }
+        if start.elapsed() >= timeout {
+            panic!("timed out waiting for every node to keep the invalidated track counted");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 // Poll peers for the track proof until one passes the accept predicate.

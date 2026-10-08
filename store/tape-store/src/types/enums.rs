@@ -6,6 +6,8 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 
+use super::values::CountedTrack;
+
 /// System-owned object categories.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub enum SystemObjectKind {
@@ -20,10 +22,13 @@ pub enum ObjectInfo {
     /// Object has been blacklisted
     Blacklisted,
 
-    /// Object is invalid
+    /// Track invalidated on chain in `epoch`. The assignment round of that
+    /// epoch still counts a track registered and certified before it, and
+    /// `counted` keeps what the round counts it by until the epoch is over.
     Invalid {
         epoch: EpochNumber,
         slot: SlotNumber,
+        counted: Option<CountedTrack>,
     },
 
     /// Object is valid
@@ -150,6 +155,31 @@ impl ObjectInfo {
             ObjectInfo::Valid { .. } | ObjectInfo::System { .. }
         )
     }
+
+    /// The last epoch whose assignment round counts a track that is no
+    /// longer live: the one it was deleted or invalidated in
+    ///
+    /// Until that epoch is over the track keeps its row, its data and its
+    /// slices. A live track has none, and neither has a track no round counted.
+    pub fn counted_through(&self) -> Option<EpochNumber> {
+        match self {
+            ObjectInfo::Deleted {
+                kind: None,
+                deleted_epoch,
+                ..
+            } => Some(*deleted_epoch),
+            ObjectInfo::Invalid {
+                epoch,
+                counted: Some(_),
+                ..
+            } => Some(*epoch),
+            ObjectInfo::Deleted { kind: Some(_), .. }
+            | ObjectInfo::Invalid { counted: None, .. }
+            | ObjectInfo::Valid { .. }
+            | ObjectInfo::System { .. }
+            | ObjectInfo::Blacklisted => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +197,16 @@ mod tests {
             ObjectInfo::Invalid {
                 epoch: EpochNumber(10),
                 slot: SlotNumber(100),
+                counted: None,
+            },
+            ObjectInfo::Invalid {
+                epoch: EpochNumber(10),
+                slot: SlotNumber(100),
+                counted: Some(CountedTrack {
+                    track_address: Address::new([6u8; 32]),
+                    registered_epoch: EpochNumber(5),
+                    certified_epoch: EpochNumber(6),
+                }),
             },
             ObjectInfo::Valid {
                 track_address: Address::new([1u8; 32]),
@@ -219,7 +259,7 @@ mod tests {
         }
     }
 
-    // a deleted track gets no repair and the cleanup may take its slices
+    // a deleted track gets no repair and is served no more
     #[test]
     fn deleted_is_gone() {
         let info = ObjectInfo::Deleted {
@@ -232,6 +272,35 @@ mod tests {
 
         assert!(!info.is_certified());
         assert!(!info.is_live());
+    }
+
+    // a track a round still counts is kept through the epoch it was deleted or invalidated in
+    #[test]
+    fn counted_through() {
+        let counted = CountedTrack {
+            track_address: Address::new([1u8; 32]),
+            registered_epoch: EpochNumber(5),
+            certified_epoch: EpochNumber(6),
+        };
+        let deleted = ObjectInfo::Deleted {
+            kind: None,
+            track_address: Address::new([1u8; 32]),
+            registered_epoch: EpochNumber(5),
+            certified_epoch: EpochNumber(6),
+            deleted_epoch: EpochNumber(9),
+        };
+        let invalid = |counted| ObjectInfo::Invalid { epoch: EpochNumber(9), slot: SlotNumber(90), counted };
+        let valid = ObjectInfo::Valid {
+            track_address: Address::new([1u8; 32]),
+            registered_epoch: EpochNumber(5),
+            certified_epoch: Some(EpochNumber(6)),
+            slot: SlotNumber(50),
+        };
+
+        assert_eq!(deleted.counted_through(), Some(EpochNumber(9)));
+        assert_eq!(invalid(Some(counted)).counted_through(), Some(EpochNumber(9)));
+        assert_eq!(invalid(None).counted_through(), None);
+        assert_eq!(valid.counted_through(), None);
     }
 
     // credential scope round-trips through serialization
