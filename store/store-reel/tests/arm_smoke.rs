@@ -113,7 +113,7 @@ fn windowed_slice() -> Vec<u8> {
     tape_store_reel::fill::markdown(3, 3 * SAMPLE_WINDOW_BYTES + 777)
 }
 
-/// A windowed read answers the same bytes whatever the column did with them
+/// A challenge answers the same bytes whatever the column did with them
 ///
 /// The window and the sub-leaf are logical offsets into the payload, so a coded
 /// column has to answer what the caller wrote and not what it stored.
@@ -137,7 +137,8 @@ fn windows_are_logical<A: BenchArm>() {
         assert_eq!(sidecar, slice_sidecar(&payload).unwrap(), "{}", A::NAME);
         assert_eq!(window, payload[sample_window(sub_leaf, payload.len())], "{}", A::NAME);
 
-        // The sub-leaf a proof signs, cut out of the window.
+        // The sub-leaf a proof signs, cut out of the window the same way the
+        // challenge cuts it.
         let at = (sub_leaf % SAMPLE_WINDOW_LEAVES) * SUB_LEAF_BYTES;
         let leaf = &window[at..(at + SUB_LEAF_BYTES).min(window.len())];
         let start = sub_leaf * SUB_LEAF_BYTES;
@@ -146,19 +147,19 @@ fn windows_are_logical<A: BenchArm>() {
     }
 }
 
-// a sample window reads the same bytes off rocks
+// a challenge window reads the same bytes off rocks
 #[test]
 fn rocks_windows() {
     windows_are_logical::<SplitStore>();
 }
 
-// a sample window reads the same bytes off the reel
+// a challenge window reads the same bytes off the reel
 #[test]
 fn reel_windows() {
     windows_are_logical::<ReelStore>();
 }
 
-// a sample window reads the same bytes off the split arm
+// a challenge window reads the same bytes off the split arm
 #[test]
 fn split_windows() {
     windows_are_logical::<MetaBulkStore>();

@@ -233,7 +233,7 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     // One hash of the slice serves both jobs: the root that settles the claim,
-    // and the sidecar the store keeps so a windowed read answers off one window.
+    // and the sidecar the store keeps so a later challenge answers off one window.
     let data = payload.data;
     let data_len = data.len() as u64;
     let sidecar = slice_sidecar(&data);

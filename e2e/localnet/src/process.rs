@@ -52,6 +52,7 @@ pub struct ProcessSupervisor {
     data_root: PathBuf,
     rpc_url: String,
     base_port: u16,
+    should_challenge: bool,
     is_admission_open: bool,
     nodes: Vec<NodeHandle>,
 }
@@ -62,6 +63,7 @@ impl ProcessSupervisor {
         data_root: PathBuf,
         rpc_url: String,
         base_port: u16,
+        should_challenge: bool,
         is_admission_open: bool,
     ) -> Self {
         Self {
@@ -69,6 +71,7 @@ impl ProcessSupervisor {
             data_root,
             rpc_url,
             base_port,
+            should_challenge,
             is_admission_open,
             nodes: Vec::new(),
         }
@@ -212,6 +215,7 @@ impl ProcessSupervisor {
             &tls_path,
             &store_path,
             &self.rpc_url,
+            self.should_challenge,
             self.is_admission_open,
         );
         std::fs::write(&config_path, yaml)
@@ -448,6 +452,7 @@ fn build_node_yaml(
     tls_path: &Path,
     store_path: &Path,
     rpc_url: &str,
+    should_challenge: bool,
     is_admission_open: bool,
 ) -> String {
     let admission = match is_admission_open {
@@ -478,7 +483,11 @@ https:
   listen: "0.0.0.0:{port}"
   identity_keypair: "{tls}"
 
-# Off on the harness: the rig should not condemn its own nodes.
+challenge:
+  enabled: {should_challenge}
+
+# Off on the harness: rounds and records still run, but the rig should not
+# condemn its own nodes.
 eviction:
   enabled: false
 
@@ -492,7 +501,7 @@ metrics:
   enabled: true
 
 logging:
-  filter: "info,tape_node::features::lifecycle=debug,tape_node::features::gc=debug"
+  filter: "info,tape_node::features::lifecycle=debug,tape_node::features::challenge=debug,tape_node::features::gc=debug"
   format: compact
 "#,
         keypair = keypair_path.display(),
@@ -519,6 +528,7 @@ mod tests {
             Path::new("/tmp/node-3/tls.json"),
             Path::new("/tmp/node-3/data"),
             "http://127.0.0.1:8899",
+            true,
             true,
         );
 

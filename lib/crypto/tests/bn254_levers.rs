@@ -48,7 +48,7 @@ fn levers() {
         println!("  k={k:<4} speedup {:.2}x\n", bytes / native);
     }
 
-    println!("single signer");
+    println!("single signer, the challenge answer shape");
     let (secrets, pubkeys) = committee(20);
     let parsed = Committee::parse(&pubkeys).unwrap();
     let sigs: Vec<G1Point> = secrets.iter().map(|s| s.sign(msg).unwrap()).collect();

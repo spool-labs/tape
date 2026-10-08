@@ -6,6 +6,7 @@ define_numeric_type!(SlotNumber, "slot");
 define_numeric_type!(TapeNumber, "tape");
 define_numeric_type!(TrackNumber, "track");
 define_numeric_type!(ChunkNumber, "chunk");
+define_numeric_type!(RoundNumber, "round");
 define_numeric_type!(NodeId, "node");
 define_numeric_type!(ShareAmount, "shares");
 

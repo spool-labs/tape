@@ -2371,6 +2371,7 @@ mod tests {
     use tape_api::instruction::build_track_write_ix;
     use tape_core::encoding::{RSParams, TAPENET_PROFILE};
     use tape_core::track::data::{BlobData, BlobInfo};
+    use tape_core::erasure::SUB_LEAF_BYTES;
     use tape_core::track::types::{TrackFlags, TrackKind};
     use tape_crypto::prelude::Address;
 
@@ -2527,6 +2528,13 @@ mod tests {
 
         assert!(computed.plan.is_none());
         assert_eq!(computed.etag, hash(&data));
+    }
+
+    // An owner answers a challenge with the whole inline payload, so the
+    // program limit is the proof size: one coded sub-leaf.
+    #[test]
+    fn inline_limit_is_one_sub_leaf() {
+        assert_eq!(MAX_INLINE_WRITE, SUB_LEAF_BYTES);
     }
 
     // A payload that is inline unnamed but not with its name must take the

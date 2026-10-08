@@ -18,6 +18,9 @@ pub const OBSERVE_STREAM_PATH: &str = tape_observe_api::STREAM_PATH;
 
 pub const VOTE_PATH: &str = "/v1/votes";
 
+pub const CHALLENGE_PROOF_PATH: &str = "/v1/challenge/proof";
+pub const CHALLENGE_ATTEST_PATH: &str = "/v1/challenge/attest";
+
 pub const SYNC_SLICES_PATH: &str = "/v1/sync/slices";
 
 pub const TAPE_TRACK_PATH: &str = "/v1/tapes/{tape_id}/tracks/{track_number}";

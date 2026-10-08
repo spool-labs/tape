@@ -281,6 +281,7 @@ fn test_app_config(bind_addr: SocketAddr, simnet: &SimnetConfig) -> Result<NodeC
     let mut config = NodeConfig::default();
     config.genesis_preset = GenesisPreset::Simnet;
     config.eviction = simnet.eviction.clone();
+    config.challenge = simnet.challenge.clone();
     config.node.node_keypair = PathBuf::from("/dev/null");
     config.node.bls_keypair = PathBuf::from("/dev/null");
     config.solana.rpc = vec!["http://127.0.0.1:8899".into()];

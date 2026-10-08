@@ -1,19 +1,35 @@
 //! Builds a node's board from live context and the metric set.
 
+use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tape_rpc::Rpc;
 use tape_store_api::{Column, Store, StoreVolume};
+use tape_core::challenge::schedule::{
+    PROOF_DEADLINE_SLOTS, SAMPLE_LOOKBACK_SLOTS, SETTLE_DEADLINE_SLOTS, SLOT_MS,
+    attest_deadline_slots, round_width_slots,
+};
 use tape_core::types::bitmap::BitmapRead;
+use tape_core::types::SpoolIndex;
+use tape_core::challenge::record::{
+    NodeVerdict, PeerRecord, node_tally, node_verdict,
+    RECENT_ROUNDS,
+};
 use tape_core::system::NodeStatus;
+use tape_crypto::Address;
+use crate::features::challenge::trace::{MarkKind, RoundTrace as TracedRound, TraceClose};
 use tape_metrics::prometheus::proto::{Histogram, MetricFamily};
 use tape_store::columns::{ObjectInfoCol, TapeCol, TrackCol};
-use tape_store::ops::SliceOps;
+use tape_store::ops::{ChallengeOps, SliceOps};
 use tape_observe_api::{
-    phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, DecodeStats, EpochInfo,
+    phase_name, BootstrapInfo, Bucket, CacheStats, Board, ChainStats, ChallengeGrid, ChallengeRow,
+    ChallengeRounds, DecodeStats, EpochInfo, MarkKind as WireMark, RoundTrace, SpoolOutcome,
+    SpoolShape,
+    TraceClose as WireClose, TraceMark,
     HttpStats, IngestInfo, Labeled, LinkStatus, NetworkNode, Network, NetworkSpool, NodeInfo,
-    NodeStats, ResourceInfo, SpoolStat, StatsSource, StorageContents, StorageInfo,
+    ChallengeOwner, NodeStats, OwnerVerdict, ResourceInfo, RoundId, SpoolStat, StatsSource, StorageContents, StorageInfo,
     StorageVolume,
     StoreIo, ThroughputTotals, CACHE_RESULTS, DECODE_RESULTS, DECODE_SLICE_OUTCOMES, SPOOL_OPS,
     SPOOL_OP_RECOVER, SPOOL_OP_REPAIR, SPOOL_OP_SYNC, SPOOL_STAGES, SPOOL_STAGE_FETCHED,
@@ -22,6 +38,7 @@ use tape_protocol::{Api, ProtocolState};
 
 use crate::context::NodeContext;
 use crate::core::restarts;
+use crate::features::challenge::fold::holds_spool;
 
 static STARTED: OnceLock<Instant> = OnceLock::new();
 
@@ -792,6 +809,9 @@ where
         last_epoch: super::last_epoch(),
         current_epoch: current_epoch.clone(),
         lifetime: super::epoch::lifetime_including(&current_epoch),
+        challenge: challenge_grid(context),
+        challenge_rounds: challenge_rounds(context),
+        challenge_timeline: challenge_timeline(context),
     }
 }
 
@@ -822,8 +842,353 @@ fn synced_groups(state: &ProtocolState) -> u64 {
         .count() as u64
 }
 
+fn challenge_rounds<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> ChallengeRounds {
+    let counters = &context.challenge_counters;
+    ChallengeRounds {
+        opened: counters.opened.load(Ordering::Relaxed),
+        settled_certified: counters.settled_certified.load(Ordering::Relaxed),
+        settled_missed: counters.settled_missed.load(Ordering::Relaxed),
+        answers_refused: counters.refusals.total(),
+        voided: counters.voided.load(Ordering::Relaxed),
+        skipped: counters.skipped.load(Ordering::Relaxed),
+        discarded: counters.discarded.load(Ordering::Relaxed),
+        own_certified: counters.own_certified.load(Ordering::Relaxed),
+        own_missed: counters.own_missed.load(Ordering::Relaxed),
+        realigns: counters.realigns.load(Ordering::Relaxed),
+        realign_failures: counters.realign_failures.load(Ordering::Relaxed),
+        divergence_observed: counters.divergence_observed.load(Ordering::Relaxed),
+        divergence_signers: context.epoch_digest.disagreeing() as u64,
+    }
+}
+
+/// Builds this node's local challenge observations, worst row first.
+/// Rounds still worth seeding a fresh page with, oldest first.
+///
+/// The stream carries every round as it happens, so the board only has to give
+/// a page that just opened something to draw. Sending the whole ring instead
+/// put a couple of megabytes of already-delivered marks into every board frame,
+/// which is most of the board and all of the cost.
+fn challenge_timeline<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> Vec<RoundTrace> {
+    let traces = context.round_traces.snapshot();
+    let newest = traces
+        .iter()
+        .map(|trace| (trace.epoch, trace.round))
+        .max()
+        .unwrap_or_default();
+    traces
+        .iter()
+        .map(|trace| {
+            // Every held round is seeded, but only the newest carries its
+            // individual messages: those are what the arcs and the per-message
+            // notes need, and they are most of the bytes.
+            // A round still in flight keeps them for a while longer, since its
+            // shape is unfinished and folding leaves a band with nothing. Only
+            // for a while: every group holds a round open at once, so carrying
+            // them all made the board grow with the group count.
+            let behind = newest.1.as_u64().saturating_sub(trace.round.as_u64());
+            let newest_rounds = trace.epoch == newest.0 && behind < DETAILED_ROUNDS;
+            let live = trace.close == TraceClose::Open && behind < OPEN_DETAILED_ROUNDS;
+            let detailed = newest_rounds || live;
+            wire_trace_with(trace, detailed)
+        })
+        .collect()
+}
+
+/// Rounds the board seeds with their individual messages, not just their shape.
+const DETAILED_ROUNDS: u64 = 2;
+
+/// How far back a round still open keeps its messages on the board; a round
+/// stays open until its block roots, so narrower leaves live bands empty
+const OPEN_DETAILED_ROUNDS: u64 = SETTLE_DEADLINE_SLOTS / round_width_slots() + 2;
+
+/// One trace on the wire. Mark times become offsets from the round opening, so
+/// a reader places them without reconciling its clock against the node's.
+/// One round's marks folded per spool, which is what a timeline draws.
+fn fold_shapes(trace: &TracedRound) -> Vec<SpoolShape> {
+    let mut by_spool: BTreeMap<SpoolIndex, SpoolShape> = BTreeMap::new();
+    for mark in &trace.marks {
+        let at = mark.at_ms as u64;
+        let shape = by_spool.entry(mark.spool).or_insert_with(|| SpoolShape {
+            spool: mark.spool.as_u64(),
+            ..SpoolShape::default()
+        });
+        match mark.kind {
+            MarkKind::AnswerIn => shape.proof_in.get_or_insert(at),
+            MarkKind::AnswerOut => shape.proof_out.insert(at),
+            MarkKind::AnswerRefused => shape.refused.insert(at),
+            MarkKind::AttestOut => shape.vote_out.insert(at),
+            MarkKind::Certified => shape.cert.insert(at),
+            MarkKind::AttestIn => {
+                shape.votes += 1;
+                shape.vote_to = shape.vote_to.max(at);
+                shape.vote_from.get_or_insert(at)
+            }
+        };
+        if mark.kind == MarkKind::AttestIn {
+            shape.vote_from = Some(shape.vote_from.unwrap_or(at).min(at));
+        }
+    }
+    by_spool.into_values().collect()
+}
+
+pub fn wire_trace(trace: &TracedRound) -> RoundTrace {
+    wire_trace_with(trace, true)
+}
+
+/// One trace carrying only the marks added since `from`, and only the
+/// addresses those marks needed that were not sent with an earlier push.
+pub fn wire_trace_from(trace: &TracedRound, from: usize, nodes_from: usize) -> RoundTrace {
+    let mut wire = wire_trace_with(trace, true);
+    let from = from.min(wire.marks.len());
+    wire.marks.drain(..from);
+    wire.mark_base = from as u32;
+
+    let nodes_from = nodes_from.min(wire.nodes.len());
+    wire.nodes.drain(..nodes_from);
+    wire.node_base = nodes_from as u32;
+    // A reader folds its own shapes from the marks and overwrites whatever
+    // arrived beside them, so a delta carrying both sends one of them twice.
+    // The first push of a round still carries shapes, which is what a page
+    // joining partway paints from.
+    if wire.mark_base > 0 {
+        wire.shapes.clear();
+    }
+    wire
+}
+
+/// One trace on the wire, with or without the individual messages behind it.
+pub fn wire_trace_with(trace: &TracedRound, detailed: bool) -> RoundTrace {
+    // The trace already interned these, so each address encodes once.
+    let nodes: Vec<String> = trace.nodes.iter().map(|peer| peer.to_string()).collect();
+    let marks: Vec<TraceMark> = trace
+        .marks
+        .iter()
+        .filter(|_| detailed)
+        .map(|mark| TraceMark {
+            spool: mark.spool.as_u64(),
+            node: mark.node,
+            kind: match mark.kind {
+                MarkKind::AnswerOut => WireMark::AnswerOut,
+                MarkKind::AnswerIn => WireMark::AnswerIn,
+                MarkKind::AnswerRefused => WireMark::AnswerRefused,
+                MarkKind::AttestOut => WireMark::AttestOut,
+                MarkKind::AttestIn => WireMark::AttestIn,
+                MarkKind::Certified => WireMark::Certified,
+            },
+            at_ms: mark.at_ms as u64,
+        })
+        .collect();
+
+    let outcomes: Vec<SpoolOutcome> = trace
+        .outcomes
+        .iter()
+        .map(|outcome| SpoolOutcome {
+            spool: outcome.spool.as_u64(),
+            node: outcome.owner,
+            certified: outcome.certified,
+        })
+        .collect();
+
+    RoundTrace {
+        epoch: trace.epoch.as_u64(),
+        round: trace.round.as_u64(),
+        group: trace.group.0,
+        anchor_slot: trace.anchor_slot.as_u64(),
+        block: trace.block.to_string(),
+        opened_at: trace.opened_ms,
+        close: match trace.close {
+            TraceClose::Open => WireClose::Open,
+            TraceClose::Settled => WireClose::Settled,
+            TraceClose::Unconfirmed => WireClose::Unconfirmed,
+            TraceClose::Nothing => WireClose::Nothing,
+        },
+        shapes: fold_shapes(trace),
+        marks,
+        nodes,
+        outcomes,
+        // Whole by default; `wire_trace_from` is what trims to a delta.
+        mark_base: 0,
+        node_base: 0,
+    }
+}
+
+fn challenge_grid<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> ChallengeGrid {
+    // A record only matters to an operator once it has turned into an action,
+    // so the row says whether this node is already pushing to evict the peer.
+    let queued: Vec<_> = context
+        .eviction_queue
+        .snapshot()
+        .into_iter()
+        .map(|(node, _)| node)
+        .collect();
+    // Only the spools their owners still answer for. A record outlives a handoff,
+    // and showing one against the peer that gave the spool up reads as a failure
+    // on data it is no longer asked about.
+    let state = context.state();
+    // Rows name the same handful of rounds over and over, so each is placed
+    // against one shared axis rather than spelling its own out.
+    let mut rows: Vec<(ChallengeRow, Vec<(RoundId, bool)>)> = context
+        .store
+        .iter_peer_records()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|((node, spool), _)| holds_spool(&state, *node, *spool))
+        .map(|((node, spool), record)| {
+            let strip = record.recent_rounds();
+            // one read per row, reused for the axis below rather than re-fetched
+            let judged = recent_round_ids(context, node, spool, strip.len())
+                .into_iter()
+                .zip(strip.iter().copied())
+                .collect();
+            (
+                ChallengeRow {
+                    node: node.to_string(),
+                    spool: spool.as_u64(),
+                    opportunities: record.opportunities,
+                    successes: record.successes,
+                    consecutive_misses: record.consecutive_misses,
+                    success_rate_bps: record.success_rate().0,
+                    rule_fired: record.eviction_fires(&context.config.eviction.policy),
+                    queued: queued.contains(&node),
+                    judged: 0,
+                    recent: 0,
+                    recent_len: strip.len() as u32,
+                },
+                judged,
+            )
+        })
+        .collect();
+
+    rows.sort_by(|(a, _), (b, _)| {
+        (a.success_rate_bps, &a.node, a.spool).cmp(&(b.success_rate_bps, &b.node, b.spool))
+    });
+
+    // The widest row sets the axis; a strip is a u64, so 64 columns at most.
+    let axis: Vec<RoundId> = rows
+        .iter()
+        .max_by_key(|(_, judged)| judged.len())
+        .map(|(_, judged)| judged.iter().map(|(id, _)| *id).collect())
+        .unwrap_or_default();
+    let rows: Vec<ChallengeRow> = rows
+        .into_iter()
+        .map(|(mut row, judged)| {
+            for (id, proved) in judged {
+                let Some(at) = axis.iter().position(|other| *other == id) else { continue };
+                row.judged |= 1 << at;
+                if proved {
+                    row.recent |= 1 << at;
+                }
+            }
+            row
+        })
+        .collect();
+
+    let schedule = context.schedules.get(state.epoch());
+    let slot_ms = observed_slot_ms(context);
+
+    ChallengeGrid {
+        recent_capacity: RECENT_ROUNDS as u64,
+        min_opportunities: context.config.eviction.policy.min_opportunities,
+        rate_floor_bps: context.config.eviction.policy.minimum_success_rate_bps.0,
+        max_consecutive_misses: context.config.eviction.policy.max_consecutive_misses,
+        round_span_ms: round_width_slots() * slot_ms,
+        proof_deadline_ms: PROOF_DEADLINE_SLOTS * slot_ms,
+        // Measured from the block like the span, so the signature window sits
+        // where the round width puts it: after the proof, before the gossip.
+        attest_deadline_ms: attest_deadline_slots() * slot_ms,
+        round_cadence_ms: schedule
+            .as_ref()
+            .map(|schedule| schedule.interval_slots * slot_ms)
+            .unwrap_or_default(),
+        quorum: context.params().thresholds.challenge,
+        slot_ms,
+        round_width_slots: round_width_slots(),
+        cadence_slots: schedule.as_ref().map(|s| s.interval_slots).unwrap_or_default(),
+        settle_deadline_slots: SETTLE_DEADLINE_SLOTS,
+        sample_lookback_slots: SAMPLE_LOOKBACK_SLOTS,
+        axis,
+        owners: owner_rows(context, &state, &queued),
+        rows,
+    }
+}
+
+/// Milliseconds a slot actually takes, measured from the chain's own clock.
+///
+/// Until enough blocks land, display the chain's nominal slot time.
+fn observed_slot_ms<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> u64 {
+    context.ingest.progress().slot_ms().unwrap_or(SLOT_MS)
+}
+
+fn owner_rows<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    state: &ProtocolState,
+    queued: &[Address],
+) -> Vec<ChallengeOwner> {
+    let mut by_peer: BTreeMap<Address, Vec<PeerRecord>> = BTreeMap::new();
+    for ((node, spool), record) in context.store.iter_peer_records().unwrap_or_default() {
+        if holds_spool(state, node, spool) {
+            by_peer.entry(node).or_default().push(record);
+        }
+    }
+
+    let mut owners: Vec<ChallengeOwner> = by_peer
+        .into_iter()
+        .map(|(node, records)| {
+            let tally = node_tally(&records);
+            ChallengeOwner {
+                node: node.to_string(),
+                spools: tally.spools,
+                opportunities: tally.opportunities,
+                successes: tally.successes,
+                rate_bps: tally.rate().0,
+                worst_run: tally.worst_run,
+                verdict: match node_verdict(&records, &context.config.eviction.policy) {
+                    NodeVerdict::Healthy => OwnerVerdict::Healthy,
+                    NodeVerdict::Unproven => OwnerVerdict::Unproven,
+                    NodeVerdict::RunFailed => OwnerVerdict::RunFailed,
+                    NodeVerdict::RateFailed => OwnerVerdict::RateFailed,
+                },
+                queued: queued.contains(&node),
+            }
+        })
+        .collect();
+    owners.sort_by(|a, b| (a.rate_bps, &a.node).cmp(&(b.rate_bps, &b.node)));
+    owners
+}
+
+/// The rounds a peer's strip entries belong to, newest `len` of them.
+///
+/// The record counts judgements without saying which rounds they were, so the
+/// ids come from the round log beside it and are trimmed to the same tail.
+fn recent_round_ids<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    peer: Address,
+    spool: SpoolIndex,
+    len: usize,
+) -> Vec<RoundId> {
+    if len == 0 {
+        return Vec::new();
+    }
+    let rounds = context.store.peer_rounds_tail(peer, spool, len).unwrap_or_default();
+    let tail = rounds.len().saturating_sub(len);
+    rounds[tail..]
+        .iter()
+        .map(|(epoch, round, _)| RoundId { epoch: epoch.0, round: round.0 })
+        .collect()
+}
+
+
 #[cfg(test)]
 mod tests {
+    use tape_core::challenge::schedule::{ATTESTATION_WINDOW_SLOTS, CERTIFICATE_GOSSIP_SLOTS};
     use tape_core::types::SpoolBitmap;
     use tape_core::types::bitmap::BitmapWrite;
 
@@ -879,6 +1244,26 @@ mod tests {
             state.current.groups[0].synced.set(position);
         }
         assert_eq!(synced_groups(&state), 1);
+    }
+
+    // the timeline marks sit where the round width counts them from the block:
+    // the proof deadline, then the signature window, then the gossip to the span
+    #[tokio::test]
+    async fn timeline_marks() {
+        let context = test_context().await;
+
+        let grid = build(&context).challenge;
+
+        assert!(grid.proof_deadline_ms < grid.attest_deadline_ms);
+        assert!(grid.attest_deadline_ms < grid.round_span_ms);
+        assert_eq!(
+            grid.round_span_ms - grid.attest_deadline_ms,
+            CERTIFICATE_GOSSIP_SLOTS * grid.slot_ms
+        );
+        assert_eq!(
+            grid.attest_deadline_ms - grid.proof_deadline_ms,
+            ATTESTATION_WINDOW_SLOTS * grid.slot_ms
+        );
     }
 
     // the network view carries the clock the charts bucket by

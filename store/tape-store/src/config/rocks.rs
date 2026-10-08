@@ -111,6 +111,12 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
         ColumnFamilyConfig::new("track_data")
             .with_block_based(cache),
 
+        // Challenge sample set - 40-byte key, small chain-derived row
+        // 8-byte group prefix so one group's set is a prefix scan
+        ColumnFamilyConfig::new("track_sample")
+            .with_block_based(cache)
+            .with_prefix_extractor(8),
+
         // Object info - 32-byte Address keys, ObjectInfo values
         ColumnFamilyConfig::new("object_info")
             .with_block_based(cache),
@@ -155,6 +161,18 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
             .with_block_based(cache)
             .with_blob_db(256 * 1024) // 256 KiB threshold
             .with_prefix_extractor(2),
+
+        // Challenge record - 34-byte key, small counters
+        // 32-byte peer prefix so one node's spools are a single scan
+        ColumnFamilyConfig::new("challenge_record")
+            .with_block_based(cache)
+            .with_prefix_extractor(32),
+
+        // Challenge rounds - 50-byte key, one byte per outcome
+        // 32-byte peer prefix so one node's history is a single scan
+        ColumnFamilyConfig::new("challenge_round")
+            .with_block_based(cache)
+            .with_prefix_extractor(32),
 
         // Event log - 20-byte EventLogKey (epoch 8B + slot 8B + seq 4B)
         // 8-byte epoch prefix for efficient per-epoch scanning and deletion
@@ -312,7 +330,7 @@ mod tests {
     #[test]
     fn test_config_count() {
         let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 27);
+        assert_eq!(configs.len(), 30);
     }
 
     #[test]
@@ -326,6 +344,7 @@ mod tests {
             "track",
             "track_lookup",
             "track_data",
+            "track_sample",
             "object_info",
             "object_metadata",
             "object_list",
@@ -335,6 +354,8 @@ mod tests {
             "spool_pending_repair",
             "spool_pending_recovery",
             "slice",
+            "challenge_record",
+            "challenge_round",
             "event_log",
             "vote_sig",
             "snapshot_artifact",

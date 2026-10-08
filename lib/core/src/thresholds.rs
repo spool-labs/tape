@@ -80,6 +80,8 @@ pub struct Thresholds {
     pub invalidate: u64,
     /// Group signatures on an eviction
     pub evict: u64,
+    /// Member attestations on a challenge certificate
+    pub challenge: u64,
     /// Group signatures on a snapshot hash
     pub snapshot: u64,
     /// Group signatures on an assignment root
@@ -115,6 +117,7 @@ impl Thresholds {
             certify: quorum,
             invalidate: quorum,
             evict: quorum,
+            challenge: quorum,
             snapshot: honest,
             assignment: honest,
             synced: k.max(honest),
@@ -127,6 +130,7 @@ impl Thresholds {
             certify: k,
             invalidate: k,
             evict: k,
+            challenge: k,
             snapshot: k,
             assignment: k,
             synced: k,
@@ -215,6 +219,7 @@ mod tests {
                 certify: 14,
                 invalidate: 14,
                 evict: 14,
+                challenge: 14,
                 snapshot: 7,
                 assignment: 7,
                 synced: 7,
@@ -241,6 +246,7 @@ mod tests {
                         certify: quorum,
                         invalidate: quorum,
                         evict: quorum,
+                        challenge: quorum,
                         snapshot: faulty + 1,
                         assignment: faulty + 1,
                         synced: k.max(faulty + 1),
@@ -263,6 +269,7 @@ mod tests {
                         certify: k,
                         invalidate: k,
                         evict: k,
+                        challenge: k,
                         snapshot: k,
                         assignment: k,
                         synced: k,

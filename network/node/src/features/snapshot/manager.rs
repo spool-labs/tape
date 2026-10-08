@@ -539,6 +539,7 @@ mod tests {
         let junk = Hash::new_unique();
         let block = ParsedBlock {
             slot: SlotNumber(10),
+            parent_slot: SlotNumber(9),
             blockhash: Hash::default(),
             previous_blockhash: Hash::default(),
             block_time: None,

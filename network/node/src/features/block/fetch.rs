@@ -135,6 +135,7 @@ pub fn parse_block(
     block: &WireBlock,
     profile: ErasureCode,
 ) -> Result<ParsedBlock, NodeError> {
+    let parent_slot = SlotNumber(block.parent_slot);
     let blockhash = parse_chain_hash(slot, "blockhash", &block.blockhash)?;
     let previous_blockhash =
         parse_chain_hash(slot, "previous_blockhash", &block.previous_blockhash)?;
@@ -160,6 +161,7 @@ pub fn parse_block(
 
     Ok(ParsedBlock {
         slot,
+        parent_slot,
         blockhash,
         previous_blockhash,
         block_time: block.block_time,

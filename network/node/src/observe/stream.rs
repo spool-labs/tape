@@ -21,8 +21,8 @@ use tokio_util::sync::CancellationToken;
 use tape_metrics::prometheus::proto::MetricFamily;
 use tape_observe_api::{
     Counters, Gauges, Hello, Tick, BACKFILL_SPAN_MS, BACKFILL_STEP_MS, BOARD_PERIOD_MS,
-    EVENT_BACKFILL, EVENT_BOARD, EVENT_HELLO, EVENT_TICK, EVENT_TOPOLOGY,
-    SPOOL_OPS,
+    EVENT_BACKFILL, EVENT_BOARD, EVENT_HELLO, EVENT_ROUND, EVENT_TICK, EVENT_TOPOLOGY,
+    RoundTrace, SPOOL_OPS,
     TOPOLOGY_PERIOD_MS,
     STREAM_PROTOCOL, TICK_PERIOD_MS,
 };
@@ -34,6 +34,13 @@ use crate::core::error::NodeError;
 
 /// Frames retained for a subscriber that falls behind before it is dropped
 const BACKLOG: usize = 64;
+
+/// Rounds of timeline a recurring board carries.
+///
+/// Wide enough to cover the rounds that open between two boards, which is what
+/// a viewer needs to repair a push it missed. A fresh connection replays the
+/// whole timeline instead.
+const LIVE_BOARD_ROUNDS: u64 = 8;
 
 /// Window each tick's rates are averaged over
 ///
@@ -76,7 +83,10 @@ const BACKFILL_LEN: usize = (BACKFILL_SPAN_MS / BACKFILL_STEP_MS) as usize;
 struct Replay {
     hello: Option<Frame>,
     topology: Option<Frame>,
-    board: Option<Frame>,
+    /// Held whole: encoding it every board period stalled the tick beside it
+    board: Option<std::sync::Arc<tape_observe_api::Board>>,
+    /// The board encoded once, handed to every later connect
+    board_frame: Option<Frame>,
     history: std::collections::VecDeque<Tick>,
 }
 
@@ -114,12 +124,24 @@ impl StreamHub {
             match frame.event {
                 EVENT_HELLO => replay.hello = Some(frame.clone()),
                 EVENT_TOPOLOGY => replay.topology = Some(frame.clone()),
-                EVENT_BOARD => replay.board = Some(frame.clone()),
                 _ => {}
             }
         }
         // send only fails with no subscribers, which is the normal idle case
         let _ = self.tx.send(frame);
+    }
+
+    /// Fan out one frame while replaying a fuller one to a fresh connection.
+    ///
+    /// A viewer already streaming has the round marks from the pushes that
+    /// carried them, so repeating the whole timeline every board period is
+    /// bytes only a page joining now has any use for.
+    fn publish_kept(&self, live: Frame, kept: std::sync::Arc<tape_observe_api::Board>) {
+        if let Ok(mut replay) = self.replay.lock() {
+            replay.board = Some(kept);
+            replay.board_frame = None;
+        }
+        let _ = self.tx.send(live);
     }
 
     /// The replay frames plus a receiver for everything after
@@ -129,10 +151,17 @@ impl StreamHub {
     pub fn subscribe(&self) -> (Vec<Frame>, broadcast::Receiver<Frame>) {
         let rx = self.tx.subscribe();
         let mut frames = Vec::new();
-        if let Ok(replay) = self.replay.lock() {
+        if let Ok(mut replay) = self.replay.lock() {
             frames.extend(replay.hello.clone());
             frames.extend(replay.topology.clone());
-            frames.extend(replay.board.clone());
+            if replay.board_frame.is_none() {
+                let encoded = replay
+                    .board
+                    .as_ref()
+                    .and_then(|board| Frame::new(EVENT_BOARD, board.as_ref()));
+                replay.board_frame = encoded;
+            }
+            frames.extend(replay.board_frame.clone());
             // Sampling stops once nobody has watched for a while, so anything
             // older than the span would draw as if it were current
             let now_ms = SystemTime::now()
@@ -162,6 +191,21 @@ static HUB: OnceLock<Arc<StreamHub>> = OnceLock::new();
 /// The process-wide stream hub
 pub fn hub() -> &'static Arc<StreamHub> {
     HUB.get_or_init(|| Arc::new(StreamHub::new()))
+}
+
+/// Whether anyone is watching, so an unwatched node builds no frames
+pub fn watching() -> bool {
+    hub().has_subscribers()
+}
+
+/// Send one round trace out as it changes
+///
+/// A round's evidence all arrives within a few slots, well inside the board
+/// period, so waiting for the next whole board would land it in one lump.
+pub fn push_round(trace: &RoundTrace) {
+    if let Some(frame) = Frame::new(EVENT_ROUND, trace) {
+        hub().publish(frame);
+    }
 }
 
 /// Serve the live stream
@@ -284,7 +328,25 @@ where
     Blockchain: Rpc,
 {
     let (tip_slot, dispatched_slot, lag_slots) = context.ingest.progress().tip_and_lag();
+    let counters = &context.challenge_counters;
     Gauges {
+        challenge: tape_observe_api::ChallengeRounds {
+            opened: counters.opened.load(std::sync::atomic::Ordering::Relaxed),
+            settled_certified: counters.settled_certified.load(std::sync::atomic::Ordering::Relaxed),
+            settled_missed: counters.settled_missed.load(std::sync::atomic::Ordering::Relaxed),
+            answers_refused: counters.refusals.total(),
+            voided: counters.voided.load(std::sync::atomic::Ordering::Relaxed),
+            skipped: counters.skipped.load(std::sync::atomic::Ordering::Relaxed),
+            discarded: counters.discarded.load(std::sync::atomic::Ordering::Relaxed),
+            own_certified: counters.own_certified.load(std::sync::atomic::Ordering::Relaxed),
+            own_missed: counters.own_missed.load(std::sync::atomic::Ordering::Relaxed),
+            realigns: counters.realigns.load(std::sync::atomic::Ordering::Relaxed),
+            realign_failures: counters.realign_failures.load(std::sync::atomic::Ordering::Relaxed),
+            divergence_observed: counters
+                .divergence_observed
+                .load(std::sync::atomic::Ordering::Relaxed),
+            divergence_signers: context.epoch_digest.disagreeing() as u64,
+        },
         lag_slots: if context.bootstrap.is_ready() {
             lag_slots
         } else {
@@ -391,8 +453,29 @@ where
 
                     if since_board >= Duration::from_millis(BOARD_PERIOD_MS) {
                         since_board = Duration::ZERO;
-                        if let Some(frame) = Frame::new(EVENT_BOARD, &board::build(&self.context)) {
-                            hub.publish(frame);
+                        let board = board::build(&self.context);
+                        let kept = std::sync::Arc::new(board.clone());
+                        let mut live = board;
+                        // A viewer already streaming has the timeline from the
+                        // round pushes, so this carries only enough of it to
+                        // repair a push it missed between boards. Every group
+                        // holds a round, so the whole timeline is the group
+                        // count times over.
+                        let newest = live
+                            .challenge_timeline
+                            .iter()
+                            .map(|trace| (trace.epoch, trace.round))
+                            .max()
+                            .unwrap_or_default();
+                        live.challenge_timeline.retain(|trace| {
+                            trace.epoch == newest.0
+                                && newest.1.saturating_sub(trace.round) < LIVE_BOARD_ROUNDS
+                        });
+                        // Marks stay: this board is what repairs a viewer that
+                        // missed a round opening, and stripping them left those
+                        // rounds blank
+                        if let Some(live) = Frame::new(EVENT_BOARD, &live) {
+                            hub.publish_kept(live, kept);
                         }
                         // The shape moves at an epoch boundary, but the peer
                         // stats inside the frame move with every aggregator

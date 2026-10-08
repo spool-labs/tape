@@ -12,6 +12,7 @@ use tape_core::erasure::MAX_GROUP_SIZE;
 use tape_core::system::EpochPhase;
 use tape_core::types::{EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
+use tape_observe_api::{BOARD_PATH, Board, ChallengeGrid, ChallengeRounds};
 use tape_protocol::api::NodeStats;
 
 use crate::view::{ClusterView, NodeView, SpoolView, LocalnetView};
@@ -49,6 +50,8 @@ struct NodeScrape {
     healthy: bool,
     stats: Option<NodeStats>,
     metrics_available: bool,
+    challenge: Option<ChallengeGrid>,
+    challenge_rounds: Option<ChallengeRounds>,
 }
 
 pub struct Observer {
@@ -162,9 +165,13 @@ impl Observer {
         let health_fut = self.http.get(format!("{base}/v1/health")).send();
         let stats_fut = self.http.get(format!("{base}/v1/stats")).send();
         let metrics_fut = self.http.get(format!("{base}/v1/metrics")).send();
+        let board_fut = self
+            .http
+            .get(format!("{base}{BOARD_PATH}"))
+            .send();
 
-        let (health_res, stats_res, metrics_res) =
-            tokio::join!(health_fut, stats_fut, metrics_fut);
+        let (health_res, stats_res, metrics_res, board_res) =
+            tokio::join!(health_fut, stats_fut, metrics_fut, board_fut);
 
         let healthy = health_res
             .map(|r| r.status().is_success())
@@ -183,10 +190,24 @@ impl Observer {
             .filter(|r| r.status().is_success())
             .is_some();
 
+        let board = match board_res
+            .ok()
+            .filter(|r| r.status().is_success())
+        {
+            Some(r) => r.json::<Board>().await.ok(),
+            None => None,
+        };
+        let (challenge, challenge_rounds) = match board {
+            Some(board) => (Some(board.challenge), Some(board.challenge_rounds)),
+            None => (None, None),
+        };
+
         NodeScrape {
             healthy,
             stats,
             metrics_available,
+            challenge,
+            challenge_rounds,
         }
     }
 
@@ -218,6 +239,8 @@ impl Observer {
                     metrics_available: scrape.metrics_available,
                     pool_stake: Some(onchain_node.pool.stake.as_u64()),
                     stats: scrape.stats,
+                    challenge: scrape.challenge,
+                    challenge_rounds: scrape.challenge_rounds,
                 };
             }
             Err(_) => (None, None),
@@ -236,6 +259,8 @@ impl Observer {
             metrics_available: scrape.metrics_available,
             pool_stake,
             stats: scrape.stats,
+            challenge: scrape.challenge,
+            challenge_rounds: scrape.challenge_rounds,
         }
     }
 
@@ -268,6 +293,20 @@ impl Observer {
             })
             .collect();
 
+        let mut rates: Vec<u64> = node_views
+            .iter()
+            .filter_map(|node| node.challenge.as_ref())
+            .flat_map(|grid| {
+                grid.rows
+                    .iter()
+                    .filter(move |row| row.opportunities >= grid.min_opportunities)
+            })
+            .map(|row| row.success_rate_bps)
+            .collect();
+        rates.sort_unstable();
+        let honest_rate_min_bps = rates.first().copied();
+        let honest_rate_med_bps = (!rates.is_empty()).then(|| rates[rates.len() / 2]);
+
         let phase_index = u64::from(chain.phase) as u8;
         Ok(LocalnetView {
             cluster: ClusterView {
@@ -282,6 +321,8 @@ impl Observer {
                 committee_size: chain.committee_size,
                 committee_next_size: chain.committee_next_size,
                 total_nodes_registered: chain.total_nodes_registered,
+                honest_rate_min_bps,
+                honest_rate_med_bps,
             },
             nodes: node_views,
             spools,

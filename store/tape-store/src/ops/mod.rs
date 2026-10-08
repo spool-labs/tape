@@ -12,6 +12,8 @@
 //! - `RemovalOps`: Tapes closed or rewound in the current epoch
 //! - `SpoolOps`: Spool status, sync progress, pending recovery (NOT epoch-namespaced)
 //! - `SliceOps`: Slice data storage
+//! - `ChallengeOps`: Per-peer record of answers to storage challenges
+//! - `SampleOps`: The per-group sample set a challenge round draws from
 //! - `CredentialOps`: S3 write credentials (put/get/revoke/list)
 //! - `PolicyOps`: Write-authorization policy engine (rule CRUD + evaluate)
 //! - `AuthStateOps`: Write-authorization control state (kill switch, policy version)
@@ -22,6 +24,7 @@
 
 mod audit_log;
 mod auth_state;
+mod challenge;
 mod credential;
 mod event_log;
 mod ledger;
@@ -33,6 +36,7 @@ mod policy;
 mod removal;
 mod s3_multipart;
 mod s3_pending;
+mod sample;
 mod snapshot;
 mod slice;
 mod spool;
@@ -45,6 +49,7 @@ mod vote;
 // Re-export operation traits
 pub use audit_log::AuditOps;
 pub use auth_state::AuthStateOps;
+pub use challenge::ChallengeOps;
 pub use credential::CredentialOps;
 pub use event_log::EventLogOps;
 pub use ledger::{LedgerOps, ReserveOutcome, ReserveRequest};
@@ -56,6 +61,7 @@ pub use policy::{PolicyDecision, PolicyOps};
 pub use removal::{RemovalOps, object_has_left, track_has_left};
 pub use s3_multipart::MultipartOps;
 pub use s3_pending::PendingWriteOps;
+pub use sample::SampleOps;
 pub use snapshot::SnapshotOps;
 pub use slice::SliceOps;
 pub use spool::SpoolOps;

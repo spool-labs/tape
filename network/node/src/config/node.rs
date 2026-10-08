@@ -3,14 +3,16 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tape_core::bls::BlsPrivateKey;
+use tape_core::challenge::schedule::{Schedule, rounds_in_seconds};
 use tape_api::consts::NAME_LENGTH;
 use tape_api::genesis::GenesisConfig;
 use tape_core::thresholds::{NetworkParams, ThresholdError};
-use tape_core::types::BasisPoints;
+use tape_core::types::{BasisPoints, SlotNumber};
 use tape_crypto::ed25519::Keypair;
 use tape_sdk::keys::helpers::{ensure_ed25519_keypair, load_bls_keypair, load_ed25519_keypair};
 
 use crate::core::error::NodeError;
+use super::challenge::ChallengeConfig;
 use super::eviction::EvictionConfig;
 use super::{
     gateway::{GatewayConfig, is_valid_origin, is_valid_policy},
@@ -61,6 +63,10 @@ pub struct NodeConfig {
     #[serde(default)]
     pub https: HttpsConfig,
 
+    /// Whether this node runs the storage challenge.
+    #[serde(default)]
+    pub challenge: ChallengeConfig,
+
     /// Whether this node takes part in evicting its peers.
     #[serde(default)]
     pub eviction: EvictionConfig,
@@ -108,6 +114,65 @@ pub enum GenesisPreset {
 }
 
 impl GenesisPreset {
+    /// Round spacing in slots: the preset's planned spacing at its slot time,
+    /// to the whole slot below.
+    pub fn challenge_interval_slots(self) -> u64 {
+        self.challenge_spacing_ms() / self.slot_ms()
+    }
+
+    /// Wall time each preset plans between one round opening and the next.
+    pub fn challenge_spacing_ms(self) -> u64 {
+        match self {
+            Self::Mainnet => 60_000,
+            Self::Devnet | Self::Custom => 30_000,
+            Self::Localnet => 10_000,
+            Self::Simnet => 10_000,
+        }
+    }
+
+    /// Wall time one slot takes on each network, and the one rate every preset
+    /// timing converts at.
+    ///
+    /// Mainnet plans at 200 ms, where it is heading from 250 today. A slower
+    /// live rate only stretches each round, so a span converted here lasts at
+    /// least as long as stated. The simnet producer closes a block every 300 ms
+    /// of wall time. `SLOT_MS` is the fallback before ingest measures a live rate.
+    pub fn slot_ms(self) -> u64 {
+        match self {
+            Self::Mainnet => 200,
+            Self::Devnet | Self::Custom => 166,
+            Self::Localnet => 400,
+            Self::Simnet => 300,
+        }
+    }
+
+    /// Seconds a spool that changed hands has to fetch what it was handed.
+    ///
+    /// Eight rounds at each preset's own cadence, the count every preset ran
+    /// with when the grace was stated in rounds. Devnet's figure falls midway
+    /// through its eighth round, so a slot time a few percent off keeps the count.
+    pub fn challenge_handover_grace_seconds(self) -> u64 {
+        match self {
+            Self::Mainnet => 480,
+            Self::Devnet | Self::Custom => 225,
+            Self::Localnet => 80,
+            Self::Simnet => 75,
+        }
+    }
+
+    /// Seconds of blank rounds in a row before the node re-reads protocol state.
+    ///
+    /// Three rounds at each preset's own cadence, well inside the default
+    /// eviction policy's thirty consecutive misses.
+    pub fn challenge_realign_after_blank_seconds(self) -> u64 {
+        match self {
+            Self::Mainnet => 180,
+            Self::Devnet | Self::Custom => 75,
+            Self::Localnet => 30,
+            Self::Simnet => 29,
+        }
+    }
+
     /// A tapenet preset's genesis values; `custom` has none of its own.
     pub fn tapenet(self) -> Option<GenesisConfig> {
         match self {
@@ -132,9 +197,43 @@ impl GenesisPreset {
 
 
 impl NodeConfig {
-    /// Returns whether eviction participation is enabled.
+    pub fn challenge_interval_slots(&self) -> u64 {
+        self.challenge
+            .interval_slots
+            .unwrap_or_else(|| self.genesis_preset.challenge_interval_slots())
+    }
+
+    /// Rounds a spool that changed hands has to fetch what it was handed.
+    pub fn challenge_handover_grace_rounds(&self) -> u64 {
+        let seconds = self
+            .challenge
+            .handover_grace_seconds
+            .unwrap_or_else(|| self.genesis_preset.challenge_handover_grace_seconds());
+        self.challenge_rounds_in(seconds)
+    }
+
+    /// Blank rounds in a row before the node re-reads protocol state.
+    pub fn challenge_realign_after_blank_rounds(&self) -> u64 {
+        let seconds = self
+            .challenge
+            .realign_after_blank_seconds
+            .unwrap_or_else(|| self.genesis_preset.challenge_realign_after_blank_seconds());
+        self.challenge_rounds_in(seconds)
+    }
+
+    /// The fewest whole rounds that last a wall-clock span at this network's
+    /// cadence.
+    fn challenge_rounds_in(&self, seconds: u64) -> u64 {
+        rounds_in_seconds(
+            seconds,
+            self.challenge_interval_slots(),
+            self.genesis_preset.slot_ms(),
+        )
+    }
+
+    /// Returns whether challenge and eviction participation are both enabled.
     pub fn eviction_enabled(&self) -> bool {
-        self.eviction.enabled
+        self.challenge.enabled && self.eviction.enabled
     }
 
     /// Load configuration from a YAML file.
@@ -153,6 +252,29 @@ impl NodeConfig {
 
     /// Validate semantic constraints after parsing.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        Schedule::for_epoch(SlotNumber(0), self.challenge_interval_slots())
+        .map_err(|error| ConfigError::Invalid(format!("challenge.interval_slots: {error:?}")))?;
+
+        self.eviction
+            .policy
+            .validate()
+            .map_err(|error| ConfigError::Invalid(format!("eviction.policy.{error}")))?;
+
+        if self.challenge.realign_after_blank_seconds == Some(0) {
+            return Err(ConfigError::Invalid(
+                "challenge.realign_after_blank_seconds must be greater than zero".into(),
+            ));
+        }
+        if self.challenge.handover_grace_seconds == Some(0) {
+            return Err(ConfigError::Invalid(
+                "challenge.handover_grace_seconds must be greater than zero".into(),
+            ));
+        }
+        if self.challenge.verify_workers == 0 {
+            return Err(ConfigError::Invalid(
+                "challenge.verify_workers must be greater than zero".into(),
+            ));
+        }
         if self.node.name.trim().is_empty() {
             return Err(ConfigError::Invalid("node.name is required".into()));
         }
@@ -452,6 +574,7 @@ fn default_commission() -> BasisPoints {
 mod tests {
     use std::path::PathBuf;
 
+    use tape_core::challenge::schedule::SLOT_MS;
     use tape_core::types::{BasisPoints, SlotNumber};
 
     use super::{GenesisPreset, NodeConfig, default_config_path};
@@ -493,6 +616,8 @@ https:
   listen: "0.0.0.0:3430"
   identity_keypair: "/etc/tape/tls.json"
   auto_update: false
+challenge:
+  enabled: false
 eviction:
   enabled: false
 store:
@@ -578,6 +703,7 @@ metrics:
         assert_eq!(config.https.listen.to_string(), "0.0.0.0:3430");
         assert_eq!(config.https.identity_keypair, PathBuf::from("/etc/tape/tls.json"));
         assert!(!config.https.auto_update);
+        assert!(!config.challenge.enabled);
         assert!(!config.eviction.enabled);
         assert_eq!(config.store.path, PathBuf::from("/var/lib/tape/data"));
         assert_eq!(config.store.compaction_mb_per_sec, 80);
@@ -793,6 +919,43 @@ recovery:
         assert_eq!(config.recovery.sync_batch, 100);
     }
 
+    // the challenge is what produces eviction evidence, so turning it off takes
+    // eviction with it whatever the eviction knob says
+    #[test]
+    fn challenge_off_takes_eviction_with_it() {
+        let config = NodeConfig::from_yaml_str(
+            r#"
+node:
+  name: "test"
+network:
+  host: "test"
+challenge:
+  enabled: false
+eviction:
+  enabled: true
+"#,
+        )
+        .unwrap();
+
+        assert!(config.eviction.enabled);
+        assert!(!config.eviction_enabled());
+    }
+
+    #[test]
+    fn challenge_is_on_unless_turned_off() {
+        let config = NodeConfig::from_yaml_str(
+            r#"
+node:
+  name: "test"
+network:
+  host: "test"
+"#,
+        )
+        .unwrap();
+
+        assert!(config.challenge.enabled);
+    }
+
     #[test]
     fn eviction_off_by_default() {
         let config = NodeConfig::from_yaml_str(
@@ -809,16 +972,79 @@ network:
         assert!(!config.eviction_enabled());
     }
 
-    // a key the eviction section does not have is refused at load
     #[test]
-    fn rejects_unknown_eviction_key() {
-        let yaml = r#"
+    fn eviction_policy_is_explicit_and_independent_of_genesis_preset() {
+        for preset in ["mainnet", "devnet", "localnet", "simnet"] {
+            let yaml = format!(
+                r#"
+genesis_preset: {preset}
 eviction:
-  enabled: true
   policy:
-    min_opportunities: 60
+    max_consecutive_misses: 45
+    min_opportunities: 90
+    minimum_success_rate_bps: 6000
+"#
+            );
+            let config = NodeConfig::from_yaml_str(&yaml).expect("valid eviction policy");
+
+            assert_eq!(config.eviction.policy.max_consecutive_misses, 45);
+            assert_eq!(config.eviction.policy.min_opportunities, 90);
+            assert_eq!(
+                config.eviction.policy.minimum_success_rate_bps,
+                BasisPoints(6_000)
+            );
+        }
+    }
+
+    // each preset's grace and realign spans are wall clock, and each becomes
+    // the fewest whole rounds that last it at that preset's own cadence
+    #[test]
+    fn challenge_spans_become_round_counts() {
+        let spans = [
+            ("mainnet", 300, 200, 8, 3),
+            ("devnet", 180, 166, 8, 3),
+            ("localnet", 25, 400, 8, 3),
+            ("simnet", 33, 300, 8, 3),
+            ("custom", 180, 166, 8, 3),
+        ];
+
+        for (preset, interval, slot_ms, grace, realign) in spans {
+            let yaml = format!("genesis_preset: {preset}");
+            let config = NodeConfig::from_yaml_str(&yaml).expect("valid preset");
+
+            assert_eq!(config.challenge_interval_slots(), interval);
+            assert_eq!(config.genesis_preset.slot_ms(), slot_ms);
+            assert_eq!(config.challenge_handover_grace_rounds(), grace, "{preset}");
+            assert_eq!(config.challenge_realign_after_blank_rounds(), realign, "{preset}");
+        }
+
+        // The tighter grid the fleet ran for a month covers the same spans in
+        // many more rounds, which is the whole point of stating them in seconds.
+        let yaml = r#"
+genesis_preset: devnet
+challenge:
+  interval_slots: 7
 "#;
-        assert!(NodeConfig::from_yaml_str(yaml).is_err());
+        let config = NodeConfig::from_yaml_str(yaml).expect("valid interval");
+        assert_eq!(config.challenge_handover_grace_rounds(), 194);
+        assert_eq!(config.challenge_realign_after_blank_rounds(), 65);
+
+        // A stated span wins over the preset at the same cadence, and a part
+        // round counts in full.
+        let yaml = r#"
+genesis_preset: devnet
+challenge:
+  handover_grace_seconds: 240
+  realign_after_blank_seconds: 90
+"#;
+        let config = NodeConfig::from_yaml_str(yaml).expect("valid spans");
+        assert_eq!(config.challenge_handover_grace_rounds(), 9);
+        assert_eq!(config.challenge_realign_after_blank_rounds(), 4);
+
+        for zero in ["handover_grace_seconds", "realign_after_blank_seconds"] {
+            let yaml = format!("challenge:\n  {zero}: 0");
+            assert!(NodeConfig::from_yaml_str(&yaml).is_err());
+        }
     }
 
     // a custom node registers with devnet's preferences, except the committee
@@ -848,6 +1074,104 @@ eviction:
         // A tapenet preset keeps its own values whatever chain the node joins.
         assert_eq!(GenesisPreset::Devnet.config(&small), Ok(devnet));
         assert_eq!(GenesisPreset::Mainnet.config(&tapenet), Ok(GenesisConfig::mainnet()));
+    }
+
+    // each preset's cadence comes from its own slot time, and the fallback slot
+    // time is no faster than any cluster preset plans for
+    #[test]
+    fn slot_times() {
+        let presets = [
+            GenesisPreset::Mainnet,
+            GenesisPreset::Devnet,
+            GenesisPreset::Localnet,
+            GenesisPreset::Simnet,
+            GenesisPreset::Custom,
+        ];
+
+        for preset in presets {
+            let slot_ms = preset.slot_ms();
+            let planned = preset.challenge_interval_slots() * slot_ms;
+
+            assert!(planned <= preset.challenge_spacing_ms(), "{preset:?}");
+            assert!(planned + slot_ms > preset.challenge_spacing_ms(), "{preset:?}");
+        }
+        for cluster in [GenesisPreset::Mainnet, GenesisPreset::Devnet, GenesisPreset::Localnet] {
+            assert!(cluster.slot_ms() <= SLOT_MS, "{cluster:?}");
+        }
+    }
+
+    #[test]
+    fn challenge_interval_uses_named_presets_and_explicit_overrides() {
+        let presets = [
+            ("mainnet", 300),
+            ("devnet", 180),
+            ("localnet", 25),
+            ("simnet", 33),
+            ("custom", 180),
+        ];
+
+        for (preset, interval) in presets {
+            let yaml = format!("genesis_preset: {preset}");
+            let config = NodeConfig::from_yaml_str(&yaml).expect("valid preset");
+            assert_eq!(config.challenge_interval_slots(), interval);
+
+            let yaml = format!(
+                r#"
+genesis_preset: {preset}
+challenge:
+  interval_slots: 40
+"#
+            );
+            let config = NodeConfig::from_yaml_str(&yaml).expect("valid interval override");
+            assert_eq!(config.challenge_interval_slots(), 40);
+        }
+
+        for interval in [0, 1, 4] {
+            let yaml = format!(
+                r#"
+challenge:
+  interval_slots: {interval}
+"#
+            );
+            assert!(NodeConfig::from_yaml_str(&yaml).is_err());
+        }
+
+        let misspelled = r#"
+challenge:
+  interval_slot: 10
+"#;
+        assert!(NodeConfig::from_yaml_str(misspelled).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_or_misspelled_eviction_policy() {
+        let invalid_rules = [
+            (0, 60, 5_000),
+            (30, 0, 5_000),
+            (30, 60, 10_001),
+        ];
+
+        for (max_misses, min_opportunities, rate_bps) in invalid_rules {
+            let yaml = format!(
+                r#"
+eviction:
+  policy:
+    max_consecutive_misses: {max_misses}
+    min_opportunities: {min_opportunities}
+    minimum_success_rate_bps: {rate_bps}
+"#
+            );
+            assert!(NodeConfig::from_yaml_str(&yaml).is_err(), "accepted {yaml}");
+        }
+
+        let misspelled = r#"
+eviction:
+  policy:
+    max_consecutive_miss: 30
+    min_opportunities: 60
+    minimum_success_rate_bps: 5000
+"#;
+        assert!(NodeConfig::from_yaml_str(misspelled).is_err());
     }
 
     #[test]

@@ -3,12 +3,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use bytemuck::Zeroable;
+use bytemuck::{Zeroable, bytes_of};
 use tape_api::state::{Epoch, Group, System};
+use tape_core::bls::BlsPubkey;
 use tape_core::spooler::{GroupFold, GroupIndex, VirtualGroup, VIRTUAL_GROUP_COUNT};
 use tape_core::system::{EpochPhase, Member, Peer, Spool};
 use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::Address;
+use tape_crypto::hash::{Hash, hash};
 
 /// On-chain state for one epoch, normalized for off-chain protocol use.
 #[derive(Debug, Clone)]
@@ -115,6 +117,46 @@ impl ProtocolState {
     /// The current epoch's nonce, used for group assignments
     pub fn nonce(&self) -> tape_crypto::Hash {
         self.current.epoch.nonce
+    }
+
+    /// Hash of the settled epoch view: committee, keys, and the spool map
+    ///
+    /// Two nodes derive the same questions, owners and keys for an epoch only if
+    /// they agree on this. Nothing that moves inside an epoch goes in: member
+    /// stake and the sync bitmap both change under ordinary traffic.
+    pub fn view_digest(&self) -> Hash {
+        let unknown_key = BlsPubkey::zeroed();
+        let mut bytes = Vec::new();
+
+        bytes.extend_from_slice(&self.current.epoch.id.0.to_le_bytes());
+
+        // The grid the questions are drawn on, not just who answers them. Two
+        // nodes that agree on the committee and disagree on the nonce, the start
+        // slot or the duration derive different rounds from the same block, and
+        // each reads the other's honest answer as an answer to nothing.
+        bytes.extend_from_slice(self.current.epoch.nonce.as_ref());
+        bytes.extend_from_slice(&self.current.epoch.start_slot.0.to_le_bytes());
+        bytes.extend_from_slice(&self.current.epoch.preferences.epoch_duration.0.to_le_bytes());
+        bytes.extend_from_slice(&self.current.epoch.total_groups.to_le_bytes());
+
+        bytes.extend_from_slice(&(self.current.committee.len() as u64).to_le_bytes());
+        for member in &self.current.committee {
+            bytes.extend_from_slice(member.node.as_ref());
+            match self.peer(member.node) {
+                Some(peer) => bytes.extend_from_slice(bytes_of(&peer.bls_pubkey)),
+                None => bytes.extend_from_slice(bytes_of(&unknown_key)),
+            }
+        }
+
+        bytes.extend_from_slice(&(self.current.groups.len() as u64).to_le_bytes());
+        for group in &self.current.groups {
+            bytes.extend_from_slice(&group.id.as_u64().to_le_bytes());
+            for spool in &group.spools {
+                bytes.extend_from_slice(bytes_of(spool));
+            }
+        }
+
+        hash(&bytes)
     }
 
     /// Find peer directory information by node account address.
@@ -324,6 +366,33 @@ impl ProtocolState {
             .unwrap_or_default()
     }
 
+    /// Each stored spool of a virtual group with its holder as of `epoch`, current or previous
+    pub fn group_peers_at(&self, epoch: EpochNumber, group: VirtualGroup) -> Option<Vec<(SpoolIndex, Address)>> {
+        let groups = self.groups_at(epoch)?;
+        Some(group_peers_inner(groups.spools_in_group(group)))
+    }
+
+    /// Unique nodes that held a virtual group as of `epoch`, current or previous
+    pub fn group_member_count_at(&self, epoch: EpochNumber, group: VirtualGroup) -> Option<usize> {
+        Some(self.groups_at(epoch)?.member_count(group))
+    }
+
+    /// Which node held this stored spool as of `epoch`, current or previous
+    pub fn spool_owner_at(&self, epoch: EpochNumber, spool: SpoolIndex) -> Option<Address> {
+        assigned_node(self.groups_at(epoch)?.spool(spool)?.node)
+    }
+
+    /// Whether a node held a position in a live group as of `epoch`. A group
+    /// that wasn't live then has no members.
+    pub fn is_member_at(&self, epoch: EpochNumber, group: GroupIndex, node: Address) -> bool {
+        self.groups_at(epoch).is_some_and(|groups| {
+            groups
+                .fold
+                .virtual_group(group)
+                .is_some_and(|own| groups.spool_for_node_in_group(own, node).is_some())
+        })
+    }
+
     fn current_groups(&self) -> Option<EpochGroups<'_>> {
         EpochGroups::of(&self.current)
     }
@@ -487,7 +556,7 @@ mod tests {
     use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::system::Spool;
     use tape_core::types::coin::TAPE;
-    use tape_core::types::StorageUnits;
+    use tape_core::types::{BitmapWrite, StorageUnits};
     use tape_crypto::Hash;
 
     fn address(byte: u8) -> Address {
@@ -608,10 +677,16 @@ mod tests {
         let spool = retired.spool_at(4);
 
         assert_eq!(state.spool_owner_prev(spool), Some(address(207)));
+        assert_eq!(state.spool_owner_at(EpochNumber(4), spool), Some(address(207)));
+        assert_eq!(state.spool_owner_at(EpochNumber(5), spool), Some(address(103)));
         assert_eq!(state.group_peers_prev(retired)[0], (retired.spool_at(0), address(207)));
 
-        // Group 7 was live last epoch and is gone now.
+        // Group 7 was live last epoch and is gone now, so it has members only then.
         let gone = GroupIndex(7);
+        assert!(state.is_member_at(EpochNumber(4), gone, address(207)));
+        assert!(!state.is_member_at(EpochNumber(5), gone, address(103)));
+        assert!(state.is_member_at(EpochNumber(5), GroupIndex(3), address(103)));
+        assert!(!state.is_member_at(EpochNumber(5), GroupIndex(3), address(207)));
         assert_eq!(state.virtual_group_at(EpochNumber(4), gone), Some(retired));
         assert_eq!(state.virtual_group_at(EpochNumber(5), gone), None);
         assert_eq!(state.virtual_group(GroupIndex(3)), Some(VirtualGroup(3)));
@@ -694,6 +769,15 @@ mod tests {
         assert!(state.group_peers(VirtualGroup(7)).is_empty());
         assert!(state.spool_owner(VirtualGroup(4).spool_at(0)).is_none());
         assert_eq!(state.spool_owner(VirtualGroup(6).spool_at(0)), Some(address(101)));
+    }
+
+    // the group count decides which virtual groups each live spool carries
+    #[test]
+    fn digest_tracks_the_group_count() {
+        let mut state = state_with_groups();
+        state.current.epoch.total_groups = 4;
+
+        assert_ne!(state.view_digest(), state_with_groups().view_digest());
     }
 
     #[test]
@@ -826,6 +910,27 @@ mod tests {
         assert_eq!(state.group_member_count_prev(VirtualGroup(0)), 1);
     }
 
+    // a spool that changed hands answers with whoever held it in the round's epoch
+    #[test]
+    fn owner_at_the_turn() {
+        let previous = EpochNumber(4);
+        let held_before = address(8);
+        let mut state = state_with_groups();
+        state.previous = Some(EpochBundle {
+            epoch: Epoch {
+                id: previous,
+                total_groups: 1,
+                ..Epoch::zeroed()
+            },
+            committee: vec![member(held_before, 10)],
+            groups: vec![group(previous, GroupIndex(0), &[held_before])],
+        });
+
+        assert_eq!(state.spool_owner_at(EpochNumber(5), SpoolIndex(0)), Some(address(1)));
+        assert_eq!(state.spool_owner_at(previous, SpoolIndex(0)), Some(held_before));
+        assert_eq!(state.spool_owner_at(EpochNumber(3), SpoolIndex(0)), None);
+        assert_eq!(state.spool_owner_at(EpochNumber(6), SpoolIndex(0)), None);
+    }
 
     #[test]
     fn find_member_next_uses_next_committee() {
@@ -845,6 +950,55 @@ mod tests {
 
         state.invalidate();
         assert_eq!(state.age(), Duration::MAX);
+    }
+
+    // the same view hashes the same every time, or the comparison is noise
+    #[test]
+    fn digest_is_stable() {
+        let state = state_with_groups();
+        assert_eq!(state.view_digest(), state.view_digest());
+        assert_eq!(state.view_digest(), state_with_groups().view_digest());
+    }
+
+    // the whole point: one changed committee member changes the digest
+    #[test]
+    fn digest_tracks_the_committee() {
+        let mut state = state_with_groups();
+        state.current.committee[1] = member(address(8), 90);
+
+        assert_ne!(state.view_digest(), state_with_groups().view_digest());
+    }
+
+    // and so does one reassigned spool, which is what decides who owes an answer
+    #[test]
+    fn digest_tracks_the_spool_map() {
+        let mut state = state_with_groups();
+        state.current.groups[0].spools[3].node = address(8);
+
+        assert_ne!(state.view_digest(), state_with_groups().view_digest());
+    }
+
+    // a key rotation moves it too, since that is what a signature is checked against
+    #[test]
+    fn digest_tracks_the_keys() {
+        let mut state = state_with_groups();
+        let mut peer = Peer::new(address(1));
+        peer.bls_pubkey = BlsPubkey::new_unique();
+        state.peers.push(peer);
+
+        assert_ne!(state.view_digest(), state_with_groups().view_digest());
+    }
+
+    // stake and the sync bitmap move under ordinary traffic, so a node that has
+    // ingested one more write must not read as diverged
+    #[test]
+    fn digest_ignores_what_moves_mid_epoch() {
+        let mut state = state_with_groups();
+        state.current.committee[0].stake = TAPE(4_000);
+        state.current.committee[0].assigned = StorageUnits(1_024);
+        state.current.groups[0].synced.set(1);
+
+        assert_eq!(state.view_digest(), state_with_groups().view_digest());
     }
 
     // a clone carries the mark rather than reading as freshly verified

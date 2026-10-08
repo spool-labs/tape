@@ -515,7 +515,6 @@ fn engine(error: reel::ReelError) -> StoreError {
 fn crossed(error: reel_core::Error) -> StoreError {
     match error {
         reel_core::Error::Database(message) => StoreError::Database(message),
-        reel_core::Error::NotFound => StoreError::NotFound,
         reel_core::Error::ColumnFamilyNotFound(cf) => StoreError::ColumnFamilyNotFound(cf),
         reel_core::Error::Serialization(message) => StoreError::Serialization(message),
         reel_core::Error::Io(error) => StoreError::Io(error),

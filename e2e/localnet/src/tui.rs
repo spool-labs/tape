@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 use ratatui::{Frame, Terminal};
 use tape_core::erasure::MAX_GROUP_SIZE;
+use tape_observe_api::ChallengeRow;
 
 use crate::action::{ActionHandle, ActionLog};
 use crate::view::{NodeView, LocalnetView, UploadView};
@@ -211,9 +213,33 @@ fn render_title_bar(frame: &mut Frame<'_>, area: Rect, view: &LocalnetView) {
         view.cluster.committee_next_size,
         phase,
     );
+    let rounds = view
+        .nodes
+        .iter()
+        .filter(|node| node.healthy)
+        .min_by_key(|node| node.local_id)
+        .and_then(|node| node.challenge_rounds.as_ref())
+        .map(|rounds| {
+            format!(
+                "R[o:{} c:{} m:{} x:{}]  ",
+                rounds.opened,
+                rounds.settled_certified,
+                rounds.settled_missed,
+                rounds.answers_refused,
+            )
+        })
+        .unwrap_or_default();
+    let rate = match view
+        .cluster
+        .honest_rate_min_bps
+        .zip(view.cluster.honest_rate_med_bps)
+    {
+        Some((min, med)) => format!("rate[{}~{}%]  ", min / 100, med / 100),
+        None => String::new(),
+    };
 
     let right = format!(
-        "epoch:{}  registered:{}  slot:{} ",
+        "{rounds}{rate}epoch:{}  registered:{}  slot:{} ",
         view.cluster.epoch,
         view.cluster.total_nodes_registered,
         view.cluster.slot,
@@ -333,6 +359,15 @@ fn render_node_table(
     nodes.sort_by_key(|node| node.local_id);
     let focus_row = focus.and_then(|id| nodes.iter().position(|node| node.local_id == id));
 
+    let challenge_grid: HashMap<&str, &ChallengeRow> = view
+        .nodes
+        .iter()
+        .filter(|node| node.healthy)
+        .min_by_key(|node| node.local_id)
+        .and_then(|node| node.challenge.as_ref())
+        .map(|grid| grid.rows.iter().map(|row| (row.node.as_str(), row)).collect())
+        .unwrap_or_default();
+
     let epoch = view.cluster.epoch;
     let rows = nodes.into_iter().map(move |node| {
         let stats = node.stats.as_ref();
@@ -352,6 +387,24 @@ fn render_node_table(
         };
         let metrics = if node.metrics_available { "yes" } else { "no" };
 
+        let judged = challenge_grid.get(node.node_address.as_str());
+        let miss = judged
+            .map(|row| row.consecutive_misses.to_string())
+            .unwrap_or_else(|| "-".into());
+        let rate = judged
+            .map(|row| format!("{}%", row.success_rate_bps / 100))
+            .unwrap_or_else(|| "-".into());
+        let strip = judged
+            .map(|row| {
+                let mut cells: Vec<char> = (0..u64::BITS)
+                    .filter(|&at| row.judged >> at & 1 == 1)
+                    .map(|at| if row.recent >> at & 1 == 1 { '▮' } else { '·' })
+                    .collect();
+                cells.drain(..cells.len().saturating_sub(16));
+                cells.into_iter().collect::<String>()
+            })
+            .unwrap_or_else(|| "-".into());
+
         Row::new(vec![
             Cell::from("▌").style(Style::default().fg(node_color(node.local_id))),
             Cell::from(
@@ -369,6 +422,9 @@ fn render_node_table(
             Cell::from(node.address.clone().unwrap_or_else(|| "-".into())),
             Cell::from(health).style(health_style),
             Cell::from(metrics),
+            Cell::from(miss),
+            Cell::from(rate),
+            Cell::from(strip),
             Cell::from(
                 stats.map(|s| s.owned_spools.to_string())
                     .unwrap_or_else(|| "-".into()),
@@ -402,6 +458,9 @@ fn render_node_table(
         Constraint::Length(17),
         Constraint::Length(6),
         Constraint::Length(7),
+        Constraint::Length(4),
+        Constraint::Length(5),
+        Constraint::Length(16),
         Constraint::Length(6),
         Constraint::Length(7),
         Constraint::Length(10),
@@ -423,6 +482,9 @@ fn render_node_table(
             "Address",
             "Health",
             "Metrics",
+            "Miss",
+            "Rate",
+            "Rounds",
             "Spools",
             "Tracks",
             "Payload",

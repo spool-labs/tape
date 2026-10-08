@@ -9,12 +9,15 @@ use tracing::{debug, warn};
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
 use tape_protocol::Api;
-use tape_store::{TapeStore, ops::MetaOps};
+use tape_crypto::Address;
+use tape_store::{TapeStore, ops::{ChallengeOps, MetaOps}};
 
 use crate::config::store::GcConfig;
 use crate::context::NodeContext;
+use crate::features::challenge::fold::holds_spool;
+use crate::features::store::cleanup::sweep_deleted_slices;
 use crate::core::error::NodeError;
 use crate::core::ingest::{AT_TIP_THRESHOLD_SLOTS, IngestState};
 use crate::core::types::ServiceName;
@@ -118,6 +121,18 @@ async fn run_tick<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     config: &GcConfig,
     reached: Option<EpochNumber>,
 ) -> Result<(), NodeError> {
+    // every tick, since a deleted track only has to outlive the rounds that can still ask for it
+    let slot = SlotNumber(context.ingest.progress().last_dispatched_slot());
+    match sweep_deleted_slices(context.store.as_ref(), slot, context.params().profile) {
+        Ok(swept) if swept.tracks > 0 => debug!(
+            tracks = swept.tracks,
+            slices = swept.slices,
+            "gc: forgot deleted tracks past the round horizon"
+        ),
+        Ok(_) => {}
+        Err(error) => warn!(%error, "gc: deleted-track sweep failed"),
+    }
+
     // Only epochs the markers still owe. A completed epoch is never swept twice.
     match reached {
         Some(epoch) => catch_up_epochs(context, config, epoch).await,
@@ -163,16 +178,22 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
         .map_err(|error| NodeError::Store(format!("set_gc_started_epoch: {error}")))?;
 
     let owned_spools = context.my_spools();
+    // Tombstones from this sweep carry the live epoch's start slot even when
+    // catching up an older epoch: a later slot only keeps an entry in the
+    // sample set longer, which is the safe direction.
+    let epoch_start_slot = context.state().current.epoch.start_slot;
     let sweep_stats = sweep_epoch(
         store,
         config,
         epoch,
+        epoch_start_slot,
         &owned_spools,
         context.pending.as_ref(),
         at_tip,
         context.params().profile,
     )
     .await?;
+    prune_handed_off_records(context.as_ref())?;
     debug!(
         node_id = context.node_id().0,
         epoch = epoch.0,
@@ -263,12 +284,43 @@ fn should_reclaim(config: &GcConfig, deleted_slices: usize) -> bool {
     deleted_slices >= config.reclaim_min_deleted_slices
 }
 
+/// Drop the records of spools their owners have handed on.
+///
+/// A record is keyed by spool, so a reassignment leaves the old owner's history
+/// behind. Reads already ignore those, but nothing would ever remove them, and
+/// the column would grow by a row per spool per owner it ever had.
+fn prune_handed_off_records<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+) -> Result<(), NodeError> {
+    let state = context.state();
+    let stale: Vec<(Address, SpoolIndex)> = context
+        .store
+        .iter_peer_records()
+        .map_err(|error| NodeError::Store(format!("iter_peer_records: {error}")))?
+        .into_iter()
+        .map(|((peer, spool), _)| (peer, spool))
+        .filter(|(peer, spool)| !holds_spool(&state, *peer, *spool))
+        .collect();
+
+    for (peer, spool) in &stale {
+        context
+            .store
+            .delete_spool_record(*peer, *spool)
+            .map_err(|error| NodeError::Store(format!("delete_spool_record: {error}")))?;
+    }
+    if !stale.is_empty() {
+        debug!(dropped = stale.len(), "gc: dropped records for handed-off spools");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use bytemuck::Zeroable;
     use tape_store_memory::MemoryStore;
+    use tape_core::challenge::PeerRecord;
     use tape_core::snapshot::replay::{ReplayRecord, ReplayableEvent};
     use tape_api::program::tapedrive::TrackAddress;
     use tape_core::spooler::VirtualGroup;
@@ -276,12 +328,12 @@ mod tests {
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
-        EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber,
+        EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
     };
     use tape_crypto::tx::Txid;
     use tape_crypto::{Address, Hash};
     use tape_store::types::TapeInfo;
-    use tape_store::{TapeStore, ops::{MetaOps, RemovalOps, TapeOps, TrackOps}};
+    use tape_store::{TapeStore, ops::{ChallengeOps, MetaOps, TapeOps, TrackOps}};
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
@@ -375,10 +427,13 @@ mod tests {
         let context = test_context().await;
         let config = test_config();
         let epoch = EpochNumber(3);
-        let tape = Address::new_unique();
+        let peer = Address::new_unique();
 
-        // a removal from an earlier epoch is pruned by a sweep that ran
-        put_earlier_removal(&context, tape, epoch);
+        // a record no owner answers for is dropped by a sweep that ran
+        context
+            .store
+            .put_peer_record(peer, SpoolIndex(0), PeerRecord::default())
+            .expect("put peer record");
 
         run_epoch_sweep(&context, &config, epoch)
             .await
@@ -386,7 +441,7 @@ mod tests {
 
         assert_eq!(context.store.get_gc_started_epoch().expect("started"), None);
         assert_eq!(context.store.get_gc_completed_epoch().expect("completed"), None);
-        assert!(has_earlier_removal(&context, tape, epoch));
+        assert_eq!(context.store.iter_peer_records().expect("records").len(), 1);
         assert_eq!(
             next_pending_epoch(&context.store, epoch).expect("pending"),
             Some(epoch)
@@ -398,7 +453,7 @@ mod tests {
             .expect("sweep at the tip");
 
         assert_eq!(context.store.get_gc_completed_epoch().expect("completed"), Some(epoch));
-        assert!(!has_earlier_removal(&context, tape, epoch));
+        assert!(context.store.iter_peer_records().expect("records").is_empty());
         assert_eq!(next_pending_epoch(&context.store, epoch).expect("pending"), None);
     }
 
@@ -408,38 +463,29 @@ mod tests {
         let config = test_config();
         let epoch = context.state().epoch();
         put_at_durable_tip(&context);
-        let tape = Address::new_unique();
+        let peer = Address::new_unique();
+        let spool = SpoolIndex(0);
 
-        // a removal from an earlier epoch survives a tick only when that tick ran no sweep
-        put_earlier_removal(&context, tape, epoch);
+        // a record no owner answers for survives a tick only when that tick ran no sweep
+        context
+            .store
+            .put_peer_record(peer, spool, PeerRecord::default())
+            .expect("put peer record");
 
         run_tick(&context, &config, Some(epoch)).await.expect("first tick");
 
         assert_eq!(context.store.get_gc_completed_epoch().expect("completed"), Some(epoch));
         assert_eq!(next_pending_epoch(&context.store, epoch).expect("pending"), None);
-        assert!(!has_earlier_removal(&context, tape, epoch));
+        assert!(context.store.iter_peer_records().expect("records").is_empty());
 
-        put_earlier_removal(&context, tape, epoch);
+        context
+            .store
+            .put_peer_record(peer, spool, PeerRecord::default())
+            .expect("put peer record again");
 
         run_tick(&context, &config, Some(epoch)).await.expect("second tick");
 
-        assert!(has_earlier_removal(&context, tape, epoch));
-    }
-
-    /// Record a removal for a tape in the epoch before `epoch`
-    fn put_earlier_removal(context: &TestContext, tape: Address, epoch: EpochNumber) {
-        context
-            .store
-            .record_removal(tape, TapeNumber(1), EpochNumber(epoch.0 - 1), TrackNumber(0))
-            .expect("record removal");
-    }
-
-    fn has_earlier_removal(context: &TestContext, tape: Address, epoch: EpochNumber) -> bool {
-        context
-            .store
-            .get_removal(tape, TapeNumber(1), EpochNumber(epoch.0 - 1))
-            .expect("get removal")
-            .is_some()
+        assert_eq!(context.store.iter_peer_records().expect("records").len(), 1);
     }
 
     #[tokio::test]

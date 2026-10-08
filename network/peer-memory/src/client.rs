@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tape_protocol::api::{
-    Api, ApiError, CertifyReq, CertifyRes, FindTrackReq, FindTrackRes,
+    Api, ApiError, AttestReq, AttestRes, CertifyReq, CertifyRes, FindTrackReq, FindTrackRes,
     GetHealthReq, GetHealthRes, GetSliceReq, GetSliceRes, GetStatsReq, GetStatsRes,
     GetTrackByNumberReq, GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq,
     GetTrackProofRes, GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListObjectsReq,
-    ListObjectsRes, ListTracksByTapeReq, ListTracksByTapeRes, PeerReq, PeerRes,
-    PutSliceReq, PutSliceRes, RepairReq, RepairRes, SyncSlicesReq, SyncSlicesRes,
+    ListObjectsRes, ListTracksByTapeReq, ListTracksByTapeRes, PeerReq, PeerRes, ProofOfAccessReq,
+    ProofOfAccessRes, PutSliceReq, PutSliceRes, RepairReq, RepairRes, SyncSlicesReq, SyncSlicesRes,
     VoteReq, VoteRes,
 };
 use tape_crypto::Address;
@@ -40,6 +40,8 @@ impl MemoryApi {
             PeerReq::Certify(_) => PeerRes::Certify(Err(not_impl())),
             PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(not_impl())),
             PeerReq::Vote(_) => PeerRes::Vote(Err(not_impl())),
+            PeerReq::ProofOfAccess(_) => PeerRes::ProofOfAccess(Err(not_impl())),
+            PeerReq::Attest(_) => PeerRes::Attest(Err(not_impl())),
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
             PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
         })
@@ -141,6 +143,27 @@ impl Api for MemoryApi {
 
     async fn invalidate(&self, node: Address, req: &InvalidateReq) -> Result<InvalidateRes, ApiError> {
         dispatch!(self, node, InvalidateReq { track: req.track, proof: req.proof.clone() }, Invalidate)
+    }
+
+    async fn proof_of_access(
+        &self,
+        node: Address,
+        req: &ProofOfAccessReq,
+    ) -> Result<ProofOfAccessRes, ApiError> {
+        dispatch!(self, node, ProofOfAccessReq { answer: req.answer.clone() }, ProofOfAccess)
+    }
+
+    async fn attest(&self, node: Address, req: &AttestReq) -> Result<AttestRes, ApiError> {
+        dispatch!(self, node, AttestReq {
+            epoch: req.epoch,
+            group: req.group,
+            round: req.round,
+            block: req.block,
+            signer: req.signer,
+            digest: req.digest,
+            digest_signature: req.digest_signature,
+            attests: req.attests.clone(),
+        }, Attest)
     }
 
     async fn get_health(&self, node: Address, _req: &GetHealthReq) -> Result<GetHealthRes, ApiError> {
