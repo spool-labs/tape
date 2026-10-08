@@ -2,7 +2,7 @@
 // sampled piece of a track to its group peers, and each peer's board shows
 // what arrived and how long it took.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
@@ -386,6 +386,7 @@ async fn flag_off_and_late_inner() {
         silent.node_address(),
         opened.round,
         silent.params().profile,
+        &HashSet::new(),
     );
     assert_eq!(batches.len(), PEERS);
 

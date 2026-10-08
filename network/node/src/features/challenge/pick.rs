@@ -61,6 +61,20 @@ pub fn pick_track<Db: Store>(
     }
 }
 
+/// Whether `group` has any track in the previous epoch's set
+///
+/// With none, this walks the whole track index before it can say so.
+pub fn has_tracks<Db: Store>(
+    store: &TapeStore<Db>,
+    group: GroupIndex,
+    fold: GroupFold,
+    epoch: EpochNumber,
+) -> Result<bool, ChallengeError> {
+    let first = pick_track(store, Address::default(), group, fold, epoch)?;
+
+    Ok(first.is_some())
+}
+
 /// Whether a track belongs to `group` and to the set the assignment sizing counts
 fn is_in_set<Db: Store>(
     store: &TapeStore<Db>,

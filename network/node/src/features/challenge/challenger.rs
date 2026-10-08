@@ -1,19 +1,22 @@
 //! One node's part in the rounds: it opens each round, proves its own spools
 //! and records what arrives from its peers
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
 use tape_core::encoding::ErasureCode;
+use tape_core::spooler::GroupIndex;
 use tape_core::types::{EpochNumber, RoundNumber, SlotNumber};
 use tape_crypto::{Address, Hash};
-use tape_protocol::ProtocolState;
+use tape_protocol::{EpochBundle, ProtocolState};
 use tape_store::TapeStore;
 use tape_store_api::Store;
+use tracing::warn;
 
 use crate::features::challenge::board::{Board, BoardRound, Opened};
 use crate::features::challenge::holders::bundle_at;
 use crate::features::challenge::observer::{expected_entries, record};
+use crate::features::challenge::pick::has_tracks;
 use crate::features::challenge::prover::build_batches;
 use crate::features::challenge::round::{Batch, Round};
 use crate::features::challenge::schedule::Schedule;
@@ -33,6 +36,7 @@ struct Current {
     schedule: Schedule,
     has_turned_active: bool,
     newest: RoundNumber,
+    empty: HashSet<(EpochNumber, GroupIndex)>,
 }
 
 /// A batch that arrived before this node handled its round's seed block
@@ -56,8 +60,8 @@ impl Challenger {
 
     /// Start an epoch's rounds
     ///
-    /// The proofs held for the epoch before are dropped. The rounds on the
-    /// board stay.
+    /// The proofs held for the epoch before are dropped, and so is what was
+    /// learned about empty groups. The rounds on the board stay.
     pub fn begin_epoch(&mut self, epoch: EpochNumber, schedule: Schedule, has_turned_active: bool) {
         self.held.clear();
         self.current = Some(Current {
@@ -65,6 +69,7 @@ impl Challenger {
             schedule,
             has_turned_active,
             newest: RoundNumber::zero(),
+            empty: HashSet::new(),
         });
     }
 
@@ -107,15 +112,58 @@ impl Challenger {
 
         let mut batches = Vec::new();
         if let Some(bundle) = self.answering().and_then(|epoch| bundle_at(state, epoch)) {
-            opened.entries = expected_entries(store, bundle, self.node, round);
+            let empty = self.empty_groups(store, bundle, answering, round);
+            opened.entries = expected_entries(bundle, self.node, &empty);
             for (sender, held) in &early {
                 record(store, bundle, self.profile, &mut opened, *sender, &held.batch, held.arrived);
             }
-            batches = build_batches(store, bundle, self.node, round, self.profile);
+            batches = build_batches(store, bundle, self.node, round, self.profile, &empty);
         }
 
         self.board.push(opened);
         batches
+    }
+
+    /// List the groups this node answers in that have no track in the set
+    ///
+    /// A group found empty is remembered for the rest of the epoch, so it
+    /// costs one walk of the track index and no more. A lookup that fails
+    /// counts as empty for this round and is not remembered.
+    fn empty_groups<Db: Store>(
+        &mut self,
+        store: &TapeStore<Db>,
+        bundle: &EpochBundle,
+        answering: EpochNumber,
+        round: Round,
+    ) -> HashSet<GroupIndex> {
+        let mut empty = HashSet::new();
+        let (Some(fold), Some(current)) = (bundle.fold(), self.current.as_mut()) else {
+            return empty;
+        };
+
+        for group in &bundle.groups {
+            if !group.spools.iter().any(|spool| spool.node == self.node) {
+                continue;
+            }
+
+            let group = group.id;
+            if current.empty.contains(&(answering, group)) {
+                empty.insert(group);
+                continue;
+            }
+            match has_tracks(store, group, fold, round.epoch) {
+                Ok(true) => {}
+                Ok(false) => {
+                    current.empty.insert((answering, group));
+                    empty.insert(group);
+                }
+                Err(error) => {
+                    warn!(%group, %error, "challenge set lookup failed");
+                    empty.insert(group);
+                }
+            }
+        }
+        empty
     }
 
     /// Take in a peer's proofs for a round
@@ -212,15 +260,18 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_api::state::{Epoch, Group};
     use tape_core::erasure::MAX_GROUP_SIZE;
-    use tape_core::spooler::GroupIndex;
+    use tape_core::spooler::{GroupIndex, VirtualGroup};
     use tape_core::system::Spool;
-    use tape_core::types::SpoolIndex;
+    use tape_core::track::types::TrackState;
+    use tape_core::types::{SpoolIndex, TrackNumber};
     use tape_protocol::EpochBundle;
     use tape_store::ops::TrackDataOps;
     use tape_store_memory::MemoryStore;
 
     use crate::features::challenge::board::{Outcome, Seen, RECENT_ROUNDS};
-    use crate::features::challenge::fixture::{every_case, fill, test_store, EPOCH, PREVIOUS, PROFILE};
+    use crate::features::challenge::fixture::{
+        every_case, fill, put_tape, test_store, write_inline, EPOCH, PREVIOUS, PROFILE, WRITTEN,
+    };
     use crate::features::challenge::proof::Proof;
 
     use super::*;
@@ -650,6 +701,71 @@ mod tests {
         assert!(sent.is_empty());
         assert!(round.opened.is_some());
         assert!(round.entries.is_empty());
+    }
+
+    // a group found empty is not walked again in the epoch: tracks that reach
+    // the store afterwards are seen once the next epoch begins, and no sooner
+    #[test]
+    fn empty_remembered() {
+        let store = test_store();
+        let base = Instant::now();
+        let mut observer = challenger(1, RECENT_ROUNDS, true);
+        let mut fresh = challenger(1, RECENT_ROUNDS, true);
+
+        open(&mut observer, &store, 1, base);
+        every_case(&store);
+        fill(&store, FILLER_TAPE, FILLER_TRACKS);
+        let same_epoch = open(&mut observer, &store, 2, ms(base, 830));
+        open(&mut fresh, &store, 2, ms(base, 830));
+
+        // A node with no memory of the group sees the tracks. This one does not walk again.
+        let unseen = observer.board().round(slot(2)).expect("round on the board");
+        let seen = fresh.board().round(slot(2)).expect("round on the board");
+        assert!(same_epoch.is_empty());
+        assert!(unseen.entries.is_empty());
+        assert_eq!(seen.entries.len(), 2 * (MAX_GROUP_SIZE - 1));
+
+        let next_start = slot(2);
+        observer.begin_epoch(EPOCH.next(), Schedule::new(next_start, CADENCE), false);
+        let next = SlotNumber(next_start.0 + CADENCE);
+        let next_epoch = observer.on_block(&store, &state(), next, seed(3), true, ms(base, 1_660));
+
+        let third = observer.board().round(next).expect("round on the board");
+        assert_eq!(third.entries.len(), 2 * (MAX_GROUP_SIZE - 1));
+        assert_eq!(next_epoch.len(), MAX_GROUP_SIZE - 1);
+    }
+
+    // what was learned while one epoch's holders answered says nothing about
+    // the next epoch's: under another fold the same group carries other tracks
+    #[test]
+    fn empty_per_holders() {
+        let store = test_store();
+        put_tape(&store, FILLER_TAPE, EPOCH.next(), TrackNumber(0));
+        for number in 0..4 {
+            write_inline(&store, FILLER_TAPE, number, VirtualGroup(1), TrackState::Certified, WRITTEN);
+        }
+        // Two groups in the previous epoch, one in the current.
+        let shrinking = ProtocolState {
+            current: bundle(EPOCH, 1, 1),
+            previous: Some(bundle(PREVIOUS, 2, 0)),
+            ..ProtocolState::default()
+        };
+        let base = Instant::now();
+        let mut observer = challenger(1, RECENT_ROUNDS, false);
+
+        observer.on_block(&store, &shrinking, slot(1), seed(1), true, base);
+        observer.turn_active();
+        observer.on_block(&store, &shrinking, slot(2), seed(2), true, ms(base, 830));
+
+        // Under two groups the tracks are all group 1's, and group 0 is empty.
+        let before = observer.board().round(slot(1)).expect("round on the board");
+        assert_eq!(before.entries.len(), MAX_GROUP_SIZE - 1);
+        assert!(before.entries.iter().all(|entry| GroupIndex(1).contains(entry.spool)));
+
+        // Under one group, group 0 carries them.
+        let after = observer.board().round(slot(2)).expect("round on the board");
+        assert_eq!(after.entries.len(), MAX_GROUP_SIZE - 1);
+        assert!(after.entries.iter().all(|entry| GroupIndex(0).contains(entry.spool)));
     }
 
     // the rounds of an epoch stay on the board when the next epoch begins

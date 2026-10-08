@@ -1,5 +1,6 @@
 //! Lists the proofs a node expects in a round and records the ones that arrive
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use tape_core::encoding::ErasureCode;
@@ -19,49 +20,24 @@ use crate::features::challenge::round::{Batch, Round, SpoolProof};
 
 /// List an empty entry for every peer spool `node` expects a proof from
 ///
-/// `bundle` is the assignment whose holders answer. A group with no track in
-/// the set has nothing to prove, so its spools get no entry.
-pub fn expected_entries<Db: Store>(
-    store: &TapeStore<Db>,
+/// `bundle` is the assignment whose holders answer. A group in `empty` has no
+/// track in the set and so nothing to prove, and its spools get no entry.
+pub fn expected_entries(
     bundle: &EpochBundle,
     node: Address,
-    round: Round,
+    empty: &HashSet<GroupIndex>,
 ) -> Vec<Entry> {
-    let Some(fold) = bundle.fold() else {
+    if bundle.fold().is_none() {
         return Vec::new();
-    };
+    }
 
-    // The spools come group by group, so one lookup covers a whole group.
     let mut entries = Vec::new();
-    let mut last: Option<(GroupIndex, bool)> = None;
     for (spool, _) in peer_spools(bundle, node) {
-        let group = GroupIndex::containing(spool);
-        let has_tracks = match last {
-            Some((seen, has_tracks)) if seen == group => has_tracks,
-            Some(_) | None => group_has_tracks(store, group, fold, round),
-        };
-        last = Some((group, has_tracks));
-
-        if has_tracks {
+        if !empty.contains(&GroupIndex::containing(spool)) {
             entries.push(Entry { spool, seen: None });
         }
     }
     entries
-}
-
-fn group_has_tracks<Db: Store>(
-    store: &TapeStore<Db>,
-    group: GroupIndex,
-    fold: GroupFold,
-    round: Round,
-) -> bool {
-    match pick_track(store, Address::default(), group, fold, round.epoch) {
-        Ok(pick) => pick.is_some(),
-        Err(error) => {
-            warn!(%group, %error, "challenge set lookup failed");
-            false
-        }
-    }
 }
 
 /// Record a peer's proofs in the round they are for

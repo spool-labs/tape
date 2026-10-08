@@ -1,6 +1,6 @@
 //! Builds a node's proofs for a round and sorts them into one batch for each peer
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use tape_api::state::Group;
 use tape_core::encoding::ErasureCode;
@@ -21,13 +21,15 @@ use crate::features::challenge::round::{Batch, Round, SpoolProof};
 ///
 /// `bundle` is the assignment whose holders answer. A peer gets the proofs of
 /// the node's spools in the groups the two share. A spool with no track to
-/// prove, or whose data this node lacks, gets no proof.
+/// prove, or whose data this node lacks, gets no proof. A group in `empty` is
+/// known to have no track in the set and is skipped with no walk.
 pub fn build_batches<Db: Store>(
     store: &TapeStore<Db>,
     bundle: &EpochBundle,
     node: Address,
     round: Round,
     profile: ErasureCode,
+    empty: &HashSet<GroupIndex>,
 ) -> Vec<(Address, Batch)> {
     let Some(fold) = bundle.fold() else {
         return Vec::new();
@@ -35,6 +37,10 @@ pub fn build_batches<Db: Store>(
 
     let mut by_peer: BTreeMap<Address, Vec<SpoolProof>> = BTreeMap::new();
     for group in &bundle.groups {
+        if empty.contains(&group.id) {
+            continue;
+        }
+
         let proofs = group_proofs(store, group, fold, node, round, profile);
         if proofs.is_empty() {
             continue;
