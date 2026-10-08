@@ -13,6 +13,7 @@ pub struct LocalnetConfig {
     pub stake_amount: u64,
     pub spool_groups: u64,
     pub is_admission_open: bool,
+    pub is_challenge_enabled: bool,
     /// Erasure code the local chain is created with
     pub profile: ErasureCode,
     /// What the local chain assumes about its nodes
@@ -46,6 +47,7 @@ impl Default for LocalnetConfig {
             stake_amount: 100_000,
             spool_groups: 1,
             is_admission_open: false,
+            is_challenge_enabled: false,
             profile: TAPENET_PROFILE,
             trust_model: TrustModel::Permissionless,
         }

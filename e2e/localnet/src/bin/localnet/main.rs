@@ -65,6 +65,10 @@ struct Cli {
     /// Let every node admit any caller at any rate
     #[arg(long)]
     open_admission: bool,
+
+    /// Run challenge rounds on every node
+    #[arg(long)]
+    challenge: bool,
 }
 
 fn main() -> ExitCode {
@@ -107,6 +111,7 @@ async fn async_main() -> ExitCode {
         stake_amount: cli.stake_amount,
         spool_groups: cli.spool_groups,
         is_admission_open: cli.open_admission,
+        is_challenge_enabled: cli.challenge,
         profile: cli.profile,
         trust_model: cli.trust_model,
     };

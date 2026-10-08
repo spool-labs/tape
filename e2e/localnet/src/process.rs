@@ -53,6 +53,7 @@ pub struct ProcessSupervisor {
     rpc_url: String,
     base_port: u16,
     is_admission_open: bool,
+    is_challenge_enabled: bool,
     nodes: Vec<NodeHandle>,
 }
 
@@ -63,6 +64,7 @@ impl ProcessSupervisor {
         rpc_url: String,
         base_port: u16,
         is_admission_open: bool,
+        is_challenge_enabled: bool,
     ) -> Self {
         Self {
             node_binary,
@@ -70,6 +72,7 @@ impl ProcessSupervisor {
             rpc_url,
             base_port,
             is_admission_open,
+            is_challenge_enabled,
             nodes: Vec::new(),
         }
     }
@@ -213,6 +216,7 @@ impl ProcessSupervisor {
             &store_path,
             &self.rpc_url,
             self.is_admission_open,
+            self.is_challenge_enabled,
         );
         std::fs::write(&config_path, yaml)
             .with_context(|| format!("write config: {}", config_path.display()))?;
@@ -449,6 +453,7 @@ fn build_node_yaml(
     store_path: &Path,
     rpc_url: &str,
     is_admission_open: bool,
+    is_challenge_enabled: bool,
 ) -> String {
     let admission = match is_admission_open {
         true => open_admission_block(),
@@ -487,6 +492,9 @@ store:
 metrics:
   enabled: true
 
+challenge:
+  enabled: {is_challenge_enabled}
+
 logging:
   filter: "info,tape_node::features::lifecycle=debug,tape_node::features::gc=debug"
   format: compact
@@ -516,9 +524,11 @@ mod tests {
             Path::new("/tmp/node-3/data"),
             "http://127.0.0.1:8899",
             true,
+            true,
         );
 
         let config = NodeConfig::from_yaml_str(&yaml).expect("generated yaml parses");
+        assert!(config.challenge_enabled());
         assert_eq!(config.node.name, "localnet-node-3");
         assert_eq!(config.solana.rpc, vec!["http://127.0.0.1:8899"]);
     }
