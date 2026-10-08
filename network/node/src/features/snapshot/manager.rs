@@ -290,7 +290,9 @@ where
             return Ok(());
         }
 
-        if state.phase() == EpochPhase::Active {
+        // A finalized snapshot whose metadata did not load is fetched again
+        // until the epoch ends. It can already be closing by the next pass.
+        if matches!(state.phase(), EpochPhase::Active | EpochPhase::Closing) {
             if let Some(previous) = state
                 .previous
                 .as_ref()
@@ -300,7 +302,7 @@ where
                     warn!(
                         epoch = previous.epoch.id.0,
                         %error,
-                        "snapshot: active-epoch metadata repair failed"
+                        "snapshot: finalized metadata repair failed"
                     );
                 }
             }
