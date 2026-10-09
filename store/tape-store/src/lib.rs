@@ -86,14 +86,15 @@ impl<S: Store> std::ops::DerefMut for TapeStore<S> {
 }
 
 /// Wrap an opened metadata store and bulk store in a split store, naming which
-/// column families live on the bulk volume
+/// column families live on the bulk volume and which of them keep a keys mirror
 #[cfg(feature = "rocks")]
-fn split_store(meta: RocksStore, bulk: RocksStore) -> SplitStore {
+fn split_store(meta: RocksStore, bulk: RocksStore) -> Result<SplitStore, tape_store_api::Error> {
     let bulk_cfs: Vec<String> = config::BULK_COLUMN_FAMILIES
         .iter()
         .map(|name| (*name).to_string())
         .collect();
-    SplitStore::new(meta, bulk, bulk_cfs)
+    let bulk = bulk.with_key_index(config::KEY_INDEXED_FAMILIES)?;
+    Ok(SplitStore::new(meta, bulk, bulk_cfs))
 }
 
 // Split-store constructors: a metadata store on the fast volume and a bulk
@@ -138,7 +139,7 @@ impl TapeStore<SplitStore> {
             config::create_db_options(bulk_compaction_mb_per_sec),
             config::create_bulk_store_configs(),
         )?;
-        Ok(Self::new(split_store(meta, bulk)))
+        Ok(Self::new(split_store(meta, bulk)?))
     }
 
     /// Open a read-only replica under a single root directory
@@ -166,7 +167,7 @@ impl TapeStore<SplitStore> {
             tape_store_rocks::Options::default(),
             config::create_bulk_store_configs(),
         )?;
-        Ok(Self::new(split_store(meta, bulk)))
+        Ok(Self::new(split_store(meta, bulk)?))
     }
 
     /// Open a secondary store for catch-up reads
@@ -210,7 +211,7 @@ impl TapeStore<SplitStore> {
             config::create_secondary_db_options(),
             config::create_bulk_store_configs(),
         )?;
-        Ok(Self::new(split_store(meta, bulk)))
+        Ok(Self::new(split_store(meta, bulk)?))
     }
 
     /// Sync both secondary instances with their primaries

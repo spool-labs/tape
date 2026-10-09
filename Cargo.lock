@@ -11832,6 +11832,7 @@ dependencies = [
  "rocksdb",
  "tape-store-api",
  "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

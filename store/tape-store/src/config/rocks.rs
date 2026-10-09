@@ -9,7 +9,9 @@
 //!   CFs that need total-order iteration get none
 
 use super::BULK_COLUMN_FAMILIES;
-use tape_store_rocks::{Cache, ColumnFamilyConfig, ColumnFamilyDescriptor, Options};
+use tape_store_rocks::{
+    key_index_family, Cache, ColumnFamilyConfig, ColumnFamilyDescriptor, Options,
+};
 
 // Re-export rocksdb types needed for configuration
 use rocksdb;
@@ -24,7 +26,7 @@ const BLOCK_CACHE_BYTES: usize = 96 * 1024 * 1024;
 
 /// Ceiling on memtable memory across all column families of one instance
 ///
-/// Per-family write buffers only bound one family at a time. With 24 families
+/// Per-family write buffers only bound one family at a time. With 26 families
 /// on the metadata volume, the sum is what matters on a small box, and RocksDB
 /// leaves it unbounded unless this is set. Crossing it flushes the largest
 /// memtable rather than stalling writes.
@@ -217,6 +219,17 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
             .with_blob_db(256 * 1024)
             .with_prefix_extractor(32),
 
+        // S3 pending writes keyed by ([tape 32B][object key]); small values.
+        ColumnFamilyConfig::new("s3_pending_write")
+            .with_block_based(cache),
+
+        // S3 pending write payloads in 8 MiB chunks, keyed by
+        // ([tape 32B][key length 4B][object key][chunk 4B]); held only until
+        // the write lands.
+        ColumnFamilyConfig::new("s3_pending_write_data")
+            .with_block_based(cache)
+            .with_blob_db(256 * 1024),
+
         // Removal log - 48-byte RemovalKey ([tape 32B][tape_number 8B][epoch 8B]),
         // a row per tape closed or rewound in an epoch.
         // The prune walks the whole column, so no prefix extractor.
@@ -234,12 +247,30 @@ pub fn create_metadata_store_configs() -> Vec<ColumnFamilyDescriptor> {
         .collect()
 }
 
+/// Bulk families whose keys RocksDB mirrors in a small family beside them
+///
+/// A count or a key listing over slices would otherwise load every slice it
+/// touches from the blob files. See `RocksStore::with_key_index`.
+pub const KEY_INDEXED_FAMILIES: &[&str] = &["slice"];
+
 /// Column family configurations for the bulk (large volume) store
+///
+/// The tape store's bulk families, then the mirror family of each key-indexed
+/// one, which has to share its instance so the two are written in one batch.
 pub fn create_bulk_store_configs() -> Vec<ColumnFamilyDescriptor> {
-    create_tape_store_configs()
-        .into_iter()
-        .filter(|cf| BULK_COLUMN_FAMILIES.contains(&cf.name()))
-        .collect()
+    let cache = Cache::new_lru_cache(BLOCK_CACHE_BYTES);
+
+    let mut configs = Vec::new();
+    for config in tape_store_column_configs(&cache) {
+        if BULK_COLUMN_FAMILIES.contains(&config.name()) {
+            configs.push(config.build());
+        }
+    }
+    for family in KEY_INDEXED_FAMILIES {
+        let mirror = ColumnFamilyConfig::new(key_index_family(family)).with_block_based(&cache);
+        configs.push(mirror.build());
+    }
+    configs
 }
 
 /// Cap on total write-ahead-log size, so a write burst cannot balloon the volume
@@ -308,49 +339,15 @@ fn base_db_options() -> Options {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::columns::ALL_COLUMN_FAMILIES;
 
-    #[test]
-    fn test_config_count() {
-        let configs = create_tape_store_configs();
-        assert_eq!(configs.len(), 27);
-    }
-
+    // every family tape-store declares is configured, in the declared order
     #[test]
     fn test_config_names() {
         let configs = create_tape_store_configs();
         let names: Vec<&str> = configs.iter().map(|cf| cf.name()).collect();
 
-        let expected = vec![
-            "meta",
-            "tape",
-            "track",
-            "track_lookup",
-            "track_data",
-            "object_info",
-            "object_metadata",
-            "object_list",
-            "sync_cursor",
-            "gc",
-            "spool_status",
-            "spool_pending_repair",
-            "spool_pending_recovery",
-            "slice",
-            "event_log",
-            "vote_sig",
-            "snapshot_artifact",
-            "credential",
-            "policy_rule",
-            "auth_state",
-            "audit_log",
-            "ledger",
-            "ledger_reservation",
-            "s3_multipart_upload",
-            "s3_multipart_part",
-            "s3_multipart_part_data",
-            "removal_log",
-        ];
-
-        assert_eq!(names, expected);
+        assert_eq!(names, ALL_COLUMN_FAMILIES);
     }
 
     #[test]
@@ -371,12 +368,21 @@ mod tests {
             .map(|cf| cf.name().to_string())
             .collect();
 
-        // The two volumes partition every column family with no overlap.
-        assert_eq!(meta.len() + bulk.len(), create_tape_store_configs().len());
+        // The two volumes partition every column family with no overlap, and
+        // the bulk volume also carries the slice keys mirror.
+        assert_eq!(meta.len() + bulk.len(), create_tape_store_configs().len() + 1);
         assert_eq!(
             bulk,
-            vec!["track_data", "slice", "snapshot_artifact"]
+            vec!["track_data", "slice", "snapshot_artifact", "slice_keys"]
         );
         assert!(meta.iter().all(|cf| !BULK_COLUMN_FAMILIES.contains(&cf.as_str())));
+    }
+
+    // a mirrored family sits on the bulk volume, where its mirror is opened
+    #[test]
+    fn mirrors_on_bulk() {
+        for family in KEY_INDEXED_FAMILIES {
+            assert!(BULK_COLUMN_FAMILIES.contains(family));
+        }
     }
 }

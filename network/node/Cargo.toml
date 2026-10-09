@@ -33,7 +33,8 @@ tape-rpc-solana = { workspace = true }
 tape-retry = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 tape-observe-api = { workspace = true }
-memory-stats = { version = "1", optional = true }
+# statm reads in O(1), smaps walks every page-table entry under mmap_lock
+memory-stats = { version = "1", optional = true, features = ["always_use_statm"] }
 sysinfo = { version = "0.39", default-features = false, features = ["system"], optional = true }
 fs2 = { version = "0.4", optional = true }
 

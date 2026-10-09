@@ -2,11 +2,19 @@
 
 //! Integration tests for TapeStore with RocksDB backend
 
-use tape_core::system::{SpoolState, SpoolStatus};
+use tape_core::bls::BlsSignature;
+use tape_core::erasure::MAX_GROUP_SIZE;
+use tape_core::spooler::GroupIndex;
+use tape_core::system::{SpoolState, SpoolStatus, VoteCandidate, VoteKind};
+use tape_core::track::blob::BlobEncoding;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-use tape_core::types::{EpochNumber, SlotNumber, VirtualGroup, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
+use tape_core::types::{
+    ChunkNumber, ContentType, EpochNumber, SlotNumber, VirtualGroup, SpoolIndex, StorageUnits,
+    StripeCount, TapeNumber, TrackNumber,
+};
 use tape_crypto::address::Address;
-use tape_crypto::hash::Hash;
+use tape_crypto::bls12254::min_sig::G1CompressedPoint;
+use tape_crypto::hash::{hash, Hash};
 use tape_store::{ops::*, types::*, TapeStore};
 use tempfile::TempDir;
 
@@ -399,4 +407,173 @@ fn tape_info_operations() {
 
     store.delete_tape(tape).unwrap();
     assert!(store.get_tape(tape).unwrap().is_none());
+}
+
+// spools with queued rows are still listed once the rows are flushed to disk
+#[test]
+fn pending_spools_flushed() {
+    let temp_dir = TempDir::new().expect("tempdir");
+    let store = TapeStore::open_primary(temp_dir.path()).expect("open");
+    store
+        .add_pending_repair(SpoolIndex(5), Address::new_unique())
+        .expect("pending repair");
+    store
+        .add_pending_repair(SpoolIndex(9), Address::new_unique())
+        .expect("pending repair");
+    store
+        .add_pending_recovery(SpoolIndex(7), Address::new_unique())
+        .expect("pending recovery");
+    store.inner().inner().flush().expect("flush");
+
+    let repair = store.pending_repair_spools().expect("repair spools");
+    let recovery = store.pending_recovery_spools().expect("recovery spools");
+
+    assert_eq!(repair, vec![SpoolIndex(5), SpoolIndex(9)]);
+    assert_eq!(recovery, vec![SpoolIndex(7)]);
+}
+
+// deleting one voting epoch's signatures leaves the next epoch's in place
+#[test]
+fn vote_epoch_delete() {
+    let temp_dir = TempDir::new().expect("tempdir");
+    let store = TapeStore::open_primary(temp_dir.path()).expect("open");
+    let group = GroupIndex(4);
+    let signature = BlsSignature(G1CompressedPoint([1; 32]));
+    let candidate = |voting_epoch: u64| VoteCandidate {
+        kind: VoteKind::Snapshot,
+        voting_epoch: EpochNumber(voting_epoch),
+        target_epoch: EpochNumber(voting_epoch - 1),
+        hash: Hash::from([0xAA; 32]),
+    };
+    for voting_epoch in [11, 12] {
+        store
+            .put_vote_sig(candidate(voting_epoch), group, Address::new_unique(), &signature)
+            .expect("put vote sig");
+    }
+    store.inner().inner().flush().expect("flush");
+
+    store.delete_vote_epoch(EpochNumber(11)).expect("delete epoch");
+
+    assert!(store.iter_vote_sigs(candidate(11), group).expect("epoch 11").is_empty());
+    assert_eq!(store.iter_vote_sigs(candidate(12), group).expect("epoch 12").len(), 1);
+}
+
+// deleting one epoch's snapshot artifacts leaves the next epoch's in place
+#[test]
+fn snapshot_epoch_delete() {
+    let temp_dir = TempDir::new().expect("tempdir");
+    let store = TapeStore::open_primary(temp_dir.path()).expect("open");
+    let group = VirtualGroup(2);
+    let artifact = SnapshotArtifact {
+        blob: BlobEncoding {
+            size: StorageUnits::from_bytes(64),
+            commitment: Hash::from([7; 32]),
+            stripe_size: StorageUnits::from_bytes(64),
+            stripe_count: StripeCount(1),
+            leaves: [Hash::from([7; 32]); MAX_GROUP_SIZE],
+        },
+        spool_index: SpoolIndex(7),
+        slice: vec![7; 32],
+    };
+    for epoch in [9, 10] {
+        store
+            .put_snapshot_artifact(EpochNumber(epoch), group, ChunkNumber(0), &artifact)
+            .expect("put artifact");
+    }
+    store.inner().inner().flush().expect("flush");
+
+    store.delete_snapshot_epoch(EpochNumber(9)).expect("delete epoch");
+
+    assert!(store.iter_snapshot_artifacts(EpochNumber(9), group).expect("epoch 9").is_empty());
+    assert_eq!(store.iter_snapshot_artifacts(EpochNumber(10), group).expect("epoch 10").len(), 1);
+}
+
+// the pending-write queue a gateway reads at startup is there, and empty
+#[test]
+fn pending_write_queue() {
+    let temp_dir = TempDir::new().expect("tempdir");
+    let store = TapeStore::open_primary(temp_dir.path()).expect("open");
+
+    let entries = store.pending_write_entries().expect("entries");
+    let has_data = store
+        .has_pending_write_data(Address::new_unique(), b"key")
+        .expect("pending data");
+
+    assert!(entries.is_empty());
+    assert!(!has_data);
+}
+
+// a spool's slice count and stored bytes follow writes and a spool-wide delete
+#[test]
+fn slice_totals() {
+    let temp_dir = TempDir::new().expect("tempdir");
+    let store = TapeStore::open_primary(temp_dir.path()).expect("open");
+    let spool = SpoolIndex(5);
+    let kept = Address::new_unique();
+    let stored = slice::fuse(&[7u8; 300_000], None).len() as u64;
+    store.put_slice(spool, kept, vec![7u8; 300_000]).expect("put slice");
+    store
+        .put_slice(spool, Address::new_unique(), vec![7u8; 300_000])
+        .expect("put slice");
+    store
+        .put_slice(SpoolIndex(6), Address::new_unique(), vec![7u8; 300_000])
+        .expect("put slice");
+    store.inner().inner().flush().expect("flush");
+
+    let (count, bytes) = store.slice_totals_by_spool(spool).expect("totals");
+    assert_eq!(count, 2);
+    assert!(bytes.expect("bytes").as_u64() >= 2 * stored);
+    assert!(store.has_slice(spool, kept).expect("has slice"));
+    assert_eq!(store.iter_slice_keys_by_spool(spool).expect("keys").len(), 2);
+
+    store.delete_all_slices_for_spool(spool).expect("delete spool");
+
+    assert_eq!(store.slice_totals_by_spool(spool).expect("totals").0, 0);
+    assert!(!store.has_slice(spool, kept).expect("has slice"));
+    assert_eq!(store.slice_totals().expect("totals").0, 1);
+}
+
+// a slice written through the awaited put reads back
+#[tokio::test]
+async fn awaited_slice() {
+    let temp_dir = TempDir::new().expect("tempdir");
+    let store = TapeStore::open_primary(temp_dir.path()).expect("open");
+    let spool = SpoolIndex(5);
+    let track = Address::new_unique();
+    let payload = vec![7u8; 64];
+
+    store
+        .put_fused_slice_wait(spool, track, slice::fuse(&payload, None))
+        .await
+        .expect("put slice");
+
+    assert_eq!(store.get_slice(spool, track).expect("get slice"), Some(payload));
+}
+
+// a queued S3 write and its bytes read back after the awaited enqueue
+#[tokio::test]
+async fn pending_write_roundtrip() {
+    let temp_dir = TempDir::new().expect("tempdir");
+    let store = TapeStore::open_primary(temp_dir.path()).expect("open");
+    let tape = Address::new_unique();
+    let data = vec![3u8; 1024];
+    let write = PendingWrite {
+        seq: 1,
+        op: PendingOp::Put {
+            content_type: ContentType::TextPlain,
+            etag: hash(&data),
+            size: data.len() as u64,
+            block_time: 1_700_000_000,
+            old_track: None,
+        },
+        state: PendingState::Queued,
+    };
+
+    store
+        .put_pending_write(tape, b"key", &write, Some(data.clone()))
+        .await
+        .expect("enqueue");
+
+    assert_eq!(store.get_pending_write(tape, b"key").expect("entry"), Some(write));
+    assert_eq!(store.get_pending_write_data(tape, b"key").expect("data"), Some(data));
 }

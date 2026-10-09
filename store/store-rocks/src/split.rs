@@ -10,7 +10,9 @@
 //! layout, so a one-drive box needs no special handling.
 
 use tape_store_api::{
-    BatchOp, CfDiskUsage, DiskVolume, Direction, Result, Store, StoreIter, StoreVolume, WriteBatch, Value};
+    BatchOp, CfDiskUsage, DiskVolume, Direction, KeyValue, Result, Store, StoreIter, StoreVolume,
+    WriteBatch, Value,
+};
 
 use crate::RocksStore;
 
@@ -60,6 +62,58 @@ impl SplitStore {
         }
     }
 
+    /// One batch for the metadata volume and one for the bulk volume
+    ///
+    /// A batch that stays within one volume is handed over whole, so its
+    /// payloads are never copied.
+    fn by_volume(&self, batch: WriteBatch) -> (WriteBatch, WriteBatch) {
+        let mut any_bulk = false;
+        let mut any_meta = false;
+        for op in batch.iter() {
+            if self.is_bulk(op.cf()) {
+                any_bulk = true;
+            } else {
+                any_meta = true;
+            }
+        }
+
+        // Nothing writes a batch spanning both volumes, and two instances cannot
+        // commit one atomically; catch such a regression in debug builds.
+        debug_assert!(
+            !(any_bulk && any_meta),
+            "write_batch spans both store volumes; cross-volume batches are not atomic"
+        );
+
+        if !any_bulk {
+            return (batch, WriteBatch::new());
+        }
+        if !any_meta {
+            return (WriteBatch::new(), batch);
+        }
+
+        let mut meta_batch = WriteBatch::new();
+        let mut bulk_batch = WriteBatch::new();
+        for op in batch {
+            match op {
+                BatchOp::Put { cf, key, value } => {
+                    if self.is_bulk(&cf) {
+                        bulk_batch.put_owned(&cf, key, value);
+                    } else {
+                        meta_batch.put_owned(&cf, key, value);
+                    }
+                }
+                BatchOp::Delete { cf, key } => {
+                    if self.is_bulk(&cf) {
+                        bulk_batch.delete_owned(&cf, key);
+                    } else {
+                        meta_batch.delete_owned(&cf, key);
+                    }
+                }
+            }
+        }
+        (meta_batch, bulk_batch)
+    }
+
     /// Flush both instances
     pub fn flush(&self) -> Result<()> {
         self.meta.flush()?;
@@ -90,61 +144,20 @@ impl Store for SplitStore {
         self.route(cf).contains(cf, key)
     }
 
+    async fn put_owned_wait(&self, cf: &str, key: &[u8], value: Vec<u8>) -> Result<()> {
+        self.route(cf).put_owned_wait(cf, key, value).await
+    }
+
     fn write_batch(&self, batch: WriteBatch) -> Result<()> {
-        if batch.is_empty() {
-            return Ok(());
-        }
+        let (meta, bulk) = self.by_volume(batch);
+        self.meta.write_batch(meta)?;
+        self.bulk.write_batch(bulk)
+    }
 
-        let mut any_bulk = false;
-        let mut any_meta = false;
-        for op in batch.iter() {
-            if self.is_bulk(op.cf()) {
-                any_bulk = true;
-            } else {
-                any_meta = true;
-            }
-        }
-
-        // Nothing writes a batch spanning both volumes, and two instances cannot
-        // commit one atomically; catch such a regression in debug builds.
-        debug_assert!(
-            !(any_bulk && any_meta),
-            "write_batch spans both store volumes; cross-volume batches are not atomic"
-        );
-
-        // The common case owns a single volume, so hand the batch straight over
-        // rather than copying every payload into a per-volume batch.
-        if !(any_bulk && any_meta) {
-            return if any_bulk {
-                self.bulk.write_batch(batch)
-            } else {
-                self.meta.write_batch(batch)
-            };
-        }
-
-        let mut meta_batch = WriteBatch::new();
-        let mut bulk_batch = WriteBatch::new();
-        for op in batch.iter() {
-            match op {
-                BatchOp::Put { cf, key, value } => {
-                    if self.is_bulk(cf) {
-                        bulk_batch.put(cf, key, value);
-                    } else {
-                        meta_batch.put(cf, key, value);
-                    }
-                }
-                BatchOp::Delete { cf, key } => {
-                    if self.is_bulk(cf) {
-                        bulk_batch.delete(cf, key);
-                    } else {
-                        meta_batch.delete(cf, key);
-                    }
-                }
-            }
-        }
-        self.meta.write_batch(meta_batch)?;
-        self.bulk.write_batch(bulk_batch)?;
-        Ok(())
+    async fn write_batch_wait(&self, batch: WriteBatch) -> Result<()> {
+        let (meta, bulk) = self.by_volume(batch);
+        self.meta.write_batch_wait(meta).await?;
+        self.bulk.write_batch_wait(bulk).await
     }
 
     fn delete_range(&self, cf: &str, start: &[u8], end: &[u8]) -> Result<()> {
@@ -163,8 +176,22 @@ impl Store for SplitStore {
         self.route(cf).iter_keys_prefix(cf, prefix)
     }
 
+    fn count_prefix(&self, cf: &str, prefix: &[u8]) -> Result<u64> {
+        self.route(cf).count_prefix(cf, prefix)
+    }
+
     fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Option<u64>> {
         self.route(cf).bytes_prefix(cf, prefix)
+    }
+
+    fn sweep_prefix(
+        &self,
+        cf: &str,
+        prefix: &[u8],
+        from: Option<&[u8]>,
+        limit: usize,
+    ) -> Result<(Vec<KeyValue>, Option<Vec<u8>>)> {
+        self.route(cf).sweep_prefix(cf, prefix, from, limit)
     }
 
     fn sweep_keys_prefix(
@@ -308,6 +335,38 @@ mod tests {
         assert_eq!(store.get("slice", b"b").unwrap().map(Value::into_vec), Some(b"2".to_vec()));
         // The bulk batch did not leak into the metadata volume.
         assert_eq!(store.meta().get("meta", b"b").unwrap(), None);
+    }
+
+    // awaited writes land in the column family's owning instance
+    #[tokio::test]
+    async fn awaited_routing() {
+        let dir = tempdir().expect("tempdir");
+        let store = split(&dir.path().join("meta"), &dir.path().join("bulk"));
+        let mut batch = WriteBatch::new();
+        batch.put("meta", b"a", b"1");
+
+        store
+            .put_owned_wait("slice", b"b", b"2".to_vec())
+            .await
+            .expect("put");
+        store.write_batch_wait(batch).await.expect("batch");
+
+        assert!(store.meta().get("meta", b"a").expect("get").is_some());
+        assert!(store.bulk().get("slice", b"b").expect("get").is_some());
+    }
+
+    // paged values come from the column family's owning instance
+    #[test]
+    fn pages_route() {
+        let dir = tempdir().expect("tempdir");
+        let store = split(&dir.path().join("meta"), &dir.path().join("bulk"));
+        store.put("slice", b"a1", b"1").expect("put");
+        store.put("slice", b"a2", b"2").expect("put");
+
+        let (page, next) = store.sweep_prefix("slice", b"a", None, 1).expect("page");
+
+        assert_eq!(page, vec![(b"a1".to_vec(), b"1".to_vec())]);
+        assert_eq!(next, Some(b"a2".to_vec()));
     }
 
     // key count estimates route to the column family's owning instance
