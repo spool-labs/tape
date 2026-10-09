@@ -74,6 +74,8 @@ pub enum TapeError {
     NoCommission = 0x55,
     #[error("assignment incomplete")]
     AssignmentIncomplete = 0x56,
+    #[error("not a storage node")]
+    NotStorageNode = 0x57,
 
     // Staking
     #[error("staking failed")]
@@ -190,6 +192,7 @@ impl TapeError {
             Self::NodeSuspended => "Node is suspended from the committee for this epoch",
             Self::AlreadySynced => "Node has already synced",
             Self::AssignmentIncomplete => "Next epoch assignment is incomplete",
+            Self::NotStorageNode => "Only a storage node can join the committee",
             Self::AlreadyAdvanced => "Already advanced",
             Self::RewardsOverflow => "Rewards calculation overflow",
             Self::NoCommission => "No commission to claim",

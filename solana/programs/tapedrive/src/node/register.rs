@@ -4,6 +4,8 @@ use tape_api::event::NodeRegistered;
 
 pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
     let args = RegisterNode::try_from_bytes(data)?;
+    let kind = NodeKind::try_from(args.kind)
+        .map_err(|_| ProgramError::InvalidArgument)?;
     args.network_address
         .validate()
         .map_err(|_| ProgramError::InvalidArgument)?;
@@ -86,6 +88,7 @@ pub fn process_register_node(accounts: &[AccountInfo<'_>], data: &[u8]) -> Progr
 
     node.id                   = node_number.into();
     node.authority            = (*authority_info.key).into();
+    node.kind                 = kind.into();
     node.registered_epoch     = current;
     node.latest_sync_epoch    = current;
     node.latest_advance_epoch = current;
@@ -160,6 +163,7 @@ mod tests {
         let instruction = build_register_node_ix(
             fee_payer.into(),
             authority.into(),
+            NodeKind::Gateway,
             name,
             commission_rate,
             network_address,
@@ -208,6 +212,7 @@ mod tests {
                     Node {
                         id: NodeId::new(0),
                         authority: authority.into(),
+                        kind: NodeKind::Gateway.into(),
                         pool: StakingPool::new(commission_rate),
                         metadata: NodeMetadata {
                             name,
@@ -249,6 +254,7 @@ mod tests {
         let instruction = build_register_node_ix(
             fee_payer.into(),
             authority.into(),
+            NodeKind::Storage,
             to_name("node"),
             BasisPoints(BasisPoints::MAX + 1),
             NetworkAddress::default(),
@@ -257,6 +263,58 @@ mod tests {
             bls_pop,
             NodePreferences::from(&GenesisConfig::simnet()),
         );
+
+        let (system_address, _) = system_pda();
+        let (node_address, _) = node_pda(authority.into());
+        let (history_address, _) = history_pda(node_address);
+        let (blacklist_address, _) = blacklist_pda(node_address);
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+
+            pda(system_address, System::zeroed().pack(), tapedrive::ID),
+            empty(node_address),
+            empty(history_address),
+            empty(blacklist_address),
+
+            system_program(),
+            rent_sysvar(),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(ProgramError::InvalidArgument)]
+        );
+    }
+
+    // a kind the program doesn't know is refused
+    #[test]
+    fn register_rejects_unknown_kind() {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+
+        let secret = BlsPrivateKey::from_random();
+        let bls_pubkey = secret.public_key().expect("pubkey");
+        let bls_pop = secret.proof_of_possession().expect("pop");
+
+        let mut instruction = build_register_node_ix(
+            fee_payer.into(),
+            authority.into(),
+            NodeKind::Gateway,
+            to_name("node"),
+            BasisPoints(100),
+            NetworkAddress::default(),
+            NetworkTlsPubkey::new_unique(),
+            bls_pubkey,
+            bls_pop,
+            NodePreferences::from(&GenesisConfig::simnet()),
+        );
+        // The kind is the first field after the instruction byte.
+        let unknown = u64::from(NodeKind::Gateway) + 1;
+        instruction.data[1..9].copy_from_slice(&unknown.to_le_bytes());
 
         let (system_address, _) = system_pda();
         let (node_address, _) = node_pda(authority.into());

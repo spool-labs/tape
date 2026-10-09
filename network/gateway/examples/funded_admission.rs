@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use tape_core::system::NodeKind;
 use tape_crypto::address::Address;
 use tape_gateway::admission::{Admission, AdmissionDeny, AdmissionRequest};
 use tape_gateway::runtime::run_with_context;
@@ -124,7 +125,7 @@ impl Admission for PrepaidAdmission {
 }
 
 async fn run(config: NodeConfig) -> Result<(), NodeError> {
-    let context: AppContext = build_context(&config).await?;
+    let context: AppContext = build_context(&config, NodeKind::Gateway).await?;
     run_with_context(context, config, Arc::new(PrepaidAdmission::default())).await
 }
 

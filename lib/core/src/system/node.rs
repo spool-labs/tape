@@ -1,4 +1,5 @@
 use bytemuck::{Pod, Zeroable};
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -10,6 +11,16 @@ use crate::bls::BlsPubkey;
 use crate::types::*;
 
 use super::{Member, Peer};
+
+#[repr(u64)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
+pub enum NodeKind {
+    /// Holds spools and can join a committee.
+    Storage = 0,
+
+    /// Serves reads to the public and never joins a committee.
+    Gateway,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]

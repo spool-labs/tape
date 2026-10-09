@@ -691,7 +691,6 @@ where
 
     Board {
         source: StatsSource::Observe,
-        kind: super::board_kind(),
         generated_at: now_secs(),
         node: NodeInfo {
             address: context.node_address().to_string(),

@@ -1,7 +1,7 @@
 use tape_crypto::address::Address;
 use tape_solana::*;
 use tape_core::staking::{RateSpan, StakingPool};
-use tape_core::system::{NodeMetadata, NodePreferences};
+use tape_core::system::{NodeKind, NodeMetadata, NodePreferences};
 use tape_core::types::EpochNumber;
 use tape_core::types::NodeId;
 
@@ -16,6 +16,9 @@ pub struct Node {
 
     /// The authority that owns this node.
     pub authority: Address,
+
+    /// The `NodeKind` this node registered as.
+    pub kind: u64,
 
     /// Metadata about this storage node.
     pub metadata: NodeMetadata,
@@ -43,6 +46,11 @@ pub struct Node {
 }
 
 impl Node {
+    #[inline]
+    pub fn kind(&self) -> Option<NodeKind> {
+        NodeKind::try_from(self.kind).ok()
+    }
+
     pub fn rate_span(&self, address: Address, current_epoch: EpochNumber) -> RateSpan {
         RateSpan {
             node: address,

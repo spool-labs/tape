@@ -13,7 +13,7 @@ use tape_api::instruction::{
 };
 use tape_api::program::tapedrive::node_pda;
 use tape_api::genesis::GenesisConfig;
-use tape_core::system::NodePreferences;
+use tape_core::system::{NodeKind, NodePreferences};
 use tape_api::utils::to_name;
 use tape_core::types::{BasisPoints, EpochNumber};
 use tape_core::types::network::NetworkAddress;
@@ -187,6 +187,7 @@ impl<'a> SimnetScenario<'a> {
         let ix = build_register_node_ix(
             node.authority().into(),
             node.authority().into(),
+            NodeKind::Storage,
             name,
             commission,
             network_address,
@@ -228,6 +229,7 @@ impl<'a> SimnetScenario<'a> {
         let ix = build_register_node_ix(
             gateway.authority().into(),
             gateway.authority().into(),
+            NodeKind::Gateway,
             name,
             commission,
             gateway.network_address(),

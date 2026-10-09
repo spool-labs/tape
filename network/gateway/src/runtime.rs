@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use tape_core::system::NodeKind;
 use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_blacklist::blacklists::Blacklists;
@@ -61,7 +62,6 @@ where
 
     #[cfg(feature = "metrics")]
     if context.config.metrics.enabled {
-        tape_node::observe::mark_gateway_boards();
         tape_node::observe::register_block_channels(&senders, &store_tx);
 
         supervisor.spawn(
@@ -280,6 +280,6 @@ where
 }
 
 pub async fn run_application(config: NodeConfig) -> Result<(), NodeError> {
-    let context: AppContext = build_context(&config).await?;
+    let context: AppContext = build_context(&config, NodeKind::Gateway).await?;
     run_with_context(context, config, Arc::new(AdmitAll)).await
 }

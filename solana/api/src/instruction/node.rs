@@ -9,13 +9,14 @@ use tape_core::bls::{BlsPubkey, BlsSignature};
 use tape_core::types::{GroupIndex, SpoolIndex};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
-use tape_core::system::NodePreferences;
+use tape_core::system::{NodeKind, NodePreferences};
 use tape_core::types::{BasisPoints, EpochDuration, EpochNumber, StorageUnits};
 use tape_core::types::coin::{Coin, TAPE};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct RegisterNode {
+    pub kind: u64,
     pub name: [u8; NAME_LENGTH],
     pub commission_rate: BasisPoints,
     pub network_address: NetworkAddress,
@@ -144,6 +145,7 @@ pub struct ClaimCommission {}
 pub fn build_register_node_ix(
     fee_payer: Address,
     authority: Address,
+    kind: NodeKind,
     name: [u8; NAME_LENGTH],
     commission_rate: BasisPoints,
     network_address: NetworkAddress,
@@ -173,6 +175,7 @@ pub fn build_register_node_ix(
             AccountMeta::new_readonly(sysvar::rent::ID, false),
         ],
         data: RegisterNode {
+            kind: kind.into(),
             name,
             commission_rate,
             network_address,
@@ -623,6 +626,7 @@ mod tests {
         let ix = build_register_node_ix(
             Address::new_unique(),
             Address::new_unique(),
+            NodeKind::Storage,
             to_name("node07"),
             BasisPoints(100),
             network_address,

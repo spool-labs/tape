@@ -32,19 +32,6 @@ pub use stream::StreamPublisher;
 pub use peers::lookup as peer_liveness;
 pub use epoch::{current_epoch_progress, last_epoch, lifetime, roll_epoch};
 
-/// The role this process stamps on the boards it serves, set once at startup.
-static BOARD_KIND: std::sync::OnceLock<tape_observe_api::BoardKind> = std::sync::OnceLock::new();
-
-/// Mark every board this process builds as coming from a read gateway.
-pub fn mark_gateway_boards() {
-    let _ = BOARD_KIND.set(tape_observe_api::BoardKind::Gateway);
-}
-
-/// The role stamped on boards, defaulting to a storage node.
-pub fn board_kind() -> tape_observe_api::BoardKind {
-    BOARD_KIND.get().copied().unwrap_or_default()
-}
-
 /// Register the context-dependent pull collectors and the per-epoch roller. The
 /// metric set and process collector are registered earlier.
 pub fn register_core_collectors<Db, Cluster, Blockchain>(

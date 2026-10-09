@@ -204,15 +204,6 @@ pub enum LinkStatus {
     Unknown,
 }
 
-/// Which process produced a board: a storage node or a read gateway.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
-#[serde(rename_all = "lowercase")]
-pub enum BoardKind {
-    #[default]
-    Node,
-    Gateway,
-}
-
 /// Where a node's figures came from: its full observe board, its always-on
 /// public stats endpoint, or nothing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
@@ -718,8 +709,6 @@ pub struct Board {
     pub generated_at: u64,
     #[serde(default)]
     pub source: StatsSource,
-    #[serde(default)]
-    pub kind: BoardKind,
     pub node: NodeInfo,
     pub epoch: EpochInfo,
     pub ingest: IngestInfo,

@@ -3,7 +3,7 @@ use tape_rpc_client::RpcClient;
 use tape_api::consts::NAME_LENGTH;
 use tape_api::instruction::build_register_node_ix;
 use tape_core::bls::{BlsPubkey, BlsSignature};
-use tape_core::system::NodePreferences;
+use tape_core::system::{NodeKind, NodePreferences};
 use tape_core::types::BasisPoints;
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
@@ -13,6 +13,7 @@ use tape_crypto::tx::Txid;
 pub async fn submit_register_node<Blockchain: Rpc>(
     rpc: &RpcClient<Blockchain>,
     keypair: &Keypair,
+    kind: NodeKind,
     name: [u8; NAME_LENGTH],
     commission: BasisPoints,
     network_address: NetworkAddress,
@@ -26,6 +27,7 @@ pub async fn submit_register_node<Blockchain: Rpc>(
     let ix = build_register_node_ix(
         authority,
         authority,
+        kind,
         name,
         commission,
         network_address,
@@ -44,7 +46,7 @@ mod tests {
     use tape_api::genesis::GenesisConfig;
     use tape_api::utils::to_name;
     use tape_core::bls::BlsPrivateKey;
-    use tape_core::system::NodePreferences;
+    use tape_core::system::{NodeKind, NodePreferences};
     use tape_core::types::BasisPoints;
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::tls::NetworkTlsPubkey;
@@ -83,12 +85,22 @@ mod tests {
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
         let preferences = NodePreferences::from(&GenesisConfig::simnet());
         submit_register_node(
-            &rpc, &keypair, name, commission, address, network_tls, bls_pubkey, bls_pop, preferences,
+            &rpc,
+            &keypair,
+            NodeKind::Gateway,
+            name,
+            commission,
+            address,
+            network_tls,
+            bls_pubkey,
+            bls_pop,
+            preferences,
         )
         .await
         .expect("register node");
 
         let node = rpc.get_node(&keypair.address()).await.expect("get node");
+        assert_eq!(node.kind(), Some(NodeKind::Gateway));
         assert_eq!(node.metadata.bls_pubkey, bls_pubkey);
         assert_eq!(node.metadata.network_address, address);
         assert_eq!(node.metadata.network_tls, network_tls);

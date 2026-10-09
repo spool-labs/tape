@@ -11,7 +11,7 @@ use tape_api::program::tapedrive::node_pda;
 use tape_api::state::Node;
 use tape_api::utils::to_name;
 use tape_core::bls::BlsPrivateKey;
-use tape_core::system::NodePreferences;
+use tape_core::system::{NodeKind, NodePreferences};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair;
@@ -199,7 +199,7 @@ fn init_metrics(config: &NodeConfig) {
     }
 }
 
-pub async fn build_context(config: &NodeConfig) -> Result<AppContext, NodeError> {
+pub async fn build_context(config: &NodeConfig, kind: NodeKind) -> Result<AppContext, NodeError> {
     let keypair = config.load_node_keypair()?;
     let bls_keypair = config.load_bls_keypair()?;
     let tls_keypair = config.load_or_generate_tls_keypair()?;
@@ -212,7 +212,7 @@ pub async fn build_context(config: &NodeConfig) -> Result<AppContext, NodeError>
 
     let rpc = build_rpc_client(config)?;
 
-    ensure_registered(config, &rpc, &keypair, &bls_keypair, &tls_keypair).await?;
+    ensure_registered(config, kind, &rpc, &keypair, &bls_keypair, &tls_keypair).await?;
 
     let peer_manager = Arc::new(PeerManager::new());
     let tls_identity = Arc::new(tls_keypair);
@@ -323,6 +323,7 @@ fn validate_node_metadata(
 
 pub async fn ensure_registered<Blockchain: Rpc>(
     config: &NodeConfig,
+    kind: NodeKind,
     rpc: &RpcClient<Blockchain>,
     keypair: &Keypair,
     bls_keypair: &BlsPrivateKey,
@@ -378,6 +379,7 @@ pub async fn ensure_registered<Blockchain: Rpc>(
     let result = submit_register_node(
         rpc,
         keypair,
+        kind,
         name,
         commission,
         network_address,
@@ -431,7 +433,7 @@ mod tests {
     use tape_api::genesis::GenesisConfig;
     use tape_api::utils::to_name;
     use tape_core::bls::BlsPrivateKey;
-    use tape_core::system::NodePreferences;
+    use tape_core::system::{NodeKind, NodePreferences};
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::tls::NetworkTlsPubkey;
     use tape_core::types::{BasisPoints, EpochNumber, SlotNumber};
@@ -565,6 +567,7 @@ mod tests {
         submit_register_node(
             &rpc,
             keypair,
+            NodeKind::Storage,
             to_name("test-node"),
             BasisPoints(0),
             address,
@@ -599,7 +602,7 @@ mod tests {
         let config = test_config_with_address([10, 0, 0, 1], 443);
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
 
-        ensure_registered(&config, &rpc, &keypair, &bls, &tls)
+        ensure_registered(&config, NodeKind::Storage, &rpc,&keypair, &bls, &tls)
             .await
             .expect("ensure_registered");
 
@@ -632,7 +635,7 @@ mod tests {
 
         let config = test_config_with_address([10, 0, 0, 1], 443);
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
-        ensure_registered(&config, &rpc, &keypair, &bls, &tls)
+        ensure_registered(&config, NodeKind::Storage, &rpc,&keypair, &bls, &tls)
             .await
             .expect("ensure_registered idempotent");
     }
@@ -660,7 +663,7 @@ mod tests {
         let mut config = test_config_with_address([10, 0, 0, 1], 443);
         config.https.auto_update = true;
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
-        ensure_registered(&config, &rpc, &keypair, &bls, &new_tls)
+        ensure_registered(&config, NodeKind::Storage, &rpc,&keypair, &bls, &new_tls)
             .await
             .expect("auto-update");
 
@@ -691,7 +694,7 @@ mod tests {
         let mut config = test_config_with_address([10, 0, 0, 1], 443);
         config.https.auto_update = false;
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
-        let err = ensure_registered(&config, &rpc, &keypair, &bls, &new_tls)
+        let err = ensure_registered(&config, NodeKind::Storage, &rpc,&keypair, &bls, &new_tls)
             .await
             .unwrap_err();
 
@@ -723,7 +726,7 @@ mod tests {
         let bls_different = BlsPrivateKey::from_random();
         let config = test_config_with_address([10, 0, 0, 1], 443);
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
-        let err = ensure_registered(&config, &rpc, &keypair, &bls_different, &tls)
+        let err = ensure_registered(&config, NodeKind::Storage, &rpc,&keypair, &bls_different, &tls)
             .await
             .unwrap_err();
 
@@ -754,7 +757,7 @@ mod tests {
 
         let config = test_config_with_address([10, 0, 0, 2], 443);
         let rpc = RpcClient::from_rpc(harness.rpc().clone());
-        let err = ensure_registered(&config, &rpc, &keypair, &bls, &tls)
+        let err = ensure_registered(&config, NodeKind::Storage, &rpc,&keypair, &bls, &tls)
             .await
             .unwrap_err();
 

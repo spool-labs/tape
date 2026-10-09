@@ -789,7 +789,7 @@ mod tests {
         build_vote_assignment_ix, build_vote_snapshot_ix,
     };
     use tape_core::bls::BlsPubkey;
-    use tape_core::system::NodePreferences;
+    use tape_core::system::{NodeKind, NodePreferences};
     use tape_core::types::network::NetworkAddress;
     use tape_core::types::tls::NetworkTlsPubkey;
     use tape_core::types::BasisPoints;
@@ -836,6 +836,7 @@ mod tests {
         let (ix, keys) = compiled_instruction(&build_register_node_ix(
             Address::new_unique(),
             authority,
+            NodeKind::Storage,
             [3u8; 32],
             BasisPoints(100),
             network_address,

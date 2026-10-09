@@ -80,6 +80,10 @@ pub fn process_join_committee(accounts: &[AccountInfo<'_>], data: &[u8]) -> Prog
         return Err(ProgramError::InvalidAccountData);
     }
 
+    if node.kind() != Some(NodeKind::Storage) {
+        return Err(TapeError::NotStorageNode.into());
+    }
+
     let stake = node.pool.stake;
     if stake.is_zero() {
         return Err(TapeError::NotStaked.into());
@@ -318,6 +322,70 @@ mod tests {
             &instruction,
             &accounts,
             &[Check::err(TapeError::NotStaked.into())],
+        );
+    }
+
+    // a staked gateway can't take a seat
+    #[test]
+    fn gateway() {
+        let fee_payer = Pubkey::new_unique();
+        let authority = Pubkey::new_unique();
+        let committee_size: u64 = 128;
+        let peer_capacity: u64 = committee_size * 3;
+
+        let (node_address, _) = node_pda(authority.into());
+        let (system_address, _) = system_pda();
+        let (peer_set_address, _) = peer_set_pda();
+        let curr = EpochNumber(42);
+        let next = EpochNumber(43);
+        let (curr_epoch_addr, _) = epoch_pda(curr);
+        let (curr_committee_addr, _) = committee_pda(curr);
+        let (next_committee_addr, _) = committee_pda(next);
+
+        let instruction =
+            build_join_committee_ix(fee_payer.into(), authority.into(), node_address, curr);
+
+        let system = System {
+            current_epoch: curr,
+            committee_size,
+            ..System::zeroed()
+        };
+
+        let curr_epoch = epoch_in_phase(curr, EpochPhase::Active);
+        let curr_committee = Committee { epoch: curr, members: Tail::empty(committee_size) }
+            .pack_with(&[]);
+        let next_committee = Committee { epoch: next, members: Tail::empty(committee_size) }
+            .pack_with(&[]);
+        let peer_set = PeerSet { peers: Tail::empty(peer_capacity) }
+            .pack_with(&[]);
+
+        let node = Node {
+            authority: authority.into(),
+            kind: NodeKind::Gateway.into(),
+            pool: StakingPool {
+                stake: TAPE(1_000),
+                shares: ShareAmount(1_000),
+                ..StakingPool::zeroed()
+            },
+            ..Node::zeroed()
+        };
+
+        let accounts = vec![
+            sol(fee_payer, 1_000_000_000),
+            sol(authority, 0),
+            pda(system_address, system.pack(), tapedrive::ID),
+            pda(curr_epoch_addr, curr_epoch.pack(), tapedrive::ID),
+            pda(curr_committee_addr, curr_committee, tapedrive::ID),
+            pda(next_committee_addr, next_committee, tapedrive::ID),
+            pda(peer_set_address, peer_set, tapedrive::ID),
+            pda(node_address, node.pack(), tapedrive::ID),
+        ];
+
+        let env = test_env();
+        env.process_instruction(
+            &instruction,
+            &accounts,
+            &[Check::err(TapeError::NotStorageNode.into())],
         );
     }
 
