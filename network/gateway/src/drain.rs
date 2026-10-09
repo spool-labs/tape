@@ -539,11 +539,28 @@ where
                 return false;
             }
         };
-        if !reap_landed(&self.staging, self.context.store.as_ref(), tape, key, write, indexed.as_ref()) {
+        let certified = indexed.as_ref().is_some_and(|resolved| self.is_certified(resolved.track_address));
+        let store = self.context.store.as_ref();
+        if !reap_landed(&self.staging, store, tape, key, write, indexed.as_ref(), certified) {
             return false;
         }
         self.retries.clear(tape, key);
         true
+    }
+
+    /// Whether readers can be served this track, which the read path checks the same way
+    fn is_certified(&self, track: Address) -> bool {
+        match self.context.store.get_track(track) {
+            Ok(in_store) => self
+                .context
+                .pending
+                .apply_to_track(track, in_store)
+                .is_some_and(|track| track.is_certified()),
+            Err(error) => {
+                warn!(%error, %track, "s3 drain: track lookup failed");
+                false
+            }
+        }
     }
 
     /// Try the chain write for one entry, honouring its backoff.
@@ -772,6 +789,7 @@ fn is_stranded<Db: Store>(store: &TapeStore<Db>, tape: Address, write: &PendingW
 
 /// Drop a landed entry from the queue once the object index agrees with it, which frees its bytes
 ///
+/// A put stays until its indexed track is certified, since reads serve the staged copy until then.
 /// An entry whose track left its tape goes too, since the index will never show it.
 fn reap_landed<Db: Store>(
     staging: &StagingStore<Db>,
@@ -780,16 +798,12 @@ fn reap_landed<Db: Store>(
     key: &[u8],
     write: &PendingWrite,
     indexed: Option<&ResolvedObject>,
+    certified: bool,
 ) -> bool {
-    // A stream's index ETag is its manifest's, so a put also shows once the index binds the key to the track it landed on.
-    let landed = match write.state {
-        PendingState::Landed { track } => Some(track),
-        PendingState::Queued | PendingState::Failed { .. } => None,
-    };
     let is_visible = match write.op {
-        PendingOp::Put { etag, .. } => indexed.is_some_and(|resolved| {
-            resolved.etag == etag || landed == Some(resolved.track_address)
-        }),
+        PendingOp::Put { etag, .. } => {
+            certified && indexed.is_some_and(|resolved| resolved.etag == etag)
+        }
         PendingOp::Delete { .. } => indexed.is_none(),
     };
     if !is_visible && !is_stranded(store, tape, write) {
@@ -891,32 +905,34 @@ mod tests {
         assert!(is_stranded(&store, tape, &landed));
     }
 
-    // a landed stream is reaped once the index binds its key to the manifest the drain wrote, which frees its bytes
+    // a landed put keeps its staged bytes until its indexed track is certified, then the reap frees them
     #[tokio::test]
-    async fn landed_stream_is_reaped() {
+    async fn landed_put_waits_for_certify() {
         let store = Arc::new(TapeStore::new(MemoryStore::new()));
         let staging = StagingStore::try_new(store.clone()).expect("open queue");
         let tape = Address::new([5u8; 32]);
-        let manifest = Address::new([6u8; 32]);
+        let track = Address::new([6u8; 32]);
+        let etag = Hash([1u8; 32]);
         staging
-            .enqueue_put(tape, b"big", vec![7u8; 16], ContentType::Unknown, Hash([1u8; 32]), 1_700_000_000)
+            .enqueue_put(tape, b"key", vec![7u8; 16], ContentType::Unknown, etag, 1_700_000_000)
             .await
             .expect("enqueue put");
-        let seq = staging.entry(tape, b"big").expect("entry").expect("queued").seq;
+        let seq = staging.entry(tape, b"key").expect("entry").expect("queued").seq;
         staging
-            .set_state(tape, b"big", seq, PendingState::Landed { track: manifest })
+            .set_state(tape, b"key", seq, PendingState::Landed { track })
             .expect("land");
-        let write = staging.entry(tape, b"big").expect("entry").expect("landed");
-        // The index holds the manifest's ETag, and the queue holds the whole body's.
+        let write = staging.entry(tape, b"key").expect("entry").expect("landed");
         let indexed = ResolvedObject {
-            track_address: manifest,
+            track_address: track,
             size: 16,
-            etag: Hash([2u8; 32]),
+            etag,
             block_time: None,
             content_type: ContentType::Unknown,
         };
 
-        assert!(reap_landed(&staging, &store, tape, b"big", &write, Some(&indexed)), "the landed stream stays queued");
+        assert!(!reap_landed(&staging, &store, tape, b"key", &write, Some(&indexed), false), "an uncertified put was reaped");
+        assert_eq!(staging.queued_bytes(), 16);
+        assert!(reap_landed(&staging, &store, tape, b"key", &write, Some(&indexed), true), "a certified put stays queued");
         assert_eq!(staging.queued_bytes(), 0);
     }
 
