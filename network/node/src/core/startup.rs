@@ -49,7 +49,6 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, N
             backend: config.store.io_backend,
             reserve: config.store.reserve,
             segment_bytes: config.store.segment_bytes,
-            preallocate: config.store.preallocate,
         },
     )
     .map_err(|error| {
@@ -110,33 +109,22 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, N
     Ok(store)
 }
 
-/// Write the volume's index down so the next open reads it instead of sweeping
+/// Close the volume once every service has joined
 ///
-/// This is what keeps the gap the open logs above from running minutes. The reel
-/// takes its own cue and seals every open tail, so it belongs at shutdown and
-/// nowhere else. A failure costs the next open its fast path and nothing more.
+/// Syncs the tails and journals, and trims each segment to its written end. A
+/// failure is only logged, since the process is on its way out.
 #[cfg(not(feature = "rocks"))]
-pub fn checkpoint_primary_store(store: &TapeStore<NodeStore>) {
+pub fn close_primary_store(store: &TapeStore<NodeStore>) {
     let started = Instant::now();
-    match store.inner().inner().checkpoint_index() {
-        Ok(Some(written)) => info!(
-            at = written.at.0,
-            segments = written.segments,
-            keys = written.keys,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "index checkpoint written",
-        ),
-        Ok(None) => tracing::debug!("no index checkpoint for this volume, skipping"),
-        Err(error) => warn!(
-            error = %error,
-            "index checkpoint failed, the next open sweeps the footers",
-        ),
+    match store.inner().inner().close() {
+        Ok(()) => info!(elapsed_ms = started.elapsed().as_millis() as u64, "store closed"),
+        Err(error) => warn!(error = %error, "store close failed"),
     }
 }
 
-/// RocksDB carries its own index across an open, so there is nothing to write
+/// RocksDB closes itself when the last handle drops
 #[cfg(feature = "rocks")]
-pub fn checkpoint_primary_store(_store: &TapeStore<NodeStore>) {}
+pub fn close_primary_store(_store: &TapeStore<NodeStore>) {}
 
 fn build_rpc_client(config: &NodeConfig) -> Result<RpcClient<SolanaRpc>, NodeError> {
     let rpc_config = RpcConfig {

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use reel::{IoBackend, Preallocate};
+use reel::IoBackend;
 use tape_store_reel::{default_backend, Reserve, DEFAULT_SYNC_BYTES};
 use serde::Deserialize;
 
@@ -38,20 +38,15 @@ pub struct StoreConfig {
     #[serde(default)]
     pub min_free_bytes: u64,
 
-    /// What a fresh volume reserves before it holds a byte. `fleet` pre-writes a
-    /// gibibyte segment per tail; `small` sizes the reservation to the run, which
-    /// is what a laptop wants and what a local fleet of twenty needs.
+    /// The segment size and tail count a volume opens with. `fleet` runs gibibyte
+    /// segments with a tail per core; `small` runs smaller segments on one tail,
+    /// which is what a laptop wants and what a local fleet of twenty needs.
     #[serde(default)]
     pub reserve: Reserve,
 
     /// Bytes one append segment spans. 0 keeps the reserve preset's size.
     #[serde(default)]
     pub segment_bytes: u64,
-
-    /// How a segment claims its space: `full` reserves the whole segment up
-    /// front, `chunk` reserves in steps. Unset keeps the reserve preset's choice.
-    #[serde(default)]
-    pub preallocate: Option<Preallocate>,
 
     /// Local garbage-collection settings.
     #[serde(default)]
@@ -68,7 +63,6 @@ impl Default for StoreConfig {
             min_free_bytes: 0,
             reserve: Reserve::default(),
             segment_bytes: 0,
-            preallocate: None,
             gc: GcConfig::default(),
         }
     }
@@ -148,18 +142,14 @@ mod tests {
         assert_eq!(config.io_backend, default_backend());
         assert_eq!(config.reserve, Reserve::Fleet);
         assert_eq!(config.segment_bytes, 0);
-        assert_eq!(config.preallocate, None);
     }
 
-    // segment knobs read straight into the engine's terms
+    // the segment knob reads straight into the engine's terms
     #[test]
-    fn yaml_segment_knobs() {
-        let config: StoreConfig = serde_yaml::from_str(
-            "path: /data/tape\nsegment_bytes: 67108864\npreallocate: chunk",
-        )
-        .unwrap();
+    fn yaml_segment_bytes() {
+        let config: StoreConfig =
+            serde_yaml::from_str("path: /data/tape\nsegment_bytes: 67108864").unwrap();
         assert_eq!(config.segment_bytes, 64 * 1024 * 1024);
-        assert_eq!(config.preallocate, Some(Preallocate::Chunk));
     }
 
     // a volume that cannot afford the shipped reservation says so in one word

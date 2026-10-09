@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use axum::body::Bytes;
-use axum::extract::{FromRequest, Path, Request, State};
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 
@@ -158,15 +158,20 @@ fn check_slice_read<Db: Store, Cluster: Api, Blockchain: Rpc>(
 pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Path((track_id, spool_id)): Path<(String, SpoolIndex)>,
-    request: Request,
+    body: Bytes,
 ) -> Result<impl IntoResponse, RouteError> {
-    trace!(track_id = %track_id, spool_id = %spool_id, "http put_slice start");
+    trace!(
+        track_id = %track_id,
+        spool_id = %spool_id,
+        payload_bytes = body.len(),
+        "http put_slice start"
+    );
 
     let track_key = parse_track(&track_id)?;
     let epoch = current_epoch(&state)?;
+    let payload = SliceBody::parse(&body)
+        .map_err(|error| RouteError::BadRequest(format!("slice payload: {error}")))?;
 
-    // Everything the path settles runs before the body is read, so a slice for
-    // an unknown, blacklisted or raw track never costs its upload.
     let track = resolve_track(&state, track_key)?
         .ok_or(RouteError::NotFound)?;
 
@@ -212,14 +217,6 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
     if spool_state.is_locked() {
         return Err(RouteError::NotResponsible);
     }
-
-    // Read under the route's body limit, as a `Bytes` extractor would.
-    let body = Bytes::from_request(request, &state)
-        .await
-        .map_err(RouteError::Body)?;
-    trace!(track_id = %track_id, payload_bytes = body.len(), "http put_slice body read");
-    let payload = SliceBody::parse(&body)
-        .map_err(|error| RouteError::BadRequest(format!("slice payload: {error}")))?;
 
     if payload.merkle_proof.len() != SLICE_TREE_HEIGHT {
         return Err(RouteError::BadRequest("invalid merkle proof".into()));
@@ -295,16 +292,11 @@ fn store_error(error: impl Display) -> RouteError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::task::Poll;
-
-    use axum::body::{to_bytes, Body};
+    use axum::body::to_bytes;
     use axum::extract::{Path, State};
     use axum::http::StatusCode;
-    use axum::response::{IntoResponse, Response};
+    use axum::response::IntoResponse;
     use bytemuck::Zeroable;
-    use futures::stream::poll_fn;
 
     use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress};
     use tape_core::cert::track::TrackWriteMessage;
@@ -315,7 +307,6 @@ mod tests {
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
-    use tape_core::system::BlacklistEntry;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
@@ -332,7 +323,6 @@ mod tests {
     use tape_store::types::{ObjectInfo, SystemObjectKind, TapeInfo};
 
     use super::*;
-    use crate::features::blacklist::tests::seed_entry;
     use crate::features::http::state::AppState;
     use crate::harness::{NodeHarness, TestContext};
 
@@ -878,7 +868,7 @@ mod tests {
         let response = put_slice(
             State(AppState { context: ctx.clone() }),
             Path((track_address.to_string(), owned_spool)),
-            Request::new(Body::from(body)),
+            body.into(),
         )
         .await
         .expect("put_slice")
@@ -913,7 +903,7 @@ mod tests {
         let response = put_slice(
             State(AppState { context: ctx.clone() }),
             Path((track_address.to_string(), owned_spool)),
-            Request::new(Body::from(body)),
+            body.into(),
         )
         .await
         .expect("put_slice")
@@ -933,94 +923,5 @@ mod tests {
                 .is_err()
         );
     }
-
-    /// A body past any limit that records whether anything read it
-    fn tripwire_body() -> (Request, Arc<AtomicBool>) {
-        let is_polled = Arc::new(AtomicBool::new(false));
-        let flag = is_polled.clone();
-        let stream = poll_fn(move |_| {
-            flag.store(true, Ordering::SeqCst);
-            Poll::Ready(Some(Ok::<_, std::io::Error>(Bytes::from(vec![0u8; 64 * 1024]))))
-        });
-
-        (Request::new(Body::from_stream(stream)), is_polled)
-    }
-
-    async fn put_tripwire(
-        ctx: &TestContext,
-        track_address: Address,
-        spool: SpoolIndex,
-    ) -> (Result<Response, RouteError>, bool) {
-        let (request, is_polled) = tripwire_body();
-        let result = put_slice(
-            State(AppState { context: ctx.clone() }),
-            Path((track_address.to_string(), spool)),
-            request,
-        )
-        .await
-        .map(IntoResponse::into_response);
-
-        (result, is_polled.load(Ordering::SeqCst))
-    }
-
-    // a slice for a track this node has never seen is refused before its body is read
-    #[tokio::test]
-    async fn unknown_track_body_unread() {
-        let ctx = test_context().await;
-        let (_, owned_spool, _) = seed_writable_track(&ctx);
-
-        let (result, is_polled) = put_tripwire(&ctx, Address::new_unique(), owned_spool).await;
-
-        assert!(matches!(result, Err(RouteError::NotFound)));
-        assert!(!is_polled, "the body was read for an unknown track");
-    }
-
-    // a slice for a blacklisted track is refused before its body is read
-    #[tokio::test]
-    async fn blacklisted_track_body_unread() {
-        let ctx = test_context().await;
-        let (track_address, owned_spool, _) = seed_writable_track(&ctx);
-        seed_entry(
-            &ctx.store,
-            ctx.node_address(),
-            TrackNumber(0),
-            BlacklistEntry::track(track_address),
-        );
-
-        let (result, is_polled) = put_tripwire(&ctx, track_address, owned_spool).await;
-
-        assert!(matches!(result, Err(RouteError::BlacklistedObject)));
-        assert!(!is_polled, "the body was read for a blacklisted track");
-    }
-
-    // a raw track takes no slices, and says so before its body is read
-    #[tokio::test]
-    async fn raw_track_body_unread() {
-        let ctx = test_context().await;
-        let (track_address, owned_spool, _) = seed_writable_track(&ctx);
-        let mut track = ctx.store.get_track(track_address).expect("track").expect("track present");
-        track.kind = TrackKind::Inline as u64;
-        ctx.store.put_track(track_address, track).expect("make the track raw");
-
-        let (result, is_polled) = put_tripwire(&ctx, track_address, owned_spool).await;
-
-        assert!(matches!(result, Err(RouteError::BadRequest(_))));
-        assert!(!is_polled, "the body was read for a raw track");
-    }
-
-    // a writable track does read the body, and an oversized one still hits the limit
-    #[tokio::test]
-    async fn oversized_body_hits_the_limit() {
-        let ctx = test_context().await;
-        let (track_address, owned_spool, _) = seed_writable_track(&ctx);
-
-        let (result, is_polled) = put_tripwire(&ctx, track_address, owned_spool).await;
-
-        assert!(is_polled);
-        let response = match result {
-            Err(error) => error.into_response(),
-            Ok(_) => panic!("an endless body was accepted"),
-        };
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    }
 }
+

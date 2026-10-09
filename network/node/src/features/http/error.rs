@@ -1,4 +1,3 @@
-use axum::extract::rejection::BytesRejection;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
@@ -12,8 +11,6 @@ pub enum RouteError {
     NotInCommittee,
     InvalidSignature,
     Internal(String),
-    /// The request body failed to read, answered as the `Bytes` extractor would
-    Body(BytesRejection),
 }
 
 impl IntoResponse for RouteError {
@@ -34,7 +31,6 @@ impl IntoResponse for RouteError {
                 tracing::error!("http internal error: {message}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
             }
-            Self::Body(rejection) => rejection.into_response(),
         }
     }
 }

@@ -292,8 +292,7 @@ mod tests {
             | RouteError::NotInCommittee
             | RouteError::InvalidSignature
             | RouteError::Forbidden(_)
-            | RouteError::Internal(_)
-            | RouteError::Body(_) => panic!("unexpected RouteError variant"),
+            | RouteError::Internal(_) => panic!("unexpected RouteError variant"),
         }
     }
 }
