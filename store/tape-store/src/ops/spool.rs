@@ -3,7 +3,7 @@
 use tape_core::system::SpoolState;
 use tape_core::types::{SlotNumber, SpoolIndex};
 use tape_crypto::address::Address;
-use tape_store_api::{Column, Store};
+use tape_store_api::{Column, Direction, Store};
 
 use crate::columns::{SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol};
 use crate::error::{Result, TapeStoreError};
@@ -51,6 +51,12 @@ pub trait SpoolOps {
 
     // Bulk clear all pending recoveries for a spool
     fn clear_all_pending_recoveries(&self, spool_id: SpoolIndex) -> Result<()>;
+
+    // Spools with any pending repair row, ready or waiting, in spool order
+    fn pending_repair_spools(&self) -> Result<Vec<SpoolIndex>>;
+
+    // Spools with any pending recovery row, in spool order
+    fn pending_recovery_spools(&self) -> Result<Vec<SpoolIndex>>;
 }
 
 impl<S: Store> SpoolOps for TapeStore<S> {
@@ -152,6 +158,42 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         clear_all_pending_by_spool(self, SpoolPendingRecoveryCol::CF_NAME, spool_id)
     }
 
+    fn pending_repair_spools(&self) -> Result<Vec<SpoolIndex>> {
+        spools_with_rows(self, SpoolPendingRepairCol::CF_NAME)
+    }
+
+    fn pending_recovery_spools(&self) -> Result<Vec<SpoolIndex>> {
+        spools_with_rows(self, SpoolPendingRecoveryCol::CF_NAME)
+    }
+
+}
+
+/// The spools with at least one row in a pending column, in spool order
+///
+/// A spool costs one seek however many rows it has: the walk reads the spool's
+/// first key and jumps to the next spool's prefix. A node holds a row of spool
+/// state for every stored spool, so asking each one for its queue costs
+/// thousands of scans where this costs one for an empty column.
+fn spools_with_rows<S: Store>(store: &TapeStore<S>, cf_name: &str) -> Result<Vec<SpoolIndex>> {
+    let raw = store.inner().inner();
+    let mut spools = Vec::new();
+    let mut start = SliceKey::spool_prefix(SpoolIndex(0))?;
+
+    loop {
+        let first = raw.iter_from(cf_name, &start, Direction::Asc)?.next();
+        let Some((key_bytes, _)) = first else {
+            return Ok(spools);
+        };
+        let key: SliceKey = wincode::deserialize(&key_bytes)
+            .map_err(|e| TapeStoreError::Serialization(format!("pending key: {}", e)))?;
+        spools.push(key.spool_id);
+
+        let (_, next) = SliceKey::spool_key_range(key.spool_id)?;
+        let Some(next) = next else {
+            return Ok(spools);
+        };
+        start = next;
+    }
 }
 
 /// Walk one spool's repair rows, skipping the ones whose ready slot is still ahead
@@ -415,5 +457,38 @@ mod tests {
 
         assert!(store.iter_pending_repairs(SpoolIndex(42), 100).unwrap().is_empty());
         assert_eq!(store.iter_pending_repairs(SpoolIndex(99), 100).unwrap().len(), 1);
+    }
+
+    // each spool with a queued row is listed once, in order, whatever its row count
+    #[test]
+    fn pending_spools() {
+        let store = test_store();
+
+        assert!(store.pending_repair_spools().unwrap().is_empty());
+        assert!(store.pending_recovery_spools().unwrap().is_empty());
+
+        for _ in 0..3 {
+            store.add_pending_repair(SpoolIndex(300), Address::new_unique()).unwrap();
+        }
+        store.add_pending_repair(SpoolIndex(7), Address::new_unique()).unwrap();
+        store.defer_pending_repair(SpoolIndex(4_099), Address::new_unique(), SlotNumber(30)).unwrap();
+        store.add_pending_recovery(SpoolIndex(42), Address::new_unique()).unwrap();
+
+        assert_eq!(
+            store.pending_repair_spools().unwrap(),
+            vec![SpoolIndex(7), SpoolIndex(300), SpoolIndex(4_099)]
+        );
+        assert_eq!(store.pending_recovery_spools().unwrap(), vec![SpoolIndex(42)]);
+    }
+
+    // the last spool id has no next prefix, and the walk ends on it
+    #[test]
+    fn pending_spools_last() {
+        let store = test_store();
+        let last = SpoolIndex(u64::from(u16::MAX));
+        store.add_pending_recovery(last, Address::new_unique()).unwrap();
+        store.add_pending_recovery(last, Address::new_unique()).unwrap();
+
+        assert_eq!(store.pending_recovery_spools().unwrap(), vec![last]);
     }
 }

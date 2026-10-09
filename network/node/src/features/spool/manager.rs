@@ -147,6 +147,23 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                 |(spool, state)| (status_priority(state.status), *spool)
         );
 
+        // The spools with anything queued, read once. A node holds a row for
+        // every stored spool and nearly all of them have nothing waiting, so
+        // asking each row for its queues costs thousands of scans a pass.
+        let mut waiting: HashSet<SpoolIndex> = self
+            .context
+            .store
+            .pending_repair_spools()
+            .map_err(|e| NodeError::Store(format!("pending_repair_spools: {e}")))?
+            .into_iter()
+            .collect();
+        waiting.extend(
+            self.context
+                .store
+                .pending_recovery_spools()
+                .map_err(|e| NodeError::Store(format!("pending_recovery_spools: {e}")))?,
+        );
+
         let mut listed = HashSet::new();
         let mut actions = Vec::new();
         for (spool, state) in spools {
@@ -180,7 +197,7 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
             }
 
             // Active spools: check if pending work appeared (e.g. from CertifyTrack hook)
-            if state.status == SpoolStatus::Active {
+            if state.status == SpoolStatus::Active && waiting.contains(&spool) {
                 let (has_repair, has_recovery) = has_pending_work(&self.context.store, spool)?;
                 if has_repair {
                     actions.push(Action::Repair { spool, epoch });
@@ -717,7 +734,7 @@ mod tests {
     use tape_core::system::{EpochPhase, SpoolState, SpoolStatus};
     use peer_memory::MemoryApi;
     use rpc_litesvm::LiteSvmRpc;
-    use tape_core::types::{EpochNumber, SpoolIndex};
+    use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
     use tape_crypto::address::Address;
     use tape_store::ops::{SliceOps, SpoolOps};
     use tape_store_memory::MemoryStore;
@@ -1038,6 +1055,35 @@ mod tests {
         assert_eq!(
             manager.due_actions(EPOCH).unwrap().first().copied(),
             Some(Action::Recover { spool: SPOOL, epoch: EPOCH })
+        );
+    }
+
+    // among many active spools, only the ones with something queued get an action
+    #[tokio::test]
+    async fn idle_spools_listed_out() {
+        let ctx = test_context().await;
+        let spools: Vec<SpoolIndex> = (0..200).map(|group| VirtualGroup(group).spool_at(3)).collect();
+        for spool in &spools {
+            ctx.store
+                .set_spool_state(*spool, SpoolState::new(SpoolStatus::Active, EPOCH))
+                .expect("spool state stored");
+        }
+        let (repair, recovery, waiting) = (spools[17], spools[120], spools[150]);
+        ctx.store.add_pending_repair(repair, Address::from([1; 32])).expect("repair queued");
+        ctx.store.add_pending_recovery(recovery, Address::from([2; 32])).expect("recovery queued");
+        // A repair that isn't ready yet is queued, and asks for nothing.
+        ctx.store
+            .defer_pending_repair(waiting, Address::from([3; 32]), SlotNumber(u64::MAX))
+            .expect("repair deferred");
+
+        let manager = SpoolManager::new(ctx, RecoveryConfig::default(), CancellationToken::new());
+
+        assert_eq!(
+            manager.due_actions(EPOCH).expect("due actions"),
+            vec![
+                Action::Repair { spool: repair, epoch: EPOCH },
+                Action::Recover { spool: recovery, epoch: EPOCH },
+            ]
         );
     }
 
