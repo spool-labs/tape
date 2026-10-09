@@ -450,6 +450,45 @@ pub struct StorageInfo {
     pub data_bytes: u64,
 }
 
+/// The machine the process runs on, as last sampled. Totals are zero until
+/// the first sample.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
+pub struct HostInfo {
+    pub cores: u64,
+    /// Busy share of every core together, 0 to 100.
+    #[wincode(with = "Pod<f32>")]
+    pub cpu_pct: f32,
+    /// This process's share of every core together, 0 to 100.
+    #[wincode(with = "Pod<f32>")]
+    pub process_cpu_pct: f32,
+    pub memory_total_bytes: u64,
+    pub memory_available_bytes: u64,
+    /// Size of the filesystem holding the store root.
+    pub disk_total_bytes: u64,
+    pub disk_available_bytes: u64,
+}
+
+impl HostInfo {
+    /// Memory in use out of the machine's total, as a percentage.
+    pub fn memory_used_pct(&self) -> Option<f64> {
+        used_pct(self.memory_total_bytes, self.memory_available_bytes)
+    }
+
+    /// Space taken on the store's filesystem out of its size, as a percentage.
+    pub fn disk_used_pct(&self) -> Option<f64> {
+        used_pct(self.disk_total_bytes, self.disk_available_bytes)
+    }
+}
+
+/// What is taken out of `total` when `available` is left, as a percentage;
+/// nothing for a total of zero.
+fn used_pct(total: u64, available: u64) -> Option<f64> {
+    if total == 0 {
+        return None;
+    }
+    Some(total.saturating_sub(available) as f64 / total as f64 * 100.0)
+}
+
 /// Process resource usage.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct ResourceInfo {
@@ -718,6 +757,8 @@ pub struct Board {
     pub contents: StorageContents,
     pub store_io: StoreIo,
     pub resources: ResourceInfo,
+    #[serde(default)]
+    pub host: HostInfo,
     pub throughput: ThroughputTotals,
     pub http: HttpStats,
     pub peers: HttpStats,

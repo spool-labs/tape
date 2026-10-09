@@ -20,6 +20,7 @@ use tape_observe_api::{
 };
 use tape_protocol::{Api, ProtocolState};
 
+use super::host;
 use crate::context::NodeContext;
 use crate::core::restarts;
 
@@ -762,6 +763,7 @@ where
             let (cpu_seconds, open_fds, queues) = resource_extras(&gathered);
             ResourceInfo { rss_bytes: rss, virtual_bytes: vsz, cpu_seconds, open_fds, queues }
         },
+        host: host::sample(&context.config.store.path),
         throughput: ThroughputTotals {
             blocks_processed: m.blocks_processed_total.get(),
             replay_events: m.replay_events_total.get(),

@@ -34,6 +34,8 @@ tape-retry = { workspace = true }
 tape-metrics = { workspace = true, optional = true }
 tape-observe-api = { workspace = true }
 memory-stats = { version = "1", optional = true }
+sysinfo = { version = "0.39", default-features = false, features = ["system"], optional = true }
+fs2 = { version = "0.4", optional = true }
 
 # External
 tokio = { workspace = true }
@@ -92,6 +94,8 @@ rocks = ["dep:tape-store-rocks", "tape-store/rocks"]
 metrics = [
     "tape-metrics/metrics",
     "dep:memory-stats",
+    "dep:sysinfo",
+    "dep:fs2",
     "tape-rpc-client/metrics",
     "tape-store-api/metrics",
     "tape-store-reel/metrics",

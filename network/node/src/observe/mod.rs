@@ -8,6 +8,7 @@ mod bandwidth;
 mod cache;
 pub mod collectors;
 mod epoch;
+mod host;
 mod peers;
 
 use std::sync::Arc;

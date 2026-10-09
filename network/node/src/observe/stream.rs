@@ -28,7 +28,7 @@ use tape_observe_api::{
 };
 use tape_protocol::Api;
 
-use super::{bandwidth, board};
+use super::{bandwidth, board, host};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 
@@ -323,6 +323,8 @@ where
 
         let hub = hub().clone();
         hub.publish_hello(&self.context);
+        // The first sample sets the baseline, so the first board has figures.
+        host::sample(&self.context.config.store.path);
 
         // Samples spanning RATE_WINDOW_MS; the front is what each tick is
         // differenced against.
