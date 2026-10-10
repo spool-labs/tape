@@ -5,11 +5,12 @@ use crate::selector::{EndpointCursor, EndpointSelector};
 use crate::status::StatusBatch;
 use async_trait::async_trait;
 use solana_account::Account;
+use solana_account_decoder::{UiAccount, UiAccountEncoding};
 use solana_client::client_error::{ClientError, ClientErrorKind};
 use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_client::rpc_config::{RpcBlockConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig, RpcSimulateTransactionConfig, RpcTransactionConfig};
-use solana_client::rpc_request::{RpcError as SolanaRpcError, RpcResponseErrorData};
-use solana_client::rpc_response::RpcSimulateTransactionResult;
+use solana_client::rpc_config::{RpcAccountInfoConfig, RpcBlockConfig, RpcProgramAccountsConfig, RpcSendTransactionConfig, RpcSimulateTransactionConfig, RpcTransactionConfig};
+use solana_client::rpc_request::{RpcError as SolanaRpcError, RpcRequest, RpcResponseErrorData};
+use solana_client::rpc_response::{Response, RpcSimulateTransactionResult};
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
 use solana_pubkey::Pubkey;
@@ -224,7 +225,7 @@ impl SolanaRpc {
                         .map(|status| status.map(|status| status.status))
                         .collect())
                 }
-                Ok(Err(error)) => Self::convert_error(error, None),
+                Ok(Err(error)) => Self::convert_error(error),
                 Err(_elapsed) => RpcError::Timeout(self.config.timeout),
             };
 
@@ -474,16 +475,10 @@ impl SolanaRpc {
     }
 
     /// Convert a ClientError to RpcError.
-    fn convert_error(err: ClientError, pubkey: Option<Address>) -> RpcError {
+    fn convert_error(err: ClientError) -> RpcError {
         let err_str = flatten_error(&err);
 
         // Check for specific error types
-        if err_str.contains("AccountNotFound") {
-            if let Some(pk) = pubkey {
-                return RpcError::AccountNotFound(pk);
-            }
-        }
-
         if err_str.contains("blockhash not found") || err_str.contains("Blockhash not found") {
             return RpcError::BlockhashExpired;
         }
@@ -523,7 +518,7 @@ impl SolanaRpc {
             return RpcError::TransactionNotFound(txid);
         }
 
-        Self::convert_error(err, None)
+        Self::convert_error(err)
     }
 }
 
@@ -825,7 +820,7 @@ fn decode_entry_error(error: JsonRpcError) -> RpcError {
         },
     ));
 
-    let converted = SolanaRpc::convert_error(client_error, None);
+    let converted = SolanaRpc::convert_error(client_error);
     if let RpcError::Request(message) = &converted {
         if tape_rpc::looks_like_transaction_error(message) {
             return RpcError::Transaction {
@@ -964,7 +959,7 @@ impl Rpc for SolanaRpc {
             client
                 .get_slot()
                 .await
-                .map_err(|error| Self::convert_error(error, None))
+                .map_err(Self::convert_error)
         })
         .await
     }
@@ -976,7 +971,7 @@ impl Rpc for SolanaRpc {
             client
                 .get_slot_with_commitment(commitment)
                 .await
-                .map_err(|error| Self::convert_error(error, None))
+                .map_err(Self::convert_error)
         })
         .await
     }
@@ -988,7 +983,7 @@ impl Rpc for SolanaRpc {
             client
                 .get_slot_with_commitment(commitment)
                 .await
-                .map_err(|error| Self::convert_error(error, None))
+                .map_err(Self::convert_error)
         })
         .await
     }
@@ -998,7 +993,7 @@ impl Rpc for SolanaRpc {
             client
                 .get_first_available_block()
                 .await
-                .map_err(|error| Self::convert_error(error, None))
+                .map_err(Self::convert_error)
         })
         .await
     }
@@ -1008,7 +1003,7 @@ impl Rpc for SolanaRpc {
             client
                 .get_latest_blockhash()
                 .await
-                .map_err(|error| Self::convert_error(error, None))
+                .map_err(Self::convert_error)
         })
         .await
     }
@@ -1018,7 +1013,7 @@ impl Rpc for SolanaRpc {
             client
                 .get_genesis_hash()
                 .await
-                .map_err(|error| Self::convert_error(error, None))
+                .map_err(Self::convert_error)
         })
         .await
     }
@@ -1044,7 +1039,7 @@ impl Rpc for SolanaRpc {
             client
                 .get_blocks_with_commitment(start, Some(end), commitment)
                 .await
-                .map_err(|error| Self::convert_error(error, None))
+                .map_err(Self::convert_error)
         })
         .await
     }
@@ -1062,7 +1057,7 @@ impl Rpc for SolanaRpc {
                 let produced = client
                     .get_blocks_with_commitment(start, Some(end), commitment)
                     .await
-                    .map_err(|error| Self::convert_error(error, None))?;
+                    .map_err(Self::convert_error)?;
 
                 if !produced.is_empty() {
                     return Ok(BlockWindow { produced, tip: None });
@@ -1071,7 +1066,7 @@ impl Rpc for SolanaRpc {
                 let tip = client
                     .get_slot()
                     .await
-                    .map_err(|error| Self::convert_error(error, None))?;
+                    .map_err(Self::convert_error)?;
 
                 Ok(BlockWindow {
                     produced,
@@ -1109,7 +1104,7 @@ impl Rpc for SolanaRpc {
             client
                 .get_block_height()
                 .await
-                .map_err(|error| Self::convert_error(error, None))
+                .map_err(Self::convert_error)
         })
         .await
     }
@@ -1126,18 +1121,34 @@ impl Rpc for SolanaRpc {
     ) -> Result<Account, RpcError> {
         let pubkey = *pubkey;
         let solana_pubkey: Pubkey = pubkey.into();
-        let commitment = CommitmentConfig { commitment };
+        let config = RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64Zstd),
+            commitment: Some(CommitmentConfig { commitment }),
+            data_slice: None,
+            min_context_slot: None,
+        };
 
-        let response = self
-            .with_retry("getAccount", move |client| async move {
-                client
-                    .get_account_with_commitment(&solana_pubkey, commitment)
-                    .await
-                    .map_err(|error| Self::convert_error(error, Some(pubkey)))
+        // The typed call reports every failure as a missing account, a refused
+        // connection included, so the request is sent and read here.
+        let response: Option<Response<Option<UiAccount>>> = self
+            .with_retry("getAccount", move |client| {
+                let params = serde_json::json!([solana_pubkey.to_string(), config]);
+                async move {
+                    client
+                        .send(RpcRequest::GetAccountInfo, params)
+                        .await
+                        .map_err(Self::convert_error)
+                }
             })
             .await?;
 
-        response.value.ok_or(RpcError::AccountNotFound(pubkey))
+        let account = response
+            .and_then(|response| response.value)
+            .ok_or(RpcError::AccountNotFound(pubkey))?;
+
+        account.to_account().ok_or_else(|| {
+            RpcError::Deserialization("account was not binary-decodable".to_string())
+        })
     }
 
     async fn get_multiple_accounts(
@@ -1163,7 +1174,7 @@ impl Rpc for SolanaRpc {
                     client
                         .get_multiple_accounts_with_commitment(&pubkeys, commitment)
                         .await
-                        .map_err(|error| Self::convert_error(error, None))
+                        .map_err(Self::convert_error)
                 }
             })
             .await?;
@@ -1185,7 +1196,7 @@ impl Rpc for SolanaRpc {
                     client
                         .get_program_ui_accounts_with_config(&solana_program_id, config)
                         .await
-                        .map_err(|error| Self::convert_error(error, None))
+                        .map_err(Self::convert_error)
                 }
             })
             .await?;
@@ -1214,7 +1225,7 @@ impl Rpc for SolanaRpc {
                     client
                         .send_transaction(transaction.as_ref())
                         .await
-                        .map_err(|error| Self::convert_error(error, None))
+                        .map_err(Self::convert_error)
                 }
             })
             .await?;
@@ -1270,7 +1281,7 @@ impl Rpc for SolanaRpc {
                 let response = client
                     .simulate_transaction_with_config(transaction.as_ref(), config)
                     .await
-                    .map_err(|error| Self::convert_error(error, None))?;
+                    .map_err(Self::convert_error)?;
 
                 let value = response.value;
                 Ok(SimulationResult {
@@ -1298,7 +1309,7 @@ impl Rpc for SolanaRpc {
                 async move {
                     send_and_poll(&client, &statuses, &transaction, commitment, skip_preflight)
                         .await
-                        .map_err(|error| Self::convert_error(error, None))
+                        .map_err(Self::convert_error)
                 }
             })
             .await?;
@@ -1316,7 +1327,7 @@ impl Rpc for SolanaRpc {
             client
                 .get_signature_status(&signature)
                 .await
-                .map_err(|error| Self::convert_error(error, None))
+                .map_err(Self::convert_error)
         })
         .await
     }
@@ -1338,7 +1349,7 @@ impl Rpc for SolanaRpc {
                 statuses
                     .wait(&client, signature, commitment, ramp, steady)
                     .await
-                    .map_err(|error| Self::convert_error(error, None))
+                    .map_err(Self::convert_error)
             }
         })
         .await
@@ -1621,6 +1632,118 @@ async fn a_refused_post_holds_its_method_and_status() {
     );
     assert!(refused.is_retriable(), "a rate limit is a retry: {refused}");
     task.abort();
+}
+
+/// A member that answers every getAccountInfo with this account
+fn account_member(account: serde_json::Value) -> impl Fn(&str) -> serde_json::Value + Send + Sync + 'static {
+    move |_method: &str| serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": { "context": { "slot": 1 }, "value": account },
+    })
+}
+
+/// The account `account_member` holds in these tests
+fn held_account() -> serde_json::Value {
+    serde_json::json!({
+        "lamports": 5,
+        "data": ["AQID", "base64"],
+        "owner": "11111111111111111111111111111111",
+        "executable": false,
+        "rentEpoch": 0,
+        "space": 3,
+    })
+}
+
+/// A url that refuses every connection
+async fn dead_url() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a free port binds");
+    format!("http://{}", listener.local_addr().expect("free port address"))
+}
+
+/// A client over these urls that retries once, with almost no wait
+fn client_at(endpoints: Vec<String>) -> SolanaRpc {
+    SolanaRpc::new(RpcConfig {
+        endpoints,
+        strategy: EndpointStrategy::PreferPrimary,
+        timeout: Duration::from_secs(5),
+        retry: crate::config::RpcRetryConfig {
+            max_retries: 1,
+            min_backoff: Duration::from_millis(1),
+            ..crate::config::RpcRetryConfig::default()
+        },
+        ..RpcConfig::default()
+    })
+    .expect("client builds")
+}
+
+// an account the endpoint holds comes back decoded
+#[tokio::test]
+async fn a_held_account_decodes() {
+    let mock = MockEndpoint::start(account_member(held_account())).await;
+    let client = client_for(&[&mock], EndpointStrategy::PreferPrimary);
+
+    let account = client
+        .get_account(&Address::new_unique())
+        .await
+        .expect("the endpoint holds the account");
+
+    assert_eq!(account.lamports, 5);
+    assert_eq!(account.data, vec![1, 2, 3]);
+    assert_eq!(mock.served(), vec!["getAccountInfo".to_string()]);
+}
+
+// an answer with no account in it is the only missing account
+#[tokio::test]
+async fn an_empty_answer_is_a_missing_account() {
+    let address = Address::new_unique();
+    let empty = MockEndpoint::start(account_member(serde_json::Value::Null)).await;
+    let null = MockEndpoint::start(agave_reply).await;
+
+    for mock in [&empty, &null] {
+        let client = client_for(&[mock], EndpointStrategy::PreferPrimary);
+        let missing = client
+            .get_account(&address)
+            .await
+            .expect_err("the endpoint holds no account");
+
+        assert!(
+            matches!(missing, RpcError::AccountNotFound(found) if found == address),
+            "an empty answer reads as a missing account: {missing}"
+        );
+    }
+}
+
+// an endpoint that refuses the connection says nothing about the account
+#[tokio::test]
+async fn a_dead_endpoint_is_a_failed_request() {
+    let client = client_at(vec![dead_url().await]);
+
+    let failed = client
+        .get_account(&Address::new_unique())
+        .await
+        .expect_err("nothing listens");
+
+    assert!(matches!(failed, RpcError::Request(_)), "a refused connection is a failed request: {failed}");
+    assert!(failed.is_retriable(), "a refused connection is a retry: {failed}");
+    assert!(failed.should_failover(), "a refused connection moves to the next endpoint: {failed}");
+}
+
+// an account read moves on to the next endpoint when the first one is dead
+#[tokio::test]
+async fn an_account_read_fails_over() {
+    let live = MockEndpoint::start(account_member(held_account())).await;
+    let client = client_at(vec![dead_url().await, live.url.clone()]);
+
+    let account = client
+        .get_account(&Address::new_unique())
+        .await
+        .expect("the second endpoint answers");
+
+    assert_eq!(account.lamports, 5);
+    assert_eq!(live.served(), vec!["getAccountInfo".to_string()]);
 }
 
 /// A member that holds no block in the window and reports this tip
@@ -2091,7 +2214,7 @@ async fn a_listed_window_reads_no_tip() {
         );
         let error = ClientError::from(ClientErrorKind::TransactionError(tx_error));
 
-        let converted = SolanaRpc::convert_error(error, None);
+        let converted = SolanaRpc::convert_error(error);
 
         match converted {
             RpcError::Transaction { err, message, .. } => {
@@ -2115,7 +2238,7 @@ async fn a_listed_window_reads_no_tip() {
             TransactionError::BlockhashNotFound,
         ));
 
-        let converted = SolanaRpc::convert_error(error, None);
+        let converted = SolanaRpc::convert_error(error);
 
         assert!(matches!(converted, RpcError::BlockhashExpired));
     }

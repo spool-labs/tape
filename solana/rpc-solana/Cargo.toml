@@ -16,6 +16,7 @@ tape-rpc.workspace = true
 # Solana dependencies
 solana-client.workspace = true
 solana-account.workspace = true
+solana-account-decoder.workspace = true
 solana-commitment-config.workspace = true
 solana-hash.workspace = true
 solana-instruction-error.workspace = true

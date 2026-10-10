@@ -11639,6 +11639,7 @@ dependencies = [
  "serde",
  "serde_json",
  "solana-account 4.3.2",
+ "solana-account-decoder",
  "solana-client",
  "solana-commitment-config",
  "solana-hash",
