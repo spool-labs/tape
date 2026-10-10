@@ -98,6 +98,9 @@ pub struct VolumeStats {
 pub struct NodeStats {
     #[serde(default)]
     pub version: String,
+    /// The store engine the node runs on, empty from a peer too old to say.
+    #[serde(default)]
+    pub store_engine: String,
     #[serde(default)]
     pub last_processed_slot: u64,
     #[serde(default)]
@@ -166,6 +169,7 @@ impl From<&NodeStats> for tape_observe_api::NodeStats {
     fn from(s: &NodeStats) -> Self {
         Self {
             version: s.version.clone(),
+            store_engine: s.store_engine.clone(),
             owned_spools: s.owned_spools,
             tracks_stored: s.tracks_stored,
             slices_stored: s.slices_stored,

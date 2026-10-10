@@ -416,6 +416,9 @@ mod tests {
     }
 
     impl Store for GatedStore {
+        fn store_engine(&self) -> tape_store_api::StoreEngine {
+            self.inner.store_engine()
+        }
         fn get(&self, cf: &str, key: &[u8]) -> tape_store_api::Result<Option<Value>> {
             self.inner.get(cf, key)
         }

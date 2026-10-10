@@ -1,5 +1,7 @@
 /target
 */**/target
+# store-rocks is outside the workspace, so testing it writes a lockfile of its own
+/store/store-rocks/Cargo.lock
 /demo/
 /libs/
 .claude

@@ -11,6 +11,7 @@ use solana_signer::Signer;
 use tape_store_reel::Reserve;
 use tape_store_api::{Column, Store};
 use tape_core::types::EpochNumber;
+use tape_node::core::startup::holds_rocks_store;
 use tape_sdk::keys::helpers::load_solana_keypair;
 use tape_store::columns::SliceCol;
 use tracing::{debug, info};
@@ -57,6 +58,7 @@ impl Orchestrator {
 
         let mut processes = ProcessSupervisor::new(
             config.node_binary.clone(),
+            config.node_binary_overrides.clone(),
             config.data_dir.clone(),
             config.rpc_url.clone(),
             config.base_port,
@@ -392,13 +394,20 @@ impl Orchestrator {
         let Some(id) = self.processes.last_running_node_id() else {
             return Ok(None);
         };
+
+        // The loss opens the node's store as a reel volume, and would start one
+        // inside a RocksDB store.
+        let store_path = self.processes.node(id).data_dir.join("data");
+        if holds_rocks_store(&store_path) {
+            anyhow::bail!("node {id} runs on RocksDB, and slices are lost from a reel volume only");
+        }
+
         self.unflap(id).await;
         self.processes
             .stop_node(id)
             .await
             .with_context(|| format!("stop node {id} for slice loss"))?;
 
-        let store_path = self.processes.node(id).data_dir.join("data");
         let dropped = tokio::task::block_in_place(|| lose_slices(&store_path, 10))
             .with_context(|| format!("lose slices on node {id}"))?;
 

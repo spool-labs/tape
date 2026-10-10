@@ -440,6 +440,7 @@ where
 
     NodeStats {
         version: crate::VERSION.to_string(),
+        store_engine: backend.store_engine().label().to_string(),
         owned_spools: owned_spool_count(context),
         tracks_stored: estimate(TrackCol::CF_NAME),
         slices_stored,
@@ -486,6 +487,7 @@ pub fn lite_board(address: String, stats: &NodeStats) -> Board {
             address,
             status: "active".to_string(),
             version: stats.version.clone(),
+            store_engine: stats.store_engine.clone(),
             uptime_secs: 0,
             restarts: stats.restarts,
         },
@@ -697,6 +699,7 @@ where
             address: context.node_address().to_string(),
             status: node_status_label(&context.node_status()).to_string(),
             version: crate::VERSION.to_string(),
+            store_engine: backend.store_engine().label().to_string(),
             uptime_secs: STARTED.get().map(|s| s.elapsed().as_secs()).unwrap_or(0),
             restarts: restarts::count(),
         },
@@ -929,6 +932,27 @@ mod tests {
         let board = build(&context);
         let uploaded: u64 = board.bandwidth.iter().map(|minute| minute.upload).sum();
         assert!(uploaded >= 4_096);
+    }
+
+    // the store engine reaches the node's board, its row in the network view,
+    // and the board built from a peer's public stats
+    #[tokio::test]
+    async fn store_engine_travels() {
+        let context = test_context().await;
+        let stats = NodeStats { store_engine: "rocksdb".to_string(), ..NodeStats::default() };
+
+        let board = build(&context);
+        let network = build_network(&context);
+        let peer = lite_board("peer".to_string(), &stats);
+
+        let local = network
+            .committee
+            .iter()
+            .find_map(|node| node.stats.as_ref())
+            .expect("local node stats");
+        assert_eq!(board.node.store_engine, "memory");
+        assert_eq!(local.store_engine, "memory");
+        assert_eq!(peer.node.store_engine, "rocksdb");
     }
 
     // a peer reachable only over public stats still charts every transfer path

@@ -33,7 +33,7 @@ use tape_store::TapeStore;
 use tape_store_api::get_metrics;
 use tape_store_api::{
     CfDiskUsage, Direction, DiskVolume, Error as StoreError, Result as StoreResult, Store,
-    StoreIter, StoreVolume, Value, WriteBatch,
+    StoreEngine, StoreIter, StoreVolume, Value, WriteBatch,
 };
 
 #[cfg(feature = "rocks")]
@@ -636,6 +636,10 @@ fn record(cf: &str, op: &str, ok: bool, elapsed: f64, read: usize, written: usiz
 }
 
 impl Store for ReelStore {
+    fn store_engine(&self) -> StoreEngine {
+        StoreEngine::Reel
+    }
+
     fn get(&self, cf: &str, key: &[u8]) -> StoreResult<Option<Value>> {
         let timer = std::time::Instant::now();
         let result = EngineStoreTrait::get(&self.inner, cf, key).map_err(crossed);

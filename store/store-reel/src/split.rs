@@ -6,8 +6,8 @@
 use std::path::Path;
 
 use tape_store_api::{
-    BatchOp, CfDiskUsage, Direction, DiskVolume, Result, Store, StoreIter, StoreVolume, Value,
-    WriteBatch,
+    BatchOp, CfDiskUsage, Direction, DiskVolume, Result, Store, StoreEngine, StoreIter,
+    StoreVolume, Value, WriteBatch,
 };
 use tape_store_rocks::RocksStore;
 use tape_store::config::{BULK_COLUMN_FAMILIES, META_SUBDIR};
@@ -73,6 +73,11 @@ impl MetaBulkStore {
 }
 
 impl Store for MetaBulkStore {
+    // The engine that holds the slices.
+    fn store_engine(&self) -> StoreEngine {
+        self.bulk.store_engine()
+    }
+
     fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Value>> {
         self.route(cf).get(cf, key)
     }

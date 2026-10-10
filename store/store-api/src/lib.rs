@@ -68,7 +68,8 @@ pub use batch::{BatchOp, WriteBatch};
 pub use column::Column;
 pub use error::Error;
 pub use store::{
-    range_of, CfDiskUsage, DiskVolume, Direction, KeyValue, Store, StoreIter, StoreVolume,
+    range_of, CfDiskUsage, DiskVolume, Direction, KeyValue, Store, StoreEngine, StoreIter,
+    StoreVolume,
 };
 pub use typed::TypedStore;
 

@@ -503,6 +503,22 @@ fn pending_write_queue() {
     assert!(!has_data);
 }
 
+// a compaction rate of 0 opens an unpaced store that writes and flushes
+#[test]
+fn unpaced_store() {
+    let temp_dir = TempDir::new().expect("tempdir");
+    let meta = temp_dir.path().join("meta");
+    let bulk = temp_dir.path().join("bulk");
+    let store = TapeStore::open_primary_split(&meta, &bulk, 0, 0).expect("open");
+    let spool = SpoolIndex(5);
+    let track = Address::new_unique();
+
+    store.put_slice(spool, track, vec![7u8; 300_000]).expect("put slice");
+    store.inner().inner().flush().expect("flush");
+
+    assert!(store.has_slice(spool, track).expect("has slice"));
+}
+
 // a spool's slice count and stored bytes follow writes and a spool-wide delete
 #[test]
 fn slice_totals() {

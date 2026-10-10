@@ -18,6 +18,11 @@ Environment, all optional:
     LOCALNET_PROFILE        erasure profile of a custom cluster, such as rs:4,3;
                             unset runs tapenet's
     LOCALNET_TRUST_MODEL    permissionless or trusted, set with the profile
+    LOCALNET_DATA_DIR       node dirs, keys, stores and logs, default
+                            target/localnet
+    LOCALNET_NODE_BINARY_FOR
+                            nodes that run on another binary, as comma
+                            separated id=path pairs
     LOCALNET_RUN_SECONDS    seconds to hold the fleet up, default 600
     LOCALNET_BOOT_TIMEOUT   seconds to wait for the api, default 900
     LOCALNET_UPLOADS        uploads to start during the run, default 1
@@ -50,6 +55,8 @@ API = f"http://127.0.0.1:{os.environ.get('LOCALNET_API_PORT', '9000')}"
 NODES = int(os.environ.get("LOCALNET_NODES", "20"))
 PROFILE = os.environ.get("LOCALNET_PROFILE")
 TRUST_MODEL = os.environ.get("LOCALNET_TRUST_MODEL")
+DATA_DIR = os.environ.get("LOCALNET_DATA_DIR")
+NODE_BINARY_FOR = os.environ.get("LOCALNET_NODE_BINARY_FOR", "")
 RUN_SECONDS = int(os.environ.get("LOCALNET_RUN_SECONDS", "600"))
 BOOT_TIMEOUT = int(os.environ.get("LOCALNET_BOOT_TIMEOUT", "900"))
 UPLOADS = int(os.environ.get("LOCALNET_UPLOADS", "1"))
@@ -89,6 +96,11 @@ def main():
         argv += ["--profile", PROFILE]
     if TRUST_MODEL:
         argv += ["--trust-model", TRUST_MODEL]
+    if DATA_DIR:
+        argv += ["--data-dir", DATA_DIR]
+    for pair in NODE_BINARY_FOR.split(","):
+        if pair.strip():
+            argv += ["--node-binary-for", pair.strip()]
     say(f"spawning: {' '.join(argv)}")
     # Its own process group, so a stuck run can be killed without taking the
     # shell with it, and so the nodes it spawned go with it.

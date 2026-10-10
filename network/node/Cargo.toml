@@ -100,4 +100,6 @@ metrics = [
     "tape-rpc-client/metrics",
     "tape-store-api/metrics",
     "tape-store-reel/metrics",
+    # Only where the rocks feature brought the crate in.
+    "tape-store-rocks?/metrics",
 ]

@@ -219,6 +219,7 @@ pub enum StatsSource {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct NodeStats {
     #[serde(default)] pub version: String,
+    #[serde(default)] pub store_engine: String,
     #[serde(default)] pub owned_spools: u64,
     #[serde(default)] pub tracks_stored: u64,
     #[serde(default)] pub slices_stored: u64,
@@ -378,6 +379,9 @@ pub struct NodeInfo {
     pub address: String,
     pub status: String,
     pub version: String,
+    /// The store engine it runs on, empty from a producer that does not say.
+    #[serde(default)]
+    pub store_engine: String,
     pub uptime_secs: u64,
     /// Lifetime process starts, zero from a producer that does not keep the tally.
     pub restarts: u64,

@@ -3,6 +3,8 @@
 # Usage:
 #   make programs     - Build SBPFv3 Solana programs into target/deploy
 #   make node         - Build tape-node release binary with metrics enabled
+#   make node-rocks   - Build the RocksDB node as target/release/tape-node-rocks
+#   make rocks-check  - Test and compile the RocksDB store, which no other target builds
 #   make explorer     - Build and test the separate explorer workspace
 #   make localnet      - Build the localnet orchestrator release binary
 #   make reset        - Remove local validator ledger + localnet state
@@ -22,6 +24,7 @@
 #   make tape         - Build tape (end-user) CLI release binary
 #   make node-linux   - Build tape-node for x86_64 Linux (native on Linux; on
 #                       macOS builds inside a linux container via docker)
+#   make node-rocks-linux - Same, for the RocksDB node, as tape-node-rocks
 #   make cache-linux  - Same, for rpc-cache
 #   make gateway-linux - Same, for tape-gateway
 #   make explorer-linux - Same, for tapedrive-explorer
@@ -37,6 +40,7 @@
 #   LOCALNET_RPC_URL=http://127.0.0.1:8899
 #   LOCALNET_API_PORT=9000
 #   LOCALNET_NODES=3
+#   LOCALNET_NODE_BINARY_FOR="0=target/release/tape-node-rocks"
 #   EXPLORER_BIND=127.0.0.1:8080
 #   EXPLORER_RPC=http://127.0.0.1:8890?api=local
 #   CACHE_BIND=127.0.0.1:8890
@@ -47,6 +51,8 @@ LOCALNET_RPC_URL ?= http://127.0.0.1:8899
 LOCALNET_API_PORT ?= 9000
 LOCALNET_NODES ?= 25
 LOCALNET_NODE_BINARY ?= target/release/tape-node
+# Nodes that run on another binary, as space separated id=path pairs.
+LOCALNET_NODE_BINARY_FOR ?=
 LOCALNET_ADMIN_KEYPAIR ?= $(LOCALNET_DATA_DIR)/admin.json
 LOCALNET_FILE_SIZE_BYTES ?= 1073741824
 LOCALNET_UPLOAD_EPOCHS ?= 4
@@ -68,13 +74,28 @@ EXPLORER_RPC ?= http://$(CACHE_BIND)?api=$(CACHE_API_KEY)
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape tape-linux node-linux cache-linux gateway-linux collector-linux explorer-linux dashboard-linux dashboard-check dashboard-dev moderation-linux linux-binaries atlas-web s3-bench deploy-tools install uninstall
+.PHONY: programs node node-rocks rocks-check node-rocks-linux explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape tape-linux node-linux cache-linux gateway-linux collector-linux explorer-linux dashboard-linux dashboard-check dashboard-dev moderation-linux linux-binaries atlas-web s3-bench deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
 
 node:
 	cargo build --release -p tape-node --features metrics
+
+# Both builds land on target/release/tape-node, so the RocksDB one is copied to
+# its own name and the default one is built again over it.
+node-rocks:
+	cargo build --release -p tape-node --features "metrics rocks"
+	cp target/release/tape-node target/release/tape-node-rocks
+	cargo build --release -p tape-node --features metrics
+
+# RocksDB sits outside the default build and the workspace, so nothing else
+# compiles or tests it. store-rocks is its own workspace and builds RocksDB a
+# second time, into store/store-rocks/target.
+rocks-check:
+	cargo test --manifest-path store/store-rocks/Cargo.toml --features metrics
+	cargo test -p tape-store --features rocks
+	cargo test -p tape-node --features "metrics rocks" --lib core::startup
 
 # Separate workspace (own Cargo.lock); build and test from within explorer/.
 explorer:
@@ -98,6 +119,7 @@ run-localnet:
 	cargo build --release -p tape-node --features metrics
 	cargo run --release -p tape-e2e-localnet --bin localnet -- \
 		--node-binary $(LOCALNET_NODE_BINARY) \
+		$(foreach pair,$(LOCALNET_NODE_BINARY_FOR),--node-binary-for $(pair)) \
 		--rpc-url $(LOCALNET_RPC_URL) \
 		--api-port $(LOCALNET_API_PORT) \
 		--init-nodes $(LOCALNET_NODES)
@@ -170,10 +192,14 @@ tape:
 LINUX_TRIPLE := x86_64-unknown-linux-gnu
 
 ifeq ($(UNAME_S),Linux)
-# $(call linux-cargo,workspace-dir,cargo-args,bin-name)
+# $(call linux-cargo,workspace-dir,cargo-args,bin-name[,artifact-name])
+# A build with an artifact name of its own gets a target directory of its own,
+# so it never lands on the artifact another build left under the bin name.
 define linux-cargo
-cd $(1) && cargo build --release --target $(LINUX_TRIPLE) $(2)
-@echo "binary: $(1)/target/$(LINUX_TRIPLE)/release/$(3)"
+cd $(1) && cargo build --release --target $(LINUX_TRIPLE) $(if $(4),--target-dir target/linux) $(2)
+@mkdir -p $(1)/target/$(LINUX_TRIPLE)/release
+$(if $(4),cp $(1)/target/linux/$(LINUX_TRIPLE)/release/$(3) $(1)/target/$(LINUX_TRIPLE)/release/$(4))
+@echo "binary: $(1)/target/$(LINUX_TRIPLE)/release/$(or $(4),$(3))"
 endef
 else
 # Compile in a native-arch container so rustc doesn't segfault under amd64
@@ -182,7 +208,7 @@ else
 # volume and target/linux caches keep repeat builds cheap; the trailing cp
 # stashes the artifact on the path the deploy tooling reads.
 DOCKER_PLATFORM := linux/$(shell uname -m | sed 's/x86_64/amd64/')
-# $(call linux-cargo,workspace-dir,cargo-args,bin-name)
+# $(call linux-cargo,workspace-dir,cargo-args,bin-name[,artifact-name])
 define linux-cargo
 docker build -q --platform $(DOCKER_PLATFORM) -t tape-linux-builder -f deploy/Dockerfile.linux-builder deploy
 docker run --rm --platform $(DOCKER_PLATFORM) \
@@ -196,13 +222,18 @@ docker run --rm --platform $(DOCKER_PLATFORM) \
 	tape-linux-builder \
 	cargo build --release --target $(LINUX_TRIPLE) $(2)
 @mkdir -p $(1)/target/$(LINUX_TRIPLE)/release
-cp $(1)/target/linux/$(LINUX_TRIPLE)/release/$(3) $(1)/target/$(LINUX_TRIPLE)/release/$(3)
-@echo "binary: $(1)/target/$(LINUX_TRIPLE)/release/$(3)"
+cp $(1)/target/linux/$(LINUX_TRIPLE)/release/$(3) $(1)/target/$(LINUX_TRIPLE)/release/$(or $(4),$(3))
+@echo "binary: $(1)/target/$(LINUX_TRIPLE)/release/$(or $(4),$(3))"
 endef
 endif
 
 node-linux:
 	$(call linux-cargo,.,--features metrics -p tape-node,tape-node)
+
+# The RocksDB node, under a name of its own. The ansible trees deploy
+# tape-node from this directory, and this build leaves that file alone.
+node-rocks-linux:
+	$(call linux-cargo,.,--features "metrics rocks" -p tape-node,tape-node,tape-node-rocks)
 
 tape-linux:
 	$(call linux-cargo,.,-p tape,tape)

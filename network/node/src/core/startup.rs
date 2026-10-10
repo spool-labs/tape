@@ -1,4 +1,5 @@
 use std::net::{IpAddr, SocketAddr};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -26,9 +27,70 @@ use crate::core::atlas::{self, AtlasBuffer};
 use crate::core::error::NodeError;
 use crate::core::restarts;
 
+/// The lock file the reel keeps in a volume's root
+const REEL_LOCK_FILE: &str = "reel.lock";
+
+/// The extension of a reel segment file
+const REEL_SEGMENT_EXTENSION: &str = "reel";
+
+/// The file RocksDB keeps in every database directory
+const ROCKS_CURRENT_FILE: &str = "CURRENT";
+
+/// Whether a store root holds a reel volume
+pub fn holds_reel_volume(root: &Path) -> bool {
+    if root.join(REEL_LOCK_FILE).exists() {
+        return true;
+    }
+
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        if entry.path().extension().is_some_and(|extension| extension == REEL_SEGMENT_EXTENSION) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether a store root holds the two RocksDB volumes, or one of them
+pub fn holds_rocks_store(root: &Path) -> bool {
+    let meta = root.join(tape_store::config::META_SUBDIR).join(ROCKS_CURRENT_FILE);
+    let bulk = root.join(tape_store::config::BULK_SUBDIR).join(ROCKS_CURRENT_FILE);
+    meta.is_file() || bulk.is_file()
+}
+
+/// Refuse a store root that holds the other engine's store
+///
+/// The two engines keep their files under one root without touching each
+/// other's. A node started on the wrong binary would open an empty store beside
+/// the full one and sync everything again.
+#[cfg(not(feature = "rocks"))]
+fn refuse_other_engine(root: &Path) -> Result<(), NodeError> {
+    match holds_rocks_store(root) {
+        true => Err(NodeError::Store(format!(
+            "store at {} holds a RocksDB store, and this binary serves the reel",
+            root.display()
+        ))),
+        false => Ok(()),
+    }
+}
+
+#[cfg(feature = "rocks")]
+fn refuse_other_engine(root: &Path) -> Result<(), NodeError> {
+    match holds_reel_volume(root) {
+        true => Err(NodeError::Store(format!(
+            "store at {} holds a reel volume, and this binary serves RocksDB",
+            root.display()
+        ))),
+        false => Ok(()),
+    }
+}
+
 #[cfg(not(feature = "rocks"))]
 pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, NodeError> {
     let root = &config.store.path;
+    refuse_other_engine(root)?;
 
     // The first open replays the tail of every unsealed segment and rebuilds the
     // resident index, so the gap between these two lines can run minutes.
@@ -79,6 +141,8 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, N
 #[cfg(feature = "rocks")]
 pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, NodeError> {
     let root = &config.store.path;
+    refuse_other_engine(root)?;
+
     let meta_dir = root.join(tape_store::config::META_SUBDIR);
     let bulk_dir = root.join(tape_store::config::BULK_SUBDIR);
 
@@ -495,6 +559,61 @@ mod tests {
 
         assert!(config.store.path.join(tape_store::config::META_SUBDIR).is_dir());
         assert!(config.store.path.join(tape_store::config::BULK_SUBDIR).is_dir());
+    }
+
+    // each engine's files are told apart, and an empty root holds neither
+    #[test]
+    fn engine_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let empty = dir.path().join("empty");
+        let locked = dir.path().join("locked");
+        let segmented = dir.path().join("segmented");
+        let rocks = dir.path().join("rocks");
+        let meta = rocks.join(tape_store::config::META_SUBDIR);
+        for root in [&empty, &locked, &segmented, &meta] {
+            std::fs::create_dir_all(root).expect("root");
+        }
+        std::fs::write(locked.join("reel.lock"), b"").expect("lock");
+        std::fs::write(segmented.join("000001.reel"), b"").expect("segment");
+        std::fs::write(meta.join("CURRENT"), b"").expect("current");
+
+        assert!(!super::holds_reel_volume(&empty) && !super::holds_rocks_store(&empty));
+        assert!(super::holds_reel_volume(&locked) && !super::holds_rocks_store(&locked));
+        assert!(super::holds_reel_volume(&segmented));
+        assert!(super::holds_rocks_store(&rocks) && !super::holds_reel_volume(&rocks));
+    }
+
+    // the reel build refuses a root a RocksDB node wrote, and leaves it alone
+    #[cfg(not(feature = "rocks"))]
+    #[test]
+    fn refuses_rocks_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = NodeConfig::default();
+        config.store.path = dir.path().join("volume");
+        let meta = config.store.path.join(tape_store::config::META_SUBDIR);
+        std::fs::create_dir_all(&meta).expect("meta");
+        std::fs::write(meta.join("CURRENT"), b"").expect("current");
+
+        let opened = super::open_primary_store(&config);
+
+        assert!(opened.is_err_and(|error| error.to_string().contains("RocksDB")));
+        assert!(!super::holds_reel_volume(&config.store.path));
+    }
+
+    // the RocksDB build refuses a root a reel node wrote, and leaves it alone
+    #[cfg(feature = "rocks")]
+    #[test]
+    fn refuses_reel_volume() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = NodeConfig::default();
+        config.store.path = dir.path().join("volume");
+        std::fs::create_dir_all(&config.store.path).expect("volume");
+        std::fs::write(config.store.path.join("reel.lock"), b"").expect("lock");
+
+        let opened = super::open_primary_store(&config);
+
+        assert!(opened.is_err_and(|error| error.to_string().contains("reel")));
+        assert!(!super::holds_rocks_store(&config.store.path));
     }
 
     // -- resolve_network_address tests --

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -49,6 +50,7 @@ pub const LOCAL_HOST: &str = "127.0.0.1";
 
 pub struct ProcessSupervisor {
     node_binary: PathBuf,
+    node_binary_overrides: HashMap<usize, PathBuf>,
     data_root: PathBuf,
     rpc_url: String,
     base_port: u16,
@@ -60,6 +62,7 @@ pub struct ProcessSupervisor {
 impl ProcessSupervisor {
     pub fn new(
         node_binary: PathBuf,
+        node_binary_overrides: HashMap<usize, PathBuf>,
         data_root: PathBuf,
         rpc_url: String,
         base_port: u16,
@@ -68,6 +71,7 @@ impl ProcessSupervisor {
     ) -> Self {
         Self {
             node_binary,
+            node_binary_overrides,
             data_root,
             rpc_url,
             base_port,
@@ -79,6 +83,11 @@ impl ProcessSupervisor {
 
     pub fn node(&self, id: usize) -> &NodeHandle {
         &self.nodes[id]
+    }
+
+    /// The binary a node runs on: its own where one was given, the fleet's otherwise
+    pub fn binary_for(&self, id: usize) -> &Path {
+        self.node_binary_overrides.get(&id).unwrap_or(&self.node_binary)
     }
 
     pub fn load_existing_nodes(&mut self) -> Result<usize> {
@@ -236,6 +245,7 @@ impl ProcessSupervisor {
     }
 
     pub fn spawn_node(&mut self, id: usize) -> Result<()> {
+        let binary = self.binary_for(id).to_path_buf();
         let handle = &mut self.nodes[id];
         if handle.child.is_some() {
             return Ok(());
@@ -250,18 +260,13 @@ impl ProcessSupervisor {
             .try_clone()
             .with_context(|| format!("clone node log handle: {}", log_path.display()))?;
 
-        let child = Command::new(&self.node_binary)
+        let child = Command::new(&binary)
             .arg("--config")
             .arg(&handle.config_path)
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()
-            .with_context(|| {
-                format!(
-                    "spawn tape-node for node {id}: {}",
-                    self.node_binary.display()
-                )
-            })?;
+            .with_context(|| format!("spawn tape-node for node {id}: {}", binary.display()))?;
 
         handle.child = Some(child);
         Ok(())
@@ -510,6 +515,24 @@ logging:
 mod tests {
     use super::*;
     use tape_node::config::node::NodeConfig;
+
+    // a node with a binary of its own runs on it, and the rest on the fleet's
+    #[test]
+    fn binary_override() {
+        let overrides = HashMap::from([(3, PathBuf::from("/bin/other-node"))]);
+        let processes = ProcessSupervisor::new(
+            PathBuf::from("/bin/tape-node"),
+            overrides,
+            PathBuf::from("/tmp/localnet"),
+            "http://127.0.0.1:8899".into(),
+            4000,
+            false,
+            false,
+        );
+
+        assert_eq!(processes.binary_for(3), Path::new("/bin/other-node"));
+        assert_eq!(processes.binary_for(0), Path::new("/bin/tape-node"));
+    }
 
     // the generated yaml must stay parseable by the node it configures
     #[test]

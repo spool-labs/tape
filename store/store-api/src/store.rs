@@ -28,6 +28,28 @@ pub enum StoreVolume {
     Bulk,
 }
 
+/// The engine behind a store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreEngine {
+    /// Held in memory, for tests and harnesses.
+    Memory,
+    /// The reel, the node's default store.
+    Reel,
+    /// RocksDB.
+    Rocks,
+}
+
+impl StoreEngine {
+    /// The word a node reports for its engine.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Memory => "memory",
+            Self::Reel => "reel",
+            Self::Rocks => "rocksdb",
+        }
+    }
+}
+
 /// Best-effort disk usage for one physical storage volume.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiskVolume {
@@ -63,6 +85,10 @@ impl CfDiskUsage {
 /// All implementations must be thread-safe (Send + Sync).
 /// Column families are namespaces for keys - each CF has its own key space.
 pub trait Store: Send + Sync {
+    /// The engine behind this store, which a node reports as what it runs on.
+    /// Required so a delegating store answers for the store it wraps.
+    fn store_engine(&self) -> StoreEngine;
+
     /// Get a value by key from the specified column family.
     fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Value>>;
 

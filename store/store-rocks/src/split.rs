@@ -10,8 +10,8 @@
 //! layout, so a one-drive box needs no special handling.
 
 use tape_store_api::{
-    BatchOp, CfDiskUsage, DiskVolume, Direction, KeyValue, Result, Store, StoreIter, StoreVolume,
-    WriteBatch, Value,
+    BatchOp, CfDiskUsage, DiskVolume, Direction, KeyValue, Result, Store, StoreEngine, StoreIter,
+    StoreVolume, WriteBatch, Value,
 };
 
 use crate::RocksStore;
@@ -128,6 +128,10 @@ impl SplitStore {
 }
 
 impl Store for SplitStore {
+    fn store_engine(&self) -> StoreEngine {
+        StoreEngine::Rocks
+    }
+
     fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Value>> {
         self.route(cf).get(cf, key)
     }

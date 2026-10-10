@@ -33,6 +33,10 @@ struct Cli {
     #[arg(long, default_value = "target/debug/tape-node")]
     node_binary: PathBuf,
 
+    /// Run one node on another binary, as `id=path`. Repeat it for more nodes
+    #[arg(long, value_name = "ID=PATH", value_parser = parse_node_binary)]
+    node_binary_for: Vec<(usize, PathBuf)>,
+
     #[arg(long, default_value = "target/localnet")]
     data_dir: PathBuf,
 
@@ -71,6 +75,18 @@ struct Cli {
     challenge: bool,
 }
 
+/// One `id=path` pair of `--node-binary-for`
+fn parse_node_binary(pair: &str) -> Result<(usize, PathBuf), String> {
+    let Some((id, path)) = pair.split_once('=') else {
+        return Err(format!("expected id=path, got {pair}"));
+    };
+
+    match id.parse::<usize>() {
+        Ok(id) => Ok((id, PathBuf::from(path))),
+        Err(error) => Err(format!("node id {id}: {error}")),
+    }
+}
+
 fn main() -> ExitCode {
     check_fd_limit();
 
@@ -105,6 +121,7 @@ async fn async_main() -> ExitCode {
     let config = LocalnetConfig {
         rpc_url: cli.rpc_url.clone(),
         node_binary: cli.node_binary,
+        node_binary_overrides: cli.node_binary_for.into_iter().collect(),
         data_dir: cli.data_dir,
         base_port: cli.base_port,
         sol_airdrop: cli.sol_airdrop,

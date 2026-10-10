@@ -11830,6 +11830,7 @@ version = "0.4.8"
 dependencies = [
  "fs2",
  "rocksdb",
+ "tape-metrics",
  "tape-store-api",
  "thiserror 2.0.20",
  "tokio",

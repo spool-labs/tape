@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-use tape_store_api::{batch::BatchOp, Direction, Result, Store, StoreIter, WriteBatch, Value};
+use tape_store_api::{
+    batch::BatchOp, Direction, Result, Store, StoreEngine, StoreIter, WriteBatch, Value,
+};
 
 #[cfg(feature = "metrics")]
 use tape_metrics::{get_metrics, OperationTimer};
@@ -44,6 +46,10 @@ impl Default for MemoryStore {
 }
 
 impl Store for MemoryStore {
+    fn store_engine(&self) -> StoreEngine {
+        StoreEngine::Memory
+    }
+
     fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Value>> {
         #[cfg(feature = "metrics")]
         let timer = OperationTimer::new();

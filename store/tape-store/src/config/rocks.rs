@@ -286,9 +286,16 @@ pub const DEFAULT_BULK_COMPACTION_MB_PER_SEC: u64 = 100;
 ///
 /// Returns a configured Options instance with settings optimized for the
 /// TapeStore workload: 64 MiB write buffers, parallelism scaled to CPU count,
-/// LZ4 compression, the given compaction rate limit, and a bounded WAL.
+/// LZ4 compression, the given compaction rate limit, and a bounded WAL. A rate
+/// of 0 leaves compaction unpaced.
 pub fn create_db_options(compaction_mb_per_sec: u64) -> Options {
     let mut options = base_db_options();
+
+    // RocksDB divides by the rate it is handed, and on x86 a rate of 0 kills
+    // the process as the store opens. No limiter is what 0 asks for.
+    if compaction_mb_per_sec == 0 {
+        return options;
+    }
 
     // Rate limiting for compaction to prevent I/O spikes
     // set_ratelimiter(rate_bytes_per_sec, refill_period_us, fairness)

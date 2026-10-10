@@ -198,6 +198,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let stats = NodeStats {
         version: crate::VERSION.to_string(),
+        store_engine: store.inner().inner().store_engine().label().to_string(),
         last_processed_slot,
         blocks_processed: metrics.blocks_processed_total,
         epoch_transitions: metrics.epoch_transitions_total,

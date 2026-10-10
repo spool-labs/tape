@@ -12,8 +12,8 @@ use rocksdb::{
 use tokio::runtime::Handle;
 
 use tape_store_api::{
-    BatchOp, CfDiskUsage, Direction, Error, KeyValue, Result, Store, StoreIter, StoreVolume,
-    WriteBatch, Value,
+    BatchOp, CfDiskUsage, Direction, Error, KeyValue, Result, Store, StoreEngine, StoreIter,
+    StoreVolume, WriteBatch, Value,
 };
 
 #[cfg(feature = "metrics")]
@@ -358,6 +358,10 @@ impl RocksStore {
 }
 
 impl Store for RocksStore {
+    fn store_engine(&self) -> StoreEngine {
+        StoreEngine::Rocks
+    }
+
     fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Value>> {
         #[cfg(feature = "metrics")]
         let timer = OperationTimer::new();
