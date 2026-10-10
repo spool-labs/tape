@@ -46,7 +46,7 @@ use crate::track::write::{
 use crate::transfer::certify::CollectedSignatures;
 
 use super::error::StreamError;
-use super::pace::{Slots, hold_slices, pace, window_cap};
+use super::pace::{Slots, coded_chunk_bytes, hold_slices, pace, window_cap};
 use super::manifest::{
     max_track_size, ChunkEntry, ChunkManifest, MAX_TRACKS_PER_TAPE, MANIFEST_VERSION,
 };
@@ -899,7 +899,8 @@ where
     // The pace reads the link while the store stage runs and stops with it.
     let pace_stage = async move {
         if pinned.is_none() {
-            pace(window_sender, cap, || client.api.pushed_bytes(), pace_stopped).await;
+            let chunk_bytes = coded_chunk_bytes(profile);
+            pace(window_sender, cap, chunk_bytes, || client.api.accepted_bytes(), pace_stopped).await;
         }
         Ok::<_, TapedriveError>(())
     };

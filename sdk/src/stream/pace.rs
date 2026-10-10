@@ -30,8 +30,11 @@ const MEMORY_SHARE: u64 = 8;
 /// How often the pace reads the link
 const PACE_TICK: Duration = Duration::from_secs(1);
 
-/// How long a window runs before its rate counts
+/// A window runs at least this long before its rate counts
 const PACE_SPAN: Duration = Duration::from_secs(8);
+
+/// A settled window steps down once the link moves less than this share of its settled rate
+const PACE_FALL: f64 = 0.7;
 
 /// A wider window stays only when it moves this much more than the narrower one
 const PACE_GAIN: f64 = 1.15;
@@ -39,12 +42,16 @@ const PACE_GAIN: f64 = 1.15;
 /// How often a settled pace tries one chunk more, so a link that got faster gets used
 const PACE_REPROBE: Duration = Duration::from_secs(60);
 
+/// Coded bytes of one full stream chunk, its slices together
+pub(crate) fn coded_chunk_bytes(profile: ErasureCode) -> u64 {
+    max_track_size(profile) as u64 * u64::from(profile.n()) / u64::from(profile.k()).max(1)
+}
+
 /// The widest window the machine's memory allows
 pub(crate) fn window_cap(profile: ErasureCode) -> usize {
     let chunk = max_track_size(profile) as u64;
-    let coded = chunk * u64::from(profile.n()) / u64::from(profile.k()).max(1);
     let budget = physical_memory() / MEMORY_SHARE;
-    let chunks = (budget / (chunk + coded)) as usize;
+    let chunks = (budget / (chunk + coded_chunk_bytes(profile))) as usize;
     chunks.saturating_sub(LEAD).clamp(1, MAX_WINDOW)
 }
 
@@ -147,21 +154,28 @@ enum Phase {
     Settled(Instant),
 }
 
-/// Widen the window while a wider one moves more bytes, then hold it and try again now and then
+/// Widen the window while a wider one moves more bytes, hold it, and follow the link after
 ///
-/// `pushed` reads the bytes the client has handed to the network so far. The
-/// pace ends when the store stage finishes and drops `stop`.
+/// `accepted` reads the slice bytes nodes have taken from this client so far.
+/// Pushes finish in bursts, so a span closes only once the nodes have taken a
+/// window's worth of chunks, and the span after each change is left out while
+/// the new window fills. A settled window steps down when the link falls away
+/// and tries one chunk more every so often. The pace ends when the store stage
+/// finishes and drops `stop`.
 pub(crate) async fn pace(
     window: watch::Sender<usize>,
     cap: usize,
-    pushed: impl Fn() -> u64,
+    chunk_bytes: u64,
+    accepted: impl Fn() -> u64,
     mut stop: oneshot::Receiver<()>,
 ) {
     let mut best = 1usize;
     let mut best_rate = 0f64;
+    let mut settled_rate = 0f64;
     let mut phase = Phase::Probing;
+    let mut is_warming = false;
     let mut span_start = Instant::now();
-    let mut span_bytes = pushed();
+    let mut span_bytes = accepted();
     window.send_replace(1);
 
     loop {
@@ -170,39 +184,51 @@ pub(crate) async fn pace(
             _ = &mut stop => return,
             () = sleep(PACE_TICK) => {}
         }
+        let current = *window.borrow();
         let elapsed = span_start.elapsed();
-        if elapsed < PACE_SPAN {
+        let moved = accepted().saturating_sub(span_bytes);
+        if elapsed < PACE_SPAN || moved < current as u64 * chunk_bytes {
             continue;
         }
-        let moved = pushed().saturating_sub(span_bytes);
+        span_start = Instant::now();
+        span_bytes = accepted();
+        if is_warming {
+            is_warming = false;
+            continue;
+        }
         let rate = moved as f64 / elapsed.as_secs_f64();
-        let current = *window.borrow();
 
         let next = match phase {
-            Phase::Probing if rate > best_rate * PACE_GAIN && rate > 0.0 => {
+            Phase::Probing if rate > best_rate * PACE_GAIN => {
                 best = current;
                 best_rate = rate;
                 match current < cap {
                     true => current + 1,
                     false => {
                         phase = Phase::Settled(Instant::now() + PACE_REPROBE);
+                        settled_rate = rate;
                         current
                     }
                 }
             }
             Phase::Probing => {
                 phase = Phase::Settled(Instant::now() + PACE_REPROBE);
+                settled_rate = best_rate;
                 best
             }
-            Phase::Settled(until) => {
+            Phase::Settled(_) if rate < settled_rate * PACE_FALL && current > 1 => {
+                settled_rate = rate;
+                current - 1
+            }
+            Phase::Settled(until) if Instant::now() >= until && current < cap => {
+                phase = Phase::Probing;
+                best = current;
                 best_rate = rate;
-                match Instant::now() >= until && current < cap {
-                    true => {
-                        phase = Phase::Probing;
-                        current + 1
-                    }
-                    false => current,
-                }
+                current + 1
+            }
+            Phase::Settled(_) => {
+                settled_rate = settled_rate.max(rate);
+                current
             }
         };
 
@@ -215,9 +241,8 @@ pub(crate) async fn pace(
                 "stream window"
             );
             window.send_replace(next);
+            is_warming = true;
         }
-        span_start = Instant::now();
-        span_bytes = pushed();
     }
 }
 
@@ -226,6 +251,44 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     use super::*;
+
+    /// Coded bytes of one chunk in these tests
+    const CHUNK: u64 = 1_000_000;
+
+    // a link that falls away after the pace settles steps the window down
+    #[tokio::test(start_paused = true)]
+    async fn a_falling_link_steps_down() {
+        let (sender, receiver) = watch::channel(1);
+        let accepted = Arc::new(AtomicU64::new(0));
+        let started = Instant::now();
+        let feed = {
+            let accepted = accepted.clone();
+            let receiver = receiver.clone();
+            tokio::spawn(async move {
+                loop {
+                    sleep(Duration::from_millis(100)).await;
+                    let window = (*receiver.borrow() as u64).min(3);
+                    let share = match started.elapsed() < PACE_SPAN * 12 {
+                        true => window,
+                        false => 1,
+                    };
+                    accepted.fetch_add(share * CHUNK, Ordering::Relaxed);
+                }
+            })
+        };
+        let reader = accepted.clone();
+        let (_stop, stopped) = oneshot::channel();
+        let task = tokio::spawn(pace(sender, 8, CHUNK, move || reader.load(Ordering::Relaxed), stopped));
+
+        sleep(PACE_SPAN * 11).await;
+        assert_eq!(*receiver.borrow(), 3);
+        sleep(PACE_SPAN * 8).await;
+        assert!(*receiver.borrow() < 3, "window {}", *receiver.borrow());
+
+        drop(receiver);
+        feed.abort();
+        task.abort();
+    }
 
     // a link that moves more with every chunk widens the window up to the cap
     #[tokio::test(start_paused = true)]
@@ -239,15 +302,15 @@ mod tests {
                 loop {
                     sleep(Duration::from_millis(100)).await;
                     let window = *receiver.borrow() as u64;
-                    pushed.fetch_add(window * 1_000_000, Ordering::Relaxed);
+                    pushed.fetch_add(window * CHUNK, Ordering::Relaxed);
                 }
             })
         };
         let reader = pushed.clone();
         let (_stop, stopped) = oneshot::channel();
-        let task = tokio::spawn(pace(sender, 4, move || reader.load(Ordering::Relaxed), stopped));
+        let task = tokio::spawn(pace(sender, 4, CHUNK, move || reader.load(Ordering::Relaxed), stopped));
 
-        sleep(PACE_SPAN * 6).await;
+        sleep(PACE_SPAN * 12).await;
 
         assert_eq!(*receiver.borrow(), 4);
         drop(receiver);
@@ -267,15 +330,15 @@ mod tests {
                 loop {
                     sleep(Duration::from_millis(100)).await;
                     let window = (*receiver.borrow() as u64).min(2);
-                    pushed.fetch_add(window * 1_000_000, Ordering::Relaxed);
+                    pushed.fetch_add(window * CHUNK, Ordering::Relaxed);
                 }
             })
         };
         let reader = pushed.clone();
         let (_stop, stopped) = oneshot::channel();
-        let task = tokio::spawn(pace(sender, 8, move || reader.load(Ordering::Relaxed), stopped));
+        let task = tokio::spawn(pace(sender, 8, CHUNK, move || reader.load(Ordering::Relaxed), stopped));
 
-        sleep(PACE_SPAN * 6).await;
+        sleep(PACE_SPAN * 12).await;
 
         assert_eq!(*receiver.borrow(), 2);
         drop(receiver);
