@@ -32,7 +32,7 @@ use crate::features::snapshot::submit::{
 use crate::features::snapshot::vote::create_snapshot_votes;
 use crate::features::vote::all_vote_groups_signed;
 
-const SNAPSHOT_HEARTBEAT: Duration = Duration::from_secs(30);
+const SNAPSHOT_HEARTBEAT: Duration = Duration::from_secs(5);
 
 pub struct SnapshotManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,

@@ -36,7 +36,7 @@ use crate::features::blacklist::decode_blacklist_entry;
 use crate::features::block::ingestor::ParsedBlock;
 use crate::features::vote::all_vote_groups_signed;
 
-const ASSIGNMENT_HEARTBEAT: Duration = Duration::from_secs(30);
+const ASSIGNMENT_HEARTBEAT: Duration = Duration::from_secs(5);
 const BLACKLIST_BATCH: usize = 256;
 
 pub struct AssignmentManager<Db: Store, Cluster: Api, Blockchain: Rpc> {

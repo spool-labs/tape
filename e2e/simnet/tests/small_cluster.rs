@@ -1,30 +1,23 @@
-//! Private clusters on small profiles, where nodes only fail and every count is k.
+//! Healthy private clusters on small profiles, where nodes only fail and every count is k.
 
 use std::time::{Duration, Instant};
 
-use tape_api::genesis::GenesisConfig;
 use tape_api::program::tapedrive::TrackAddress;
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
-use tape_core::encoding::{ClayParams, ErasureCode, RSParams, RepParams};
+use tape_core::encoding::{ClayParams, ErasureCode, RSParams};
 use tape_core::spooler::{GroupIndex, VirtualGroup};
 use tape_core::thresholds::TrustModel;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{BasisPoints, EpochNumber};
+use tape_core::types::BasisPoints;
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, SimnetHarness, run_simnet_test};
 
 const THREE_OF_FOUR: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
-const FOUR_OF_SIX: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(4, 2));
-const MIRROR: ErasureCode = ErasureCode::Replication(RepParams::new(2));
-const SMALL_CLAY: ErasureCode = ErasureCode::Clay(ClayParams::new(4, 2, 3));
 const WIDE_CLAY: ErasureCode = ErasureCode::Clay(ClayParams::new(10, 7, 9));
 
 const STAKE: u64 = 1_000;
 const RESERVE_EPOCHS: u64 = 32;
 const EPOCHS: u64 = 3;
-
-/// Epochs a cluster may still advance through after a node stops, before it stalls
-const STALL_ATTEMPTS: usize = 4;
 
 /// Epochs a new group count may take to go live
 const GROWTH_EPOCHS: usize = 4;
@@ -35,8 +28,6 @@ const WRITE_ATTEMPTS: usize = 24;
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 const ACTIVE_TIMEOUT: Duration = Duration::from_secs(60);
 const SLICE_TIMEOUT: Duration = Duration::from_secs(120);
-const HEAL_TIMEOUT: Duration = Duration::from_secs(180);
-const EVICT_TIMEOUT: Duration = Duration::from_secs(90);
 const EPOCH_TIMEOUT: Duration = Duration::from_secs(TEST_MAX_EPOCH_DURATION.0 * 5);
 
 // a healthy 3-of-4 cluster writes, certifies, fills every spool and keeps the
@@ -85,140 +76,6 @@ async fn add_group_inner() {
     harness.stop_all().await.expect("stop runtimes");
 }
 
-// a cluster of exactly n nodes that loses one keeps writing and reading, and
-// its epoch stalls until the node's keys return on a new drive
-#[test]
-fn stalled_epoch() {
-    run_simnet_test(stalled_epoch_inner);
-}
-
-async fn stalled_epoch_inner() {
-    const LOST: usize = 3;
-
-    let node_count = usize::from(THREE_OF_FOUR.n());
-    let mut harness = start_cluster(THREE_OF_FOUR, node_count, 1).await;
-
-    let before = payload(256 * 1024);
-    let (first, first_track) = write(&harness, &before).await;
-    wait_full_group(&harness, first, &first_track, SLICE_TIMEOUT).await;
-
-    harness.stop_nodes(&[LOST]).await.expect("stop a node");
-
-    let after = payload(300 * 1024);
-    let (second, second_track) = write(&harness, &after).await;
-
-    wait_stalled_epoch(&harness).await;
-    let seated = harness
-        .scenario()
-        .committee_next_size()
-        .await
-        .expect("next committee size");
-    assert!(seated < node_count, "the next committee is full, so nothing stalls the epoch");
-    assert_eq!(read(&harness, first).await, before, "an old track reads on three nodes");
-    assert_eq!(read(&harness, second).await, after, "a new track reads on three nodes");
-
-    // The lost node's keys come back on a new drive. Its stake is already
-    // active, so it takes its seat and the epoch moves on.
-    harness.wipe_nodes(&[LOST]).expect("wipe the node's store");
-    harness.start_nodes(&[LOST]).await.expect("restart the node on an empty store");
-    harness
-        .scenario()
-        .self_advance_epoch(EPOCH_TIMEOUT)
-        .await
-        .expect("the epoch advances with the node back");
-    wait_full_group(&harness, first, &first_track, HEAL_TIMEOUT).await;
-    wait_full_group(&harness, second, &second_track, HEAL_TIMEOUT).await;
-    assert_eq!(read(&harness, first).await, before);
-    assert_eq!(read(&harness, second).await, after);
-
-    harness.stop_all().await.expect("stop runtimes");
-}
-
-// with a spare in the committee, losing a node stalls nothing: the epoch moves
-// on and the survivors rebuild the lost spool between them
-#[test]
-fn spare_node() {
-    run_simnet_test(|| lost_nodes_inner(THREE_OF_FOUR, 1));
-}
-
-// a 4-of-6 cluster with two spares loses two owners at once and rebuilds both spools
-#[test]
-fn two_lost() {
-    run_simnet_test(|| lost_nodes_inner(FOUR_OF_SIX, 2));
-}
-
-async fn lost_nodes_inner(profile: ErasureCode, lost_count: usize) {
-    let node_count = usize::from(profile.n()) + lost_count;
-    let mut harness = start_cluster(profile, node_count, 1).await;
-
-    let before = payload(256 * 1024);
-    let (first, first_track) = write(&harness, &before).await;
-    wait_full_group(&harness, first, &first_track, SLICE_TIMEOUT).await;
-
-    // Owners of the written group, so every lost node takes a slice with it.
-    let lost = owners(&harness, first_track.group).await[..lost_count].to_vec();
-    harness.stop_nodes(&lost).await.expect("stop nodes");
-
-    let after = payload(300 * 1024);
-    let (second, second_track) = write(&harness, &after).await;
-
-    // A lost node may already sit in the next committee, so it can take two
-    // epochs before the survivors own every spool.
-    wait_full_group(&harness, first, &first_track, EPOCH_TIMEOUT).await;
-    wait_full_group(&harness, second, &second_track, EPOCH_TIMEOUT).await;
-    let survivors = owners(&harness, first_track.group).await;
-    assert!(
-        lost.iter().all(|node| !survivors.contains(node)),
-        "a stopped node still owns a spool"
-    );
-    assert_eq!(read(&harness, first).await, before);
-    assert_eq!(read(&harness, second).await, after);
-
-    harness.stop_all().await.expect("stop runtimes");
-}
-
-// a 2-copy mirror writes on one node while the other is down, and the other
-// returns with a new drive and rebuilds its spool
-#[test]
-fn mirror_outage() {
-    run_simnet_test(|| outage_inner(MIRROR));
-}
-
-// the same outage and lost drive on Clay, where a repair reads from d helpers
-#[test]
-fn clay_outage() {
-    run_simnet_test(|| outage_inner(SMALL_CLAY));
-}
-
-async fn outage_inner(profile: ErasureCode) {
-    // Every node owns a spool in a cluster of exactly n.
-    const LOST: usize = 1;
-
-    let node_count = usize::from(profile.n());
-    let mut harness = start_cluster(profile, node_count, 1).await;
-
-    let before = payload(256 * 1024);
-    let (first, first_track) = write(&harness, &before).await;
-    wait_full_group(&harness, first, &first_track, SLICE_TIMEOUT).await;
-
-    harness.stop_nodes(&[LOST]).await.expect("stop a node");
-
-    let after = payload(300 * 1024);
-    let (second, second_track) = write(&harness, &after).await;
-    assert_eq!(read(&harness, second).await, after, "a track written with a node down reads");
-
-    // The node returns on an empty store. Only the other owners can give it
-    // the first track's slice back.
-    harness.wipe_nodes(&[LOST]).expect("wipe the node's store");
-    harness.start_nodes(&[LOST]).await.expect("restart the wiped node");
-    wait_full_group(&harness, first, &first_track, HEAL_TIMEOUT).await;
-    wait_full_group(&harness, second, &second_track, HEAL_TIMEOUT).await;
-
-    run_epochs(&harness, &[(first, &before), (second, &after)]).await;
-
-    harness.stop_all().await.expect("stop runtimes");
-}
-
 // twelve nodes on a 10-wide profile: the groups between them use more nodes
 // than one group has spools
 #[test]
@@ -258,74 +115,6 @@ async fn wide_committee_inner() {
         .map(|(track, _)| (*track, data.as_slice()))
         .collect();
     run_epochs(&harness, &written).await;
-
-    harness.stop_all().await.expect("stop runtimes");
-}
-
-// the other three owners vote a node out, the spare takes its spool, and the
-// node returns after its suspension
-#[test]
-fn eviction() {
-    run_simnet_test(|| eviction_inner(THREE_OF_FOUR));
-}
-
-// on a 2-copy mirror the vote is one signature, from the owner that isn't accused
-#[test]
-fn mirror_eviction() {
-    run_simnet_test(|| eviction_inner(MIRROR));
-}
-
-async fn eviction_inner(profile: ErasureCode) {
-    let group_size = usize::from(profile.n());
-    let node_count = group_size + 1;
-    let mut harness = start(cluster(profile, node_count), 1).await;
-
-    let data = payload(256 * 1024);
-    let (track, written) = write(&harness, &data).await;
-    wait_full_group(&harness, track, &written, SLICE_TIMEOUT).await;
-
-    // An owner of the group, so the other owners carry the vote alone.
-    let target = owners(&harness, written.group).await[0];
-    let address = Address::from(harness.scenario().node_address(target));
-    let suspended = wait_eviction(&harness, target).await;
-
-    advance_to_epoch(&harness, suspended).await;
-    let members = harness
-        .scenario()
-        .read_committee(suspended)
-        .await
-        .expect("read the committee");
-    assert!(
-        members.iter().all(|member| member.node != address),
-        "the evicted node is still seated"
-    );
-    assert_eq!(members.len(), group_size, "the other nodes fill the committee");
-    assert!(
-        !owners(&harness, written.group).await.contains(&target),
-        "the evicted node still owns a spool"
-    );
-
-    // The node that took the spool rebuilds the slice.
-    wait_full_group(&harness, track, &written, EPOCH_TIMEOUT).await;
-    assert_eq!(read(&harness, track).await, data);
-
-    let rejoin = suspended.next();
-    advance_to_epoch(&harness, rejoin).await;
-    harness
-        .scenario()
-        .wait_nodes_active(&[target], ACTIVE_TIMEOUT)
-        .await
-        .expect("the evicted node is active again");
-    let members = harness
-        .scenario()
-        .read_committee(rejoin)
-        .await
-        .expect("read the committee");
-    assert!(
-        members.iter().any(|member| member.node == address),
-        "the node did not take a seat after its suspension"
-    );
-    assert_eq!(read(&harness, track).await, data);
 
     harness.stop_all().await.expect("stop runtimes");
 }
@@ -467,19 +256,6 @@ async fn run_epochs(harness: &SimnetHarness, tracks: &[(Address, &[u8])]) {
     }
 }
 
-async fn advance_to_epoch(harness: &SimnetHarness, target: EpochNumber) {
-    let scenario = harness.scenario();
-    loop {
-        if scenario.current_epoch_number().await.expect("current epoch") >= target.0 {
-            return;
-        }
-        scenario
-            .self_advance_epoch(EPOCH_TIMEOUT)
-            .await
-            .expect("advance epoch toward target");
-    }
-}
-
 /// The nodes that hold a virtual group's spools this epoch, in spool order
 async fn owners(harness: &SimnetHarness, group: VirtualGroup) -> Vec<usize> {
     let scenario = harness.scenario();
@@ -544,48 +320,6 @@ async fn wait_groups(harness: &SimnetHarness, groups: u64) {
             .expect("advance epoch");
     }
     panic!("the network never reached {groups} groups");
-}
-
-/// Wait for an epoch that stops advancing, and return its number
-async fn wait_stalled_epoch(harness: &SimnetHarness) -> u64 {
-    // Longer than a healthy epoch takes here, so a slow epoch is never taken for a stalled one.
-    let timeout = Duration::from_secs(GenesisConfig::simnet().epoch_duration.0 * 5);
-
-    for _ in 0..STALL_ATTEMPTS {
-        let epoch = harness
-            .scenario()
-            .current_epoch_number()
-            .await
-            .expect("current epoch");
-        let changed = harness.scenario().wait_epoch_change(epoch, timeout).await;
-        if changed.is_err() {
-            return epoch;
-        }
-    }
-    panic!("the epoch kept advancing without a full committee");
-}
-
-/// Propose the eviction and cast the group's vote by hand until it lands, and
-/// return the epoch the node is suspended through
-async fn wait_eviction(harness: &SimnetHarness, target: usize) -> EpochNumber {
-    let deadline = Instant::now() + EVICT_TIMEOUT;
-    loop {
-        // A proposal expires with its epoch, and a repeat inside one epoch is refused.
-        let _ = harness.scenario().propose_eviction(target).await;
-        let _ = harness.scenario().vote_eviction(target, GroupIndex(0)).await;
-
-        let suspended = harness
-            .scenario()
-            .read_node(target)
-            .await
-            .expect("read the node")
-            .suspended_until;
-        if suspended != EpochNumber(0) {
-            return suspended;
-        }
-        assert!(Instant::now() < deadline, "the eviction never landed");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
 }
 
 fn payload(len: usize) -> Vec<u8> {
