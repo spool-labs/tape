@@ -22,9 +22,8 @@ mod split;
 use std::path::Path;
 
 use reel::{
-    ByteCount, CompactRate, IoBackend, MapShape, PointReads, Preallocate, RecordKey, ReelConfig,
-    ReelStore as EngineStore, ServingBackend, ShardShapes, SyncPolicy, ThreadBudget,
-    MAP_EVERYTHING,
+    ByteCount, CompactRate, IoBackend, RecordKey, ReelConfig,
+    ReelStore as EngineStore, ServingBackend, SyncPolicy, ThreadBudget, MAP_EVERYTHING,
 };
 use reel_core::Store as EngineStoreTrait;
 use serde::Deserialize;
@@ -41,8 +40,6 @@ pub use arm::{
     scaled, track_data_codec, BenchArm, SCALE_VAR, SEGMENT_MIB_VAR, TRACK_DATA_CODEC_VAR,
 };
 pub use columns::{RAW_TRACK_DATA_COLUMNS, TAPE_COLUMNS};
-// So a tool opening a node's volume needs this crate and not the engine behind it.
-pub use reel::{IndexCheckpoint, IndexResidency};
 #[cfg(feature = "rocks")]
 pub use rocks::{
     bench_bulk_configs, bench_cache, bench_db_options, bench_metadata_configs, bench_store_configs,
@@ -73,15 +70,15 @@ impl ReelStore {
 }
 
 /// What one column's index holds
-pub struct ResidentColumn {
+pub struct IndexColumn {
     /// The column, as the volume was opened with it
     pub column: String,
 
-    /// Live records the index counts, absent on a paged open
-    pub records: Option<u64>,
+    /// Live records the index counts
+    pub records: u64,
 
-    /// Live bytes the index counts, absent on a paged open
-    pub bytes: Option<u64>,
+    /// Live bytes the index counts
+    pub bytes: u64,
 
     /// Keys the index holds in memory
     pub keys: u64,
@@ -93,7 +90,7 @@ pub struct IndexReport {
     pub resident_bytes: u64,
 
     /// One row per column the volume was opened over
-    pub columns: Vec<ResidentColumn>,
+    pub columns: Vec<IndexColumn>,
 }
 
 impl ReelStore {
@@ -135,6 +132,14 @@ impl ReelStore {
         Ok(ReelStore { inner })
     }
 
+    /// Sync the tails and journals, and trim each segment to its written end
+    ///
+    /// What a node runs at shutdown. Nothing seals, so the next open appends where
+    /// this one stopped.
+    pub fn close(&self) -> StoreResult<()> {
+        self.inner.close().map_err(engine)
+    }
+
     /// The engine underneath, for a caller reading its counters
     pub fn engine(&self) -> &EngineStore {
         &self.inner
@@ -148,38 +153,7 @@ impl ReelStore {
         self.inner.serving_backend()
     }
 
-    /// The shape each column's index actually took, beside the one it declared
-    ///
-    /// A declaration is a request the engine may decline, and it declines
-    /// silently, so a run reports the shape it got rather than the one it asked
-    /// for.
-    pub fn shapes(&self) -> Vec<(&'static str, MapShape, MapShape)> {
-        let index = self.inner.index();
-        let mut shapes = Vec::with_capacity(TAPE_COLUMNS.len());
-        for spec in TAPE_COLUMNS {
-            let Some(column) = index.column(spec.id) else {
-                continue;
-            };
-            shapes.push((spec.name, spec.map_shape, column.map_shape()));
-        }
-        shapes
-    }
-
-    /// Every column whose index did not take the shape it declared
-    pub fn declined_shapes(&self) -> Vec<&'static str> {
-        let mut declined = Vec::new();
-        for (name, asked, got) in self.shapes() {
-            if asked != got {
-                declined.push(name);
-            }
-        }
-        declined
-    }
-
     /// What the engine's index holds, column by column
-    ///
-    /// A paged open counts only the keys it holds, so the record and byte cells
-    /// go unanswered there rather than reporting a fraction as the whole.
     pub fn index_report(&self) -> IndexReport {
         let index = self.inner.index();
         let keys = index.lead_tie_rates();
@@ -191,7 +165,7 @@ impl ReelStore {
                 .iter()
                 .find(|(id, _, _)| id.as_u8() == column.id)
                 .map_or(0, |(_, _, keys)| *keys);
-            columns.push(ResidentColumn {
+            columns.push(IndexColumn {
                 column: column.column,
                 records: column.records,
                 bytes: column.bytes,
@@ -209,18 +183,6 @@ impl ReelStore {
         self.inner.flush().map_err(engine)
     }
 
-    /// Write the resident index down at a cue, so the next open skips the sweep
-    ///
-    /// Takes its own cue and seals every open tail, which is why nothing but a
-    /// shutdown calls it. `None` where there is no resident index to write down,
-    /// which is a volume paging its keys out to the footers.
-    pub fn checkpoint_index(&self) -> StoreResult<Option<IndexCheckpoint>> {
-        let config = self.inner.config();
-        if config.index.pages() {
-            return Ok(None);
-        }
-        self.inner.checkpoint_index().map(Some).map_err(engine)
-    }
 }
 
 /// Bytes a node writes between durability syncs
@@ -241,19 +203,20 @@ pub const fn default_backend() -> IoBackend {
     }
 }
 
-/// What a fresh volume claims before it holds a byte
+/// The segment size and tail count a volume opens with
 ///
-/// A tail costs a reserved segment and the shipped shape pre-writes each one
-/// whole. That is the right trade on a fleet disk and the wrong one wherever the
-/// reservation is a large share of the volume, or twenty nodes share a laptop.
+/// A tail's segment file is sized to the segment but stays sparse, filling in
+/// windows as it is written. Gibibyte segments and a tail per core suit a fleet
+/// disk. A short run, or twenty nodes on a laptop, wants smaller segments on one
+/// tail.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reserve {
-    /// Gibibyte segments pre-written whole, a tail per core up to eight
+    /// Gibibyte segments, a tail per core up to eight
     #[default]
     Fleet,
 
-    /// Segments a short run can fill, reserved in steps, on one tail
+    /// Segments a short run can fill, on one tail
     Small,
 }
 
@@ -270,8 +233,6 @@ pub struct NodeStoreOptions {
     pub reserve: Reserve,
     /// Bytes one segment spans. 0 keeps the preset's size.
     pub segment_bytes: u64,
-    /// How a segment claims its space. Unset keeps the preset's choice.
-    pub preallocate: Option<Preallocate>,
 }
 
 impl Default for NodeStoreOptions {
@@ -282,16 +243,12 @@ impl Default for NodeStoreOptions {
             backend: default_backend(),
             reserve: Reserve::default(),
             segment_bytes: 0,
-            preallocate: None,
         }
     }
 }
 
 /// Bytes a small volume seals a segment at
 const SMALL_SEGMENT_BYTES: u64 = 32 * 1024 * 1024;
-
-/// Bytes a small volume reserves ahead of its write head
-const SMALL_ALLOC_CHUNK: u64 = 4 * 1024 * 1024;
 
 /// The config a node opens its volume with
 ///
@@ -300,10 +257,7 @@ const SMALL_ALLOC_CHUNK: u64 = 4 * 1024 * 1024;
 /// segment is the shipped size.
 pub fn node_config(options: NodeStoreOptions) -> ReelConfig {
     let config = ReelConfig {
-        sync: match options.sync_bytes {
-            0 => SyncPolicy::EveryPut,
-            bytes => SyncPolicy::Bytes(ByteCount::from_bytes(bytes)),
-        },
+        sync: SyncPolicy::Bytes(ByteCount::from_bytes(options.sync_bytes)),
         compact_mbps: match options.compaction_mbps {
             0 => CompactRate::Auto,
             capped => CompactRate::Mbps(capped),
@@ -313,50 +267,26 @@ pub fn node_config(options: NodeStoreOptions) -> ReelConfig {
         // and a dead process where the door returns an error the node can act
         // on. The mapped path stays a bench and tooling knob.
         map_above: None,
-        point_reads: probe_for(options.backend),
         io_backend: options.backend,
-        shard_shapes: ShardShapes::Declared,
         ..ReelConfig::default()
     };
 
     let mut config = match options.reserve {
         Reserve::Fleet => config,
-        // Four knobs rather than one: dropping the tail count alone still
-        // reserves a gibibyte, and shrinking the segment alone still pre-writes
-        // it. Chunk is what makes the reservation track the data.
+        // Both knobs: the pressure model holds back a whole segment per tail
+        // and per compaction pass.
         Reserve::Small => ReelConfig {
             segment_bytes: ByteCount::from_bytes(SMALL_SEGMENT_BYTES),
-            alloc_chunk: ByteCount::from_bytes(SMALL_ALLOC_CHUNK),
-            preallocate: Preallocate::Chunk,
             active_tails: ThreadBudget::threads(1),
             ..config
         },
     };
 
-    // The explicit knobs override whichever preset was picked. The chunk step
-    // rides down with a shrunken segment, since the engine refuses a step wider
-    // than the segment it feeds.
+    // The explicit segment size overrides whichever preset was picked
     if options.segment_bytes != 0 {
         config.segment_bytes = ByteCount::from_bytes(options.segment_bytes);
-        let chunk = config.alloc_chunk.to_bytes().min(options.segment_bytes);
-        config.alloc_chunk = ByteCount::from_bytes(chunk);
-    }
-    if let Some(preallocate) = options.preallocate {
-        config.preallocate = preallocate;
     }
     config
-}
-
-/// Whether to ask the page cache before queueing a read, which only a ring wants
-///
-/// A ring read is a submit and a wait, and the probe skips that round trip. A
-/// posix read is answered inline already, so there the probe is one wasted
-/// syscall per read. Coupled here so the pairing is not something to re-learn.
-fn probe_for(backend: IoBackend) -> PointReads {
-    match backend {
-        IoBackend::Uring => PointReads::Probed,
-        IoBackend::Posix | IoBackend::UringDirect => PointReads::Queued,
-    }
 }
 
 /// The store a node runs, every tape family on one reel volume
@@ -385,37 +315,19 @@ pub fn open_node_store(
     Ok(TapeStore::new(volume))
 }
 
-/// The config an offline tool reads a node's volume under
-///
-/// The node's own shape declarations, since a column read under a different one
-/// is a column the engine refuses to serve. Residency is the caller's: resident
-/// answers what a column holds, paged answers which sealed segments stand over
-/// it and fits a volume larger than the memory reading it.
-pub fn read_only_config(residency: IndexResidency) -> ReelConfig {
-    ReelConfig {
-        index: residency,
-        // The engine refuses an open shard under a paged walk, so a paged read
-        // takes every column as a tree. The shape is how this open builds its
-        // index, not how the volume was written.
-        shard_shapes: match residency {
-            IndexResidency::Resident => ShardShapes::Declared,
-            _ => ShardShapes::Tree,
-        },
-        ..node_config(NodeStoreOptions::default())
-    }
+/// The config an offline tool reads a node's volume under, which is the node's own
+pub fn read_only_config() -> ReelConfig {
+    node_config(NodeStoreOptions::default())
 }
 
 /// A tape store over a node's volume, read-only and without its lock
 ///
 /// What every offline tool opens, so it reads beside a running node rather than
 /// waiting for one to stop.
-pub fn open_node_store_read_only(
-    root: impl AsRef<Path>,
-    residency: IndexResidency,
-) -> StoreResult<TapeStore<ReelStore>> {
+pub fn open_node_store_read_only(root: impl AsRef<Path>) -> StoreResult<TapeStore<ReelStore>> {
     Ok(TapeStore::new(ReelStore::open_read_only(
         root,
-        read_only_config(residency),
+        read_only_config(),
         TAPE_COLUMNS,
     )?))
 }
@@ -443,44 +355,27 @@ pub fn open_harness_store(root: impl AsRef<Path>) -> StoreResult<TapeStore<ReelS
 /// A config sized for a bench rather than for a node
 ///
 /// Segments are small enough that a bench writing a few GiB still seals several
-/// of them, and space is reserved a chunk ahead so a case that writes little is
-/// not charged for a segment it never fills. Syncing is left to the caller's
-/// flush, matching a rocks arm that does not fsync per write either.
+/// of them. Syncing is left to the caller's flush, matching a rocks arm that does
+/// not fsync per write either.
 pub fn bench_config(segment_bytes: u64) -> ReelConfig {
     // Printed rather than assumed: a bench that cannot say which config it
     // opened with cannot tell a real result from a stale binary.
     eprintln!(
-        "bench_config segment={segment_bytes} alloc_chunk={} sync={:?} map_above={:?} shapes={:?}",
-        alloc_chunk_bytes().min(segment_bytes),
+        "bench_config segment={segment_bytes} sync={:?} map_above={:?}",
         sync_policy(),
         MAP_EVERYTHING,
-        ShardShapes::Declared,
     );
     ReelConfig {
         segment_bytes: ByteCount::from_bytes(segment_bytes),
-        // A small segment cannot reserve a chunk larger than itself, and a run
-        // sweeping segment sizes has no reason to know that.
-        alloc_chunk: ByteCount::from_bytes(alloc_chunk_bytes().min(segment_bytes)),
-        preallocate: Preallocate::Chunk,
         sync: sync_policy(),
-        // Without this the engine drops every open-shard request a column makes
-        // and hands back a tree, so a run measuring the shape would measure the
-        // default and never say so.
-        shard_shapes: ShardShapes::Declared,
         // The mapped read path is gated on this and the default forbids it, so
         // every warm read pays a door round trip it does not need.
         map_above: MAP_EVERYTHING,
-        // Ask the page cache before queueing a read: a cold probe costs one
-        // nowait syscall against a seek, and a warm one skips the door.
-        point_reads: PointReads::Probed,
         ..ReelConfig::default()
     }
 }
 
-/// Environment variable naming the allocation chunk in MiB
-pub const ALLOC_MIB_VAR: &str = "TAPE_BENCH_ALLOC_MIB";
-
-/// Environment variable naming the sync policy: `never`, `everyput`, or bytes
+/// Environment variable for the sync policy: `never`, or the bytes between syncs, 0 for every put
 pub const SYNC_VAR: &str = "TAPE_BENCH_SYNC";
 
 /// The durability a bench arm runs under, `Never` unless asked
@@ -490,19 +385,10 @@ pub const SYNC_VAR: &str = "TAPE_BENCH_SYNC";
 fn sync_policy() -> SyncPolicy {
     match std::env::var(SYNC_VAR).ok().as_deref() {
         None | Some("never") => SyncPolicy::Never,
-        Some("everyput") => SyncPolicy::EveryPut,
         Some(bytes) => match bytes.parse::<u64>() {
             Ok(bytes) => SyncPolicy::Bytes(ByteCount::from_bytes(bytes)),
-            Err(_) => panic!("{SYNC_VAR} is `never`, `everyput`, or a byte count"),
+            Err(_) => panic!("{SYNC_VAR} is `never` or a byte count"),
         },
-    }
-}
-
-/// The allocation chunk a bench arm reserves ahead in, the shipped one unless asked
-fn alloc_chunk_bytes() -> u64 {
-    match std::env::var(ALLOC_MIB_VAR).ok().and_then(|value| value.parse::<u64>().ok()) {
-        Some(mib) => mib * 1024 * 1024,
-        None => ReelConfig::default().alloc_chunk.to_bytes(),
     }
 }
 
@@ -515,7 +401,6 @@ fn engine(error: reel::ReelError) -> StoreError {
 fn crossed(error: reel_core::Error) -> StoreError {
     match error {
         reel_core::Error::Database(message) => StoreError::Database(message),
-        reel_core::Error::NotFound => StoreError::NotFound,
         reel_core::Error::ColumnFamilyNotFound(cf) => StoreError::ColumnFamilyNotFound(cf),
         reel_core::Error::Serialization(message) => StoreError::Serialization(message),
         reel_core::Error::Io(error) => StoreError::Io(error),

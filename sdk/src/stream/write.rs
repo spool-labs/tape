@@ -1,11 +1,10 @@
 //! Stream write implementation.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use futures::stream::{self, FuturesOrdered, Stream, StreamExt, TryStreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
@@ -47,7 +46,6 @@ use crate::track::write::{
 use crate::transfer::certify::CollectedSignatures;
 
 use super::error::StreamError;
-use super::pace::{Slots, coded_chunk_bytes, guard_memory, hold_slices, pace};
 use super::manifest::{
     max_track_size, ChunkEntry, ChunkManifest, MAX_TRACKS_PER_TAPE, MANIFEST_VERSION,
 };
@@ -66,7 +64,9 @@ const EPOCH_RECOLLECT_ATTEMPTS: usize = 3;
 /// Tracks signed again at once when an epoch turn stales a whole run
 const RECOLLECT_CONCURRENCY: usize = 2;
 
-/// Concurrent chunk encodes, bounded by available cores
+/// Concurrent chunk encodes, bounded by available cores. Each in-flight
+/// encode holds its input and coded slices (~3x the chunk), so four workers
+/// add up to ~768 MiB peak on top of the store stage.
 const MAX_ENCODE_WORKERS: usize = 4;
 
 /// Track-written event fetches kept in flight behind the register submits.
@@ -77,9 +77,6 @@ const RESOLVE_CONCURRENCY: usize = 3;
 /// Stored chunks whose signatures are collected ahead of the serial certify
 /// submits. Collections hold no slice data, so lookahead is cheap.
 const COLLECT_LOOKAHEAD: usize = 2;
-
-/// Stored chunks certified in one run, between two stretches of registers
-const CERTIFY_SEGMENT: usize = 8;
 
 /// Attempts to resubmit a conflicted certify against refetched chain state
 /// before falling back to the peer-proof path.
@@ -669,19 +666,6 @@ where
     let mirror = Mutex::new(ArchiveMirror::new(&tape.tracks));
     let mirror = &mirror;
 
-    let workers = std::thread::available_parallelism()
-        .map(|cores| cores.get())
-        .unwrap_or(1)
-        .min(MAX_ENCODE_WORKERS);
-    // The window is the chunks uploading at once. A pinned store depth fixes
-    // it; otherwise it starts at one and widens while the link rewards it,
-    // up to what free memory allows, read again each tick.
-    let pinned = client.write_options.store_depth;
-    let (window_sender, window) = watch::channel(pinned.unwrap_or(1).max(1));
-    let slots = Slots::new(window.clone(), profile);
-    let pace_slots = slots.clone();
-    let (stop_pace, pace_stopped) = oneshot::channel::<()>();
-
     let (encoded_sender, mut encoded_receiver) = mpsc::channel(ENCODE_AHEAD);
     let (sent_sender, mut sent_receiver) = mpsc::channel(1);
     let (registered_sender, mut registered_receiver) = mpsc::channel(1);
@@ -689,45 +673,41 @@ where
 
     // Registers and certifies rewrite the same track tree, so a certify
     // proof built while a register is still in flight is guaranteed stale.
-    // Each register leases the tree until it is mirrored, and a certify run
-    // takes the tree whole: it waits for the leases out and holds new
-    // registers back until its run is sent.
-    let tree = Arc::new(RwLock::new(()));
+    // The resolve stage fires this once its loop completes, which is the
+    // moment every register is mirrored; the certify stage holds its first
+    // submit until then.
+    let (registers_mirrored_sender, registers_mirrored_receiver) = oneshot::channel::<()>();
 
-    // Encoding is CPU-bound; encode several chunks on blocking threads at once
-    // so idle cores shorten the encode chain. Plans still reach the register
-    // stage in stream order, each as soon as it and the ones before it are done.
+    // Encoding is CPU-bound and single-threaded per chunk; encode several
+    // chunks on blocking threads at once so idle cores shorten the encode
+    // chain. Plans still reach the register stage in stream order.
     let encode_stage = async move {
+        let workers = std::thread::available_parallelism()
+            .map(|cores| cores.get())
+            .unwrap_or(1)
+            .min(MAX_ENCODE_WORKERS);
         let mut in_flight = FuturesOrdered::new();
         let mut chunk_sources = std::pin::pin!(chunk_sources);
         let mut chunk_index = 0usize;
-        let mut is_reading = true;
-        while is_reading || !in_flight.is_empty() {
-            tokio::select! {
-                biased;
-                // Safe: FuturesOrdered::next only removes a future once it
-                // completes; a cancelled poll leaves every encode in place.
-                encoded = in_flight.next(), if !in_flight.is_empty() => {
-                    let Some(encoded) = encoded else { continue };
-                    if encoded_sender.send(encoded?).await.is_err() {
-                        return Ok(());
-                    }
+        while let Some(chunk_data) = chunk_sources.next().await {
+            if in_flight.len() >= workers {
+                let Some(encoded) = in_flight.next().await else { break };
+                if encoded_sender.send(encoded?).await.is_err() {
+                    return Ok(());
                 }
-                // Safe: a dropped acquire holds no slot and reads no chunk.
-                slot = slots.acquire(), if is_reading && in_flight.len() < workers => {
-                    let Some(chunk_data) = chunk_sources.next().await else {
-                        is_reading = false;
-                        continue;
-                    };
-                    let data = chunk_data?;
-                    let index = chunk_index;
-                    in_flight.push_back(async move {
-                        encode_blob(client, data, Operation::WriteStream)
-                            .await
-                            .map(|plan| (index, hold_slices(plan, slot)))
-                    });
-                    chunk_index += 1;
-                }
+            }
+            let data = chunk_data?;
+            let index = chunk_index;
+            in_flight.push_back(async move {
+                encode_blob(client, data, Operation::WriteStream)
+                    .await
+                    .map(|plan| (index, plan))
+            });
+            chunk_index += 1;
+        }
+        while let Some(encoded) = in_flight.next().await {
+            if encoded_sender.send(encoded?).await.is_err() {
+                break;
             }
         }
         Ok::<_, TapedriveError>(())
@@ -736,10 +716,8 @@ where
     // Registers submit at processed level: the processed wait is enough to
     // keep track numbers assigned in stream order, and the confirmed-level
     // event wait moves into the resolve stage.
-    let register_tree = tree.clone();
     let register_stage = async move {
         while let Some((chunk_index, plan)) = encoded_receiver.recv().await {
-            let lease = register_tree.clone().read_owned().await;
             let logical_size = plan.storage_units;
             let sent = register_blob_processed(
                 client,
@@ -752,7 +730,7 @@ where
                 client.write_options.flags,
             )
             .await?;
-            if sent_sender.send((chunk_index, sent, lease)).await.is_err() {
+            if sent_sender.send((chunk_index, sent)).await.is_err() {
                 break;
             }
         }
@@ -773,10 +751,10 @@ where
                     if is_registering && in_flight.len() < RESOLVE_CONCURRENCY =>
                 {
                     match sent {
-                        Some((chunk_index, sent, lease)) => in_flight.push_back(async move {
+                        Some((chunk_index, sent)) => in_flight.push_back(async move {
                             resolve_sent_blob(client, sent)
                                 .await
-                                .map(|resolved| (chunk_index, resolved, lease))
+                                .map(|resolved| (chunk_index, resolved))
                         }),
                         None => is_registering = false,
                     }
@@ -785,9 +763,8 @@ where
                 // completes; a cancelled poll leaves every resolve in place.
                 resolved = in_flight.next(), if !in_flight.is_empty() => {
                     let Some(resolved) = resolved else { continue };
-                    let (chunk_index, (written, plan), lease) = resolved?;
+                    let (chunk_index, (written, plan)) = resolved?;
                     append_to_mirror(client, tape_key, mirror, &written).await?;
-                    drop(lease);
                     let entry = chunk_entry(
                         chunk_index,
                         chunk_count,
@@ -806,24 +783,24 @@ where
                 }
             }
         }
+        // The loop only completes once every register sent has been
+        // mirrored; error exits drop the sender without firing.
+        let _ = registers_mirrored_sender.send(());
         Ok::<_, TapedriveError>(())
     };
 
     let store_stage = async move {
-        let _stop_pace = stop_pace;
-        let mut window = window;
-        let mut is_pacing = pinned.is_none();
+        // Each in-flight chunk holds ~2x its bytes encoded, so the depth also
+        // bounds peak memory.
+        let store_depth = client.write_options.store_depth.max(1);
         let mut in_flight = FuturesOrdered::new();
         let mut is_registering = true;
         while is_registering || !in_flight.is_empty() {
-            let width = *window.borrow_and_update();
             tokio::select! {
-                // Safe: a new window only wakes the loop, which reads it again.
-                changed = window.changed(), if is_pacing => is_pacing = changed.is_ok(),
                 // Safe: recv is cancellation-safe and a chunk only leaves the
                 // channel when this branch completes.
                 registered = registered_receiver.recv(),
-                    if is_registering && in_flight.len() < width =>
+                    if is_registering && in_flight.len() < store_depth =>
                 {
                     match registered {
                         Some(registered) => in_flight.push_back(store_chunk(client, registered)),
@@ -866,38 +843,33 @@ where
     // Each certify mutates the tape's track tree, so a proof is only valid
     // against the root left by the previous certify; proofs come from the
     // shared mirror. Do not parallelize the submits.
-    // A long stream certifies as it goes: every segment of stored chunks
-    // goes out as one run while registers wait, so no chunk sits uncertified
-    // for the whole upload and a broken stream keeps what it certified.
     let certify_stage = async move {
+        // Hold the first proof until the chain's register sequence is final;
+        // after that the tree gains no new leaves until the manifest write,
+        // so mirror proofs cannot be staled by this stream's own registers.
+        // Collections keep running ahead; only proof generation and the
+        // submits wait.
+        registers_mirrored_receiver.await.map_err(|_| {
+            stream_error(StreamError::Chunk(
+                "resolve stage ended before mirroring every register".into(),
+            ))
+        })?;
+
         let mut pending_chunks = Vec::with_capacity(chunk_count.as_usize());
         let mut processed = Vec::new();
-        let mut segment = Vec::with_capacity(CERTIFY_SEGMENT);
-        let mut is_collecting = true;
-        while is_collecting || !segment.is_empty() {
-            match collected_receiver.recv().await {
-                Some((pending, collected)) => {
-                    let pending: PendingChunk = pending;
-                    segment.push(ChunkCertification {
-                        written: pending.written.clone(),
-                        collected,
-                        receipts: pending.receipts.clone(),
-                    });
-                    pending_chunks.push(pending);
-                    if segment.len() < CERTIFY_SEGMENT {
-                        continue;
-                    }
-                }
-                None => is_collecting = false,
-            }
-            if segment.is_empty() {
-                continue;
-            }
-            let _whole_tree = tree.write().await;
-            let run = std::mem::take(&mut segment);
-            let signatures =
-                certify_chunk_run(client, tape_key, mirror, run, Operation::WriteStream).await?;
-            processed.extend(signatures);
+        while let Some((pending, collected)) = collected_receiver.recv().await {
+            let signature = certify_chunk(
+                client,
+                tape_key,
+                mirror,
+                &pending.written,
+                collected,
+                &pending.receipts,
+                Operation::WriteStream,
+            )
+            .await?;
+            processed.extend(signature);
+            pending_chunks.push(pending);
         }
 
         // Readers poll peers, so the write ends at confirmation without waiting on peer lag.
@@ -905,20 +877,7 @@ where
         Ok::<_, TapedriveError>(pending_chunks)
     };
 
-    // The pace reads the link while the store stage runs and stops with it.
-    let pace_stage = async move {
-        match pinned {
-            Some(_) => guard_memory(pace_slots, pace_stopped).await,
-            None => {
-                let chunk_bytes = coded_chunk_bytes(profile);
-                pace(window_sender, pace_slots, chunk_bytes, || client.api.accepted_bytes(), pace_stopped).await;
-            }
-        }
-        Ok::<_, TapedriveError>(())
-    };
-
-    let ((), (), (), (), (), (), pending_chunks) = tokio::try_join!(
-        pace_stage,
+    let ((), (), (), (), (), pending_chunks) = tokio::try_join!(
         encode_stage,
         register_stage,
         resolve_stage,
@@ -1444,14 +1403,17 @@ async fn store_chunk<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     registered: RegisteredChunk,
 ) -> Result<PendingChunk, TapedriveError> {
-    let RegisteredChunk { entry, written, plan } = registered;
-    let receipts = upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
+    let receipts = upload_with_retry(
+        client,
+        &registered.written,
+        &registered.plan,
+        Operation::WriteStream,
+    )
+    .await?;
 
-    // A straggler push keeps its slice, and the chunk's slot, until it ends
-    drop(plan);
     Ok(PendingChunk {
-        entry,
-        written,
+        entry: registered.entry,
+        written: registered.written,
         receipts,
     })
 }

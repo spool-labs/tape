@@ -143,8 +143,8 @@ tape-store-api = { version = "0.4.8", path = "./store/store-api" }
 tape-store-memory = { version = "0.4.8", path = "./store/store-memory" }
 tape-store-rocks = { version = "0.4.8", path = "./store/store-rocks" }
 tape-store-reel = { version = "0.4.8", path = "./store/store-reel" }
-reel = { package = "tape-reel", version = "0.2.0", features = ["serde"] }
-reel-core = { package = "tape-reel-core", version = "0.2.0" }
+reel = { package = "tape-reel", version = "0.3.0", features = ["serde"] }
+reel-core = { package = "tape-reel-core", version = "0.3.0" }
 tape-sdk = { version = "0.4.8", path = "./sdk" }
 tape-test = { version = "0.4.8", path = "./test" }
 tape-chain-harness = { version = "0.4.8", path = "./test/harness" }
@@ -242,7 +242,7 @@ colored = "3.0.0"
 dialoguer = "0.11.0"
 dirs = "5.0"
 tokio = { version = "1.37", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
 bytes = "1"
 indicatif = "0.17"
 console = "0.15"

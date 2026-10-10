@@ -19,13 +19,12 @@ use tape_protocol::ProtocolState;
 use tape_retry::{Backoff, RetryConfig, Retryable};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, Instant};
+use tokio::time::{sleep, sleep_until, Instant};
 use tracing::{debug, info, warn};
 
 use crate::bootstrap::{counts_against_peer, Reputation};
 use crate::codec::encoder::SliceMerkleProof;
 use crate::error::UploadError;
-use crate::transfer::gate::{PushGate, PushPace};
 
 /// Longest a rate limited upload sleeps, whatever the server advertises
 const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
@@ -120,7 +119,6 @@ pub struct DistributedUploader {
     epoch: EpochNumber,
     concurrency_limit: Arc<Semaphore>,
     reputation: Option<Arc<Reputation>>,
-    gate: Option<Arc<PushGate>>,
     // one push task per owner; a call that gives up aborts them, a call that reached quorum hands them to the registry
     stragglers: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -203,15 +201,8 @@ impl DistributedUploader {
             epoch: state.current.epoch.id,
             concurrency_limit: Arc::new(Semaphore::new(concurrency.max(1))),
             reputation: None,
-            gate: None,
             stragglers: Mutex::new(Vec::new()),
         })
-    }
-
-    /// Run every push through the client's gate, so the pushes sharing its uplink each land in time.
-    pub fn with_gate(mut self, gate: Arc<PushGate>) -> Self {
-        self.gate = Some(gate);
-        self
     }
 
     /// Spend less time on owners already known to be down.
@@ -281,6 +272,15 @@ impl DistributedUploader {
             })
             .collect();
 
+        // What this call puts on the wire, which is what the quorum wait has
+        // to cover.
+        let bytes_in_flight: u64 = missing_groups
+            .values()
+            .flatten()
+            .filter_map(|spool| slice_map.get(spool))
+            .map(|slice| slice.data().len() as u64)
+            .sum();
+
         // A group puts each spool on its own node, so the members and the
         // slices that certify a track are the same count.
         let required_members = self.params.thresholds.certify as usize;
@@ -312,7 +312,6 @@ impl DistributedUploader {
                 false => AttemptBudget::Full,
             };
             let reputation = self.reputation.clone();
-            let gate = self.gate.clone();
 
             let handle = tokio::spawn(async move {
                 let started = Instant::now();
@@ -323,7 +322,6 @@ impl DistributedUploader {
                     slices,
                     budget,
                     concurrency_limit,
-                    gate,
                 )
                 .await;
                 if let Some(reputation) = reputation {
@@ -345,9 +343,13 @@ impl DistributedUploader {
         let mut not_responsible_count = 0usize;
         let mut member_failures = 0;
 
-        // Each push ends on its own: stored, refused, out of attempts, or quiet
-        // on the wire for the client's idle limit. A slow link keeps its pushes
-        // moving, so the call waits as long as any push is still moving.
+        // Waiting on every owner would hold the call for the whole straggler
+        // window, so a run where no owner answers stops at the ladder the
+        // pushes themselves spend, widened by the time this call's bytes take
+        // on the wire. Every answer re-arms that wait, because owners still
+        // streaming their slices have not gone quiet.
+        let quiet_limit = quorum_wait_limit(bytes_in_flight);
+        let mut deadline = Instant::now() + quiet_limit;
         loop {
             if fully_successful_members >= required_members
                 && stored_slices.len() >= required_slices
@@ -371,9 +373,16 @@ impl DistributedUploader {
                 return Ok(progress.receipts.values().cloned().collect());
             }
 
-            let Some(result) = result_receiver.recv().await else {
+            let received = tokio::select! {
+                // Safe: recv leaves an unread result queued.
+                received = result_receiver.recv() => received,
+                // Safe: the deadline is absolute, so a re-armed sleep is the same sleep.
+                _ = sleep_until(deadline) => break,
+            };
+            let Some(result) = received else {
                 break;
             };
+            deadline = Instant::now() + quiet_limit;
 
             match result {
                 Ok(node) => {
@@ -478,28 +487,23 @@ async fn upload_node_slices<P: Api>(
     slices: Vec<(SpoolIndex, SliceWithProof)>,
     budget: AttemptBudget,
     concurrency_limit: Arc<Semaphore>,
-    gate: Option<Arc<PushGate>>,
 ) -> Result<NodeUploadResult, UploadError> {
     let _permit = concurrency_limit
         .acquire()
         .await
         .map_err(|_| UploadError::Semaphore)?;
 
-    let uploads = slices.into_iter().map(|(global_spool, slice)| {
-        let gate = gate.clone();
-        async move {
-            let payload_bytes = slice.data().len();
-            let req = PutSliceReq {
-                track,
-                spool: global_spool,
-                body: slice.body.clone(),
-            };
+    let uploads = slices.into_iter().map(|(global_spool, slice)| async move {
+        let payload_bytes = slice.data().len();
+        let req = PutSliceReq {
+            track,
+            spool: global_spool,
+            body: slice.body.clone(),
+        };
 
-            let result =
-                upload_slice_with_retry(peer_client, node, track, req, payload_bytes, budget, gate)
-                    .await;
-            (global_spool, result)
-        }
+        let result =
+            upload_slice_with_retry(peer_client, node, track, req, payload_bytes, budget).await;
+        (global_spool, result)
     });
 
     let mut stored = Vec::new();
@@ -569,6 +573,31 @@ fn next_push_delay(
 ///
 /// Ramping from 60 ms catches the ingest as soon as it happens and still
 /// settles to a polite cadence if a node is genuinely down rather than behind.
+/// Slowest link a quorum wait sits through, in bytes per second.
+///
+/// The wait has to cover the time the slices themselves spend on the wire, so
+/// it is sized from the bytes in flight. Ten megabits is below any link a
+/// writer can usefully upload from, so this only ever widens the wait for a
+/// transfer that is genuinely large.
+const QUORUM_WAIT_FLOOR_BYTES_PER_SEC: u64 = 1_250_000;
+
+/// Longest the call waits for a quiet quorum once the pushes are in flight
+///
+/// The retry ladder below spends about twelve seconds on an owner that has not
+/// ingested the register, and `bytes_in_flight` adds the time those bytes take
+/// to transmit on the slowest link worth waiting for. A push still streaming
+/// its slices is inside that budget, so the wait covers it. Past that the run
+/// has no quorum to report and the caller retries the whole write.
+fn quorum_wait_limit(bytes_in_flight: u64) -> Duration {
+    let config = slice_retry_config();
+    let mut total = Duration::ZERO;
+    for attempt in 0..config.max_retries.unwrap_or(0) {
+        total += (config.base_delay * 2u32.saturating_pow(attempt)).min(config.max_delay);
+    }
+
+    total + Duration::from_secs(bytes_in_flight / QUORUM_WAIT_FLOOR_BYTES_PER_SEC)
+}
+
 fn slice_retry_config() -> RetryConfig {
     RetryConfig {
         base_delay: Duration::from_millis(60),
@@ -584,26 +613,15 @@ async fn upload_slice_with_retry<P: Api>(
     req: PutSliceReq,
     payload_bytes: usize,
     budget: AttemptBudget,
-    gate: Option<Arc<PushGate>>,
 ) -> Result<CertifyRes, ApiError> {
-    let mut started = None;
+    let started = Instant::now();
     let mut backoff = Backoff::new(slice_retry_config());
     let mut pushes: u32 = 0;
 
     loop {
-        let pass = match &gate {
-            Some(gate) => Some(gate.enter().await),
-            None => None,
-        };
         let attempt_started = Instant::now();
-        // Time spent waiting in the gate is not the owner's, so the straggler clock starts at the first push
-        let started = *started.get_or_insert(attempt_started);
         pushes = pushes.saturating_add(1);
-        let result = peer_client.put_slice(node, &req).await;
-        if let Some(pass) = pass {
-            pass.finish(PushPace::of(&result, attempt_started.elapsed()));
-        }
-        match result {
+        match peer_client.put_slice(node, &req).await {
             Ok(response) => {
                 debug!(
                     track = %track,
@@ -1038,23 +1056,85 @@ mod tests {
         assert_eq!(registry.live(), 2);
     }
 
-    // a run that never reaches quorum gives up once every push has run out
+    // a run that never reaches quorum gives up on the retry ladder
     #[tokio::test(start_paused = true)]
     async fn no_quorum_gives_up() {
         let state = make_test_state(WIDTH);
         let api = Arc::new(MemoryApi::new(|_, _| refused(ApiError::NotFound)));
         let started = Instant::now();
+        let bytes = small_slice_bytes();
 
         let uploader = uploader_for(&state, ephemeral_reputation());
         let error = uploader.upload_all(api, &mut UploadProgress::default()).await.expect_err("no quorum");
 
         assert!(matches!(error, UploadError::InsufficientQuorum { .. }), "{error}");
-        assert!(started.elapsed() >= STRAGGLER_LIMIT, "{:?}", started.elapsed());
+        assert!(started.elapsed() >= quorum_wait_limit(bytes), "{:?}", started.elapsed());
         assert!(
-            started.elapsed() < STRAGGLER_LIMIT + STRAGGLER_STEP * 2,
+            started.elapsed() < quorum_wait_limit(bytes) + STRAGGLER_STEP,
             "{:?}",
             started.elapsed()
         );
+    }
+
+    /// Bytes `make_test_slices(WIDTH)` puts on the wire.
+    fn small_slice_bytes() -> u64 {
+        make_test_slices(WIDTH)
+            .iter()
+            .map(|slice| slice.data().len() as u64)
+            .sum()
+    }
+
+    // the quorum wait covers the ladder plus the time the bytes take to send
+    #[test]
+    fn quorum_wait_covers_the_bytes_in_flight() {
+        let ladder = quorum_wait_limit(0);
+        assert!(ladder >= Duration::from_secs(11) && ladder <= Duration::from_secs(13), "{ladder:?}");
+
+        // One 64 MiB chunk is WIDTH slices of about 9.1 MiB.
+        let chunk = 20 * 9_588_048u64;
+        let wide = quorum_wait_limit(chunk);
+        assert!(wide >= ladder + Duration::from_secs(145), "{wide:?}");
+    }
+
+    // a push whose slices are still streaming is not cut off at the ladder
+    #[tokio::test(start_paused = true)]
+    async fn a_large_upload_waits_out_its_bytes() {
+        let state = make_test_state(WIDTH);
+        let api = Arc::new(MemoryApi::new(|_, _| refused(ApiError::NotFound)));
+        let slices: Vec<_> = (0..WIDTH)
+            .map(|index| {
+                SliceWithProof::new(
+                    SpoolIndex::from(index as u64),
+                    framed(&vec![index as u8; 4 * 1024 * 1024]),
+                    Hash::default(),
+                    [Hash::default(); SLICE_TREE_HEIGHT],
+                )
+                .expect("slice")
+            })
+            .collect();
+        let bytes: u64 = slices.iter().map(|slice| slice.data().len() as u64).sum();
+        let started = Instant::now();
+
+        let uploader = DistributedUploader::new(
+            Address::new_unique(),
+            VirtualGroup(0),
+            slices,
+            &state,
+            WIDTH,
+        )
+        .expect("uploader built")
+        .with_reputation(ephemeral_reputation());
+        let error = uploader.upload_all(api, &mut UploadProgress::default()).await.expect_err("no quorum");
+
+        assert!(matches!(error, UploadError::InsufficientQuorum { .. }), "{error}");
+        // The bare ladder would have cut this off while every push was still
+        // streaming; the byte-sized wait lets the pushes run themselves out.
+        assert!(
+            started.elapsed() > quorum_wait_limit(0),
+            "gave up at the ladder after {:?}",
+            started.elapsed(),
+        );
+        assert!(quorum_wait_limit(bytes) > quorum_wait_limit(0) + Duration::from_secs(60));
     }
 
     // an owner whose spool moved off it still clears the failures it had

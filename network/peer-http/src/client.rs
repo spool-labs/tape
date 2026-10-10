@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -15,7 +15,6 @@ use tape_crypto::ed25519::Keypair;
 
 use crate::builder::HttpApiBuilder;
 use crate::metrics::ApiMetrics;
-use crate::paced::{Watch, paced_body, silence};
 
 /// Per-request timeout for vote calls.
 const VOTE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -25,8 +24,6 @@ const CHALLENGE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Connections a peer's slice bodies spread over; one h2 client holds one socket.
 const SLICE_CONNECTIONS: usize = 8;
-/// A push goes quiet before this unless it trickles for a day, so it only stops a stuck one
-const PUT_SLICE_CEILING: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Receive windows wide enough for a whole slice body in one round trip.
 const H2_STREAM_WINDOW: u32 = 16 * 1024 * 1024;
@@ -113,9 +110,7 @@ pub struct HttpApi {
     pub metrics: Option<Arc<ApiMetrics>>,
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
-    pub put_slice_idle: Duration,
-    /// Slice bytes nodes have accepted from this client so far
-    pub accepted_bytes: Arc<AtomicU64>,
+    pub put_slice_timeout: Duration,
     pub get_slice_timeout: Duration,
     pub local_identity: Option<Arc<Keypair>>,
     pub transfer_sink: Option<TransferSink>,
@@ -253,40 +248,26 @@ fn https_base_url(addr: NetworkAddress) -> Result<String, ApiError> {
 
 #[async_trait]
 impl Api for HttpApi {
-    fn accepted_bytes(&self) -> u64 {
-        self.accepted_bytes.load(Ordering::Relaxed)
-    }
-
     async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
         let (client, _lease, base) = self.lease_slice(node)?;
         let track_id = req.track.to_string();
         let url = format!("{base}{}", slice_url(&track_id, req.spool));
-        let bytes_sent = req.body.len() as u64;
-        let watch = Watch::new();
-        let body = paced_body(req.body.clone(), watch.clone());
+        let body = req.body.clone();
+        let bytes_sent = body.len() as u64;
         let start = Instant::now();
-        // A slow link moves the push along slowly, so only a push that goes quiet gives up
-        let exchange = async {
-            let resp = client
-                .put(&url)
-                .timeout(PUT_SLICE_CEILING)
-                .header("content-type", BINARY_CONTENT)
-                .header("content-length", bytes_sent)
-                .body(body)
-                .send()
-                .await
-                .map_err(map_reqwest)?;
-            watch.touch();
-            self.record(node, "put_slice", &resp, start, bytes_sent);
-            let resp = check_status(resp).await?;
-            let bytes = resp.bytes().await.map_err(map_reqwest)?;
-            self.accepted_bytes.fetch_add(bytes_sent, Ordering::Relaxed);
-            Ok::<_, ApiError>(bytes)
-        };
-        let bytes = tokio::select! {
-            bytes = exchange => bytes?,
-            () = silence(&watch, self.put_slice_idle) => return Err(ApiError::Timeout),
-        };
+        let resp = client
+            .put(&url)
+            .timeout(self.put_slice_timeout)
+            .header("content-type", BINARY_CONTENT)
+            .body(body)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record(node, "put_slice", &resp, start, bytes_sent);
+
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
         self.record_rx(node, "put_slice", bytes.len() as u64);
 
         let receipt: BlsSignResponse = wincode::deserialize(&bytes)
