@@ -63,6 +63,16 @@ pub trait MultipartOps {
     /// if present
     fn get_multipart_part_data(&self, upload_id: &str, part_number: u32) -> Result<Option<Vec<u8>>>;
 
+    /// One stored chunk of one part of `upload_id`, if present. A part of `size`
+    /// bytes fills chunks `0..size.div_ceil(MULTIPART_CHUNK_BYTES)`, and only the
+    /// last one is short.
+    fn get_multipart_part_chunk(
+        &self,
+        upload_id: &str,
+        part_number: u32,
+        chunk_index: u32,
+    ) -> Result<Option<Vec<u8>>>;
+
     /// Every in-flight upload as `(upload_id, metadata)`, for ListMultipartUploads
     fn list_multipart_uploads(&self) -> Result<Vec<(String, MultipartUpload)>>;
 
@@ -174,6 +184,17 @@ impl<Backend: Store> MultipartOps for TapeStore<Backend> {
             true => Ok(Some(data)),
             false => Ok(None),
         }
+    }
+
+    fn get_multipart_part_chunk(
+        &self,
+        upload_id: &str,
+        part_number: u32,
+        chunk_index: u32,
+    ) -> Result<Option<Vec<u8>>> {
+        let key = MultipartPartChunkKey::new(upload_digest(upload_id), part_number, chunk_index);
+        let chunk = self.get::<S3MultipartPartDataCol>(&key)?;
+        Ok(chunk.map(|chunk| chunk.data))
     }
 
     fn list_multipart_uploads(&self) -> Result<Vec<(String, MultipartUpload)>> {
@@ -337,6 +358,25 @@ mod tests {
         assert_eq!(stored_chunks(&store, "u1"), 3);
         assert_eq!(store.list_multipart_parts("u1").expect("list")[0].size, data.len() as u64);
         assert_eq!(store.get_multipart_part_data("u1", 1).expect("data"), Some(data));
+    }
+
+    // a part reads back one chunk at a time, the last one short
+    #[test]
+    fn chunk_reads() {
+        let store = store();
+        let data = pattern(MULTIPART_CHUNK_BYTES * 2 + 7);
+
+        put_part(&store, "u1", 1, &data);
+
+        for index in 0..3 {
+            let offset = index * MULTIPART_CHUNK_BYTES;
+            let end = data.len().min(offset + MULTIPART_CHUNK_BYTES);
+            let chunk = store.get_multipart_part_chunk("u1", 1, index as u32).expect("chunk");
+            assert_eq!(chunk.as_deref(), Some(&data[offset..end]));
+        }
+        assert!(store.get_multipart_part_chunk("u1", 1, 3).expect("chunk").is_none());
+        assert!(store.get_multipart_part_chunk("u1", 2, 0).expect("chunk").is_none());
+        assert!(store.get_multipart_part_chunk("u2", 1, 0).expect("chunk").is_none());
     }
 
     // deleting an upload removes every chunk of every part
