@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use futures::stream::{self, FuturesOrdered, Stream, StreamExt, TryStreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
@@ -46,6 +46,7 @@ use crate::track::write::{
 use crate::transfer::certify::CollectedSignatures;
 
 use super::error::StreamError;
+use super::pace::{Slots, coded_chunk_bytes, guard_memory, hold_slices, pace};
 use super::manifest::{
     max_track_size, ChunkEntry, ChunkManifest, MAX_TRACKS_PER_TAPE, MANIFEST_VERSION,
 };
@@ -64,9 +65,7 @@ const EPOCH_RECOLLECT_ATTEMPTS: usize = 3;
 /// Tracks signed again at once when an epoch turn stales a whole run
 const RECOLLECT_CONCURRENCY: usize = 2;
 
-/// Concurrent chunk encodes, bounded by available cores. Each in-flight
-/// encode holds its input and coded slices (~3x the chunk), so four workers
-/// add up to ~768 MiB peak on top of the store stage.
+/// Concurrent chunk encodes, bounded by available cores
 const MAX_ENCODE_WORKERS: usize = 4;
 
 /// Track-written event fetches kept in flight behind the register submits.
@@ -666,6 +665,19 @@ where
     let mirror = Mutex::new(ArchiveMirror::new(&tape.tracks));
     let mirror = &mirror;
 
+    let workers = std::thread::available_parallelism()
+        .map(|cores| cores.get())
+        .unwrap_or(1)
+        .min(MAX_ENCODE_WORKERS);
+    // The window is the chunks uploading at once. A pinned store depth fixes
+    // it; otherwise it starts at one and widens while the link rewards it,
+    // up to what free memory allows, read again each tick.
+    let pinned = client.write_options.store_depth;
+    let (window_sender, window) = watch::channel(pinned.unwrap_or(1).max(1));
+    let slots = Slots::new(window.clone(), profile);
+    let pace_slots = slots.clone();
+    let (stop_pace, pace_stopped) = oneshot::channel::<()>();
+
     let (encoded_sender, mut encoded_receiver) = mpsc::channel(ENCODE_AHEAD);
     let (sent_sender, mut sent_receiver) = mpsc::channel(1);
     let (registered_sender, mut registered_receiver) = mpsc::channel(1);
@@ -678,36 +690,40 @@ where
     // submit until then.
     let (registers_mirrored_sender, registers_mirrored_receiver) = oneshot::channel::<()>();
 
-    // Encoding is CPU-bound and single-threaded per chunk; encode several
-    // chunks on blocking threads at once so idle cores shorten the encode
-    // chain. Plans still reach the register stage in stream order.
+    // Encoding is CPU-bound; encode several chunks on blocking threads at once
+    // so idle cores shorten the encode chain. Plans still reach the register
+    // stage in stream order, each as soon as it and the ones before it are done.
     let encode_stage = async move {
-        let workers = std::thread::available_parallelism()
-            .map(|cores| cores.get())
-            .unwrap_or(1)
-            .min(MAX_ENCODE_WORKERS);
         let mut in_flight = FuturesOrdered::new();
         let mut chunk_sources = std::pin::pin!(chunk_sources);
         let mut chunk_index = 0usize;
-        while let Some(chunk_data) = chunk_sources.next().await {
-            if in_flight.len() >= workers {
-                let Some(encoded) = in_flight.next().await else { break };
-                if encoded_sender.send(encoded?).await.is_err() {
-                    return Ok(());
+        let mut is_reading = true;
+        while is_reading || !in_flight.is_empty() {
+            tokio::select! {
+                biased;
+                // Safe: FuturesOrdered::next only removes a future once it
+                // completes; a cancelled poll leaves every encode in place.
+                encoded = in_flight.next(), if !in_flight.is_empty() => {
+                    let Some(encoded) = encoded else { continue };
+                    if encoded_sender.send(encoded?).await.is_err() {
+                        return Ok(());
+                    }
                 }
-            }
-            let data = chunk_data?;
-            let index = chunk_index;
-            in_flight.push_back(async move {
-                encode_blob(client, data, Operation::WriteStream)
-                    .await
-                    .map(|plan| (index, plan))
-            });
-            chunk_index += 1;
-        }
-        while let Some(encoded) = in_flight.next().await {
-            if encoded_sender.send(encoded?).await.is_err() {
-                break;
+                // Safe: a dropped acquire holds no slot and reads no chunk.
+                slot = slots.acquire(), if is_reading && in_flight.len() < workers => {
+                    let Some(chunk_data) = chunk_sources.next().await else {
+                        is_reading = false;
+                        continue;
+                    };
+                    let data = chunk_data?;
+                    let index = chunk_index;
+                    in_flight.push_back(async move {
+                        encode_blob(client, data, Operation::WriteStream)
+                            .await
+                            .map(|plan| (index, hold_slices(plan, slot)))
+                    });
+                    chunk_index += 1;
+                }
             }
         }
         Ok::<_, TapedriveError>(())
@@ -790,17 +806,20 @@ where
     };
 
     let store_stage = async move {
-        // Each in-flight chunk holds ~2x its bytes encoded, so the depth also
-        // bounds peak memory.
-        let store_depth = client.write_options.store_depth.max(1);
+        let _stop_pace = stop_pace;
+        let mut window = window;
+        let mut is_pacing = pinned.is_none();
         let mut in_flight = FuturesOrdered::new();
         let mut is_registering = true;
         while is_registering || !in_flight.is_empty() {
+            let width = *window.borrow_and_update();
             tokio::select! {
+                // Safe: a new window only wakes the loop, which reads it again.
+                changed = window.changed(), if is_pacing => is_pacing = changed.is_ok(),
                 // Safe: recv is cancellation-safe and a chunk only leaves the
                 // channel when this branch completes.
                 registered = registered_receiver.recv(),
-                    if is_registering && in_flight.len() < store_depth =>
+                    if is_registering && in_flight.len() < width =>
                 {
                     match registered {
                         Some(registered) => in_flight.push_back(store_chunk(client, registered)),
@@ -877,7 +896,20 @@ where
         Ok::<_, TapedriveError>(pending_chunks)
     };
 
-    let ((), (), (), (), (), pending_chunks) = tokio::try_join!(
+    // The pace reads the link while the store stage runs and stops with it.
+    let pace_stage = async move {
+        match pinned {
+            Some(_) => guard_memory(pace_slots, pace_stopped).await,
+            None => {
+                let chunk_bytes = coded_chunk_bytes(profile);
+                pace(window_sender, pace_slots, chunk_bytes, || client.api.accepted_bytes(), pace_stopped).await;
+            }
+        }
+        Ok::<_, TapedriveError>(())
+    };
+
+    let ((), (), (), (), (), (), pending_chunks) = tokio::try_join!(
+        pace_stage,
         encode_stage,
         register_stage,
         resolve_stage,
@@ -1403,17 +1435,14 @@ async fn store_chunk<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     registered: RegisteredChunk,
 ) -> Result<PendingChunk, TapedriveError> {
-    let receipts = upload_with_retry(
-        client,
-        &registered.written,
-        &registered.plan,
-        Operation::WriteStream,
-    )
-    .await?;
+    let RegisteredChunk { entry, written, plan } = registered;
+    let receipts = upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
 
+    // A straggler push keeps its slice, and the chunk's slot, until it ends
+    drop(plan);
     Ok(PendingChunk {
-        entry: registered.entry,
-        written: registered.written,
+        entry,
+        written,
         receipts,
     })
 }
