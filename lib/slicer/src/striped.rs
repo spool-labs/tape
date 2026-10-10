@@ -60,7 +60,7 @@ impl ErasureCoder for StripedCoder {
         }
     }
 
-    fn encode(&self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
+    fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         match self {
             Self::Clay(coder) => coder.encode(data),
             Self::ReedSolomon(coder) => coder.encode(data),

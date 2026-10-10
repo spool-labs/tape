@@ -23,7 +23,7 @@ pub use reed_solomon::ReedSolomonCoder;
 pub use replication::ReplicationCoder;
 pub use striped::StripedCoder;
 pub use metadata::SliceMetadata;
-pub use slicer::{Slicer, MappingStrategy, STRIPE_THREADS, rotation_step, shard_to_slice, slice_to_shard};
+pub use slicer::{Slicer, MappingStrategy, rotation_step, shard_to_slice, slice_to_shard};
 pub use stripe::{
     coded_slice_len, derive_stripe_size, num_stripes, stripe_chunk_len, stripe_size_accepted,
     STRIPE_CAP,

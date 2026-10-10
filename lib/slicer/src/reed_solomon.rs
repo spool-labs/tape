@@ -46,7 +46,7 @@ impl ErasureCoder for ReedSolomonCoder {
         self.k * SLICE_ALIGN
     }
 
-    fn encode(&self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
+    fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         let slice_bytes = slice_bytes(self.k, data.len());
 
         let mut slices: Vec<Vec<u8>> = data
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn encodes_an_empty_payload() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let chunks = coder.encode(&[]).expect("encode");
 
         assert_eq!(chunks.len(), K + M);
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn too_few_slices_is_rejected() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let data = make_data(1_000);
         let chunks = coder.encode(&data).expect("encode");
 
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn mismatched_slice_lengths_are_rejected() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let data = make_data(10_000);
         let chunks = coder.encode(&data).expect("encode");
 
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn an_index_outside_the_group_is_rejected() {
-        let coder = test_coder();
+        let mut coder = test_coder();
         let data = make_data(10_000);
         let chunks = coder.encode(&data).expect("encode");
 

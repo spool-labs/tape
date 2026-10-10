@@ -161,7 +161,7 @@ pub fn encode_chunk(
 
     let context = format!("epoch={} group={group} chunk={chunk}", epoch.0);
 
-    let slicer = Slicer::try_from_profile(profile)
+    let mut slicer = Slicer::try_from_profile(profile)
         .map_err(|e| SnapshotError::InnerEncode(format!("{context}: {e}")))?;
     let slices = slicer
         .encode(&packed)

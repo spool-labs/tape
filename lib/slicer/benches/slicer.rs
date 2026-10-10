@@ -19,7 +19,7 @@ fn clay_encode(c: &mut Criterion) {
         let data = make_data(size);
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_function(format!("{size}B"), |b| {
-            let coder = ClayCoder::from_params(TAPENET_CLAY);
+            let mut coder = ClayCoder::from_params(TAPENET_CLAY);
             b.iter(|| {
                 black_box(coder.encode(black_box(&data)).unwrap())
             })
@@ -34,7 +34,7 @@ fn clay_decode(c: &mut Criterion) {
 
     for size in [10_000, 100_000, 1_000_000] {
         let data = make_data(size);
-        let coder = ClayCoder::from_params(TAPENET_CLAY);
+        let mut coder = ClayCoder::from_params(TAPENET_CLAY);
         let chunks = coder.encode(&data).unwrap();
         let refs: Vec<(usize, &[u8])> = chunks.iter()
             .enumerate()
@@ -61,7 +61,7 @@ fn rs_encode(c: &mut Criterion) {
         let data = make_data(size);
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_function(format!("{size}B"), |b| {
-            let coder = ReedSolomonCoder::new(10, 10);
+            let mut coder = ReedSolomonCoder::new(10, 10);
             b.iter(|| {
                 black_box(coder.encode(black_box(&data)).unwrap())
             })
@@ -76,7 +76,7 @@ fn rs_decode(c: &mut Criterion) {
 
     for size in [1_000, 10_000, 30_000] {
         let data = make_data(size);
-        let coder = ReedSolomonCoder::new(10, 10);
+        let mut coder = ReedSolomonCoder::new(10, 10);
         let chunks = coder.encode(&data).unwrap();
         let refs: Vec<(usize, &[u8])> = chunks.iter()
             .enumerate()
@@ -102,7 +102,7 @@ fn slicer_encode(c: &mut Criterion) {
         let data = make_data(size);
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_function(format!("{size}B"), |b| {
-            let slicer = tapenet();
+            let mut slicer = tapenet();
             b.iter(|| {
                 black_box(slicer.encode(black_box(&data)).unwrap())
             })
@@ -117,7 +117,7 @@ fn slicer_decode(c: &mut Criterion) {
 
     for size in [100_000, 1_000_000, 10_000_000] {
         let data = make_data(size);
-        let slicer = tapenet();
+        let mut slicer = tapenet();
         let chunks = slicer.encode(&data).unwrap();
         let refs: Vec<(usize, &[u8])> = chunks.iter()
             .enumerate()

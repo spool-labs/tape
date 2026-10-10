@@ -163,7 +163,7 @@ pub fn coded(
     group: VirtualGroup,
     bytes: &[u8],
 ) -> Coded {
-    let slicer = Slicer::try_from_profile(profile).expect("valid profile");
+    let mut slicer = Slicer::try_from_profile(profile).expect("valid profile");
     let slices = slicer.encode(bytes).expect("payload encodes");
     let stripe_size = SliceMetadata::parse(&slices[0])
         .expect("slice metadata")

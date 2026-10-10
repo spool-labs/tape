@@ -77,7 +77,7 @@ fn mk(len: usize) -> Vec<u8> {
 }
 
 fn measure(profile: ErasureCode, len: usize) -> (usize, usize, usize, String) {
-    let slicer = Slicer::try_from_profile(profile).expect("valid profile");
+    let mut slicer = Slicer::try_from_profile(profile).expect("valid profile");
     let slices = slicer.encode(&mk(len)).expect("encode");
     let meta = SliceMetadata::parse(&slices[0]).expect("metadata");
 

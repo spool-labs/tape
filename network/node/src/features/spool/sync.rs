@@ -506,7 +506,7 @@ mod tests {
     }
 
     fn clay_slices(fill: u8, size: usize) -> Vec<Vec<u8>> {
-        let slicer = Slicer::try_from_profile(TAPENET_PROFILE).unwrap();
+        let mut slicer = Slicer::try_from_profile(TAPENET_PROFILE).unwrap();
         slicer.encode(&vec![fill; size]).unwrap()
     }
 

@@ -63,7 +63,7 @@ fn measure_encode_decode() {
         let blob = mk(len);
         let ideal = len as f64 * 20.0 / 7.0;
 
-        let slicer = tapenet();
+        let mut slicer = tapenet();
         slicer.encode(&blob).unwrap();
         let reps = if len >= 16 * MIB { 2 } else { 5 };
         let start = Instant::now();
@@ -102,7 +102,7 @@ fn measure_repair() {
     println!("blob_len repair_ms helper_bytes");
     for &len in &[1_000_001usize, 4 * MIB + 8] {
         let blob = mk(len);
-        let slicer = tapenet();
+        let mut slicer = tapenet();
         let slices = slicer.encode(&blob).unwrap();
 
         let helpers: Vec<(SliceIndex, &[u8])> = slices
