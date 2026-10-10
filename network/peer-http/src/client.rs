@@ -114,6 +114,7 @@ pub struct HttpApi {
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
     pub put_slice_idle: Duration,
+    /// Slice bytes nodes have accepted from this client so far
     pub accepted_bytes: Arc<AtomicU64>,
     pub get_slice_timeout: Duration,
     pub local_identity: Option<Arc<Keypair>>,
