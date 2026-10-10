@@ -1,11 +1,10 @@
 //! Stream write implementation.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use futures::stream::{self, FuturesOrdered, Stream, StreamExt, TryStreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
@@ -47,6 +46,7 @@ use crate::track::write::{
 use crate::transfer::certify::CollectedSignatures;
 
 use super::error::StreamError;
+use super::pace::{Slots, hold_slices, pace, window_cap};
 use super::manifest::{
     max_track_size, ChunkEntry, ChunkManifest, MAX_TRACKS_PER_TAPE, MANIFEST_VERSION,
 };
@@ -178,7 +178,6 @@ struct RegisteredChunk {
     entry: ChunkEntry,
     written: WrittenTrack,
     plan: UploadPlan,
-    held: OwnedSemaphorePermit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -666,14 +665,18 @@ where
     let mirror = Mutex::new(ArchiveMirror::new(&tape.tracks));
     let mirror = &mirror;
 
-    // A chunk holds one permit from its read to its stored slices, so the
-    // encode workers plus the store depth bound every coded chunk alive.
     let workers = std::thread::available_parallelism()
         .map(|cores| cores.get())
         .unwrap_or(1)
         .min(MAX_ENCODE_WORKERS);
-    let store_depth = client.write_options.store_depth.max(1);
-    let chunks_alive = Arc::new(Semaphore::new(workers + store_depth));
+    // The window is the chunks uploading at once. A pinned store depth fixes
+    // it; otherwise it starts at one and widens while the link rewards it,
+    // up to what the memory available now allows.
+    let pinned = client.write_options.store_depth;
+    let (window_sender, window) = watch::channel(pinned.unwrap_or(1).max(1));
+    let cap = window_cap(profile);
+    let slots = Slots::new(window.clone());
+    let (stop_pace, pace_stopped) = oneshot::channel::<()>();
 
     let (encoded_sender, mut encoded_receiver) = mpsc::channel(ENCODE_AHEAD);
     let (sent_sender, mut sent_receiver) = mpsc::channel(1);
@@ -706,13 +709,8 @@ where
                         return Ok(());
                     }
                 }
-                // Safe: a dropped acquire holds no permit and reads no chunk.
-                held = Arc::clone(&chunks_alive).acquire_owned(),
-                    if is_reading && in_flight.len() < workers =>
-                {
-                    let held = held.map_err(|_| {
-                        stream_error(StreamError::Chunk("chunk budget closed".into()))
-                    })?;
+                // Safe: a dropped acquire holds no slot and reads no chunk.
+                slot = slots.acquire(), if is_reading && in_flight.len() < workers => {
                     let Some(chunk_data) = chunk_sources.next().await else {
                         is_reading = false;
                         continue;
@@ -722,7 +720,7 @@ where
                     in_flight.push_back(async move {
                         encode_blob(client, data, Operation::WriteStream)
                             .await
-                            .map(|plan| (index, plan, held))
+                            .map(|plan| (index, hold_slices(plan, slot)))
                     });
                     chunk_index += 1;
                 }
@@ -735,7 +733,7 @@ where
     // keep track numbers assigned in stream order, and the confirmed-level
     // event wait moves into the resolve stage.
     let register_stage = async move {
-        while let Some((chunk_index, plan, held)) = encoded_receiver.recv().await {
+        while let Some((chunk_index, plan)) = encoded_receiver.recv().await {
             let logical_size = plan.storage_units;
             let sent = register_blob_processed(
                 client,
@@ -748,7 +746,7 @@ where
                 client.write_options.flags,
             )
             .await?;
-            if sent_sender.send((chunk_index, sent, held)).await.is_err() {
+            if sent_sender.send((chunk_index, sent)).await.is_err() {
                 break;
             }
         }
@@ -769,10 +767,10 @@ where
                     if is_registering && in_flight.len() < RESOLVE_CONCURRENCY =>
                 {
                     match sent {
-                        Some((chunk_index, sent, held)) => in_flight.push_back(async move {
+                        Some((chunk_index, sent)) => in_flight.push_back(async move {
                             resolve_sent_blob(client, sent)
                                 .await
-                                .map(|resolved| (chunk_index, resolved, held))
+                                .map(|resolved| (chunk_index, resolved))
                         }),
                         None => is_registering = false,
                     }
@@ -781,7 +779,7 @@ where
                 // completes; a cancelled poll leaves every resolve in place.
                 resolved = in_flight.next(), if !in_flight.is_empty() => {
                     let Some(resolved) = resolved else { continue };
-                    let (chunk_index, (written, plan), held) = resolved?;
+                    let (chunk_index, (written, plan)) = resolved?;
                     append_to_mirror(client, tape_key, mirror, &written).await?;
                     let entry = chunk_entry(
                         chunk_index,
@@ -794,7 +792,6 @@ where
                         entry: entry.map_err(stream_error)?,
                         written,
                         plan,
-                        held,
                     };
                     if registered_sender.send(registered).await.is_err() {
                         break;
@@ -809,14 +806,20 @@ where
     };
 
     let store_stage = async move {
+        let _stop_pace = stop_pace;
+        let mut window = window;
+        let mut is_pacing = pinned.is_none();
         let mut in_flight = FuturesOrdered::new();
         let mut is_registering = true;
         while is_registering || !in_flight.is_empty() {
+            let width = *window.borrow_and_update();
             tokio::select! {
+                // Safe: a new window only wakes the loop, which reads it again.
+                changed = window.changed(), if is_pacing => is_pacing = changed.is_ok(),
                 // Safe: recv is cancellation-safe and a chunk only leaves the
                 // channel when this branch completes.
                 registered = registered_receiver.recv(),
-                    if is_registering && in_flight.len() < store_depth =>
+                    if is_registering && in_flight.len() < width =>
                 {
                     match registered {
                         Some(registered) => in_flight.push_back(store_chunk(client, registered)),
@@ -893,7 +896,16 @@ where
         Ok::<_, TapedriveError>(pending_chunks)
     };
 
-    let ((), (), (), (), (), pending_chunks) = tokio::try_join!(
+    // The pace reads the link while the store stage runs and stops with it.
+    let pace_stage = async move {
+        if pinned.is_none() {
+            pace(window_sender, cap, || client.api.pushed_bytes(), pace_stopped).await;
+        }
+        Ok::<_, TapedriveError>(())
+    };
+
+    let ((), (), (), (), (), (), pending_chunks) = tokio::try_join!(
+        pace_stage,
         encode_stage,
         register_stage,
         resolve_stage,
@@ -1419,12 +1431,11 @@ async fn store_chunk<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     registered: RegisteredChunk,
 ) -> Result<PendingChunk, TapedriveError> {
-    let RegisteredChunk { entry, written, plan, held } = registered;
+    let RegisteredChunk { entry, written, plan } = registered;
     let receipts = upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
 
-    // The slices are stored, so the next chunk may start reading
+    // A straggler push keeps its slice, and the chunk's slot, until it ends
     drop(plan);
-    drop(held);
     Ok(PendingChunk {
         entry,
         written,

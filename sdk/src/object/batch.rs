@@ -28,6 +28,8 @@ const RESOLVE_CONCURRENCY: usize = 3;
 const COLLECT_CONCURRENCY: usize = 2;
 pub const MAX_OBJECT_BATCH_ITEMS: usize = 32;
 pub const MAX_OBJECT_BATCH_BYTES: u64 = 256 * 1024 * 1024;
+/// Batch items uploading at once unless the client pins a store depth
+const BATCH_STORE_DEPTH: usize = 4;
 
 #[derive(Clone)]
 pub struct ObjectBatchItem {
@@ -376,7 +378,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             append_to_mirror(self, bucket, &mirror, written).await?;
         }
 
-        let store_depth = self.write_options.store_depth.max(1);
+        let store_depth = self.write_options.store_depth.unwrap_or(BATCH_STORE_DEPTH).max(1);
         let stored: Vec<StoredItem> = stream::iter(resolved)
             .map(|item| async move {
                 match item {
