@@ -14,7 +14,7 @@ use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use bytes::Bytes;
-use tape_protocol::api::{Api, ApiError, CertifyRes, PutSliceReq, SlicePayload};
+use tape_protocol::api::{Api, ApiError, CertifyRes, PutSliceReq, SlicePayload, SLICE_BODY_HEADROOM};
 use tape_protocol::ProtocolState;
 use tape_retry::{Backoff, RetryConfig, Retryable};
 use tokio::sync::{mpsc, Semaphore};
@@ -68,9 +68,6 @@ impl StragglerRegistry {
     }
 }
 
-/// The wire body puts a u64 length ahead of the slice bytes
-const BODY_DATA_OFFSET: usize = 8;
-
 /// A slice with its merkle proof, held as the wire body every push attempt shares
 #[derive(Clone)]
 pub struct SliceWithProof {
@@ -82,16 +79,15 @@ pub struct SliceWithProof {
 }
 
 impl SliceWithProof {
-    /// Create a new slice with proof.
+    /// Create a new slice with proof, framing slice bytes held behind the body's headroom.
     pub fn new(
         index: SpoolIndex,
-        data: Vec<u8>,
+        framed: Vec<u8>,
         leaf_hash: Hash,
         merkle_proof: SliceMerkleProof,
     ) -> Result<Self, UploadError> {
-        let data_len = data.len();
-        let payload = SlicePayload::new(data, leaf_hash, merkle_proof.to_vec());
-        let body = wincode::serialize(&payload)
+        let data_len = framed.len().saturating_sub(SLICE_BODY_HEADROOM);
+        let body = SlicePayload::frame(framed, leaf_hash, &merkle_proof)
             .map_err(|error| UploadError::Encoding(format!("slice body: {error}")))?;
         Ok(Self {
             index,
@@ -104,7 +100,7 @@ impl SliceWithProof {
 
     /// The slice bytes inside the wire body.
     pub fn data(&self) -> &[u8] {
-        &self.body[BODY_DATA_OFFSET..BODY_DATA_OFFSET + self.data_len]
+        &self.body[SLICE_BODY_HEADROOM..SLICE_BODY_HEADROOM + self.data_len]
     }
 }
 
@@ -728,6 +724,12 @@ mod tests {
 
     use crate::bootstrap::{NetworkKey, PeerRecord, QUARANTINE_THRESHOLD};
 
+    fn framed(data: &[u8]) -> Vec<u8> {
+        let mut body = vec![0u8; SLICE_BODY_HEADROOM];
+        body.extend_from_slice(data);
+        body
+    }
+
     /// Spools in a tapenet group.
     const WIDTH: usize = TAPENET_PROFILE.n() as usize;
 
@@ -741,7 +743,7 @@ mod tests {
             .map(|i| {
                 SliceWithProof::new(
                     SpoolIndex::from(i as u64),
-                    vec![i as u8; 100],
+                    framed(&[i as u8; 100]),
                     Hash::default(),
                     [Hash::default(); SLICE_TREE_HEIGHT],
                 )
@@ -854,16 +856,20 @@ mod tests {
         assert_eq!(uploader.slice_count(), WIDTH);
     }
 
-    // the wire body decodes back to the original slice
+    // the wire body is the bytes the payload encoder writes and decodes back to the slice
     #[test]
     fn wire_body() {
         let data: Vec<u8> = (0..500).map(|byte| (byte % 251) as u8).collect();
         let proof = [Hash([7u8; 32]); SLICE_TREE_HEIGHT];
-        let slice = SliceWithProof::new(SpoolIndex::from(42), data.clone(), Hash([9u8; 32]), proof)
+        let slice = SliceWithProof::new(SpoolIndex::from(42), framed(&data), Hash([9u8; 32]), proof)
             .expect("slice");
+        let encoded =
+            wincode::serialize(&SlicePayload::new(data.clone(), Hash([9u8; 32]), proof.to_vec()))
+                .expect("encode");
 
         let payload: SlicePayload = wincode::deserialize(&slice.body).expect("decode");
 
+        assert_eq!(slice.body.as_ref(), encoded.as_slice());
         assert_eq!(payload.data, data);
         assert_eq!(slice.data(), data.as_slice());
         assert_eq!(payload.leaf_hash, slice.leaf_hash);
@@ -1099,7 +1105,7 @@ mod tests {
             .map(|index| {
                 SliceWithProof::new(
                     SpoolIndex::from(index as u64),
-                    vec![index as u8; 4 * 1024 * 1024],
+                    framed(&vec![index as u8; 4 * 1024 * 1024]),
                     Hash::default(),
                     [Hash::default(); SLICE_TREE_HEIGHT],
                 )

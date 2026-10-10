@@ -113,7 +113,7 @@ mod tests {
 
         for profile in profiles {
             for size in [0usize, 1, 1_000, 100_000, 1_000_001, 4 * 1024 * 1024] {
-                let mut slicer = Slicer::try_from_profile(profile).expect("valid profile");
+                let slicer = Slicer::try_from_profile(profile).expect("valid profile");
                 let slices = slicer.encode(&payload(size)).expect("encode");
 
                 let derived = coded_slice_len(

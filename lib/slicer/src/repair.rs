@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn repair_coder_direct() {
-        let mut coder = test_coder();
+        let coder = test_coder();
         let original = mk(10_000);
         let chunks = coder.encode(&original).unwrap();
         let chunk_size = chunks[0].len();
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn repair_full_single() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
+        let slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn repair_plan_helpers() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
+        let slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn repair_plan_bandwidth() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
+        let slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
         let payload = mk(50_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn repair_plan_rotation() {
-        let mut slicer = Slicer::with_rotation(test_coder());
+        let slicer = Slicer::with_rotation(test_coder());
         let payload = mk(2_500_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn repair_exactly_d() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
+        let slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
         let d = slicer.coder.d();
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn repair_plan_from_params_matches() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
+        let slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
         let payload = mk(50_000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn repair_insufficient() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
+        let slicer = Slicer::with_stripe_cap(test_coder(), 100_000);
         let d = slicer.coder.d();
         let payload = mk(10_000);
         let chunks = slicer.encode(&payload).unwrap();

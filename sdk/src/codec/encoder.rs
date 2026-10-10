@@ -9,9 +9,11 @@ use tape_core::types::SpoolIndex;
 use tape_crypto::merkle::MerkleLeafTree;
 use tape_crypto::Hash;
 use tape_slicer::{
-    Slicer, StripedCoder, ErasureCoder, SLICE_TREE_HEIGHT,
+    Slicer, StripedCoder, ErasureCoder, SLICE_TREE_HEIGHT, STRIPE_THREADS,
     build_blob_merkle_tree, BlobMerkleRoot,
 };
+
+use tape_protocol::api::{SLICE_BODY_HEADROOM, SLICE_BODY_TAILROOM};
 
 use crate::error::UploadError;
 use crate::transfer::uploader::SliceWithProof;
@@ -54,6 +56,13 @@ impl BlobEncoder {
     fn encode_internal(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, UploadError> {
         self.slicer
             .encode(data)
+            .map_err(|e| UploadError::Encoding(e.to_string()))
+    }
+
+    /// Encode into slices held behind the wire body's headroom, ready to frame in place.
+    fn encode_framed(&self, data: &[u8]) -> Result<Vec<Vec<u8>>, UploadError> {
+        self.slicer
+            .encode_framed(data, SLICE_BODY_HEADROOM, SLICE_BODY_TAILROOM)
             .map_err(|e| UploadError::Encoding(e.to_string()))
     }
 
@@ -161,25 +170,19 @@ impl BlobEncoder {
         &mut self,
         data: &[u8],
     ) -> Result<(Vec<SliceWithProof>, BlobMerkleRoot), UploadError> {
-        let chunks = self.encode_internal(data)?;
+        let bodies = self.encode_framed(data)?;
 
         // Build each slice's sub-leaf root once, then reuse it for the blob root,
         // the proofs, and the per-slice leaf stored in the upload payload.
-        let leaf_hashes: Vec<Hash> = chunks
-            .iter()
-            .map(|chunk| slice_root(chunk))
-            .collect::<Option<Vec<Hash>>>()
-            .ok_or_else(|| {
-                UploadError::Encoding("slice exceeds sub-leaf tree capacity".to_string())
-            })?;
+        let leaf_hashes = slice_roots(&bodies)?;
         // One fold serves the root and all n proofs.
         let tree = MerkleLeafTree::new(&leaf_hashes, SLICE_TREE_HEIGHT)
             .map_err(|error| UploadError::Encoding(format!("{error:?}")))?;
         let root = tree.root();
 
         // Generate proof for each slice
-        let mut output = Vec::with_capacity(chunks.len());
-        for (idx, (chunk, leaf_hash)) in chunks
+        let mut output = Vec::with_capacity(bodies.len());
+        for (idx, (body, leaf_hash)) in bodies
             .into_iter()
             .zip(leaf_hashes.iter().copied())
             .enumerate()
@@ -190,7 +193,7 @@ impl BlobEncoder {
 
             output.push(SliceWithProof::new(
                 SpoolIndex::from(idx as u64),
-                chunk,
+                body,
                 leaf_hash,
                 proof_arr,
             )?);
@@ -214,6 +217,43 @@ impl BlobEncoder {
         }
         Ok((slices, root, leaves))
     }
+}
+
+/// Hash every slice body into its sub-leaf root, the bodies split across scoped threads
+fn slice_roots(bodies: &[Vec<u8>]) -> Result<Vec<Hash>, UploadError> {
+    let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get());
+    let threads = cores.min(STRIPE_THREADS).min(bodies.len()).max(1);
+    let bodies_per_thread = bodies.len().div_ceil(threads).max(1);
+    let parts: Vec<Result<Vec<Hash>, UploadError>> = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(threads);
+        for part in bodies.chunks(bodies_per_thread) {
+            handles.push(scope.spawn(move || slice_roots_in(part)));
+        }
+        let mut parts = Vec::with_capacity(handles.len());
+        for handle in handles {
+            let panicked = Err(UploadError::Encoding("a slice hash thread panicked".to_string()));
+            parts.push(handle.join().unwrap_or(panicked));
+        }
+        parts
+    });
+
+    let mut roots = Vec::with_capacity(bodies.len());
+    for part in parts {
+        roots.extend(part?);
+    }
+    Ok(roots)
+}
+
+/// Hash a run of slice bodies on the calling thread
+fn slice_roots_in(bodies: &[Vec<u8>]) -> Result<Vec<Hash>, UploadError> {
+    let mut roots = Vec::with_capacity(bodies.len());
+    for body in bodies {
+        let root = slice_root(&body[SLICE_BODY_HEADROOM..]).ok_or_else(|| {
+            UploadError::Encoding("slice exceeds sub-leaf tree capacity".to_string())
+        })?;
+        roots.push(root);
+    }
+    Ok(roots)
 }
 
 #[cfg(test)]

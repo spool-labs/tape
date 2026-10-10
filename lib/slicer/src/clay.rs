@@ -101,7 +101,7 @@ impl ErasureCoder for ClayCoder {
         self.k * self.alpha() * 2
     }
 
-    fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
+    fn encode(&self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         if data.is_empty() {
             return Err(EncodeError::EmptyInput);
         }
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn test_chunk_count() {
-        let mut coder = test_coder();
+        let coder = test_coder();
         let data = make_data(10_000);
         let chunks = coder.encode(&data).unwrap();
         assert_eq!(chunks.len(), coder.n());
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn test_uniform_chunks() {
-        let mut coder = test_coder();
+        let coder = test_coder();
         let data = make_data(10_000);
         let chunks = coder.encode(&data).unwrap();
         let size = chunks[0].len();
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_all() {
-        let mut coder = test_coder();
+        let coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn test_data_only() {
-        let mut coder = test_coder();
+        let coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_parity_only() {
-        let mut coder = test_coder();
+        let coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn test_mixed_chunks() {
-        let mut coder = test_coder();
+        let coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_insufficient() {
-        let mut coder = test_coder();
+        let coder = test_coder();
         let original = make_data(10_000);
         let chunks = coder.encode(&original).unwrap();
 
@@ -269,14 +269,14 @@ mod tests {
 
     #[test]
     fn test_empty_fails() {
-        let mut coder = test_coder();
+        let coder = test_coder();
         let result = coder.encode(&[]);
         assert!(matches!(result, Err(EncodeError::EmptyInput)));
     }
 
     #[test]
     fn test_chunk_size_for() {
-        let mut coder = test_coder();
+        let coder = test_coder();
 
         // Verify that chunk_size_for matches actual encoding output
         for len in [100, 1000, 2000, 10_000, 100_000, 1_000_000] {

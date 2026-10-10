@@ -28,6 +28,7 @@ use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 use tower::limit::ConcurrencyLimitLayer;
 use tower::load_shed::LoadShedLayer;
+use tower::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, Instrument};
 
@@ -37,7 +38,6 @@ use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::http::admission;
 use crate::features::http::auth::authorize_peer;
-use crate::features::http::deadline::quiet_deadline;
 use crate::features::http::handlers;
 use crate::features::http::peer_identity::PeerIdentityAcceptor;
 use crate::features::http::state::AppState;
@@ -297,10 +297,9 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     .layer(TraceLayer::new_for_http().make_span_with(request_span))
                     .layer(LoadShedLayer::new())
                     .layer(ConcurrencyLimitLayer::new(self.http_config.concurrency))
-                    .layer(from_fn_with_state(
-                        Duration::from_secs(self.http_config.timeout_secs),
-                        quiet_deadline,
-                    )),
+                    .layer(TimeoutLayer::new(Duration::from_secs(
+                        self.http_config.timeout_secs,
+                    ))),
             )
     }
 
@@ -398,8 +397,12 @@ fn request_span(request: &Request) -> tracing::Span {
 }
 
 
-async fn handle_http_error(_error: BoxError) -> StatusCode {
-    StatusCode::SERVICE_UNAVAILABLE
+async fn handle_http_error(error: BoxError) -> StatusCode {
+    if error.is::<tower::timeout::error::Elapsed>() {
+        StatusCode::REQUEST_TIMEOUT
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 /// Service routes 503 until bootstrap catch-up completes; status routes are

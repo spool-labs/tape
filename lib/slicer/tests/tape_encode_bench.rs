@@ -28,7 +28,7 @@ fn encode_paths() {
     println!("{:<16} {:>10} {:>10} {:>10}", "path", "payload", "ms", "MiB/s");
 
     for payload in [1024 * 1024usize, 10 * 1024 * 1024, 64 * 1024 * 1024] {
-        let mut slicer = Slicer::with_rotation(ClayCoder::from_params(TAPENET_CLAY));
+        let slicer = Slicer::with_rotation(ClayCoder::from_params(TAPENET_CLAY));
         bench("clay striped", payload, |data| {
             std::hint::black_box(slicer.encode(data).expect("clay encode"));
         });
@@ -43,7 +43,7 @@ fn encode_paths() {
     }
 
     for payload in [1024 * 1024usize, 10 * 1024 * 1024, 64 * 1024 * 1024] {
-        let mut coder = ReedSolomonCoder::new(10, 10);
+        let coder = ReedSolomonCoder::new(10, 10);
         bench("rs basic", payload, |data| {
             std::hint::black_box(coder.encode(data).expect("rs encode"));
         });

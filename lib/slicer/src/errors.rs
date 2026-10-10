@@ -8,6 +8,10 @@ pub enum EncodeError {
     TooMuchData,
     #[error("empty input data")]
     EmptyInput,
+    #[error("encoded chunks differ in size")]
+    UnevenChunks,
+    #[error("an encode thread panicked")]
+    Worker,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]

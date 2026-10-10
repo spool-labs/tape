@@ -745,7 +745,7 @@ mod tests {
 
     #[tokio::test]
     async fn clay_repair() {
-        let mut slicer = tapenet_slicer();
+        let slicer = tapenet_slicer();
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
         let track = addr(9);
@@ -790,7 +790,7 @@ mod tests {
     async fn escalates_failure() {
         let ctx = test_context().await; // noop api, no peers
         let a = addr(1);
-        let mut slicer = tapenet_slicer();
+        let slicer = tapenet_slicer();
         let slices = slicer.encode(&vec![0x24; 1024]).unwrap();
         let track_blob = clay_blob(1024, &slices);
 
@@ -853,7 +853,7 @@ mod tests {
     async fn skips_uncertified() {
         let ctx = test_context().await;
         let a = addr(2);
-        let mut slicer = tapenet_slicer();
+        let slicer = tapenet_slicer();
         let slices = slicer.encode(&vec![0x33; 1024]).unwrap();
         let track_blob = clay_blob(1024, &slices);
 
@@ -884,7 +884,7 @@ mod tests {
     /// with current helpers from protocol state and complete the repair.
     #[tokio::test]
     async fn split_peers() {
-        let mut slicer = tapenet_slicer();
+        let slicer = tapenet_slicer();
         let payload = vec![0x42u8; 1024];
         let slices = slicer.encode(&payload).unwrap();
         let track = addr(9);

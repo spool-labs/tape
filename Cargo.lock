@@ -11343,7 +11343,6 @@ dependencies = [
  "fs2",
  "futures",
  "hex",
- "http-body-util",
  "hyper",
  "lz4_flex",
  "memory-stats",

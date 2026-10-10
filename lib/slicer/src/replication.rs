@@ -38,7 +38,7 @@ impl ErasureCoder for ReplicationCoder {
         1
     }
 
-    fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
+    fn encode(&self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
         if data.is_empty() {
             return Err(EncodeError::EmptyInput);
         }
@@ -63,7 +63,7 @@ mod tests {
     // every copy is the whole stripe
     #[test]
     fn copies() {
-        let mut coder = ReplicationCoder::new(3);
+        let coder = ReplicationCoder::new(3);
         let data = payload(4096);
 
         let copies = coder.encode(&data).expect("encode");
@@ -75,7 +75,7 @@ mod tests {
     // any one copy reconstructs the stripe
     #[test]
     fn one_copy() {
-        let mut coder = ReplicationCoder::new(2);
+        let coder = ReplicationCoder::new(2);
         let data = payload(1024);
         let copies = coder.encode(&data).expect("encode");
 
@@ -87,7 +87,7 @@ mod tests {
     // a single drive is a code with no parity
     #[test]
     fn single_drive() {
-        let mut coder = ReplicationCoder::new(1);
+        let coder = ReplicationCoder::new(1);
         let data = payload(512);
 
         let copies = coder.encode(&data).expect("encode");
