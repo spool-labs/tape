@@ -67,7 +67,6 @@ fn slot_bytes(profile: ErasureCode) -> u64 {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Memory {
     pub(crate) total: u64,
-    /// What the system can hand out now without swapping, or nothing when it won't say
     pub(crate) available: Option<u64>,
 }
 
@@ -145,7 +144,6 @@ fn available_memory() -> Option<u64> {
 /// Chunks alive in a stream, each from its read to the end of its last slice push
 pub(crate) struct Slots {
     alive: AtomicUsize,
-    /// Slots the machine's free memory allows, read again each pace tick
     limit: AtomicUsize,
     slot_bytes: u64,
     read_memory: Box<dyn Fn() -> Memory + Send + Sync>,
