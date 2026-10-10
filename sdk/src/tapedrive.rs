@@ -46,7 +46,6 @@ pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
     pub write_options: WriteOptions,
     pub read_options: ReadOptions,
     pub reputation: Arc<Reputation>,
-    /// Every slice push this client makes waits its turn here
     pub push_gate: Arc<PushGate>,
 }
 
