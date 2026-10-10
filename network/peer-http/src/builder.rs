@@ -85,7 +85,7 @@ impl HttpApiBuilder {
             connect_timeout: self.connect_timeout,
             request_timeout: self.request_timeout,
             put_slice_idle: self.put_slice_idle,
-            pushed_bytes: Arc::new(AtomicU64::new(0)),
+            accepted_bytes: Arc::new(AtomicU64::new(0)),
             get_slice_timeout: self.get_slice_timeout,
             local_identity: self.local_identity,
             transfer_sink: self.transfer_sink,
