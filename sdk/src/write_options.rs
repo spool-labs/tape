@@ -10,8 +10,9 @@ pub struct WriteOptions {
     /// `MAX_GROUP_SIZE` slices, so the default sends all n at once on every
     /// network.
     pub slice_concurrency: usize,
-    /// Stream chunks uploading concurrently; also bounds peak memory.
-    pub store_depth: usize,
+    /// Pins the stream chunks uploading at once. Unset, a stream starts at
+    /// one and widens while the link moves more, within the memory available.
+    pub store_depth: Option<usize>,
     /// Every track this client writes is registered with these flags.
     pub flags: u64,
     /// Stream writes and the one-call write list the tape first, and finish or
@@ -23,7 +24,7 @@ impl Default for WriteOptions {
     fn default() -> Self {
         Self {
             slice_concurrency: MAX_GROUP_SIZE,
-            store_depth: 4,
+            store_depth: None,
             flags: TrackFlags::NONE,
             resume: false,
         }
@@ -38,7 +39,7 @@ mod tests {
     fn defaults() {
         let options = WriteOptions::default();
         assert_eq!(options.slice_concurrency, MAX_GROUP_SIZE);
-        assert_eq!(options.store_depth, 4);
+        assert_eq!(options.store_depth, None);
         assert_eq!(options.flags, TrackFlags::NONE);
         assert!(!options.resume);
     }
