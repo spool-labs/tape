@@ -525,8 +525,8 @@ mod tests {
             },
         };
         ctx.store
-            .append_record(target, SlotNumber(9), None, &record)
-            .expect("append record");
+            .journal_slot(SlotNumber(9), None, &[(target, &record)])
+            .expect("journal slot");
 
         let candidate = build_snapshot(&ctx, ctx.state(), target, &cancel)
             .await

@@ -289,7 +289,7 @@ async fn handle(
         MethodKind::Read { ttl } => {
             let key = CacheKey::from_request(method, &params);
             if let Some(cached) = state.cache.get(&key).await {
-                return json_ok(id, (*cached).clone()).into_response();
+                return serve_cached_read(id, &cached);
             }
 
             // Miss — forward and populate. moka's get_with would coalesce
@@ -301,10 +301,9 @@ async fn handle(
             match state.upstream.forward(&req, CALLER_RATE_LIMIT_WAIT).await {
                 Ok(envelope) => {
                     if let Some(result) = &envelope.result {
-                        state
-                            .cache
-                            .insert(key, Arc::new(result.clone()), ttl)
-                            .await;
+                        if let Ok(serialized) = serde_json::to_vec(result) {
+                            state.cache.insert(key, Bytes::from(serialized), ttl).await;
+                        }
                     }
                     (
                         StatusCode::OK,
@@ -470,15 +469,22 @@ pub fn reshape_with_id(env: RpcEnvelope, id: Value) -> Value {
     out
 }
 
-pub fn json_ok(id: Value, result: Value) -> (StatusCode, axum::Json<Value>) {
+/// Splice a cached `result` body into the envelope, keys in serde_json's sorted order
+pub fn serve_cached_read(id: Value, result: &[u8]) -> Response {
+    let id_serialized = serde_json::to_vec(&id).unwrap_or_else(|_| b"null".to_vec());
+    let mut buf = Vec::with_capacity(40 + id_serialized.len() + result.len());
+    buf.extend_from_slice(br#"{"id":"#);
+    buf.extend_from_slice(&id_serialized);
+    buf.extend_from_slice(br#","jsonrpc":"2.0","result":"#);
+    buf.extend_from_slice(result);
+    buf.push(b'}');
+
     (
         StatusCode::OK,
-        axum::Json(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": result,
-        })),
+        [(header::CONTENT_TYPE, "application/json")],
+        buf,
     )
+        .into_response()
 }
 
 pub fn upstream_err(id: Value, err: &UpstreamError) -> (StatusCode, axum::Json<Value>) {
@@ -568,6 +574,78 @@ mod tests {
         let result_bytes = Bytes::from_static(br#"{"blockhash":"abc","parentSlot":10}"#);
         let resp = serve_present_block(json!(7), result_bytes);
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // the old hit path, a cloned tree serialized behind the envelope
+    fn old_hit(id: Value, result: &Value) -> Vec<u8> {
+        serde_json::to_vec(&json!({"jsonrpc": "2.0", "id": id, "result": result.clone()}))
+            .expect("serialize envelope")
+    }
+
+    fn body(response: Response) -> Bytes {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        runtime
+            .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+            .expect("body")
+    }
+
+    // a spliced hit sends the bytes the cloned tree did
+    #[test]
+    fn cached_read_bytes() {
+        let results = [
+            json!({"context": {"slot": 9}, "value": [{"data": ["AAEC", "base64"], "lamports": 5}, null]}),
+            json!(123_456_789u64),
+            json!("4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"),
+            Value::Null,
+        ];
+        let ids = [json!(1), json!("abc"), Value::Null];
+
+        for result in &results {
+            for id in &ids {
+                let cached = serde_json::to_vec(result).expect("serialize result");
+                let spliced = body(serve_cached_read(id.clone(), &cached));
+                assert_eq!(spliced.as_ref(), old_hit(id.clone(), result).as_slice());
+            }
+        }
+    }
+
+    // a run of read-cache hits on an account batch
+    // cargo test -p rpc-cache --release --lib hit_loop -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn hit_loop() {
+        let accounts: Vec<Value> = (0..100)
+            .map(|index| {
+                json!({
+                    "data": [format!("{index:0>270}"), "base64"],
+                    "executable": false,
+                    "lamports": 1_000_000 + index,
+                    "owner": "tape9hFAZTFUWyqLb7CpkbXkPbAr1ubwATCVeQr8cW7",
+                    "rentEpoch": 18_446_744_073_709_551_615u64,
+                    "space": 200,
+                })
+            })
+            .collect();
+        let result = json!({"context": {"apiVersion": "2.3.0", "slot": 400_000_000}, "value": accounts});
+        let cached = Bytes::from(serde_json::to_vec(&result).expect("serialize"));
+        let hits = 20_000;
+
+        let started = Instant::now();
+        let mut sent = 0usize;
+        for hit in 0..hits {
+            let response = serve_cached_read(json!(hit), &cached);
+            sent += usize::from(response.status() == StatusCode::OK);
+        }
+        let elapsed = started.elapsed();
+
+        assert_eq!(sent, hits);
+        println!(
+            "hits {hits}  result {} bytes  per hit {:.2} us",
+            cached.len(),
+            elapsed.as_secs_f64() * 1e6 / hits as f64
+        );
     }
 
     #[test]

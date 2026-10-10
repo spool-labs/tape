@@ -2,11 +2,10 @@
 //! serialized JSON-RPC result bodies.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use moka::future::Cache;
-use serde_json::Value;
 
 use crate::key::CacheKey;
 
@@ -66,7 +65,7 @@ const SUBMIT_METHODS: &[&str] = &[
 /// check it on read; the global TTL on the builder is a loose ceiling.
 #[derive(Clone)]
 pub struct CachedEntry {
-    pub value: Arc<Value>,
+    pub value: Bytes,
     pub expires_at: Instant,
 }
 
@@ -116,7 +115,7 @@ impl CacheStore {
 
     /// Look up a fresh entry. If the entry is past its per-method TTL
     /// we treat it as a miss and ask the caller to repopulate.
-    pub async fn get(&self, key: &CacheKey) -> Option<Arc<Value>> {
+    pub async fn get(&self, key: &CacheKey) -> Option<Bytes> {
         let entry = self.inner.get(key).await?;
         if Instant::now() >= entry.expires_at {
             self.inner.invalidate(key).await;
@@ -125,7 +124,7 @@ impl CacheStore {
         Some(entry.value)
     }
 
-    pub async fn insert(&self, key: CacheKey, value: Arc<Value>, ttl: Duration) {
+    pub async fn insert(&self, key: CacheKey, value: Bytes, ttl: Duration) {
         let entry = CachedEntry {
             value,
             expires_at: Instant::now() + ttl,
@@ -171,7 +170,7 @@ mod tests {
         let store = CacheStore::new(16);
         let key = CacheKey { method: "getLatestBlockhash".into(), params_hash: 0 };
         store
-            .insert(key.clone(), Arc::new(Value::Null), Duration::from_millis(20))
+            .insert(key.clone(), Bytes::from_static(b"null"), Duration::from_millis(20))
             .await;
         assert!(store.get(&key).await.is_some(), "fresh entry hits");
         tokio::time::sleep(Duration::from_millis(40)).await;

@@ -319,8 +319,8 @@ mod tests {
 
         let ctx = harness.ctx_for(OWNER_INDEX);
         ctx.store
-            .append_record(EPOCH, EVENT_SLOT, None, &record())
-            .expect("append record");
+            .journal_slot(EVENT_SLOT, None, &[(EPOCH, &record())])
+            .expect("journal slot");
 
         // A chunk is stamped with its live group's own number, so the slices
         // this node keeps sit under its live spools.

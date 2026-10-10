@@ -11,6 +11,7 @@ use std::time::Duration;
 use axum::Json;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use bytes::Bytes;
 use serde_json::{Value, json};
 use tracing::debug;
 
@@ -22,7 +23,7 @@ use crate::config::PublicConfig;
 use crate::gate::{Gate, Refusal};
 use crate::key::CacheKey;
 use crate::meter::{Decision, Meter, Rate};
-use crate::server::{AppState, json_ok, raw_reply, reshape_with_id, upstream_err};
+use crate::server::{AppState, raw_reply, reshape_with_id, serve_cached_read, upstream_err};
 use crate::submit_log;
 use crate::upstream::{RateLimitWait, RpcEnvelope, UpstreamError};
 
@@ -135,7 +136,7 @@ async fn read(
     let key = CacheKey::from_request(&call.method, &call.params);
     if is_cached {
         if let Some(cached) = state.cache.get(&key).await {
-            return json_ok(call.id, (*cached).clone()).into_response();
+            return serve_cached_read(call.id, &cached);
         }
     }
     if let Decision::Limited { retry_after } = public.meter.charge_upstream() {
@@ -156,7 +157,9 @@ async fn read(
         // A null is a transaction that has not landed yet; caching it would
         // hide the landing from a CLI that polls until it does.
         if is_cached && !result.is_null() {
-            state.cache.insert(key, Arc::new(result.clone()), ttl).await;
+            if let Ok(serialized) = serde_json::to_vec(result) {
+                state.cache.insert(key, Bytes::from(serialized), ttl).await;
+            }
         }
     }
     (StatusCode::OK, Json(reshape_with_id(envelope, call.id))).into_response()
