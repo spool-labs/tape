@@ -48,7 +48,6 @@ hex = { workspace = true }
 
 # Async
 tokio = { workspace = true }
-libc = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 

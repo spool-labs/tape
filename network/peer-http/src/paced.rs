@@ -8,8 +8,8 @@ use bytes::Bytes;
 use futures::stream;
 use tokio::time::Instant;
 
-/// Bytes handed to the connection per poll, small enough that a push on a slow, shared link still moves within its idle limit
-const PIECE_BYTES: usize = 64 * 1024;
+/// Bytes handed to the connection per poll
+const PIECE_BYTES: usize = 256 * 1024;
 
 /// When a push last moved a byte
 pub(crate) struct Watch {
@@ -48,13 +48,14 @@ pub(crate) async fn silence(watch: &Watch, limit: Duration) {
     }
 }
 
-/// A body that hands `body` to the connection in pieces, touching the watch as each piece leaves
+/// A body that hands `body` to the connection in pieces, touching the watch and counting each piece
 ///
 /// The connection asks for the next piece only once it has room for it, so the
 /// watch moves at the pace of the link and stops when the link stops.
-pub(crate) fn paced_body(body: Bytes, watch: Arc<Watch>) -> reqwest::Body {
+pub(crate) fn paced_body(body: Bytes, watch: Arc<Watch>, pushed: Arc<AtomicU64>) -> reqwest::Body {
     let pieces = stream::unfold((body, 0usize), move |(body, offset)| {
         let watch = watch.clone();
+        let pushed = pushed.clone();
         async move {
             if offset >= body.len() {
                 return None;
@@ -62,6 +63,7 @@ pub(crate) fn paced_body(body: Bytes, watch: Arc<Watch>) -> reqwest::Body {
             let end = (offset + PIECE_BYTES).min(body.len());
             let piece = body.slice(offset..end);
             watch.touch();
+            pushed.fetch_add(piece.len() as u64, Ordering::Relaxed);
             Some((Ok::<Bytes, std::io::Error>(piece), (body, end)))
         }
     });
@@ -73,13 +75,13 @@ mod tests {
     use super::*;
 
     // a watch that was touched reads quiet from the touch on
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn silence_waits_for_quiet() {
         let watch = Watch::new();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
         watch.touch();
-        let started = Instant::now();
-        silence(&watch, Duration::from_millis(300)).await;
-        assert!(started.elapsed() >= Duration::from_millis(290), "{:?}", started.elapsed());
+        let started = tokio::time::Instant::now();
+        silence(&watch, Duration::from_secs(30)).await;
+        assert!(started.elapsed() >= Duration::from_secs(29));
     }
 }
