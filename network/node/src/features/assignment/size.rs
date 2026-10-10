@@ -834,7 +834,7 @@ mod tests {
             ErasureCode::ReedSolomon(RSParams::new(3, 1)),
             ErasureCode::Replication(RepParams::new(2)),
         ] {
-            let mut slicer = Slicer::try_from_profile(profile).expect("valid profile");
+            let slicer = Slicer::try_from_profile(profile).expect("valid profile");
             let slices = slicer.encode(&vec![0x5Au8; len]).expect("encode");
             let blob = striped_blob(profile, len);
 

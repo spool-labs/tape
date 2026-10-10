@@ -5,6 +5,8 @@
 //! - Metadata suffix (blob_len, stripe_size for decoding)
 //! - Optional rotation mapping for fair load distribution
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use tape_core::encoding::{ErasureCode, ProfileError};
 use tape_core::types::ChunkNumber;
 
@@ -80,21 +82,23 @@ pub fn slice_to_shard(strategy: MappingStrategy, n: usize, stripe_idx: usize, sl
     }
 }
 
-/// Distribute encoded chunks to output slices using rotation mapping.
-///
-/// Each chunk from the coder is placed into the appropriate slice based on
-/// the mapping strategy and current stripe index.
-fn distribute_chunks(
+/// Copy one stripe's encoded chunks into that stripe's window of each slice, by the rotation mapping
+fn place_chunks(
     strategy: MappingStrategy,
     n: usize,
     stripe_idx: usize,
     chunks: &[Vec<u8>],
-    slices: &mut [Vec<u8>],
-) {
+    windows: &mut [&mut [u8]],
+) -> Result<(), EncodeError> {
     for (shard_idx, chunk) in chunks.iter().enumerate() {
         let slice_idx = shard_to_slice(strategy, n, stripe_idx, shard_idx);
-        slices[slice_idx].extend_from_slice(chunk);
+        let window = windows.get_mut(slice_idx).ok_or(EncodeError::UnevenChunks)?;
+        if window.len() != chunk.len() {
+            return Err(EncodeError::UnevenChunks);
+        }
+        window.copy_from_slice(chunk);
     }
+    Ok(())
 }
 
 /// Validate slice layout and compute stripe parameters.
@@ -142,16 +146,16 @@ fn validate_layout(
 /// # Examples
 /// ```ignore
 /// // Production: the rotated slicer for the network's profile
-/// let mut slicer = Slicer::try_from_profile(profile)?;
+/// let slicer = Slicer::try_from_profile(profile)?;
 /// let chunks = slicer.encode(&data)?;
 ///
 /// // Striped only (no rotation)
-/// let mut slicer = Slicer::new(ClayCoder::from_params(params));
+/// let slicer = Slicer::new(ClayCoder::from_params(params));
 /// ```
 pub struct Slicer<C: ErasureCoder> {
     pub coder: C,
     /// Stripe size of the last encode; 0 until the first one.
-    pub stripe_size: usize,
+    stripe_size: AtomicUsize,
     pub strategy: MappingStrategy,
     /// Chunk/group index embedded in slice metadata. Ensures that identical
     /// data chunks at different positions produce distinct commitments.
@@ -167,7 +171,7 @@ impl<C: ErasureCoder> Slicer<C> {
     fn build(coder: C, strategy: MappingStrategy, cap: usize) -> Self {
         Self {
             coder,
-            stripe_size: 0,
+            stripe_size: AtomicUsize::new(0),
             strategy,
             chunk_index: ChunkNumber(0),
             stripe_cap: cap,
@@ -224,7 +228,7 @@ impl<C: ErasureCoder> Slicer<C> {
 
     /// Get the current stripe size.
     pub fn stripe_size(&self) -> usize {
-        self.stripe_size
+        self.stripe_size.load(Ordering::Relaxed)
     }
 
     /// Get the mapping strategy.
@@ -264,62 +268,8 @@ impl<C: ErasureCoder + Sync> ErasureCoder for Slicer<C> {
         self.coder.stripe_alignment()
     }
 
-    fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
-        let blob_len = data.len();
-
-        // Derive the stripe size from the blob
-        self.stripe_size = self.derived_stripe_size(blob_len);
-
-        // Handle empty blob
-        if blob_len == 0 {
-            return self.encode_empty_blob();
-        }
-
-        let n = self.n();
-        let num_stripes = blob_len.div_ceil(self.stripe_size);
-
-        // Encode first stripe to determine chunk size
-        let first_stripe_data = &data[..self.stripe_size.min(blob_len)];
-        let first_chunks = self.coder.encode(first_stripe_data)?;
-        let chunk_size = first_chunks[0].len();
-
-        // Initialize output slices
-        let mut slices: Vec<Vec<u8>> = (0..n)
-            .map(|_| Vec::with_capacity(num_stripes * chunk_size + SliceMetadata::SIZE))
-            .collect();
-
-        // Distribute first stripe chunks
-        distribute_chunks(self.strategy, n, 0, &first_chunks, &mut slices);
-
-        // Encode remaining stripes. Only the last one can fall short, and the
-        // derived stripe size is a multiple of the coder's alignment, so
-        // padding it up front is what keeps chunk sizes uniform.
-        let mut padded = Vec::new();
-        for s in 1..num_stripes {
-            let start = s * self.stripe_size;
-            let end = (start + self.stripe_size).min(blob_len);
-            let stripe_data = &data[start..end];
-
-            let chunks = if stripe_data.len() == self.stripe_size {
-                self.coder.encode(stripe_data)?
-            } else {
-                padded.clear();
-                padded.extend_from_slice(stripe_data);
-                padded.resize(self.stripe_size, 0);
-                self.coder.encode(&padded)?
-            };
-
-            distribute_chunks(self.strategy, n, s, &chunks, &mut slices);
-        }
-
-        // Append metadata (includes chunk_index for position-dependent commitment)
-        let mut metadata = SliceMetadata::new(blob_len, self.stripe_size);
-        metadata.chunk_index = self.chunk_index;
-        for slice in &mut slices {
-            slice.extend_from_slice(&metadata.to_bytes());
-        }
-
-        Ok(slices)
+    fn encode(&self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError> {
+        self.encode_framed(data, 0, 0)
     }
 
     fn decode(&self, chunks: &[(usize, &[u8])]) -> Result<Vec<u8>, DecodeError> {
@@ -352,7 +302,7 @@ impl<C: ErasureCoder + Sync> ErasureCoder for Slicer<C> {
             chunk_size,
         };
         let mut output = vec![0u8; blob_len];
-        let threads = decode_threads(num_stripes);
+        let threads = stripe_threads(num_stripes);
         if threads == 1 {
             self.decode_stripes(&by_slice, layout, 0, 0, &mut output)?;
             return Ok(output);
@@ -381,10 +331,10 @@ impl<C: ErasureCoder + Sync> ErasureCoder for Slicer<C> {
     }
 }
 
-/// A decode spreads its stripes over at most this many threads
-pub const DECODE_THREADS: usize = 8;
+/// An encode or decode spreads its stripes over at most this many threads
+pub const STRIPE_THREADS: usize = 8;
 
-/// A thread earns its spawn only with at least this many stripes to decode
+/// A thread earns its spawn only with at least this many stripes to code
 const MIN_STRIPES_PER_THREAD: usize = 2;
 
 /// Where each stripe sits in the blob and in every slice
@@ -394,12 +344,118 @@ struct StripeLayout {
     chunk_size: usize,
 }
 
-fn decode_threads(num_stripes: usize) -> usize {
+fn stripe_threads(num_stripes: usize) -> usize {
     let cores = std::thread::available_parallelism().map_or(1, |cores| cores.get());
-    (num_stripes / MIN_STRIPES_PER_THREAD).min(cores).min(DECODE_THREADS).max(1)
+    (num_stripes / MIN_STRIPES_PER_THREAD).min(cores).min(STRIPE_THREADS).max(1)
 }
 
 impl<C: ErasureCoder + Sync> Slicer<C> {
+    /// Encode into slices that each start after `headroom` zero bytes and keep
+    /// `tailroom` spare capacity, so a caller can frame them without a copy.
+    pub fn encode_framed(
+        &self,
+        data: &[u8],
+        headroom: usize,
+        tailroom: usize,
+    ) -> Result<Vec<Vec<u8>>, EncodeError> {
+        let blob_len = data.len();
+        let stripe_size = self.derived_stripe_size(blob_len);
+        self.stripe_size.store(stripe_size, Ordering::Relaxed);
+        let n = self.coder.n();
+        // An empty blob still encodes one stripe, all padding
+        let num_stripes = blob_len.div_ceil(stripe_size).max(1);
+
+        let first_chunks = self.encode_stripe(data, stripe_size, 0)?;
+        let chunk_size = first_chunks[0].len();
+        let coded_len = num_stripes * chunk_size;
+        let mut slices: Vec<Vec<u8>> = (0..n)
+            .map(|_| {
+                let mut slice =
+                    Vec::with_capacity(headroom + coded_len + SliceMetadata::SIZE + tailroom);
+                slice.resize(headroom + coded_len, 0);
+                slice
+            })
+            .collect();
+
+        // Every stripe owns one chunk-sized window of each slice, so stripes encode apart
+        let mut stripes: Vec<Vec<&mut [u8]>> = (0..num_stripes).map(|_| Vec::with_capacity(n)).collect();
+        for slice in &mut slices {
+            for (stripe, window) in slice[headroom..].chunks_exact_mut(chunk_size).enumerate() {
+                stripes[stripe].push(window);
+            }
+        }
+        place_chunks(self.strategy, n, 0, &first_chunks, &mut stripes[0])?;
+        let rest = &mut stripes[1..];
+        let threads = stripe_threads(rest.len());
+        if threads == 1 {
+            self.encode_stripes(data, stripe_size, 1, rest)?;
+        } else {
+            let stripes_per_thread = rest.len().div_ceil(threads);
+            let results: Vec<Result<(), EncodeError>> = std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(threads);
+                for (part, windows) in rest.chunks_mut(stripes_per_thread).enumerate() {
+                    let first = 1 + part * stripes_per_thread;
+                    handles.push(scope.spawn(move || self.encode_stripes(data, stripe_size, first, windows)));
+                }
+                let mut results = Vec::with_capacity(handles.len());
+                for handle in handles {
+                    results.push(handle.join().unwrap_or(Err(EncodeError::Worker)));
+                }
+                results
+            });
+            for result in results {
+                result?;
+            }
+        }
+
+        // Append metadata (includes chunk_index for position-dependent commitment)
+        let mut metadata = SliceMetadata::new(blob_len, stripe_size);
+        metadata.chunk_index = self.chunk_index;
+        for slice in &mut slices {
+            slice.extend_from_slice(&metadata.to_bytes());
+        }
+
+        Ok(slices)
+    }
+
+    /// Encode a run of stripes starting at `first` into their windows of each slice
+    fn encode_stripes(
+        &self,
+        data: &[u8],
+        stripe_size: usize,
+        first: usize,
+        stripes: &mut [Vec<&mut [u8]>],
+    ) -> Result<(), EncodeError> {
+        for (offset, windows) in stripes.iter_mut().enumerate() {
+            let stripe = first + offset;
+            let chunks = self.encode_stripe(data, stripe_size, stripe)?;
+            place_chunks(self.strategy, self.coder.n(), stripe, &chunks, windows)?;
+        }
+        Ok(())
+    }
+
+    /// Encode one stripe, padding a short one up to the stripe size
+    ///
+    /// The derived stripe size is a multiple of the coder's alignment, so
+    /// padding a short stripe up front is what keeps chunk sizes uniform.
+    fn encode_stripe(
+        &self,
+        data: &[u8],
+        stripe_size: usize,
+        stripe: usize,
+    ) -> Result<Vec<Vec<u8>>, EncodeError> {
+        let start = (stripe * stripe_size).min(data.len());
+        let end = (start + stripe_size).min(data.len());
+        let stripe_data = &data[start..end];
+        if stripe_data.len() == stripe_size {
+            return self.coder.encode(stripe_data);
+        }
+        let mut padded = Vec::with_capacity(stripe_size);
+        padded.extend_from_slice(stripe_data);
+        padded.resize(stripe_size, 0);
+        self.coder.encode(&padded)
+    }
+
     /// Decode the stripes a range covers from slice windows that start at its slice offset
     pub fn decode_window(
         &self,
@@ -467,29 +523,6 @@ impl<C: ErasureCoder + Sync> Slicer<C> {
             window.copy_from_slice(decoded);
         }
         Ok(())
-    }
-}
-
-impl<C: ErasureCoder> Slicer<C> {
-    fn encode_empty_blob(&mut self) -> Result<Vec<Vec<u8>>, EncodeError> {
-        let n = self.coder.n();
-
-        // Encode a full stripe of zeros
-        let empty = vec![0u8; self.stripe_size];
-        let chunks = self.coder.encode(&empty)?;
-        let chunk_size = chunks[0].len();
-
-        let mut slices: Vec<Vec<u8>> = vec![Vec::with_capacity(chunk_size + SliceMetadata::SIZE); n];
-        distribute_chunks(self.strategy, n, 0, &chunks, &mut slices);
-
-        // Append metadata (blob_len = 0 for empty blob)
-        let mut metadata = SliceMetadata::new(0, self.stripe_size);
-        metadata.chunk_index = self.chunk_index;
-        for slice in &mut slices {
-            slice.extend_from_slice(&metadata.to_bytes());
-        }
-
-        Ok(slices)
     }
 }
 
@@ -596,7 +629,7 @@ mod tests {
 
     #[test]
     fn test_stripe_size_derives_from_blob() {
-        let mut slicer = tapenet();
+        let slicer = tapenet();
 
         // one stripe under the cap, several equal stripes above it
         for (len, stripes) in [(1usize, 1usize), (500_000, 1), (1_000_000, 1), (2_500_000, 3)] {
@@ -607,7 +640,7 @@ mod tests {
 
     #[test]
     fn test_small_identity() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
+        let slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
         let payload = mk(500);
         let chunks = slicer.encode(&payload).unwrap();
         assert_eq!(chunks.len(), N);
@@ -621,7 +654,7 @@ mod tests {
     #[test]
     fn window_decode() {
         let blob = mk(4 * 1024 * 1024 + 333);
-        let mut slicer = tapenet();
+        let slicer = tapenet();
         let slices = slicer.encode(&blob).expect("encode");
         let stripe_size = slicer.stripe_size();
         let stripes = num_stripes(blob.len(), stripe_size);
@@ -656,7 +689,7 @@ mod tests {
 
     #[test]
     fn test_multi_stripe() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
+        let slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
         let payload = mk(5000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -667,7 +700,7 @@ mod tests {
 
     #[test]
     fn test_empty() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
+        let slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
         let payload = Vec::new();
         let chunks = slicer.encode(&payload).unwrap();
         assert_eq!(chunks.len(), N);
@@ -679,7 +712,7 @@ mod tests {
 
     #[test]
     fn test_data_only() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
+        let slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
         let k = slicer.k();
         let payload = mk(3000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -707,7 +740,7 @@ mod tests {
 
     #[test]
     fn test_insufficient() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
+        let slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
         let k = slicer.k();
         let payload = mk(1000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -719,7 +752,7 @@ mod tests {
 
     #[test]
     fn test_uniform_slices() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
+        let slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
         let payload = mk(5000);
         let chunks = slicer.encode(&payload).unwrap();
         let first_len = chunks[0].len();
@@ -730,7 +763,7 @@ mod tests {
 
     #[test]
     fn test_tapenet() {
-        let mut slicer = tapenet();
+        let slicer = tapenet();
         assert_eq!(slicer.k(), 7);
         assert_eq!(slicer.m(), 13);
         assert_eq!(slicer.strategy(), MappingStrategy::Rotated);
@@ -752,7 +785,7 @@ mod tests {
 
     #[test]
     fn test_metadata() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
+        let slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
         let payload = mk(2000);
         let chunks = slicer.encode(&payload).unwrap();
 
@@ -760,6 +793,12 @@ mod tests {
         let meta = SliceMetadata::parse(&chunks[0]).unwrap();
         assert_eq!(meta.blob_len(), 2000);
         assert_eq!(meta.stripe_size(), slicer.derived_stripe_size(2000));
+    }
+
+    fn place(strategy: MappingStrategy, stripe: usize, chunks: &[Vec<u8>], slices: &mut [Vec<u8>]) {
+        let n = slices.len();
+        let mut windows: Vec<&mut [u8]> = slices.iter_mut().map(|slice| slice.as_mut_slice()).collect();
+        place_chunks(strategy, n, stripe, chunks, &mut windows).expect("place");
     }
 
     #[test]
@@ -771,9 +810,9 @@ mod tests {
             vec![5, 6],
             vec![7, 8],
         ];
-        let mut slices: Vec<Vec<u8>> = vec![Vec::new(); n];
+        let mut slices: Vec<Vec<u8>> = vec![vec![0; 2]; n];
 
-        distribute_chunks(MappingStrategy::Identity, n, 0, &chunks, &mut slices);
+        place(MappingStrategy::Identity, 0, &chunks, &mut slices);
 
         // Identity: chunk i goes to slice i
         assert_eq!(slices[0], vec![1, 2]);
@@ -793,38 +832,35 @@ mod tests {
         ];
 
         // Stripe 0: offset = 0, so same as identity
-        let mut slices: Vec<Vec<u8>> = vec![Vec::new(); n];
-        distribute_chunks(MappingStrategy::Rotated, n, 0, &chunks, &mut slices);
+        let mut slices: Vec<Vec<u8>> = vec![vec![0; 2]; n];
+        place(MappingStrategy::Rotated, 0, &chunks, &mut slices);
         assert_eq!(slices[0], vec![1, 2]);
         assert_eq!(slices[1], vec![3, 4]);
 
         // Stripe 1: offset = rotation_step(4) = 3
         // shard 0 -> slice (0 + 3) % 4 = 3
         // shard 1 -> slice (1 + 3) % 4 = 0
-        let mut slices: Vec<Vec<u8>> = vec![Vec::new(); n];
-        distribute_chunks(MappingStrategy::Rotated, n, 1, &chunks, &mut slices);
+        let mut slices: Vec<Vec<u8>> = vec![vec![0; 2]; n];
+        place(MappingStrategy::Rotated, 1, &chunks, &mut slices);
         assert_eq!(slices[3], vec![1, 2]); // shard 0
         assert_eq!(slices[0], vec![3, 4]); // shard 1
     }
 
+    // a chunk of the wrong size is refused
     #[test]
-    fn test_distribute_accum() {
-        let n = 2;
-        let chunks1: Vec<Vec<u8>> = vec![vec![1], vec![2]];
-        let chunks2: Vec<Vec<u8>> = vec![vec![3], vec![4]];
+    fn test_place_uneven() {
+        let chunks: Vec<Vec<u8>> = vec![vec![1], vec![2, 3]];
+        let mut slices: Vec<Vec<u8>> = vec![vec![0; 1]; 2];
 
-        let mut slices: Vec<Vec<u8>> = vec![Vec::new(); n];
-        distribute_chunks(MappingStrategy::Identity, n, 0, &chunks1, &mut slices);
-        distribute_chunks(MappingStrategy::Identity, n, 1, &chunks2, &mut slices);
+        let mut windows: Vec<&mut [u8]> = slices.iter_mut().map(|slice| slice.as_mut_slice()).collect();
+        let placed = place_chunks(MappingStrategy::Identity, 2, 0, &chunks, &mut windows);
 
-        // Both stripes should accumulate in each slice
-        assert_eq!(slices[0], vec![1, 3]);
-        assert_eq!(slices[1], vec![2, 4]);
+        assert_eq!(placed, Err(EncodeError::UnevenChunks));
     }
 
     #[test]
     fn test_layout_valid() {
-        let mut slicer = tapenet();
+        let slicer = tapenet();
         // derived sizing splits 2.5MB into three equal stripes under the cap
         let payload = mk(2_500_000);
         let chunks = slicer.encode(&payload).unwrap();
@@ -839,7 +875,7 @@ mod tests {
 
     #[test]
     fn test_layout_mismatch() {
-        let mut slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
+        let slicer = Slicer::with_stripe_cap(test_coder(), TEST_CAP);
         let payload = mk(2000);
         let mut chunks = slicer.encode(&payload).unwrap();
 
@@ -935,7 +971,7 @@ mod tests {
         for profile in profiles {
             let n = profile.n() as usize;
             let k = profile.k() as usize;
-            let mut slicer = Slicer::try_from_profile(profile).expect("valid profile");
+            let slicer = Slicer::try_from_profile(profile).expect("valid profile");
             let slices = slicer.encode(&blob).expect("encode");
             let stripe_size = slicer.stripe_size();
             let chunk_size = crate::stripe_chunk_len(profile, stripe_size, blob.len());
@@ -978,7 +1014,7 @@ mod tests {
 
         for profile in profiles {
             let k = profile.k() as usize;
-            let mut slicer = Slicer::try_from_profile(profile).expect("valid profile");
+            let slicer = Slicer::try_from_profile(profile).expect("valid profile");
             let slices = slicer.encode(&mk(5_000)).expect("encode");
 
             let short = keep_only(&slices, &(0..k - 1).collect::<Vec<_>>());

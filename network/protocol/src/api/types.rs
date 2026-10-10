@@ -217,6 +217,37 @@ impl SlicePayload {
     }
 }
 
+/// Bytes the wire body puts ahead of the slice bytes
+pub const SLICE_BODY_HEADROOM: usize = size_of::<u64>();
+
+/// Bytes the wire body puts after the slice bytes
+pub const SLICE_BODY_TAILROOM: usize = Hash::LEN + size_of::<u64>() + SLICE_TREE_HEIGHT * Hash::LEN;
+
+impl SlicePayload {
+    /// Write the wire form around slice bytes held after a headroom gap, in place
+    pub fn frame(
+        mut body: Vec<u8>,
+        leaf_hash: Hash,
+        merkle_proof: &[Hash],
+    ) -> Result<Vec<u8>, String> {
+        let data_len = body
+            .len()
+            .checked_sub(SLICE_BODY_HEADROOM)
+            .ok_or_else(|| "slice body has no room for its length".to_string())?;
+        if data_len > SLICE_BYTES_LIMIT {
+            return Err(format!("slice of {data_len} bytes is over the limit"));
+        }
+        body[..SLICE_BODY_HEADROOM].copy_from_slice(&(data_len as u64).to_le_bytes());
+        body.reserve_exact(Hash::LEN + size_of::<u64>() + merkle_proof.len() * Hash::LEN);
+        body.extend_from_slice(leaf_hash.as_ref());
+        body.extend_from_slice(&(merkle_proof.len() as u64).to_le_bytes());
+        for hash in merkle_proof {
+            body.extend_from_slice(hash.as_ref());
+        }
+        Ok(body)
+    }
+}
+
 /// A slice push body read in place; its slice bytes point into the request body
 #[derive(Clone, Debug)]
 pub struct SliceBody {
@@ -458,6 +489,23 @@ mod tests {
         assert_eq!(parsed.data.as_ref(), payload.data.as_slice());
         assert_eq!(parsed.leaf_hash, payload.leaf_hash);
         assert_eq!(parsed.merkle_proof, payload.merkle_proof);
+    }
+
+    // framing in place writes the bytes the wire encoder writes
+    #[test]
+    fn framed_body() {
+        for len in [0, 1, 70_000] {
+            let (payload, body) = encoded_slice(len);
+            let mut held = vec![0u8; SLICE_BODY_HEADROOM];
+            held.extend_from_slice(&payload.data);
+
+            let framed = SlicePayload::frame(held, payload.leaf_hash, &payload.merkle_proof)
+                .expect("frame");
+
+            assert_eq!(framed.as_slice(), body.as_ref());
+        }
+        let over = vec![0u8; SLICE_BODY_HEADROOM + SLICE_BYTES_LIMIT + 1];
+        assert!(SlicePayload::frame(over, Hash::default(), &[]).is_err());
     }
 
     // a cut or padded body is refused

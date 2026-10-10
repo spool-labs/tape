@@ -33,7 +33,7 @@ pub trait ErasureCoder {
     ///
     /// # Returns
     /// Vector of n chunks (each chunk is a Vec<u8>).
-    fn encode(&mut self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError>;
+    fn encode(&self, data: &[u8]) -> Result<Vec<Vec<u8>>, EncodeError>;
 
     /// Decode from available chunks.
     ///

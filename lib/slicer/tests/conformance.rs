@@ -61,7 +61,7 @@ fn roundtrip_from_any_k_slices() {
     let mut rng = StdRng::seed_from_u64(69);
 
     for cap in CAPS {
-        let mut slicer = slicer_at(cap);
+        let slicer = slicer_at(cap);
         let n = slicer.n();
         let k = slicer.k();
 
@@ -104,7 +104,7 @@ fn roundtrip_from_any_k_slices() {
 #[test]
 fn roundtrip_empty_blob() {
     for cap in CAPS {
-        let mut slicer = slicer_at(cap);
+        let slicer = slicer_at(cap);
         let slices = slicer.encode(&[]).unwrap();
         let refs: Vec<(usize, &[u8])> = slices.iter().enumerate().map(|(i, s)| (i, s.as_slice())).collect();
         assert_eq!(slicer.decode(&refs).unwrap(), Vec::<u8>::new(), "cap {cap}");
@@ -115,7 +115,7 @@ fn roundtrip_empty_blob() {
 #[test]
 fn repair_is_bit_exact() {
     for cap in CAPS {
-        let mut slicer = slicer_at(cap);
+        let slicer = slicer_at(cap);
         let n = slicer.n();
 
         for &len in REPAIR_SIZES {
@@ -146,7 +146,7 @@ fn repair_is_bit_exact() {
 #[test]
 fn repair_plan_params_match_reference() {
     for cap in CAPS {
-        let mut slicer = slicer_at(cap);
+        let slicer = slicer_at(cap);
         let n = slicer.n();
 
         for &len in REPAIR_SIZES {
@@ -211,7 +211,7 @@ fn padding_and_range_bounds() {
 fn parser_takes_writer_output_only() {
     for &len in &[1usize, 500_000, 1_000_000, 100_001, 1_000_001, 2_000_000, SNAPSHOT_PACKED] {
         let payload = mk(len);
-        let mut writer = slicer_at(STRIPE_CAP);
+        let writer = slicer_at(STRIPE_CAP);
         let meta = SliceMetadata::parse(&writer.encode(&payload).unwrap()[0]).unwrap();
 
         assert_eq!(meta.stripe_size(), writer.derived_stripe_size(len));
@@ -247,7 +247,7 @@ fn commitment_matches_chain() {
     ];
 
     for profile in profiles {
-        let mut slicer = Slicer::try_from_profile(profile).expect("valid profile");
+        let slicer = Slicer::try_from_profile(profile).expect("valid profile");
         let slices = slicer.encode(&mk(100_001)).unwrap();
 
         let mut leaves = [Hash::default(); MAX_GROUP_SIZE];
@@ -280,7 +280,7 @@ fn hostile_stripe_count_rejected() {
 
     // the mechanics still work at one stripe per alignment unit, so only the
     // parser stands between a hostile writer and per-track resource blowup
-    let mut slicer = slicer_at(align);
+    let slicer = slicer_at(align);
     let payload = mk(100_001);
     let slices = slicer.encode(&payload).unwrap();
     assert!(num_stripes(payload.len(), slicer.stripe_size()) > 70);
