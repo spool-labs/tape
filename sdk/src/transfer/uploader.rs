@@ -14,7 +14,7 @@ use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use bytes::Bytes;
-use tape_protocol::api::{Api, ApiError, CertifyRes, PutSliceReq, SlicePayload, SLICE_BODY_HEADROOM};
+use tape_protocol::api::{Api, ApiError, CertifyRes, GetTrackReq, PutSliceReq, SlicePayload, SLICE_BODY_HEADROOM};
 use tape_protocol::ProtocolState;
 use tape_retry::{Backoff, RetryConfig, Retryable};
 use tokio::sync::{mpsc, Semaphore};
@@ -25,6 +25,7 @@ use tracing::{debug, info, warn};
 use crate::bootstrap::{counts_against_peer, Reputation};
 use crate::codec::encoder::SliceMerkleProof;
 use crate::error::UploadError;
+use crate::transfer::gate::{PushGate, PushPace};
 
 /// Longest a rate limited upload sleeps, whatever the server advertises
 const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
@@ -34,6 +35,12 @@ const STRAGGLER_LIMIT: Duration = Duration::from_secs(60);
 
 /// The beat a straggler pushes at once its retry ladder is spent
 const STRAGGLER_STEP: Duration = Duration::from_millis(250);
+
+/// Largest slice body pushed before its owner is known to hold the track
+///
+/// An owner refuses a push until it has ingested the register, after the body
+/// has gone out. On devnet a 4 GiB put re-sent 576 refused 9.4 MiB bodies.
+const EAGER_PUSH_BYTES: usize = 1 << 20;
 
 /// Owners still pushing after their calls returned, process wide; the oldest gives way past this
 const MAX_STRAGGLERS: usize = 256;
@@ -119,6 +126,7 @@ pub struct DistributedUploader {
     epoch: EpochNumber,
     concurrency_limit: Arc<Semaphore>,
     reputation: Option<Arc<Reputation>>,
+    gate: Option<Arc<PushGate>>,
     // one push task per owner; a call that gives up aborts them, a call that reached quorum hands them to the registry
     stragglers: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -201,8 +209,15 @@ impl DistributedUploader {
             epoch: state.current.epoch.id,
             concurrency_limit: Arc::new(Semaphore::new(concurrency.max(1))),
             reputation: None,
+            gate: None,
             stragglers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Run every push through the client's gate, so the pushes sharing its uplink each land in time.
+    pub fn with_gate(mut self, gate: Arc<PushGate>) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     /// Spend less time on owners already known to be down.
@@ -303,6 +318,7 @@ impl DistributedUploader {
                 false => AttemptBudget::Full,
             };
             let reputation = self.reputation.clone();
+            let gate = self.gate.clone();
 
             let handle = tokio::spawn(async move {
                 let started = Instant::now();
@@ -313,6 +329,7 @@ impl DistributedUploader {
                     slices,
                     budget,
                     concurrency_limit,
+                    gate,
                 )
                 .await;
                 if let Some(reputation) = reputation {
@@ -467,23 +484,28 @@ async fn upload_node_slices<P: Api>(
     slices: Vec<(SpoolIndex, SliceWithProof)>,
     budget: AttemptBudget,
     concurrency_limit: Arc<Semaphore>,
+    gate: Option<Arc<PushGate>>,
 ) -> Result<NodeUploadResult, UploadError> {
     let _permit = concurrency_limit
         .acquire()
         .await
         .map_err(|_| UploadError::Semaphore)?;
 
-    let uploads = slices.into_iter().map(|(global_spool, slice)| async move {
-        let payload_bytes = slice.data().len();
-        let req = PutSliceReq {
-            track,
-            spool: global_spool,
-            body: slice.body.clone(),
-        };
+    let uploads = slices.into_iter().map(|(global_spool, slice)| {
+        let gate = gate.clone();
+        async move {
+            let payload_bytes = slice.data().len();
+            let req = PutSliceReq {
+                track,
+                spool: global_spool,
+                body: slice.body.clone(),
+            };
 
-        let result =
-            upload_slice_with_retry(peer_client, node, track, req, payload_bytes, budget).await;
-        (global_spool, result)
+            let result =
+                upload_slice_with_retry(peer_client, node, track, req, payload_bytes, budget, gate)
+                    .await;
+            (global_spool, result)
+        }
     });
 
     let mut stored = Vec::new();
@@ -568,15 +590,50 @@ async fn upload_slice_with_retry<P: Api>(
     req: PutSliceReq,
     payload_bytes: usize,
     budget: AttemptBudget,
+    gate: Option<Arc<PushGate>>,
 ) -> Result<CertifyRes, ApiError> {
-    let started = Instant::now();
+    let mut started = None;
     let mut backoff = Backoff::new(slice_retry_config());
     let mut pushes: u32 = 0;
+    let probes = payload_bytes > EAGER_PUSH_BYTES;
+    let mut holds_track = !probes;
 
     loop {
+        if !holds_track {
+            let started = *started.get_or_insert(Instant::now());
+            match peer_client.get_track(node, &GetTrackReq { track }).await {
+                Err(ApiError::NotFound) => {
+                    let Some(delay) = next_push_delay(&mut backoff, &ApiError::NotFound, started.elapsed()) else {
+                        warn!(
+                            track = %track,
+                            node = %node,
+                            slice = %req.spool,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "owner never ingested the register, leaving for recovery"
+                        );
+                        return Err(ApiError::NotFound);
+                    };
+                    sleep(delay).await;
+                    continue;
+                }
+                // any other answer goes to the push, which settles it
+                _ => holds_track = true,
+            }
+        }
+
+        let pass = match &gate {
+            Some(gate) => Some(gate.enter().await),
+            None => None,
+        };
         let attempt_started = Instant::now();
+        // Time spent waiting in the gate is not the owner's, so the straggler clock starts at the first push
+        let started = *started.get_or_insert(attempt_started);
         pushes = pushes.saturating_add(1);
-        match peer_client.put_slice(node, &req).await {
+        let result = peer_client.put_slice(node, &req).await;
+        if let Some(pass) = pass {
+            pass.finish(PushPace::of(&result, attempt_started.elapsed()));
+        }
+        match result {
             Ok(response) => {
                 debug!(
                     track = %track,
@@ -591,6 +648,9 @@ async fn upload_slice_with_retry<P: Api>(
                 return Ok(response.receipt);
             }
             Err(error) => {
+                if probes && matches!(error, ApiError::NotFound) {
+                    holds_track = false;
+                }
                 if !should_retry_put_slice(&error) {
                     warn!(
                         track = %track,
@@ -673,7 +733,8 @@ mod tests {
     use tape_core::thresholds::TrustModel;
     use tape_core::types::coin::TAPE;
     use tape_core::types::{EpochNumber, StorageUnits};
-    use tape_protocol::api::{PeerReq, PeerRes, PutSliceRes};
+    use tape_core::prelude::CompressedTrack;
+    use tape_protocol::api::{GetTrackRes, PeerReq, PeerRes, PutSliceRes};
     use tape_slicer::SLICE_TREE_HEIGHT;
     use tape_crypto::address::Address;
 
@@ -931,6 +992,50 @@ mod tests {
         assert!(started.elapsed() < STRAGGLER_STEP, "{:?}", started.elapsed());
         let record = peer_record(&reputation, straggler).expect("straggler recorded");
         assert_eq!(record.consecutive_failures, 0);
+    }
+
+    // a large slice waits until its owner holds the track, then goes out once
+    #[tokio::test(start_paused = true)]
+    async fn large_slice_waits_for_the_track() {
+        let state = make_test_state(WIDTH);
+        let straggler = state.current.committee[0].node;
+        let probes = Arc::new(AtomicUsize::new(0));
+        let pushes = Arc::new(AtomicUsize::new(0));
+        let (probed, pushed) = (probes.clone(), pushes.clone());
+        let api = Arc::new(MemoryApi::new(move |node, req| match req {
+            PeerReq::GetTrack(_) if node == straggler => match probed.fetch_add(1, Ordering::Relaxed) < 3 {
+                true => PeerRes::GetTrack(Err(ApiError::NotFound)),
+                false => PeerRes::GetTrack(Ok(GetTrackRes { track: CompressedTrack::zeroed() })),
+            },
+            PeerReq::GetTrack(_) => PeerRes::GetTrack(Ok(GetTrackRes { track: CompressedTrack::zeroed() })),
+            PeerReq::PutSlice(_) => {
+                if node == straggler {
+                    pushed.fetch_add(1, Ordering::Relaxed);
+                }
+                accepted(node)
+            }
+            _ => refused(ApiError::Other("unexpected call".into())),
+        }));
+        let large = (0..WIDTH)
+            .map(|i| {
+                SliceWithProof::new(
+                    SpoolIndex::from(i as u64),
+                    framed(&vec![i as u8; EAGER_PUSH_BYTES + 1]),
+                    Hash::default(),
+                    [Hash::default(); SLICE_TREE_HEIGHT],
+                )
+                .expect("slice")
+            })
+            .collect();
+        let uploader = DistributedUploader::new(Address::new_unique(), VirtualGroup(0), large, &state, WIDTH)
+            .expect("uploader built")
+            .with_reputation(ephemeral_reputation());
+
+        uploader.upload_all(api, &mut UploadProgress::default()).await.expect("quorum reached");
+        sleep(STRAGGLER_LIMIT).await;
+
+        assert_eq!(probes.load(Ordering::Relaxed), 4);
+        assert_eq!(pushes.load(Ordering::Relaxed), 1);
     }
 
     // an owner that never ingests the register is left for recovery at no reputation cost
