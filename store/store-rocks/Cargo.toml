@@ -1,6 +1,6 @@
 [package]
 name = "tape-store-rocks"
-version = "0.5.0"
+version = "0.4.8"
 edition = "2021"
 description = "RocksDB backend implementation for the store crate"
 
@@ -10,7 +10,7 @@ metrics = ["tape-metrics/metrics", "tape-store-api/metrics"]
 
 [dependencies]
 tape-store-api = { path = "../store-api" }
-tape-metrics = { version = "0.5.0", path = "../../lib/metrics", optional = true }
+tape-metrics = { version = "0.4.8", path = "../../lib/metrics", optional = true }
 rocksdb = { version = "0.23.0", features = ["multi-threaded-cf"] }
 thiserror = "2.0.12"
 fs2 = "0.4"

@@ -34,7 +34,7 @@ pub struct HttpConfig {
     )]
     pub listen: SocketAddr,
 
-    /// Global request timeout in seconds.
+    /// Seconds a request may go without a body frame or a response before it times out.
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 
