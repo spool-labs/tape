@@ -18,6 +18,7 @@ tape-crypto = { workspace = true, features = ["wincode"] }
 tape-peer-tls = { workspace = true }
 async-trait.workspace = true
 bytes = { workspace = true }
+futures = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 wincode = { workspace = true }

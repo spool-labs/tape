@@ -111,7 +111,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.4.8"
+version = "0.5.0"
 edition = "2021"
 license = "Apache-2.0"
 homepage = "https://tape.network"
@@ -121,45 +121,46 @@ readme = "./README.md"
 keywords = ["object", "storage", "solana"]
 
 [workspace.dependencies]
-tape-api = { version = "0.4.8", path = "./solana/api" }
-tape-blocks = { version = "0.4.8", path = "./lib/blocks" }
-tape-blacklist = { version = "0.4.8", path = "./lib/blacklist" }
-tape-rack = { version = "0.4.8", path = "./lib/rack" }
-tape-forwarded = { version = "0.4.8", path = "./lib/forwarded" }
-tape-core = { version = "0.4.8", path = "./lib/core" }
-tape-crypto = { version = "0.4.8", path = "./lib/crypto" }
-tape-solana = { version = "0.4.8", path = "./solana/framework" }
+tape-api = { version = "0.5.0", path = "./solana/api" }
+tape-blocks = { version = "0.5.0", path = "./lib/blocks" }
+tape-blacklist = { version = "0.5.0", path = "./lib/blacklist" }
+tape-rack = { version = "0.5.0", path = "./lib/rack" }
+tape-forwarded = { version = "0.5.0", path = "./lib/forwarded" }
+tape-core = { version = "0.5.0", path = "./lib/core" }
+tape-crypto = { version = "0.5.0", path = "./lib/crypto" }
+tape-solana = { version = "0.5.0", path = "./solana/framework" }
 
-tape-rpc = { version = "0.4.8", path = "./solana/rpc" }
-tape-rpc-solana = { version = "0.4.8", path = "./solana/rpc-solana" }
-tape-rpc-client = { version = "0.4.8", path = "./solana/rpc-client" }
-rpc-litesvm = { version = "0.4.8", path = "./solana/rpc-litesvm" }
+tape-rpc = { version = "0.5.0", path = "./solana/rpc" }
+tape-rpc-solana = { version = "0.5.0", path = "./solana/rpc-solana" }
+tape-rpc-client = { version = "0.5.0", path = "./solana/rpc-client" }
+rpc-litesvm = { version = "0.5.0", path = "./solana/rpc-litesvm" }
 
-tape-store = { version = "0.4.8", path = "./store/tape-store" }
-tape-slicer = { version = "0.4.8", path = "./lib/slicer" }
-tape-spooler = { version = "0.4.8", path = "./lib/spooler" }
-tape-snapshot = { version = "0.4.8", path = "./lib/snapshot" }
-tape-store-api = { version = "0.4.8", path = "./store/store-api" }
-tape-store-memory = { version = "0.4.8", path = "./store/store-memory" }
-tape-store-rocks = { version = "0.4.8", path = "./store/store-rocks" }
-tape-store-reel = { version = "0.4.8", path = "./store/store-reel" }
-reel = { package = "tape-reel", version = "0.3.0", features = ["serde"] }
-reel-core = { package = "tape-reel-core", version = "0.3.0" }
-tape-sdk = { version = "0.4.8", path = "./sdk" }
-tape-test = { version = "0.4.8", path = "./test" }
-tape-chain-harness = { version = "0.4.8", path = "./test/harness" }
-tape-metrics = { version = "0.4.8", path = "./lib/metrics" }
-tape-observe-api = { version = "0.4.8", path = "./network/observe-api" }
-tape-dashboard-api = { version = "0.4.8", path = "./dashboard/api" }
-tape-atlas = { version = "0.4.8", path = "./monitoring/atlas" }
-tape-gateway = { version = "0.4.8", path = "./network/gateway" }
-tape-node = { version = "0.4.8", path = "./network/node" }
-tape-peer-manager = { version = "0.4.8", path = "./network/peer-manager" }
-peer-memory = { version = "0.4.8", path = "./network/peer-memory" }
-tape-peer-http = { version = "0.4.8", path = "./network/peer-http" }
-tape-peer-tls = { version = "0.4.8", path = "./network/peer-tls" }
-tape-protocol = { version = "0.4.8", path = "./network/protocol" }
-tape-retry = { version = "0.4.8", path = "./lib/retry" }
+tape-store = { version = "0.5.0", path = "./store/tape-store" }
+tape-slicer = { version = "0.5.0", path = "./lib/slicer" }
+tape-spooler = { version = "0.5.0", path = "./lib/spooler" }
+tape-snapshot = { version = "0.5.0", path = "./lib/snapshot" }
+tape-store-api = { version = "0.5.0", path = "./store/store-api" }
+tape-store-memory = { version = "0.5.0", path = "./store/store-memory" }
+tape-store-rocks = { version = "0.5.0", path = "./store/store-rocks" }
+tape-store-reel = { version = "0.5.0", path = "./store/store-reel" }
+tape-sdk = { version = "0.5.0", path = "./sdk" }
+tape-test = { version = "0.5.0", path = "./test" }
+tape-chain-harness = { version = "0.5.0", path = "./test/harness" }
+tape-metrics = { version = "0.5.0", path = "./lib/metrics" }
+tape-observe-api = { version = "0.5.0", path = "./network/observe-api" }
+tape-dashboard-api = { version = "0.5.0", path = "./dashboard/api" }
+tape-atlas = { version = "0.5.0", path = "./monitoring/atlas" }
+tape-gateway = { version = "0.5.0", path = "./network/gateway" }
+tape-node = { version = "0.5.0", path = "./network/node" }
+tape-peer-manager = { version = "0.5.0", path = "./network/peer-manager" }
+peer-memory = { version = "0.5.0", path = "./network/peer-memory" }
+tape-peer-http = { version = "0.5.0", path = "./network/peer-http" }
+tape-peer-tls = { version = "0.5.0", path = "./network/peer-tls" }
+tape-protocol = { version = "0.5.0", path = "./network/protocol" }
+tape-retry = { version = "0.5.0", path = "./lib/retry" }
+
+reel = { package = "tape-reel", version = "0.3.1", features = ["serde"] }
+reel-core = { package = "tape-reel-core", version = "0.3.1" }
 
 dashmap = "6"
 ratatui = "0.29"
@@ -242,7 +243,7 @@ colored = "3.0.0"
 dialoguer = "0.11.0"
 dirs = "5.0"
 tokio = { version = "1.37", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2", "stream"] }
 bytes = "1"
 indicatif = "0.17"
 console = "0.15"

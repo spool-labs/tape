@@ -29,6 +29,11 @@ pub const JSON_CONTENT: &str = "application/json";
 #[async_trait]
 pub trait Api: Send + Sync + 'static {
     async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError>;
+
+    /// Slice bytes nodes have accepted from this client so far, which paces a long upload
+    fn accepted_bytes(&self) -> u64 {
+        0
+    }
     async fn get_slice(&self, node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError>;
 
     /// Fetch part of a slice with its sidecar

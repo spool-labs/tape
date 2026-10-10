@@ -4,6 +4,7 @@ mod builder;
 mod client;
 mod gateway;
 mod metrics;
+mod paced;
 
 pub use builder::HttpApiBuilder;
 pub use client::{HttpApi, PeerTransfer, TransferSink};

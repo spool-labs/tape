@@ -17,6 +17,7 @@ use tape_protocol::{Api, ProtocolState};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::balance::{sol_balance_of, tape_balance_of};
+use crate::transfer::gate::PushGate;
 use crate::bootstrap::{BootstrapStore, Reputation};
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
@@ -45,6 +46,7 @@ pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
     pub write_options: WriteOptions,
     pub read_options: ReadOptions,
     pub reputation: Arc<Reputation>,
+    pub push_gate: Arc<PushGate>,
 }
 
 /// Default constructor using `HttpApi`.
@@ -115,6 +117,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             write_options: WriteOptions::default(),
             read_options: ReadOptions::default(),
             reputation: Arc::new(Reputation::detached()),
+            push_gate: Arc::new(PushGate::new()),
         }
     }
 

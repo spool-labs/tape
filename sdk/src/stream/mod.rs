@@ -6,6 +6,7 @@
 
 pub mod error;
 pub mod manifest;
+mod pace;
 pub mod read;
 pub mod receipt;
 pub mod write;
