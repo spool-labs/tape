@@ -114,8 +114,8 @@ pub struct HttpApi {
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
     pub put_slice_idle: Duration,
-    /// Slice bytes nodes have accepted from this client so far
-    pub accepted_bytes: Arc<AtomicU64>,
+    /// Slice bytes handed to the network by every push so far
+    pub pushed_bytes: Arc<AtomicU64>,
     pub get_slice_timeout: Duration,
     pub local_identity: Option<Arc<Keypair>>,
     pub transfer_sink: Option<TransferSink>,
@@ -253,8 +253,8 @@ fn https_base_url(addr: NetworkAddress) -> Result<String, ApiError> {
 
 #[async_trait]
 impl Api for HttpApi {
-    fn accepted_bytes(&self) -> u64 {
-        self.accepted_bytes.load(Ordering::Relaxed)
+    fn pushed_bytes(&self) -> u64 {
+        self.pushed_bytes.load(Ordering::Relaxed)
     }
 
     async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError> {
@@ -263,7 +263,7 @@ impl Api for HttpApi {
         let url = format!("{base}{}", slice_url(&track_id, req.spool));
         let bytes_sent = req.body.len() as u64;
         let watch = Watch::new();
-        let body = paced_body(req.body.clone(), watch.clone());
+        let body = paced_body(req.body.clone(), watch.clone(), self.pushed_bytes.clone());
         let start = Instant::now();
         // A slow link moves the push along slowly, so only a push that goes quiet gives up
         let exchange = async {
@@ -279,9 +279,7 @@ impl Api for HttpApi {
             watch.touch();
             self.record(node, "put_slice", &resp, start, bytes_sent);
             let resp = check_status(resp).await?;
-            let bytes = resp.bytes().await.map_err(map_reqwest)?;
-            self.accepted_bytes.fetch_add(bytes_sent, Ordering::Relaxed);
-            Ok::<_, ApiError>(bytes)
+            resp.bytes().await.map_err(map_reqwest)
         };
         let bytes = tokio::select! {
             bytes = exchange => bytes?,

@@ -48,13 +48,14 @@ pub(crate) async fn silence(watch: &Watch, limit: Duration) {
     }
 }
 
-/// A body that hands `body` to the connection in pieces, touching the watch as each piece leaves
+/// A body that hands `body` to the connection in pieces, touching the watch and counting each piece
 ///
 /// The connection asks for the next piece only once it has room for it, so the
 /// watch moves at the pace of the link and stops when the link stops.
-pub(crate) fn paced_body(body: Bytes, watch: Arc<Watch>) -> reqwest::Body {
+pub(crate) fn paced_body(body: Bytes, watch: Arc<Watch>, pushed: Arc<AtomicU64>) -> reqwest::Body {
     let pieces = stream::unfold((body, 0usize), move |(body, offset)| {
         let watch = watch.clone();
+        let pushed = pushed.clone();
         async move {
             if offset >= body.len() {
                 return None;
@@ -62,6 +63,7 @@ pub(crate) fn paced_body(body: Bytes, watch: Arc<Watch>) -> reqwest::Body {
             let end = (offset + PIECE_BYTES).min(body.len());
             let piece = body.slice(offset..end);
             watch.touch();
+            pushed.fetch_add(piece.len() as u64, Ordering::Relaxed);
             Some((Ok::<Bytes, std::io::Error>(piece), (body, end)))
         }
     });
