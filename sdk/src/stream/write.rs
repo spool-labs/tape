@@ -1,10 +1,11 @@
 //! Stream write implementation.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::stream::{self, FuturesOrdered, Stream, StreamExt, TryStreamExt};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, RwLock};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
@@ -76,6 +77,9 @@ const RESOLVE_CONCURRENCY: usize = 3;
 /// Stored chunks whose signatures are collected ahead of the serial certify
 /// submits. Collections hold no slice data, so lookahead is cheap.
 const COLLECT_LOOKAHEAD: usize = 2;
+
+/// Stored chunks certified in one run, between two stretches of registers
+const CERTIFY_SEGMENT: usize = 8;
 
 /// Attempts to resubmit a conflicted certify against refetched chain state
 /// before falling back to the peer-proof path.
@@ -685,10 +689,10 @@ where
 
     // Registers and certifies rewrite the same track tree, so a certify
     // proof built while a register is still in flight is guaranteed stale.
-    // The resolve stage fires this once its loop completes, which is the
-    // moment every register is mirrored; the certify stage holds its first
-    // submit until then.
-    let (registers_mirrored_sender, registers_mirrored_receiver) = oneshot::channel::<()>();
+    // Each register leases the tree until it is mirrored, and a certify run
+    // takes the tree whole: it waits for the leases out and holds new
+    // registers back until its run is sent.
+    let tree = Arc::new(RwLock::new(()));
 
     // Encoding is CPU-bound; encode several chunks on blocking threads at once
     // so idle cores shorten the encode chain. Plans still reach the register
@@ -732,8 +736,10 @@ where
     // Registers submit at processed level: the processed wait is enough to
     // keep track numbers assigned in stream order, and the confirmed-level
     // event wait moves into the resolve stage.
+    let register_tree = tree.clone();
     let register_stage = async move {
         while let Some((chunk_index, plan)) = encoded_receiver.recv().await {
+            let lease = register_tree.clone().read_owned().await;
             let logical_size = plan.storage_units;
             let sent = register_blob_processed(
                 client,
@@ -746,7 +752,7 @@ where
                 client.write_options.flags,
             )
             .await?;
-            if sent_sender.send((chunk_index, sent)).await.is_err() {
+            if sent_sender.send((chunk_index, sent, lease)).await.is_err() {
                 break;
             }
         }
@@ -767,10 +773,10 @@ where
                     if is_registering && in_flight.len() < RESOLVE_CONCURRENCY =>
                 {
                     match sent {
-                        Some((chunk_index, sent)) => in_flight.push_back(async move {
+                        Some((chunk_index, sent, lease)) => in_flight.push_back(async move {
                             resolve_sent_blob(client, sent)
                                 .await
-                                .map(|resolved| (chunk_index, resolved))
+                                .map(|resolved| (chunk_index, resolved, lease))
                         }),
                         None => is_registering = false,
                     }
@@ -779,8 +785,9 @@ where
                 // completes; a cancelled poll leaves every resolve in place.
                 resolved = in_flight.next(), if !in_flight.is_empty() => {
                     let Some(resolved) = resolved else { continue };
-                    let (chunk_index, (written, plan)) = resolved?;
+                    let (chunk_index, (written, plan), lease) = resolved?;
                     append_to_mirror(client, tape_key, mirror, &written).await?;
+                    drop(lease);
                     let entry = chunk_entry(
                         chunk_index,
                         chunk_count,
@@ -799,9 +806,6 @@ where
                 }
             }
         }
-        // The loop only completes once every register sent has been
-        // mirrored; error exits drop the sender without firing.
-        let _ = registers_mirrored_sender.send(());
         Ok::<_, TapedriveError>(())
     };
 
@@ -862,33 +866,38 @@ where
     // Each certify mutates the tape's track tree, so a proof is only valid
     // against the root left by the previous certify; proofs come from the
     // shared mirror. Do not parallelize the submits.
+    // A long stream certifies as it goes: every segment of stored chunks
+    // goes out as one run while registers wait, so no chunk sits uncertified
+    // for the whole upload and a broken stream keeps what it certified.
     let certify_stage = async move {
-        // Hold the first proof until the chain's register sequence is final;
-        // after that the tree gains no new leaves until the manifest write,
-        // so mirror proofs cannot be staled by this stream's own registers.
-        // Collections keep running ahead; only proof generation and the
-        // submits wait.
-        registers_mirrored_receiver.await.map_err(|_| {
-            stream_error(StreamError::Chunk(
-                "resolve stage ended before mirroring every register".into(),
-            ))
-        })?;
-
         let mut pending_chunks = Vec::with_capacity(chunk_count.as_usize());
         let mut processed = Vec::new();
-        while let Some((pending, collected)) = collected_receiver.recv().await {
-            let signature = certify_chunk(
-                client,
-                tape_key,
-                mirror,
-                &pending.written,
-                collected,
-                &pending.receipts,
-                Operation::WriteStream,
-            )
-            .await?;
-            processed.extend(signature);
-            pending_chunks.push(pending);
+        let mut segment = Vec::with_capacity(CERTIFY_SEGMENT);
+        let mut is_collecting = true;
+        while is_collecting || !segment.is_empty() {
+            match collected_receiver.recv().await {
+                Some((pending, collected)) => {
+                    let pending: PendingChunk = pending;
+                    segment.push(ChunkCertification {
+                        written: pending.written.clone(),
+                        collected,
+                        receipts: pending.receipts.clone(),
+                    });
+                    pending_chunks.push(pending);
+                    if segment.len() < CERTIFY_SEGMENT {
+                        continue;
+                    }
+                }
+                None => is_collecting = false,
+            }
+            if segment.is_empty() {
+                continue;
+            }
+            let _whole_tree = tree.write().await;
+            let run = std::mem::take(&mut segment);
+            let signatures =
+                certify_chunk_run(client, tape_key, mirror, run, Operation::WriteStream).await?;
+            processed.extend(signatures);
         }
 
         // Readers poll peers, so the write ends at confirmation without waiting on peer lag.

@@ -25,6 +25,7 @@ use tracing::{debug, info, warn};
 use crate::bootstrap::{counts_against_peer, Reputation};
 use crate::codec::encoder::SliceMerkleProof;
 use crate::error::UploadError;
+use crate::transfer::gate::{PushGate, PushPace};
 
 /// Longest a rate limited upload sleeps, whatever the server advertises
 const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
@@ -119,6 +120,7 @@ pub struct DistributedUploader {
     epoch: EpochNumber,
     concurrency_limit: Arc<Semaphore>,
     reputation: Option<Arc<Reputation>>,
+    gate: Option<Arc<PushGate>>,
     // one push task per owner; a call that gives up aborts them, a call that reached quorum hands them to the registry
     stragglers: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -201,8 +203,15 @@ impl DistributedUploader {
             epoch: state.current.epoch.id,
             concurrency_limit: Arc::new(Semaphore::new(concurrency.max(1))),
             reputation: None,
+            gate: None,
             stragglers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Run every push through the client's gate, so the pushes sharing its uplink each land in time.
+    pub fn with_gate(mut self, gate: Arc<PushGate>) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     /// Spend less time on owners already known to be down.
@@ -303,6 +312,7 @@ impl DistributedUploader {
                 false => AttemptBudget::Full,
             };
             let reputation = self.reputation.clone();
+            let gate = self.gate.clone();
 
             let handle = tokio::spawn(async move {
                 let started = Instant::now();
@@ -313,6 +323,7 @@ impl DistributedUploader {
                     slices,
                     budget,
                     concurrency_limit,
+                    gate,
                 )
                 .await;
                 if let Some(reputation) = reputation {
@@ -467,23 +478,28 @@ async fn upload_node_slices<P: Api>(
     slices: Vec<(SpoolIndex, SliceWithProof)>,
     budget: AttemptBudget,
     concurrency_limit: Arc<Semaphore>,
+    gate: Option<Arc<PushGate>>,
 ) -> Result<NodeUploadResult, UploadError> {
     let _permit = concurrency_limit
         .acquire()
         .await
         .map_err(|_| UploadError::Semaphore)?;
 
-    let uploads = slices.into_iter().map(|(global_spool, slice)| async move {
-        let payload_bytes = slice.data().len();
-        let req = PutSliceReq {
-            track,
-            spool: global_spool,
-            body: slice.body.clone(),
-        };
+    let uploads = slices.into_iter().map(|(global_spool, slice)| {
+        let gate = gate.clone();
+        async move {
+            let payload_bytes = slice.data().len();
+            let req = PutSliceReq {
+                track,
+                spool: global_spool,
+                body: slice.body.clone(),
+            };
 
-        let result =
-            upload_slice_with_retry(peer_client, node, track, req, payload_bytes, budget).await;
-        (global_spool, result)
+            let result =
+                upload_slice_with_retry(peer_client, node, track, req, payload_bytes, budget, gate)
+                    .await;
+            (global_spool, result)
+        }
     });
 
     let mut stored = Vec::new();
@@ -568,15 +584,26 @@ async fn upload_slice_with_retry<P: Api>(
     req: PutSliceReq,
     payload_bytes: usize,
     budget: AttemptBudget,
+    gate: Option<Arc<PushGate>>,
 ) -> Result<CertifyRes, ApiError> {
-    let started = Instant::now();
+    let mut started = None;
     let mut backoff = Backoff::new(slice_retry_config());
     let mut pushes: u32 = 0;
 
     loop {
+        let pass = match &gate {
+            Some(gate) => Some(gate.enter().await),
+            None => None,
+        };
         let attempt_started = Instant::now();
+        // Time spent waiting in the gate is not the owner's, so the straggler clock starts at the first push
+        let started = *started.get_or_insert(attempt_started);
         pushes = pushes.saturating_add(1);
-        match peer_client.put_slice(node, &req).await {
+        let result = peer_client.put_slice(node, &req).await;
+        if let Some(pass) = pass {
+            pass.finish(PushPace::of(&result, attempt_started.elapsed()));
+        }
+        match result {
             Ok(response) => {
                 debug!(
                     track = %track,
