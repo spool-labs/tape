@@ -233,7 +233,7 @@ async fn read_write_inner() {
         let writer = scenario.sdk(harness.admin());
         // Room for the streamed puts and the streamed multipart object on top.
         let reserve_capacity = StorageUnits::from_bytes((object_data.len() + put_body.len()) as u64)
-            + StorageUnits::mb(64);
+            + StorageUnits::mb(128);
         writer
             .reserve(&tape_key, reserve_capacity, RESERVE_EPOCHS)
             .await
@@ -423,6 +423,35 @@ async fn read_write_inner() {
     // range path (chunk-subset decode) on the S3 listener.
     assert_s3_get_range(&s3_base, &bucket_label, stream_key, &stream_body, 1000, 2023).await;
     eprintln!("s3_gateway: streamed object ranged GET returned 206");
+
+    // A signed body hash past the threshold streams too, checked before the manifest lands.
+    let signed_stream_key = "uploads/signed-streamed.bin";
+    let signed_stream_body = deterministic_bytes(BUFFER_LIMIT_BYTES + 7);
+    let signed_stream_etag = assert_s3_signed_put(
+        &s3_base, &host, &bucket_label, signed_stream_key, &signed_stream_body, PUT_CONTENT_TYPE,
+    )
+    .await;
+    let listed =
+        wait_sdk_object_listed(&harness, &bucket, signed_stream_key, signed_stream_key, active_timeout).await;
+    assert_eq!(signed_stream_etag, format!("\"{}\"", listed.etag));
+    eprintln!("s3_gateway: signed-hash PutObject past the threshold streamed (etag {signed_stream_etag})");
+
+    let tampered_key = "uploads/tampered.bin";
+    let mut tampered = signed_stream_body.clone();
+    tampered[BUFFER_LIMIT_BYTES] ^= 0xff;
+    let refused = signed_put_with_hash_response(
+        &s3_base, &host, &bucket_label, tampered_key, &signed_stream_body, &tampered,
+    )
+    .await;
+    let refused_status = refused.status();
+    let refused_body = refused.text().await.unwrap_or_default();
+    assert_eq!(refused_status, StatusCode::BAD_REQUEST, "tampered body: {refused_body}");
+    assert!(
+        refused_body.contains("<Code>XAmzContentSHA256Mismatch</Code>"),
+        "tampered body should fail its signed hash: {refused_body}"
+    );
+    wait_s3_head_status(&s3_base, &bucket_label, tampered_key, StatusCode::NOT_FOUND, Duration::from_secs(5)).await;
+    eprintln!("s3_gateway: streamed PutObject whose body missed its signed hash refused (400)");
 
     // A long name forces a coded manifest while keeping the upload small.
     let coded_key = format!("uploads/{}", "m".repeat(MAX_NAME_LEN - PUT_PREFIX.len()));
@@ -1052,6 +1081,36 @@ async fn signed_put_response(
         .header("x-amz-date", amz_date)
         .header("x-amz-content-sha256", payload_hash)
         .header(CONTENT_TYPE, content_type)
+        .body(body.to_vec())
+        .send()
+        .await
+        .expect("signed put send")
+}
+
+/// Send a PUT whose `x-amz-content-sha256` is the hash of `signed` while the
+/// body is `body`, and return the raw response.
+async fn signed_put_with_hash_response(
+    base: &str,
+    host: &str,
+    bucket: &str,
+    key: &str,
+    signed: &[u8],
+    body: &[u8],
+) -> reqwest::Response {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()
+        .expect("build s3 client");
+    let path = format!("/{bucket}/{key}");
+    let url = format!("{base}{path}");
+    let (authorization, amz_date, payload_hash) = sigv4_headers("PUT", host, &path, signed);
+
+    client
+        .put(&url)
+        .header("authorization", authorization)
+        .header("x-amz-date", amz_date)
+        .header("x-amz-content-sha256", payload_hash)
+        .header(CONTENT_TYPE, PUT_CONTENT_TYPE)
         .body(body.to_vec())
         .send()
         .await

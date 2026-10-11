@@ -1,12 +1,18 @@
 //! Request-body readers for streamed (bounded-memory) S3 writes.
 
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
 use std::io;
+use std::mem::take;
+use std::pin::Pin;
+use std::task::{ready, Context, Poll};
 
 use axum::body::Body;
 use futures::TryStreamExt;
+use sha2::{Digest, Sha256};
 use tokio::io::{
     copy, duplex, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
-    DuplexStream,
+    DuplexStream, ReadBuf,
 };
 use tokio::spawn;
 use tokio::task::JoinHandle;
@@ -72,6 +78,83 @@ where
     copy(&mut framed, &mut sink).await?;
     sink.shutdown().await?;
     Ok(())
+}
+
+/// The body hashed to a value other than the signed `x-amz-content-sha256`
+#[derive(Debug)]
+pub struct DigestMismatch;
+
+impl Display for DigestMismatch {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("request body does not match x-amz-content-sha256")
+    }
+}
+
+impl Error for DigestMismatch {}
+
+/// Whether an I/O error is a [`DigestMismatch`]
+pub fn is_digest_mismatch(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<DigestMismatch>())
+}
+
+/// A reader that hashes the bytes passing through and fails at end of body
+/// when they miss the SHA-256 the request signed
+///
+/// The stream writer drains the reader before it writes the manifest, so a
+/// body that fails here never becomes an object.
+pub struct DigestCheck<Reader> {
+    inner: Reader,
+    /// The signed SHA-256, or `None` when the request signed no body hash
+    expected: Option<[u8; 32]>,
+    digest: Sha256,
+    /// Whether the end of body was reached with a matching digest, once known
+    is_match: Option<bool>,
+}
+
+impl<Reader> DigestCheck<Reader> {
+    pub fn new(inner: Reader, expected: Option<[u8; 32]>) -> Self {
+        Self {
+            inner,
+            expected,
+            digest: Sha256::new(),
+            is_match: None,
+        }
+    }
+}
+
+impl<Reader: AsyncRead + Unpin> AsyncRead for DigestCheck<Reader> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let Some(expected) = this.expected else {
+            return Pin::new(&mut this.inner).poll_read(context, buf);
+        };
+        if this.is_match == Some(false) {
+            return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, DigestMismatch)));
+        }
+
+        let start = buf.filled().len();
+        let has_room = buf.remaining() > 0;
+        ready!(Pin::new(&mut this.inner).poll_read(context, buf))?;
+        let read = &buf.filled()[start..];
+        if !read.is_empty() {
+            this.digest.update(read);
+            return Poll::Ready(Ok(()));
+        }
+
+        // A read with room that returns nothing is the end of the body.
+        if has_room && this.is_match.is_none() {
+            let digest: [u8; 32] = take(&mut this.digest).finalize().into();
+            this.is_match = Some(digest == expected);
+        }
+        match this.is_match {
+            Some(false) => Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, DigestMismatch))),
+            _ => Poll::Ready(Ok(())),
+        }
+    }
 }
 
 /// Strip `aws-chunked` framing from `framed`, writing the de-framed bytes into
@@ -247,6 +330,50 @@ fn parse_chunk_size(header: &[u8]) -> io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sha256(data: &[u8]) -> [u8; 32] {
+        Sha256::digest(data).into()
+    }
+
+    // a body matching the signed hash reads through to a clean end
+    #[tokio::test]
+    async fn digest_match() {
+        let body = vec![7u8; 100_000];
+        let mut reader = DigestCheck::new(body.as_slice(), Some(sha256(&body)));
+        let mut read = Vec::new();
+        reader.read_to_end(&mut read).await.expect("matching body");
+        assert_eq!(read, body);
+    }
+
+    // a body missing the signed hash hands over every byte, then fails at the end
+    #[tokio::test]
+    async fn digest_mismatch() {
+        let body = vec![7u8; 100_000];
+        let mut reader = DigestCheck::new(body.as_slice(), Some(sha256(b"other")));
+        let mut read = vec![0u8; body.len()];
+        reader.read_exact(&mut read).await.expect("bytes before the end");
+        assert_eq!(read, body);
+
+        let error = reader.read(&mut [0u8; 1]).await.expect_err("end of body fails");
+        assert!(is_digest_mismatch(&error));
+        let error = reader.read(&mut [0u8; 1]).await.expect_err("and keeps failing");
+        assert!(is_digest_mismatch(&error));
+    }
+
+    // a read with no room is no end of body, and no expected hash checks nothing
+    #[tokio::test]
+    async fn digest_unchecked() {
+        let body = b"abc".to_vec();
+        let mut reader = DigestCheck::new(body.as_slice(), Some(sha256(b"other")));
+        assert_eq!(reader.read(&mut []).await.expect("empty read"), 0);
+        let mut read = vec![0u8; body.len()];
+        reader.read_exact(&mut read).await.expect("bytes");
+
+        let mut reader = DigestCheck::new(body.as_slice(), None);
+        let mut read = Vec::new();
+        reader.read_to_end(&mut read).await.expect("unsigned body");
+        assert_eq!(read, body);
+    }
 
     // hex chunk sizes parse, with or without a chunk-signature extension
     #[test]
