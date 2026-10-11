@@ -22,6 +22,7 @@ use tape_crypto::hash::hashv;
 use tape_crypto::Hash;
 use tape_store::ops::MultipartOps;
 use tape_store::types::{MULTIPART_CHUNK_BYTES, MultipartPart, MultipartUpload};
+use tape_store_api::DiskVolume;
 
 use super::clock::now_unix;
 use super::error::S3Error;
@@ -132,6 +133,39 @@ pub fn check_part_number(part_number: u32) -> Result<(), S3Error> {
     Ok(())
 }
 
+/// The bytes a part may stage
+#[derive(Clone, Copy)]
+pub struct PartLimits {
+    /// The upload's staged bytes may not pass the largest object it could complete
+    pub max_object_bytes: u64,
+    /// Disk the store has left for staged parts, when it can tell
+    pub room: Option<u64>,
+}
+
+/// Disk the store has left for staged parts: the least free space across its
+/// volumes, less the `min_free_bytes` floor. `None` when no volume reports
+/// its free space.
+pub fn staging_room(volumes: &[DiskVolume], min_free_bytes: u64) -> Option<u64> {
+    let mut room: Option<u64> = None;
+    for volume in volumes {
+        if let Some(free) = volume.free_bytes {
+            let left = free.saturating_sub(min_free_bytes);
+            room = Some(room.map_or(left, |room| room.min(left)));
+        }
+    }
+    room
+}
+
+/// Refuse to stage `needed` more bytes when the disk has no room for them
+pub fn check_room(room: Option<u64>, needed: u64) -> Result<(), S3Error> {
+    match room {
+        Some(room) if needed > room => Err(S3Error::InsufficientStorage(format!(
+            "the gateway has {room} bytes of disk left for staged parts and this needs {needed}"
+        ))),
+        Some(_) | None => Ok(()),
+    }
+}
+
 /// A part whose chunks are in the store, waiting to be published or discarded
 pub struct StagedPart {
     pub part_number: u32,
@@ -145,10 +179,10 @@ pub struct StagedPart {
 /// Stream one part's bytes into the store under `upload_id` (UploadPart), one
 /// `MULTIPART_CHUNK_BYTES` row at a time with a running SHA-256
 ///
-/// Memory stays at one chunk whatever the part size. The upload's staged bytes
-/// are capped at `max_object_bytes` as the bytes arrive, so a caller cannot
-/// stage more than the largest object it could complete. The part reads as
-/// absent until [`publish_part`].
+/// Memory stays at one chunk whatever the part size. The bytes are held to
+/// `limits` as they arrive: the upload cannot stage more than the largest
+/// object it could complete, nor more than the disk has room for. The part
+/// reads as absent until [`publish_part`].
 pub async fn stage_part<Reader: AsyncRead + Unpin>(
     store: &impl MultipartOps,
     upload_id: &str,
@@ -156,7 +190,7 @@ pub async fn stage_part<Reader: AsyncRead + Unpin>(
     key: &str,
     part_number: u32,
     body: Reader,
-    max_object_bytes: u64,
+    limits: PartLimits,
     principal: Address,
 ) -> Result<StagedPart, S3Error> {
     check_part_number(part_number)?;
@@ -173,7 +207,7 @@ pub async fn stage_part<Reader: AsyncRead + Unpin>(
     }
 
     store.retire_multipart_part(upload_id, part_number).map_err(store_error)?;
-    let written = write_chunks(store, upload_id, part_number, body, staged, max_object_bytes).await;
+    let written = write_chunks(store, upload_id, part_number, body, staged, limits).await;
     match written {
         Ok((etag, size)) => Ok(StagedPart {
             part_number,
@@ -189,15 +223,16 @@ pub async fn stage_part<Reader: AsyncRead + Unpin>(
 }
 
 /// Write a part's body as chunks and return its SHA-256 and size, refusing
-/// once `staged` plus the part passes `max_object_bytes`
+/// once `staged` plus the part passes the object limit, or the part passes the room
 async fn write_chunks<Reader: AsyncRead + Unpin>(
     store: &impl MultipartOps,
     upload_id: &str,
     part_number: u32,
     mut body: Reader,
     staged: u64,
-    max_object_bytes: u64,
+    limits: PartLimits,
 ) -> Result<(Hash, u64), S3Error> {
+    let max_object_bytes = limits.max_object_bytes;
     let mut digest = Sha256::new();
     let mut size: u64 = 0;
     let mut chunk_index: u32 = 0;
@@ -220,6 +255,7 @@ async fn write_chunks<Reader: AsyncRead + Unpin>(
                 "this upload's staged bytes ({projected}) would exceed the maximum object size of {max_object_bytes} bytes"
             )));
         }
+        check_room(limits.room, size)?;
         // An empty part still takes one chunk, so it reads back as present.
         if read == 0 && chunk_index > 0 {
             break;
@@ -362,7 +398,7 @@ pub fn validate(
     bucket: Address,
     key: &str,
     requested: &[CompletedPartRef],
-    max_object_bytes: usize,
+    max_object_bytes: u64,
     principal: Address,
 ) -> Result<ValidatedUpload, S3Error> {
     if requested.is_empty() {
@@ -418,7 +454,7 @@ pub fn validate(
         }
         total = total.saturating_add(stored_part.size);
     }
-    if total > max_object_bytes as u64 {
+    if total > max_object_bytes {
         return Err(S3Error::EntityTooLarge(format!(
             "assembled object size {total} exceeds the maximum of {max_object_bytes} bytes"
         )));
@@ -700,6 +736,7 @@ fn store_error(error: impl std::fmt::Display) -> S3Error {
 mod tests {
     use futures::executor::block_on;
     use tape_crypto::hash::hash;
+    use tape_store_api::StoreVolume;
     use tape_store_memory::MemoryStore;
     use tape_store::TapeStore;
 
@@ -736,7 +773,15 @@ mod tests {
 
     // Object ceiling for the assembly/staging tests; comfortably above the bytes
     // any test stages.
-    const TEST_MAX_OBJECT: usize = 64 * 1024 * 1024;
+    const TEST_MAX_OBJECT: u64 = 64 * 1024 * 1024;
+
+    // limits with no disk figure, as a store that cannot tell its free space
+    fn limits(max_object_bytes: u64) -> PartLimits {
+        PartLimits {
+            max_object_bytes,
+            room: None,
+        }
+    }
 
     fn put_part(
         store: &TapeStore<MemoryStore>,
@@ -757,7 +802,7 @@ mod tests {
         key: &str,
         part_number: u32,
         data: Vec<u8>,
-        max_object_bytes: usize,
+        max_object_bytes: u64,
         principal: Address,
     ) -> Result<Hash, S3Error> {
         block_on(async {
@@ -768,7 +813,7 @@ mod tests {
                 key,
                 part_number,
                 data.as_slice(),
-                max_object_bytes as u64,
+                limits(max_object_bytes),
                 principal,
             )
             .await?;
@@ -1285,7 +1330,7 @@ mod tests {
         let data = pattern(MULTIPART_CHUNK_BYTES * 2 + 7, 3);
 
         let staged = stage_part(
-            &store, &upload_id, bucket, "obj", 1, data.as_slice(), TEST_MAX_OBJECT as u64, owner(),
+            &store, &upload_id, bucket, "obj", 1, data.as_slice(), limits(TEST_MAX_OBJECT), owner(),
         )
         .await
         .expect("stage");
@@ -1312,7 +1357,7 @@ mod tests {
         put_part_as(&store, &upload_id, bucket, "obj", 1, vec![1; 5], 16, owner()).expect("p1");
 
         let data = vec![2u8; 12];
-        let staged = stage_part(&store, &upload_id, bucket, "obj", 2, data.as_slice(), 16, owner()).await;
+        let staged = stage_part(&store, &upload_id, bucket, "obj", 2, data.as_slice(), limits(16), owner()).await;
         assert!(matches!(staged, Err(S3Error::EntityTooLarge(_))));
         assert_eq!(part_chunks(&store, &upload_id, 2), 0);
         assert_eq!(list_parts(&store, &upload_id, bucket, "obj").expect("list").parts.len(), 1);
@@ -1327,7 +1372,7 @@ mod tests {
         let data = vec![4u8; 1000];
 
         let staged = stage_part(
-            &store, &upload_id, bucket, "obj", 1, data.as_slice(), TEST_MAX_OBJECT as u64, owner(),
+            &store, &upload_id, bucket, "obj", 1, data.as_slice(), limits(TEST_MAX_OBJECT), owner(),
         )
         .await
         .expect("stage");
@@ -1336,7 +1381,7 @@ mod tests {
         assert_eq!(part_chunks(&store, &upload_id, 1), 0);
 
         let staged = stage_part(
-            &store, &upload_id, bucket, "obj", 1, data.as_slice(), TEST_MAX_OBJECT as u64, owner(),
+            &store, &upload_id, bucket, "obj", 1, data.as_slice(), limits(TEST_MAX_OBJECT), owner(),
         )
         .await
         .expect("stage");
@@ -1356,12 +1401,12 @@ mod tests {
         let second = vec![2u8; 50];
 
         let staged = stage_part(
-            &store, &upload_id, bucket, "obj", 1, first.as_slice(), TEST_MAX_OBJECT as u64, owner(),
+            &store, &upload_id, bucket, "obj", 1, first.as_slice(), limits(TEST_MAX_OBJECT), owner(),
         )
         .await
         .expect("stage first");
         let waiting = stage_part(
-            &store, &upload_id, bucket, "obj", 1, second.as_slice(), TEST_MAX_OBJECT as u64, owner(),
+            &store, &upload_id, bucket, "obj", 1, second.as_slice(), limits(TEST_MAX_OBJECT), owner(),
         );
         tokio::pin!(waiting);
         assert!(futures::poll!(&mut waiting).is_pending());
@@ -1386,5 +1431,38 @@ mod tests {
         mark_write_attempt(&store, &upload_id).expect("mark");
         assert!(validate(&store, &upload_id, bucket, "obj", &requested).expect("validate").has_write_attempt);
         assert!(matches!(mark_write_attempt(&store, "missing"), Err(S3Error::NoSuchUpload)));
+    }
+
+    // the room is the least free space across volumes less the floor
+    #[test]
+    fn room_figure() {
+        let volume = |free: Option<u64>| DiskVolume {
+            volume: StoreVolume::Primary,
+            used_bytes: 0,
+            free_bytes: free,
+        };
+        assert_eq!(staging_room(&[volume(Some(100)), volume(Some(40))], 10), Some(30));
+        assert_eq!(staging_room(&[volume(Some(5))], 10), Some(0));
+        assert_eq!(staging_room(&[volume(None)], 10), None);
+        assert!(check_room(Some(30), 30).is_ok());
+        assert!(matches!(check_room(Some(30), 31), Err(S3Error::InsufficientStorage(_))));
+        assert!(check_room(None, u64::MAX).is_ok());
+    }
+
+    // a part past the disk's room is refused as it streams, and its rows go
+    #[tokio::test]
+    async fn room_refused() {
+        let store = store();
+        let bucket = bucket();
+        let upload_id = create(&store, bucket, "obj", ContentType::Unknown);
+        let data = vec![3u8; MULTIPART_CHUNK_BYTES + 1];
+        let limits = PartLimits {
+            max_object_bytes: TEST_MAX_OBJECT,
+            room: Some(MULTIPART_CHUNK_BYTES as u64),
+        };
+
+        let staged = stage_part(&store, &upload_id, bucket, "obj", 1, data.as_slice(), limits, owner()).await;
+        assert!(matches!(staged, Err(S3Error::InsufficientStorage(_))));
+        assert_eq!(part_chunks(&store, &upload_id, 1), 0);
     }
 }

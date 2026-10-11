@@ -51,6 +51,8 @@ pub enum S3Error {
     NotImplemented(String),
     /// The content was removed from this gateway. HTTP 410
     Removed,
+    /// The gateway's disk has no room to stage the upload. HTTP 507
+    InsufficientStorage(String),
     /// An unexpected internal error. HTTP 500
     Internal(String),
 }
@@ -93,6 +95,7 @@ impl S3Error {
             Self::SlowDown { .. } => "SlowDown",
             Self::NotImplemented(_) => "NotImplemented",
             Self::Removed => "ContentRemoved",
+            Self::InsufficientStorage(_) => "InsufficientStorage",
             Self::Internal(_) => "InternalError",
         }
     }
@@ -113,6 +116,7 @@ impl S3Error {
             Self::SlowDown { .. } => StatusCode::SERVICE_UNAVAILABLE,
             Self::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             Self::Removed => StatusCode::GONE,
+            Self::InsufficientStorage(_) => StatusCode::INSUFFICIENT_STORAGE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -157,7 +161,8 @@ impl S3Error {
             | Self::EntityTooLarge(detail)
             | Self::EntityTooSmall(detail)
             | Self::InvalidRequest(detail)
-            | Self::NotImplemented(detail) => detail.clone(),
+            | Self::NotImplemented(detail)
+            | Self::InsufficientStorage(detail) => detail.clone(),
         }
     }
 
@@ -181,6 +186,7 @@ impl S3Error {
             | Self::InvalidRange(_)
             | Self::PreconditionFailed
             | Self::Removed
+            | Self::InsufficientStorage(_)
             | Self::NotImplemented(_) => None,
         }
     }
@@ -224,6 +230,7 @@ impl IntoResponse for S3Error {
             | Self::PreconditionFailed
             | Self::NotImplemented(_)
             | Self::Removed
+            | Self::InsufficientStorage(_)
             | Self::Internal(_) => None,
         };
 

@@ -35,7 +35,7 @@ use tape_crypto::address::Address;
 use tape_protocol::Api;
 use tape_protocol::api::{current_request_id, with_request_id, with_share_token, ApiError};
 use tape_sdk::error::{TapedriveError, UploadError};
-use tape_sdk::stream::manifest::max_track_size;
+use tape_sdk::stream::manifest::{max_single_tape_stream_size, max_track_size};
 use tape_sdk::track::write::content_etag_named;
 use tape_store::ops::{CredentialOps, ObjectListOps, ObjectListPage, TapeOps, object_has_left};
 use tape_store::types::{CredentialScope, ObjectListEntry, PendingOp, PendingWrite};
@@ -59,7 +59,7 @@ use super::clock::now_unix;
 use super::complete::{self, Answer, Registration};
 use super::conditional::{Preconditions, ReadCondition, check_read, check_write};
 use super::error::S3Error;
-use super::multipart::{self, CompletedPartRef, ValidatedUpload};
+use super::multipart::{self, CompletedPartRef, MIN_PART_SIZE, PartLimits, ValidatedUpload};
 use super::resolve::{parse_bucket, resolve_object, bucket_name};
 use crate::http::handlers::resolve::{self, QueuedObject, Readable, ResolvedObject};
 use super::response::{
@@ -1126,14 +1126,15 @@ where
 
     let content_type = content_type_from_headers(headers);
     let preconditions = Preconditions::from_headers(headers);
-    let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
+    let profile = state.context.params().profile;
+    let max_object_bytes = max_object_size(state.context.config.gateway.s3.max_object_bytes, profile);
     let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
-    let threshold = stream_threshold(max_buffered_bytes, state.context.params().profile);
+    let threshold = stream_threshold(max_buffered_bytes, profile);
 
     // An object that fits one track is queued and acknowledged; a larger one streams onto chunk tracks.
     let etag = match declared_object_size(signed_payload, headers)? {
         Some(size) if size > threshold => {
-            if size > max_object_bytes as u64 {
+            if size > max_object_bytes {
                 return Err(S3Error::EntityTooLarge(format!(
                     "object size {size} exceeds the maximum of {max_object_bytes} bytes"
                 )));
@@ -1190,6 +1191,23 @@ where
     };
 
     put_response(etag)
+}
+
+/// The largest object this gateway writes: the configured ceiling, held to
+/// the per-stream limit of the network's code
+pub fn max_object_size(configured: usize, profile: ErasureCode) -> u64 {
+    (configured as u64).min(max_single_tape_stream_size(profile))
+}
+
+/// Disk the store has left for staged multipart parts, or `None` when it cannot tell
+fn staging_room<Db, Cluster, Blockchain>(state: &AppState<Db, Cluster, Blockchain>) -> Option<u64>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let volumes = state.context.store.inner().inner().disk_volumes().ok()?;
+    multipart::staging_room(&volumes, state.context.config.store.min_free_bytes)
 }
 
 /// Objects past this size stream onto chunk tracks at the request
@@ -1924,6 +1942,13 @@ where
     let permit = authorize_write(state, auth, bucket, &key, WriteOp::CreateMultipart, 0).await?;
     let principal = permit.owner();
 
+    // An upload stages its parts on this gateway's disk until it completes, so
+    // a disk with no room for one part refuses the upload up front.
+    if let Err(error) = multipart::check_room(staging_room(state), MIN_PART_SIZE as u64) {
+        permit.refund(state);
+        return Err(error);
+    }
+
     // Enforce the per-principal concurrent-upload budget.
     let limit = match accounting::concurrent_multipart_limit(state, &principal) {
         Ok(limit) => limit,
@@ -1995,7 +2020,13 @@ where
     let framing = body_framing(signed_payload, chunk_signing)?;
     let signed = signed_digest(signed_payload)?;
     let declared = declared_object_size(signed_payload, headers)?.unwrap_or(0);
-    let max_object_bytes = state.context.config.gateway.s3.max_object_bytes as u64;
+    let limits = PartLimits {
+        max_object_bytes: max_object_size(
+            state.context.config.gateway.s3.max_object_bytes,
+            state.context.params().profile,
+        ),
+        room: staging_room(state),
+    };
     let store = state.context.store.as_ref();
 
     // Authorization chokepoint: gate staging a part. The part is held in the
@@ -2003,6 +2034,11 @@ where
     // reserved, and the object cost is reserved at CompleteMultipartUpload.
     let permit = authorize_write(state, auth, bucket, &key, WriteOp::UploadPart, declared).await?;
     let principal = permit.owner();
+    // A declared part the disk cannot hold is refused before its body is read.
+    if let Err(error) = multipart::check_room(limits.room, declared) {
+        permit.refund(state);
+        return Err(error);
+    }
     let (reader, producer) = object_reader(body, framing);
     let staged = multipart::stage_part(
         store,
@@ -2011,7 +2047,7 @@ where
         &key,
         part_number,
         reader,
-        max_object_bytes,
+        limits,
         principal,
     )
     .await;
@@ -2188,9 +2224,10 @@ where
 
     // The upload is retained until the write lands, so a failed write leaves it
     // intact for the client to retry or abort.
-    let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
+    let profile = state.context.params().profile;
+    let max_object_bytes = max_object_size(state.context.config.gateway.s3.max_object_bytes, profile);
     let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
-    let threshold = stream_threshold(max_buffered_bytes, state.context.params().profile);
+    let threshold = stream_threshold(max_buffered_bytes, profile);
     let upload = multipart::validate(
         store,
         &upload_id,
@@ -2385,6 +2422,7 @@ mod tests {
     use axum::http::HeaderValue;
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::types::{StorageUnits, TapeNumber};
+    use tape_node::config::gateway::S3Config;
     use tape_store::types::PendingState;
 
     use crate::http::handlers::s3::sigv4::ChunkVerification;
@@ -2676,6 +2714,17 @@ mod tests {
         assert!(track < buffer as u64);
         assert_eq!(stream_threshold(buffer, TAPENET_PROFILE), track);
         assert_eq!(stream_threshold(5 * 1024 * 1024, TAPENET_PROFILE), 5 * 1024 * 1024);
+    }
+
+    // the object ceiling holds to the network's per-stream limit
+    #[test]
+    fn object_ceiling() {
+        let stream_limit = max_single_tape_stream_size(TAPENET_PROFILE);
+        assert_eq!(max_object_size(usize::MAX, TAPENET_PROFILE), stream_limit);
+        assert_eq!(max_object_size(1024, TAPENET_PROFILE), 1024);
+        let default = S3Config::default().max_object_bytes as u64;
+        assert_eq!(default, 4 * 1024 * 1024 * 1024 * 1024);
+        assert!(stream_limit < default);
     }
 
     // a signed body hash streams with a size, and a malformed one is refused
