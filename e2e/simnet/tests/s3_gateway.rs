@@ -561,15 +561,36 @@ async fn read_write_inner() {
     // chunk tracks. A refused condition keeps the parts for a retry, and the retry
     // lands the object byte for byte and drops them.
     let streamed_mp_key = "uploads/multipart-streamed.bin";
-    let streamed_mp_body = deterministic_bytes(2 * BUFFER_LIMIT_BYTES + 1027);
+    let streamed_mp_body = deterministic_bytes(3 * BUFFER_LIMIT_BYTES + 1027);
     let streamed_upload_id =
         s3_create_multipart(&s3_base, &host, &bucket_label, streamed_mp_key, PUT_CONTENT_TYPE).await;
     let mut streamed_parts = Vec::new();
+    // Part 1 is twice the buffer, which only a part streamed into the store can be.
     let part_bodies = [
-        &streamed_mp_body[..BUFFER_LIMIT_BYTES],
-        &streamed_mp_body[BUFFER_LIMIT_BYTES..2 * BUFFER_LIMIT_BYTES],
-        &streamed_mp_body[2 * BUFFER_LIMIT_BYTES..],
+        &streamed_mp_body[..2 * BUFFER_LIMIT_BYTES],
+        &streamed_mp_body[2 * BUFFER_LIMIT_BYTES..3 * BUFFER_LIMIT_BYTES],
+        &streamed_mp_body[3 * BUFFER_LIMIT_BYTES..],
     ];
+
+    // A part whose body misses its signed hash is refused and leaves nothing staged.
+    let mut tampered_part = part_bodies[1].to_vec();
+    tampered_part[0] ^= 0xff;
+    let refused = s3_upload_part_response(
+        &s3_base, &host, &bucket_label, streamed_mp_key, &streamed_upload_id, 2, part_bodies[1], &tampered_part,
+    )
+    .await;
+    let refused_status = refused.status();
+    let refused_body = refused.text().await.unwrap_or_default();
+    assert_eq!(refused_status, StatusCode::BAD_REQUEST, "tampered part: {refused_body}");
+    assert!(
+        refused_body.contains("<Code>XAmzContentSHA256Mismatch</Code>"),
+        "tampered part should fail its signed hash: {refused_body}"
+    );
+    let staged = s3_list_parts_response(&s3_base, &host, &bucket_label, streamed_mp_key, &streamed_upload_id).await;
+    let staged_body = staged.text().await.unwrap_or_default();
+    assert_eq!(staged_body.matches("<Part>").count(), 0, "a refused part stays out: {staged_body}");
+    eprintln!("s3_gateway: UploadPart whose body missed its signed hash refused (400)");
+
     for (index, part_body) in part_bodies.into_iter().enumerate() {
         let part_number = index as u32 + 1;
         let etag = s3_upload_part(
@@ -1511,25 +1532,7 @@ async fn s3_upload_part(
     part_number: u32,
     body: &[u8],
 ) -> String {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(180))
-        .build()
-        .expect("build s3 client");
-    let path = format!("/{bucket}/{key}");
-    let raw_query = format!("partNumber={part_number}&uploadId={upload_id}");
-    let url = format!("{base}{path}?{raw_query}");
-    let (authorization, amz_date, payload_hash) =
-        sigv4_headers_with_payload("PUT", host, &path, &canonical_query(&raw_query), &sha256_hex(body));
-
-    let response = client
-        .put(&url)
-        .header("authorization", authorization)
-        .header("x-amz-date", amz_date)
-        .header("x-amz-content-sha256", payload_hash)
-        .body(body.to_vec())
-        .send()
-        .await
-        .expect("upload part send");
+    let response = s3_upload_part_response(base, host, bucket, key, upload_id, part_number, body, body).await;
     let status = response.status();
     let etag = response
         .headers()
@@ -1541,6 +1544,39 @@ async fn s3_upload_part(
         panic!("UploadPart should return 200, got {status}: {body}");
     }
     etag.expect("UploadPart response should include an ETag")
+}
+
+/// Send an UploadPart whose `x-amz-content-sha256` is the hash of `signed`
+/// while the body is `body`, and return the raw response.
+async fn s3_upload_part_response(
+    base: &str,
+    host: &str,
+    bucket: &str,
+    key: &str,
+    upload_id: &str,
+    part_number: u32,
+    signed: &[u8],
+    body: &[u8],
+) -> reqwest::Response {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()
+        .expect("build s3 client");
+    let path = format!("/{bucket}/{key}");
+    let raw_query = format!("partNumber={part_number}&uploadId={upload_id}");
+    let url = format!("{base}{path}?{raw_query}");
+    let (authorization, amz_date, payload_hash) =
+        sigv4_headers_with_payload("PUT", host, &path, &canonical_query(&raw_query), &sha256_hex(signed));
+
+    client
+        .put(&url)
+        .header("authorization", authorization)
+        .header("x-amz-date", amz_date)
+        .header("x-amz-content-sha256", payload_hash)
+        .body(body.to_vec())
+        .send()
+        .await
+        .expect("upload part send")
 }
 
 /// CompleteMultipartUpload (`POST /{bucket}/{key}?uploadId=..`) with the part list

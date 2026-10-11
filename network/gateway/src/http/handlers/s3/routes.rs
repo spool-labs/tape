@@ -1050,7 +1050,7 @@ fn check_request_rate<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
 /// `PUT /{bucket}/{key}` -> PutObject, or UploadPart when `?uploadId=` is set
 ///
-/// PutObject queues an object that fits one track for the drain and streams a larger one onto chunk tracks; UploadPart buffers the part
+/// PutObject queues an object that fits one track for the drain and streams a larger one onto chunk tracks; UploadPart streams the part into the store
 async fn put_object<Db, Cluster, Blockchain>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
     Extension(auth): Extension<Auth>,
@@ -1067,21 +1067,18 @@ where
     Blockchain: Rpc + 'static,
 {
     if has_query_param(query.as_deref(), "uploadId", None) {
-        // UploadPart buffers the part bytes under the upload id; the assembled
-        // object is written at CompleteMultipartUpload. A chunked part is
-        // de-framed (and, when signed, verified) first, since the framing is
-        // transport and storing it verbatim would splice chunk headers into
-        // the assembled bytes.
-        let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
-        let part = match body_framing(&signed_payload, chunk_signing)? {
-            BodyFraming::Plain => {
-                let part = buffer_object_body(body, max_buffered_bytes).await?;
-                verify_signed_body(&signed_payload, &part)?;
-                part
-            }
-            framing => buffer_streamed_body(body, framing, max_buffered_bytes).await?,
-        };
-        return upload_part(&state, &auth, bucket, key, query.as_deref(), part).await;
+        return upload_part(
+            &state,
+            &auth,
+            &signed_payload,
+            chunk_signing,
+            bucket,
+            key,
+            query.as_deref(),
+            &headers,
+            body,
+        )
+        .await;
     }
 
     put_object_impl(
@@ -1948,16 +1945,21 @@ where
 
 /// `PUT /{bucket}/{key}?uploadId=..&partNumber=..` -> UploadPart
 ///
-/// Buffers the part bytes under the upload id keyed by part number and returns
-/// the part's ETag (hex of a placeholder content hash) for the client to echo
-/// back at CompleteMultipartUpload.
+/// Streams the part into the store under the upload id one chunk at a time and
+/// returns its ETag (the part's SHA-256) for the client to echo back at
+/// CompleteMultipartUpload. A chunked body is de-framed (and, when signed,
+/// verified) on the way in, since the framing is transport and storing it
+/// would splice chunk headers into the object.
 async fn upload_part<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     auth: &Auth,
+    signed_payload: &SignedPayloadHash,
+    chunk_signing: ChunkSigning,
     bucket_label: String,
     key: String,
     query: Option<&str>,
-    body: Bytes,
+    headers: &HeaderMap,
+    body: Body,
 ) -> Result<Response, S3Error>
 where
     Db: Store + 'static,
@@ -1970,26 +1972,48 @@ where
     let part_number = query_value(query, "partNumber")
         .and_then(|value| value.parse::<u32>().ok())
         .ok_or_else(|| S3Error::InvalidRequest("missing or invalid partNumber".into()))?;
+    multipart::check_part_number(part_number)?;
+    let framing = body_framing(signed_payload, chunk_signing)?;
+    let signed = signed_digest(signed_payload)?;
+    let declared = declared_object_size(signed_payload, headers)?.unwrap_or(0);
+    let max_object_bytes = state.context.config.gateway.s3.max_object_bytes as u64;
     let store = state.context.store.as_ref();
 
-    // Authorization chokepoint: gate persisting a part. The part is held in the
+    // Authorization chokepoint: gate staging a part. The part is held in the
     // store until CompleteMultipartUpload (no on-chain cost here), so nothing is
-    // reserved — the object cost is reserved at CompleteMultipartUpload. The
-    // object ceiling bounds the bytes a single upload may stage.
-    let size = body.len() as u64;
-    let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
-    let permit = authorize_write(state, auth, bucket, &key, WriteOp::UploadPart, size).await?;
-    let part = multipart::put_part(
+    // reserved, and the object cost is reserved at CompleteMultipartUpload.
+    let permit = authorize_write(state, auth, bucket, &key, WriteOp::UploadPart, declared).await?;
+    let principal = permit.owner();
+    let (reader, producer) = object_reader(body, framing);
+    let staged = multipart::stage_part(
         store,
         &upload_id,
         bucket,
         &key,
         part_number,
-        body.to_vec(),
+        reader,
         max_object_bytes,
-        permit.owner(),
-    );
-    let etag = settle(permit, state, size, part)?;
+        principal,
+    )
+    .await;
+
+    // A body that broke off reads as a short or failed one, so the producer
+    // decides whether the staged bytes are the whole part.
+    let part = match staged {
+        Ok(staged) => match body_producer_error(producer.await) {
+            Some(error) => {
+                multipart::discard_part(store, &upload_id, staged);
+                Err(error)
+            }
+            None => multipart::publish_part(store, &upload_id, bucket, &key, principal, staged, signed),
+        },
+        Err(S3Error::InvalidRequest(detail)) => {
+            Err(body_producer_error(producer.await).unwrap_or(S3Error::InvalidRequest(detail)))
+        }
+        // The producer ends at its next write into the closed pipe.
+        Err(error) => Err(error),
+    };
+    let etag = settle(permit, state, declared, part)?;
     upload_part_response(etag)
 }
 
