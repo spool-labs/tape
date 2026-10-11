@@ -410,9 +410,6 @@ pub struct MultipartUpload {
     /// Owner authority that opened the upload; bounds the per-principal
     /// concurrent-upload budget (the live record count is the open-upload count)
     pub principal: Address,
-    /// Whether a Complete began streaming this upload's object, so a later
-    /// Complete resumes the chunk tracks that attempt left on the tape
-    pub has_write_attempt: bool,
 }
 
 /// One uploaded multipart part's metadata, kept apart from its payload so

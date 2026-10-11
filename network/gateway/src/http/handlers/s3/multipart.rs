@@ -1,28 +1,17 @@
 //! Durable S3 multipart upload state machine
 
 use std::collections::HashMap;
-use std::io;
-use std::mem::take;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::vec;
 
-use bytes::Bytes;
-use futures::stream;
 use hex::encode;
-use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
-use tokio_util::io::StreamReader;
 
 use tape_core::types::ContentType;
 use tape_crypto::address::Address;
-use tape_crypto::hash::hashv;
+use tape_crypto::hash::{hash, hashv};
 use tape_crypto::Hash;
 use tape_store::ops::MultipartOps;
-use tape_store::types::{MULTIPART_CHUNK_BYTES, MultipartPart, MultipartUpload};
-use tape_store_api::DiskVolume;
+use tape_store::types::{MultipartPart, MultipartUpload};
 
 use super::clock::now_unix;
 use super::error::S3Error;
@@ -37,11 +26,6 @@ pub const MIN_PART_SIZE: usize = 5 * 1024 * 1024;
 /// Monotonic counter mixed into minted upload ids for uniqueness
 static UPLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// One lock per part being uploaded, so two uploads of one part number never
-/// interleave their chunks
-static PART_LOCKS: LazyLock<Mutex<HashMap<(String, u32), Arc<AsyncMutex<()>>>>> =
-    LazyLock::new(Default::default);
-
 /// One part as named in a CompleteMultipartUpload request body
 pub struct CompletedPartRef {
     /// Part number the client is asking to assemble
@@ -50,18 +34,14 @@ pub struct CompletedPartRef {
     pub etag: String,
 }
 
-/// A multipart upload checked for completion, its part bytes still in the store
-pub struct ValidatedUpload {
+/// A multipart upload assembled and ready to write
+pub struct AssembledUpload {
     /// Object key (the on-chain track name)
     pub key: String,
     /// Content type to apply to the written object
     pub content_type: ContentType,
-    /// The requested parts in part-number order
-    pub parts: Vec<MultipartPart>,
-    /// Object size in bytes, the sum of the parts
-    pub size: u64,
-    /// Whether an earlier Complete began streaming this object
-    pub has_write_attempt: bool,
+    /// Concatenated part bytes in part-number order
+    pub data: Vec<u8>,
 }
 
 /// A snapshot of one persisted part, for ListParts rendering
@@ -100,7 +80,6 @@ pub fn create_upload(
         content_type,
         initiated: now_unix(),
         principal,
-        has_write_attempt: false,
     };
     store
         .put_multipart_upload(&upload_id, &upload)
@@ -123,79 +102,28 @@ pub fn count_open_uploads(
     Ok(count)
 }
 
-/// Refuse a part number outside S3's range
-pub fn check_part_number(part_number: u32) -> Result<(), S3Error> {
-    if !(MIN_PART_NUMBER..=MAX_PART_NUMBER).contains(&part_number) {
-        return Err(S3Error::InvalidRequest(format!(
-            "partNumber must be between {MIN_PART_NUMBER} and {MAX_PART_NUMBER}"
-        )));
-    }
-    Ok(())
-}
-
-/// The bytes a part may stage
-#[derive(Clone, Copy)]
-pub struct PartLimits {
-    /// The upload's staged bytes may not pass the largest object it could complete
-    pub max_object_bytes: u64,
-    /// Disk the store has left for staged parts, when it can tell
-    pub room: Option<u64>,
-}
-
-/// Disk the store has left for staged parts: the least free space across its
-/// volumes, less the `min_free_bytes` floor. `None` when no volume reports
-/// its free space.
-pub fn staging_room(volumes: &[DiskVolume], min_free_bytes: u64) -> Option<u64> {
-    let mut room: Option<u64> = None;
-    for volume in volumes {
-        if let Some(free) = volume.free_bytes {
-            let left = free.saturating_sub(min_free_bytes);
-            room = Some(room.map_or(left, |room| room.min(left)));
-        }
-    }
-    room
-}
-
-/// Refuse to stage `needed` more bytes when the disk has no room for them
-pub fn check_room(room: Option<u64>, needed: u64) -> Result<(), S3Error> {
-    match room {
-        Some(room) if needed > room => Err(S3Error::InsufficientStorage(format!(
-            "the gateway has {room} bytes of disk left for staged parts and this needs {needed}"
-        ))),
-        Some(_) | None => Ok(()),
-    }
-}
-
-/// A part whose chunks are in the store, waiting to be published or discarded
-pub struct StagedPart {
-    pub part_number: u32,
-    /// SHA-256 of the part's bytes, which is its ETag
-    pub etag: Hash,
-    pub size: u64,
-    /// Held until the part is published or discarded
-    _guard: PartGuard,
-}
-
-/// Stream one part's bytes into the store under `upload_id` (UploadPart), one
-/// `MULTIPART_CHUNK_BYTES` row at a time with a running SHA-256
+/// Persist one part's bytes under `upload_id` (UploadPart) and return its ETag.
 ///
-/// Memory stays at one chunk whatever the part size. The bytes are held to
-/// `limits` as they arrive: the upload cannot stage more than the largest
-/// object it could complete, nor more than the disk has room for. The part
-/// reads as absent until [`publish_part`].
-pub async fn stage_part<Reader: AsyncRead + Unpin>(
+/// The upload's total staged bytes are capped at `max_object_bytes`: buffered
+/// parts never exceed the largest object that could be assembled from them, so a
+/// caller cannot stage unbounded data ahead of completion.
+pub fn put_part(
     store: &impl MultipartOps,
     upload_id: &str,
     bucket: Address,
     key: &str,
     part_number: u32,
-    body: Reader,
-    limits: PartLimits,
+    data: Vec<u8>,
+    max_object_bytes: usize,
     principal: Address,
-) -> Result<StagedPart, S3Error> {
-    check_part_number(part_number)?;
+) -> Result<Hash, S3Error> {
+    if !(MIN_PART_NUMBER..=MAX_PART_NUMBER).contains(&part_number) {
+        return Err(S3Error::InvalidRequest(format!(
+            "partNumber must be between {MIN_PART_NUMBER} and {MAX_PART_NUMBER}"
+        )));
+    }
+
     load_upload(store, upload_id, bucket, key, principal)?;
-    let guard = lock_part(upload_id, part_number).await;
 
     // A re-upload of this part number replaces it, so exclude it from the
     // already-staged total before admitting the new bytes.
@@ -205,148 +133,22 @@ pub async fn stage_part<Reader: AsyncRead + Unpin>(
             staged = staged.saturating_add(part.size);
         }
     }
+    let projected = staged.saturating_add(data.len() as u64);
+    if projected > max_object_bytes as u64 {
+        return Err(S3Error::EntityTooLarge(format!(
+            "this upload's staged bytes ({projected}) would exceed the maximum object size of {max_object_bytes} bytes"
+        )));
+    }
 
-    store.retire_multipart_part(upload_id, part_number).map_err(store_error)?;
-    let written = write_chunks(store, upload_id, part_number, body, staged, limits).await;
-    match written {
-        Ok((etag, size)) => Ok(StagedPart {
-            part_number,
-            etag,
-            size,
-            _guard: guard,
-        }),
-        Err(error) => {
-            drop_part(store, upload_id, part_number);
-            Err(error)
-        }
-    }
-}
-
-/// Write a part's body as chunks and return its SHA-256 and size, refusing
-/// once `staged` plus the part passes the object limit, or the part passes the room
-async fn write_chunks<Reader: AsyncRead + Unpin>(
-    store: &impl MultipartOps,
-    upload_id: &str,
-    part_number: u32,
-    mut body: Reader,
-    staged: u64,
-    limits: PartLimits,
-) -> Result<(Hash, u64), S3Error> {
-    let max_object_bytes = limits.max_object_bytes;
-    let mut digest = Sha256::new();
-    let mut size: u64 = 0;
-    let mut chunk_index: u32 = 0;
-    loop {
-        let mut chunk = Vec::with_capacity(MULTIPART_CHUNK_BYTES);
-        while chunk.len() < MULTIPART_CHUNK_BYTES {
-            let read = body
-                .read_buf(&mut chunk)
-                .await
-                .map_err(|error| S3Error::InvalidRequest(format!("request body: {error}")))?;
-            if read == 0 {
-                break;
-            }
-        }
-        let read = chunk.len();
-        size = size.saturating_add(read as u64);
-        let projected = staged.saturating_add(size);
-        if projected > max_object_bytes {
-            return Err(S3Error::EntityTooLarge(format!(
-                "this upload's staged bytes ({projected}) would exceed the maximum object size of {max_object_bytes} bytes"
-            )));
-        }
-        check_room(limits.room, size)?;
-        // An empty part still takes one chunk, so it reads back as present.
-        if read == 0 && chunk_index > 0 {
-            break;
-        }
-        digest.update(&chunk);
-        store
-            .put_multipart_part_chunk(upload_id, part_number, chunk_index, chunk)
-            .map_err(store_error)?;
-        chunk_index += 1;
-        if read < MULTIPART_CHUNK_BYTES {
-            break;
-        }
-    }
-    let digest: [u8; 32] = digest.finalize().into();
-    Ok((Hash(digest), size))
-}
-
-/// Publish a staged part once its body checked out, and return its ETag
-///
-/// `signed` is the body SHA-256 the request signed, if any. An upload aborted
-/// while the part streamed takes the part with it.
-pub fn publish_part(
-    store: &impl MultipartOps,
-    upload_id: &str,
-    bucket: Address,
-    key: &str,
-    principal: Address,
-    staged: StagedPart,
-    signed: Option<[u8; 32]>,
-) -> Result<Hash, S3Error> {
-    if signed.is_some_and(|signed| Hash(signed) != staged.etag) {
-        discard_part(store, upload_id, staged);
-        return Err(S3Error::ContentSha256Mismatch);
-    }
-    if let Err(error) = load_upload(store, upload_id, bucket, key, principal) {
-        discard_part(store, upload_id, staged);
-        return Err(error);
-    }
+    let etag = hash(&data);
     let part = MultipartPart {
-        part_number: staged.part_number,
-        etag: staged.etag,
+        part_number,
+        etag,
         last_modified: now_unix(),
-        size: staged.size,
+        size: data.len() as u64,
     };
-    if let Err(error) = store.publish_multipart_part(upload_id, &part) {
-        discard_part(store, upload_id, staged);
-        return Err(store_error(error));
-    }
-    Ok(part.etag)
-}
-
-/// Drop a staged part's chunks, for a body that failed after it was read
-pub fn discard_part(store: &impl MultipartOps, upload_id: &str, staged: StagedPart) {
-    drop_part(store, upload_id, staged.part_number);
-}
-
-/// Delete one part's rows. A failure only leaks rows the upload's Complete or
-/// Abort reclaims, so it is logged.
-fn drop_part(store: &impl MultipartOps, upload_id: &str, part_number: u32) {
-    if let Err(error) = store.delete_multipart_part(upload_id, part_number) {
-        tracing::warn!(%error, part_number, "s3 UploadPart: failed to drop a part's rows");
-    }
-}
-
-/// Holds one part's upload lock, and drops the lock's entry once nothing waits on it
-struct PartGuard {
-    key: (String, u32),
-    guard: Option<OwnedMutexGuard<()>>,
-}
-
-impl Drop for PartGuard {
-    fn drop(&mut self) {
-        self.guard = None;
-        let mut locks = PART_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
-        if locks.get(&self.key).is_some_and(|lock| Arc::strong_count(lock) == 1) {
-            locks.remove(&self.key);
-        }
-    }
-}
-
-/// Wait for and take the upload lock of one part
-async fn lock_part(upload_id: &str, part_number: u32) -> PartGuard {
-    let key = (upload_id.to_string(), part_number);
-    let lock = {
-        let mut locks = PART_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
-        locks.entry(key.clone()).or_default().clone()
-    };
-    PartGuard {
-        key,
-        guard: Some(lock.lock_owned().await),
-    }
+    store.put_multipart_part(upload_id, &part, data).map_err(store_error)?;
+    Ok(etag)
 }
 
 /// Snapshot the persisted parts of `upload_id` for ListParts
@@ -390,17 +192,17 @@ pub fn abort(
     store.delete_multipart_upload(upload_id).map_err(store_error)
 }
 
-/// Validate the client's part list against the persisted parts (the read side
-/// of CompleteMultipartUpload). No part bytes are read here.
-pub fn validate(
+/// Validate the client's part list against the persisted parts and assemble the
+/// object bytes (the read side of CompleteMultipartUpload).
+pub fn assemble(
     store: &impl MultipartOps,
     upload_id: &str,
     bucket: Address,
     key: &str,
     requested: &[CompletedPartRef],
-    max_object_bytes: u64,
+    max_object_bytes: usize,
     principal: Address,
-) -> Result<ValidatedUpload, S3Error> {
+) -> Result<AssembledUpload, S3Error> {
     if requested.is_empty() {
         return Err(S3Error::InvalidRequest(
             "CompleteMultipartUpload must list at least one part".into(),
@@ -415,7 +217,7 @@ pub fn validate(
     // Validate structure first (ascending order, existence, ETag), so a structural
     // error always wins over a size error below.
     let mut previous: Option<u32> = None;
-    let mut ordered: Vec<MultipartPart> = Vec::with_capacity(requested.len());
+    let mut ordered: Vec<&MultipartPart> = Vec::with_capacity(requested.len());
     for part in requested {
         if let Some(previous) = previous {
             if part.part_number <= previous {
@@ -438,21 +240,23 @@ pub fn validate(
                 part.part_number
             )));
         }
-        ordered.push(**stored_part);
+        ordered.push(stored_part);
     }
 
-    // Every part except the last must meet S3's minimum part size, and the sum
-    // must fit the object ceiling. Both come from metadata sizes alone.
+    // Every part except the last must meet S3's minimum part size. Validate from
+    // metadata sizes (no payloads read yet) so the object ceiling is enforced
+    // before any part bytes are loaded into memory.
     let last_index = ordered.len() - 1;
-    let mut total: u64 = 0;
+    let mut total: usize = 0;
     for (index, stored_part) in ordered.iter().enumerate() {
-        if index != last_index && stored_part.size < MIN_PART_SIZE as u64 {
+        let part_size = stored_part.size as usize;
+        if index != last_index && part_size < MIN_PART_SIZE {
             return Err(S3Error::EntityTooSmall(format!(
                 "part {} is {} bytes; every part except the last must be at least {MIN_PART_SIZE} bytes",
-                stored_part.part_number, stored_part.size
+                stored_part.part_number, part_size
             )));
         }
-        total = total.saturating_add(stored_part.size);
+        total = total.saturating_add(part_size);
     }
     if total > max_object_bytes {
         return Err(S3Error::EntityTooLarge(format!(
@@ -460,181 +264,25 @@ pub fn validate(
         )));
     }
 
-    Ok(ValidatedUpload {
+    let mut data = Vec::with_capacity(total);
+    for stored_part in &ordered {
+        let payload = store
+            .get_multipart_part_data(upload_id, stored_part.part_number)
+            .map_err(store_error)?
+            .ok_or_else(|| {
+                S3Error::Internal(format!(
+                    "multipart part {} payload missing",
+                    stored_part.part_number
+                ))
+            })?;
+        data.extend_from_slice(&payload);
+    }
+
+    Ok(AssembledUpload {
         key: upload.key,
         content_type: upload.content_type,
-        parts: ordered,
-        size: total,
-        has_write_attempt: upload.has_write_attempt,
+        data,
     })
-}
-
-/// Record that a Complete began streaming this upload's object, so a retry
-/// after a failure resumes the chunk tracks it left
-pub fn mark_write_attempt(store: &impl MultipartOps, upload_id: &str) -> Result<(), S3Error> {
-    let mut upload = store
-        .get_multipart_upload(upload_id)
-        .map_err(store_error)?
-        .ok_or(S3Error::NoSuchUpload)?;
-    upload.has_write_attempt = true;
-    store.put_multipart_upload(upload_id, &upload).map_err(store_error)
-}
-
-/// Read a validated upload's object into memory, for an object the queue buffers
-pub fn read_object(
-    store: &impl MultipartOps,
-    upload_id: &str,
-    upload: &ValidatedUpload,
-) -> Result<Vec<u8>, S3Error> {
-    let mut data = Vec::with_capacity(upload.size as usize);
-    let mut cursor = PartCursor::new(upload_id.to_string(), upload.parts.clone());
-    while let Some(chunk) = cursor.next(store) {
-        let chunk = chunk.map_err(|error| S3Error::Internal(error.to_string()))?;
-        data.extend_from_slice(&chunk);
-    }
-    Ok(data)
-}
-
-/// Read a validated upload's object in part order, one stored chunk at a time
-///
-/// Memory stays at one `MULTIPART_CHUNK_BYTES` chunk whatever size the client
-/// chose for its parts.
-pub fn part_reader<PartStore>(
-    store: Arc<PartStore>,
-    upload_id: String,
-    parts: Vec<MultipartPart>,
-) -> impl AsyncRead + Unpin + Send + 'static
-where
-    PartStore: MultipartOps + Send + Sync + 'static,
-{
-    let chunks = PartChunks {
-        store,
-        cursor: PartCursor::new(upload_id, parts),
-    };
-    StreamReader::new(stream::iter(chunks))
-}
-
-/// The stored chunks of an upload's parts in order
-struct PartChunks<PartStore> {
-    store: Arc<PartStore>,
-    cursor: PartCursor,
-}
-
-impl<PartStore: MultipartOps> Iterator for PartChunks<PartStore> {
-    type Item = io::Result<Bytes>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.cursor.next(self.store.as_ref())
-    }
-}
-
-/// Read progress through an upload's parts, each part checked against the
-/// ETag the client completed it with
-struct PartCursor {
-    upload_id: String,
-    parts: vec::IntoIter<MultipartPart>,
-    /// The part being read, if one is open
-    open: Option<OpenPart>,
-}
-
-/// Read progress through one part
-struct OpenPart {
-    part: MultipartPart,
-    /// The next chunk to read
-    chunk_index: u32,
-    /// Bytes of the part not read yet
-    remaining: u64,
-    /// SHA-256 of the bytes read so far
-    digest: Sha256,
-}
-
-impl PartCursor {
-    fn new(upload_id: String, parts: Vec<MultipartPart>) -> Self {
-        Self {
-            upload_id,
-            parts: parts.into_iter(),
-            open: None,
-        }
-    }
-
-    /// The next chunk of the object, ending the read at the first failure
-    fn next(&mut self, store: &impl MultipartOps) -> Option<io::Result<Bytes>> {
-        match self.next_chunk(store) {
-            Ok(chunk) => chunk.map(Ok),
-            Err(error) => {
-                self.parts = Vec::new().into_iter();
-                self.open = None;
-                Some(Err(error))
-            }
-        }
-    }
-
-    /// The next chunk of the object, or `None` once every part is read
-    fn next_chunk(&mut self, store: &impl MultipartOps) -> io::Result<Option<Bytes>> {
-        loop {
-            let open = match &mut self.open {
-                Some(open) => open,
-                None => match self.parts.next() {
-                    Some(part) => self.open.insert(OpenPart {
-                        part,
-                        chunk_index: 0,
-                        remaining: part.size,
-                        digest: Sha256::new(),
-                    }),
-                    None => return Ok(None),
-                },
-            };
-            let part_number = open.part.part_number;
-
-            let mut chunk = None;
-            if open.remaining > 0 {
-                let expected = open.remaining.min(MULTIPART_CHUNK_BYTES as u64);
-                let data = store
-                    .get_multipart_part_chunk(&self.upload_id, part_number, open.chunk_index)
-                    .map_err(|error| read_error(format!("multipart store: {error}")))?
-                    .ok_or_else(|| {
-                        read_error(format!(
-                            "multipart part {part_number} chunk {} missing",
-                            open.chunk_index
-                        ))
-                    })?;
-                if data.len() as u64 != expected {
-                    return Err(read_error(format!(
-                        "multipart part {part_number} chunk {} is {} bytes, expected {expected}",
-                        open.chunk_index,
-                        data.len()
-                    )));
-                }
-                open.digest.update(&data);
-                open.remaining -= expected;
-                open.chunk_index += 1;
-                chunk = Some(Bytes::from(data));
-            }
-
-            // The part's last chunk goes out only once the part still matches
-            // its ETag, so an UploadPart that replaced it mid-stream fails the write.
-            if open.remaining == 0 {
-                let digest: [u8; 32] = take(&mut open.digest).finalize().into();
-                if Hash(digest) != open.part.etag {
-                    return Err(read_error(format!(
-                        "multipart part {part_number} changed after CompleteMultipartUpload began"
-                    )));
-                }
-                self.open = None;
-            }
-
-            if let Some(chunk) = chunk {
-                return Ok(Some(chunk));
-            }
-        }
-    }
-}
-
-/// An I/O error for a failed read of stored part bytes. The detail is logged
-/// here, since the stream writer reports it only as an I/O failure.
-fn read_error(detail: String) -> io::Error {
-    tracing::warn!("{detail}");
-    io::Error::other(detail)
 }
 
 /// Drop a completed upload and its parts (called after the assembled object is
@@ -734,10 +382,8 @@ fn store_error(error: impl std::fmt::Display) -> S3Error {
 
 #[cfg(test)]
 mod tests {
-    use futures::executor::block_on;
-    use tape_crypto::hash::hash;
-    use tape_store_api::StoreVolume;
     use tape_store_memory::MemoryStore;
+    use tape_store::types::MULTIPART_CHUNK_BYTES;
     use tape_store::TapeStore;
 
     use super::*;
@@ -773,15 +419,7 @@ mod tests {
 
     // Object ceiling for the assembly/staging tests; comfortably above the bytes
     // any test stages.
-    const TEST_MAX_OBJECT: u64 = 64 * 1024 * 1024;
-
-    // limits with no disk figure, as a store that cannot tell its free space
-    fn limits(max_object_bytes: u64) -> PartLimits {
-        PartLimits {
-            max_object_bytes,
-            room: None,
-        }
-    }
+    const TEST_MAX_OBJECT: usize = 64 * 1024 * 1024;
 
     fn put_part(
         store: &TapeStore<MemoryStore>,
@@ -791,56 +429,26 @@ mod tests {
         part_number: u32,
         data: Vec<u8>,
     ) -> Result<Hash, S3Error> {
-        put_part_as(store, upload_id, bucket, key, part_number, data, TEST_MAX_OBJECT, owner())
+        super::put_part(
+            store,
+            upload_id,
+            bucket,
+            key,
+            part_number,
+            data,
+            TEST_MAX_OBJECT,
+            owner(),
+        )
     }
 
-    // stage a part from memory and publish it, as UploadPart does with a body
-    fn put_part_as(
-        store: &TapeStore<MemoryStore>,
-        upload_id: &str,
-        bucket: Address,
-        key: &str,
-        part_number: u32,
-        data: Vec<u8>,
-        max_object_bytes: u64,
-        principal: Address,
-    ) -> Result<Hash, S3Error> {
-        block_on(async {
-            let staged = stage_part(
-                store,
-                upload_id,
-                bucket,
-                key,
-                part_number,
-                data.as_slice(),
-                limits(max_object_bytes),
-                principal,
-            )
-            .await?;
-            publish_part(store, upload_id, bucket, key, principal, staged, None)
-        })
-    }
-
-    fn validate(
-        store: &TapeStore<MemoryStore>,
-        upload_id: &str,
-        bucket: Address,
-        key: &str,
-        requested: &[CompletedPartRef],
-    ) -> Result<ValidatedUpload, S3Error> {
-        super::validate(store, upload_id, bucket, key, requested, TEST_MAX_OBJECT, owner())
-    }
-
-    // validate, then read the object whole
     fn assemble(
         store: &TapeStore<MemoryStore>,
         upload_id: &str,
         bucket: Address,
         key: &str,
         requested: &[CompletedPartRef],
-    ) -> Result<Vec<u8>, S3Error> {
-        let upload = validate(store, upload_id, bucket, key, requested)?;
-        read_object(store, upload_id, &upload)
+    ) -> Result<AssembledUpload, S3Error> {
+        super::assemble(store, upload_id, bucket, key, requested, TEST_MAX_OBJECT, owner())
     }
 
     fn abort(
@@ -882,14 +490,18 @@ mod tests {
         let etag2 =
             put_part(&store, &upload_id, bucket, "obj", 2, b"world".to_vec()).expect("part 2");
 
-        let requested = [completed(1, etag1), completed(2, etag2)];
-        let upload = validate(&store, &upload_id, bucket, "obj", &requested).expect("validate");
-        assert_eq!(upload.key, "obj");
-        assert_eq!(upload.size, (MIN_PART_SIZE + 5) as u64);
-        let assembled = assemble(&store, &upload_id, bucket, "obj", &requested).expect("assemble");
+        let assembled = assemble(
+            &store,
+            &upload_id,
+            bucket,
+            "obj",
+            &[completed(1, etag1), completed(2, etag2)],
+        )
+        .expect("assemble");
         let mut expected = head;
         expected.extend_from_slice(b"world");
-        assert_eq!(assembled, expected);
+        assert_eq!(assembled.data, expected);
+        assert_eq!(assembled.key, "obj");
 
         // Assemble retains the upload until the caller removes it.
         remove(&store, &upload_id).expect("remove");
@@ -915,7 +527,7 @@ mod tests {
 
         let assembled = assemble(&store, &upload_id, bucket, "obj", &[completed(1, etag)])
             .expect("assemble");
-        assert_eq!(assembled, part);
+        assert_eq!(assembled.data, part);
     }
 
     // abort drops every chunk of the upload's parts
@@ -946,7 +558,7 @@ mod tests {
             create_upload(&store, bucket, "obj".into(), ContentType::Unknown, owner()).expect("create");
 
         assert!(matches!(
-            put_part_as(&store, &upload_id, bucket, "obj", 1, vec![0; 9], 8, owner()),
+            super::put_part(&store, &upload_id, bucket, "obj", 1, vec![0; 9], 8, owner()),
             Err(S3Error::EntityTooLarge(_))
         ));
         assert!(store.get_multipart_part_data(&upload_id, 1).expect("data").is_none());
@@ -984,7 +596,7 @@ mod tests {
 
         let assembled = assemble(&store, &upload_id, bucket, "obj", &[completed(1, etag)])
             .expect("single small part is allowed");
-        assert_eq!(assembled, b"tiny");
+        assert_eq!(assembled.data, b"tiny");
     }
 
     // an unknown upload id is NoSuchUpload
@@ -1130,7 +742,7 @@ mod tests {
         let etag = put_part(&store, &upload_id, bucket, "obj", 1, b"mine".to_vec()).expect("p1");
 
         assert!(matches!(
-            put_part_as(
+            super::put_part(
                 &store,
                 &upload_id,
                 bucket,
@@ -1147,7 +759,7 @@ mod tests {
             Err(S3Error::NoSuchUpload)
         ));
         assert!(matches!(
-            super::validate(
+            super::assemble(
                 &store,
                 &upload_id,
                 bucket,
@@ -1205,264 +817,5 @@ mod tests {
         remove(&store, &alice_first).expect("remove");
         assert_eq!(count_open_uploads(&store, alice).expect("count"), 1);
         assert_eq!(count_open_uploads(&store, bob).expect("count"), 1);
-    }
-
-    // Bytes that vary with position and seed, so a dropped or reordered chunk shows up.
-    fn pattern(size: usize, seed: u8) -> Vec<u8> {
-        let mut data = Vec::with_capacity(size);
-        for index in 0..size {
-            data.push((index % 251) as u8 ^ seed);
-        }
-        data
-    }
-
-    // Three parts that end on a chunk boundary, past one, and empty, uploaded
-    // and validated. Returns the upload id, the validated upload and the object.
-    fn staged_upload(store: &TapeStore<MemoryStore>, bucket: Address) -> (String, ValidatedUpload, Vec<u8>) {
-        let upload_id = create(store, bucket, "obj", ContentType::Unknown);
-        let parts = [
-            pattern(MULTIPART_CHUNK_BYTES * 2, 1),
-            pattern(MULTIPART_CHUNK_BYTES + 7, 2),
-            Vec::new(),
-        ];
-        let mut requested = Vec::new();
-        let mut object = Vec::new();
-        for (index, part) in parts.into_iter().enumerate() {
-            object.extend_from_slice(&part);
-            let part_number = index as u32 + 1;
-            let etag = put_part(store, &upload_id, bucket, "obj", part_number, part).expect("part");
-            requested.push(completed(part_number, etag));
-        }
-        let upload = validate(store, &upload_id, bucket, "obj", &requested).expect("validate");
-        (upload_id, upload, object)
-    }
-
-    // the streamed reader returns the parts byte for byte, one stored chunk at a time
-    #[tokio::test]
-    async fn streamed_parts() {
-        let store = Arc::new(store());
-        let bucket = bucket();
-        let (upload_id, upload, object) = staged_upload(&store, bucket);
-        assert_eq!(upload.size, object.len() as u64);
-
-        let mut streamed = Vec::new();
-        part_reader(store.clone(), upload_id.clone(), upload.parts.clone())
-            .read_to_end(&mut streamed)
-            .await
-            .expect("stream parts");
-        assert_eq!(streamed, object);
-
-        let chunks = PartChunks {
-            store: store.clone(),
-            cursor: PartCursor::new(upload_id.clone(), upload.parts.clone()),
-        };
-        let sizes: Vec<usize> = chunks.map(|chunk| chunk.expect("chunk").len()).collect();
-        assert_eq!(
-            sizes,
-            vec![MULTIPART_CHUNK_BYTES, MULTIPART_CHUNK_BYTES, MULTIPART_CHUNK_BYTES, 7]
-        );
-
-        assert_eq!(read_object(store.as_ref(), &upload_id, &upload).expect("read"), object);
-    }
-
-    // a part replaced after validation fails the read before the object ends,
-    // and the upload stays for a retry
-    #[tokio::test]
-    async fn replaced_part() {
-        let store = Arc::new(store());
-        let bucket = bucket();
-        let (upload_id, upload, _) = staged_upload(&store, bucket);
-        put_part(&store, &upload_id, bucket, "obj", 2, pattern(MULTIPART_CHUNK_BYTES + 7, 9))
-            .expect("replace part 2");
-
-        let mut streamed = Vec::new();
-        let read = part_reader(store.clone(), upload_id.clone(), upload.parts.clone())
-            .read_to_end(&mut streamed)
-            .await;
-        assert!(read.is_err());
-        // part 1 and the first chunk of part 2 went out, and the short last chunk was held back
-        assert_eq!(streamed.len(), MULTIPART_CHUNK_BYTES * 3);
-        assert!(matches!(
-            read_object(store.as_ref(), &upload_id, &upload),
-            Err(S3Error::Internal(_))
-        ));
-
-        let listing = list_parts(&store, &upload_id, bucket, "obj").expect("list");
-        assert_eq!(listing.parts.len(), 3);
-    }
-
-    // an upload aborted after validation fails the read at the first missing chunk
-    #[tokio::test]
-    async fn aborted_upload() {
-        let store = Arc::new(store());
-        let bucket = bucket();
-        let (upload_id, upload, _) = staged_upload(&store, bucket);
-        abort(&store, &upload_id, bucket, "obj").expect("abort");
-
-        let mut streamed = Vec::new();
-        let read = part_reader(store.clone(), upload_id.clone(), upload.parts.clone())
-            .read_to_end(&mut streamed)
-            .await;
-        assert!(read.is_err());
-        assert!(streamed.is_empty());
-    }
-
-    // number of stored chunk rows of one part
-    fn part_chunks(store: &TapeStore<MemoryStore>, upload_id: &str, part_number: u32) -> u32 {
-        let mut count = 0;
-        while store
-            .get_multipart_part_chunk(upload_id, part_number, count)
-            .expect("chunk")
-            .is_some()
-        {
-            count += 1;
-        }
-        count
-    }
-
-    // a streamed part lands one row per chunk with its SHA-256 as the ETag, and
-    // reads as absent until it is published
-    #[tokio::test]
-    async fn staged_rows() {
-        let store = store();
-        let bucket = bucket();
-        let upload_id = create(&store, bucket, "obj", ContentType::Unknown);
-        let data = pattern(MULTIPART_CHUNK_BYTES * 2 + 7, 3);
-
-        let staged = stage_part(
-            &store, &upload_id, bucket, "obj", 1, data.as_slice(), limits(TEST_MAX_OBJECT), owner(),
-        )
-        .await
-        .expect("stage");
-        assert_eq!(staged.etag, hash(&data));
-        assert_eq!(staged.size, data.len() as u64);
-        assert_eq!(part_chunks(&store, &upload_id, 1), 3);
-        assert!(list_parts(&store, &upload_id, bucket, "obj").expect("list").parts.is_empty());
-
-        let etag = publish_part(&store, &upload_id, bucket, "obj", owner(), staged, Some(hash(&data).0))
-            .expect("publish");
-        assert_eq!(etag, hash(&data));
-        let listing = list_parts(&store, &upload_id, bucket, "obj").expect("list");
-        assert_eq!(listing.parts.len(), 1);
-        assert_eq!(listing.parts[0].size, data.len() as u64);
-        assert_eq!(store.get_multipart_part_data(&upload_id, 1).expect("data"), Some(data));
-    }
-
-    // the staged-bytes cap stops a part as its bytes arrive, and its rows go
-    #[tokio::test]
-    async fn staged_cap() {
-        let store = store();
-        let bucket = bucket();
-        let upload_id = create(&store, bucket, "obj", ContentType::Unknown);
-        put_part_as(&store, &upload_id, bucket, "obj", 1, vec![1; 5], 16, owner()).expect("p1");
-
-        let data = vec![2u8; 12];
-        let staged = stage_part(&store, &upload_id, bucket, "obj", 2, data.as_slice(), limits(16), owner()).await;
-        assert!(matches!(staged, Err(S3Error::EntityTooLarge(_))));
-        assert_eq!(part_chunks(&store, &upload_id, 2), 0);
-        assert_eq!(list_parts(&store, &upload_id, bucket, "obj").expect("list").parts.len(), 1);
-    }
-
-    // a body missing its signed hash, or an upload aborted mid-part, drops the part
-    #[tokio::test]
-    async fn staged_refused() {
-        let store = store();
-        let bucket = bucket();
-        let upload_id = create(&store, bucket, "obj", ContentType::Unknown);
-        let data = vec![4u8; 1000];
-
-        let staged = stage_part(
-            &store, &upload_id, bucket, "obj", 1, data.as_slice(), limits(TEST_MAX_OBJECT), owner(),
-        )
-        .await
-        .expect("stage");
-        let published = publish_part(&store, &upload_id, bucket, "obj", owner(), staged, Some([0; 32]));
-        assert!(matches!(published, Err(S3Error::ContentSha256Mismatch)));
-        assert_eq!(part_chunks(&store, &upload_id, 1), 0);
-
-        let staged = stage_part(
-            &store, &upload_id, bucket, "obj", 1, data.as_slice(), limits(TEST_MAX_OBJECT), owner(),
-        )
-        .await
-        .expect("stage");
-        abort(&store, &upload_id, bucket, "obj").expect("abort");
-        let published = publish_part(&store, &upload_id, bucket, "obj", owner(), staged, None);
-        assert!(matches!(published, Err(S3Error::NoSuchUpload)));
-        assert_eq!(part_chunks(&store, &upload_id, 1), 0);
-    }
-
-    // a second upload of one part number waits until the first is published
-    #[tokio::test]
-    async fn serialized_part() {
-        let store = store();
-        let bucket = bucket();
-        let upload_id = create(&store, bucket, "obj", ContentType::Unknown);
-        let first = vec![1u8; 100];
-        let second = vec![2u8; 50];
-
-        let staged = stage_part(
-            &store, &upload_id, bucket, "obj", 1, first.as_slice(), limits(TEST_MAX_OBJECT), owner(),
-        )
-        .await
-        .expect("stage first");
-        let waiting = stage_part(
-            &store, &upload_id, bucket, "obj", 1, second.as_slice(), limits(TEST_MAX_OBJECT), owner(),
-        );
-        tokio::pin!(waiting);
-        assert!(futures::poll!(&mut waiting).is_pending());
-
-        publish_part(&store, &upload_id, bucket, "obj", owner(), staged, None).expect("publish first");
-        let staged = waiting.await.expect("stage second");
-        publish_part(&store, &upload_id, bucket, "obj", owner(), staged, None).expect("publish second");
-        assert_eq!(store.get_multipart_part_data(&upload_id, 1).expect("data"), Some(second.clone()));
-        assert!(PART_LOCKS.lock().expect("locks").get(&(upload_id.clone(), 1)).is_none());
-    }
-
-    // a Complete that began streaming marks its upload, and validation reports it
-    #[test]
-    fn write_attempt() {
-        let store = store();
-        let bucket = bucket();
-        let upload_id = create(&store, bucket, "obj", ContentType::Unknown);
-        let etag = put_part(&store, &upload_id, bucket, "obj", 1, b"tail".to_vec()).expect("p1");
-        let requested = [completed(1, etag)];
-        assert!(!validate(&store, &upload_id, bucket, "obj", &requested).expect("validate").has_write_attempt);
-
-        mark_write_attempt(&store, &upload_id).expect("mark");
-        assert!(validate(&store, &upload_id, bucket, "obj", &requested).expect("validate").has_write_attempt);
-        assert!(matches!(mark_write_attempt(&store, "missing"), Err(S3Error::NoSuchUpload)));
-    }
-
-    // the room is the least free space across volumes less the floor
-    #[test]
-    fn room_figure() {
-        let volume = |free: Option<u64>| DiskVolume {
-            volume: StoreVolume::Primary,
-            used_bytes: 0,
-            free_bytes: free,
-        };
-        assert_eq!(staging_room(&[volume(Some(100)), volume(Some(40))], 10), Some(30));
-        assert_eq!(staging_room(&[volume(Some(5))], 10), Some(0));
-        assert_eq!(staging_room(&[volume(None)], 10), None);
-        assert!(check_room(Some(30), 30).is_ok());
-        assert!(matches!(check_room(Some(30), 31), Err(S3Error::InsufficientStorage(_))));
-        assert!(check_room(None, u64::MAX).is_ok());
-    }
-
-    // a part past the disk's room is refused as it streams, and its rows go
-    #[tokio::test]
-    async fn room_refused() {
-        let store = store();
-        let bucket = bucket();
-        let upload_id = create(&store, bucket, "obj", ContentType::Unknown);
-        let data = vec![3u8; MULTIPART_CHUNK_BYTES + 1];
-        let limits = PartLimits {
-            max_object_bytes: TEST_MAX_OBJECT,
-            room: Some(MULTIPART_CHUNK_BYTES as u64),
-        };
-
-        let staged = stage_part(&store, &upload_id, bucket, "obj", 1, data.as_slice(), limits, owner()).await;
-        assert!(matches!(staged, Err(S3Error::InsufficientStorage(_))));
-        assert_eq!(part_chunks(&store, &upload_id, 1), 0);
     }
 }
