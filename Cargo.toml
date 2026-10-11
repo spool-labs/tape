@@ -159,8 +159,8 @@ tape-peer-tls = { version = "0.5.0", path = "./network/peer-tls" }
 tape-protocol = { version = "0.5.0", path = "./network/protocol" }
 tape-retry = { version = "0.5.0", path = "./lib/retry" }
 
-reel = { package = "tape-reel", version = "0.3.1", features = ["serde"] }
-reel-core = { package = "tape-reel-core", version = "0.3.1" }
+reel = { package = "tape-reel", version = "0.3.2", features = ["serde"] }
+reel-core = { package = "tape-reel-core", version = "0.3.2" }
 
 dashmap = "6"
 ratatui = "0.29"

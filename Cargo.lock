@@ -11509,9 +11509,9 @@ checksum = "a8d60ec175b7c0ef10297410f621b88006ce9e327b18fd85a12982839e6c294b"
 
 [[package]]
 name = "tape-reel"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14ab28808051f6aa9b71ea5dc5bd3f8327f445431d667550c48f7c4e56573ea2"
+checksum = "b5d0ad56959bbb6ea45be402201cea702d5617c4b87a6eaf907fb9f12e936ae5"
 dependencies = [
  "crc-fast",
  "getrandom 0.2.17",
@@ -11528,9 +11528,9 @@ dependencies = [
 
 [[package]]
 name = "tape-reel-core"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7df698392ee01eb8d307b5273ad0077dc25851c4b40a93dc4fcbead388ced39"
+checksum = "5d3d39431ef6a1edcb1dce1559eb0c43a8b773174b88b3cb19c3112b1b1ff82e"
 dependencies = [
  "thiserror 2.0.20",
 ]
