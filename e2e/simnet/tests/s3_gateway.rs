@@ -600,7 +600,8 @@ async fn read_write_inner() {
         streamed_parts.push((part_number, etag));
     }
 
-    // The key holds nothing, so an If-Match fails once the stream path takes the bucket lock.
+    // The key holds nothing, so an If-Match fails once the write takes the bucket
+    // lock. Complete answers 200 at once, so the failure is an <Error> in the body.
     let refused = s3_complete_multipart_response(
         &s3_base,
         &host,
@@ -611,7 +612,13 @@ async fn read_write_inner() {
         Some(("if-match", "\"no-such-etag\"")),
     )
     .await;
-    assert_precondition_failed(refused).await;
+    let refused_status = refused.status();
+    let refused_body = refused.text().await.unwrap_or_default();
+    assert_eq!(refused_status, StatusCode::OK, "Complete answers 200 at once: {refused_body}");
+    assert!(
+        refused_body.contains("<Error><Code>PreconditionFailed</Code>"),
+        "the refused condition comes back in the 200 body: {refused_body}"
+    );
     let kept = s3_list_parts_response(&s3_base, &host, &bucket_label, streamed_mp_key, &streamed_upload_id).await;
     let kept_status = kept.status();
     let kept_body = kept.text().await.unwrap_or_default();
@@ -619,18 +626,35 @@ async fn read_write_inner() {
     assert_eq!(kept_body.matches("<Part>").count(), 3, "a refused Complete keeps every part: {kept_body}");
     eprintln!("s3_gateway: refused streamed CompleteMultipartUpload kept its 3 parts");
 
-    let streamed_mp_etag = s3_complete_multipart(
-        &s3_base, &host, &bucket_label, streamed_mp_key, &streamed_upload_id, &streamed_parts,
+    // A client that hangs up once the 200 arrives cancels nothing: the write lands.
+    let hangup = s3_complete_multipart_response(
+        &s3_base,
+        &host,
+        &bucket_label,
+        streamed_mp_key,
+        &streamed_upload_id,
+        &streamed_parts,
+        None,
     )
     .await;
+    assert_eq!(hangup.status(), StatusCode::OK, "Complete answers 200 at once");
+    drop(hangup);
     let listed =
         wait_sdk_object_listed(&harness, &bucket, streamed_mp_key, streamed_mp_key, active_timeout).await;
-    assert_eq!(streamed_mp_etag, format!("\"{}\"", listed.etag));
+    eprintln!("s3_gateway: Complete landed after its client hung up");
     let gone = s3_list_parts_response(&s3_base, &host, &bucket_label, streamed_mp_key, &streamed_upload_id).await;
     let gone_status = gone.status();
     let gone_body = gone.text().await.unwrap_or_default();
     assert_eq!(gone_status, StatusCode::NOT_FOUND, "ListParts after Complete: {gone_body}");
     assert!(gone_body.contains("<Code>NoSuchUpload</Code>"), "parts should be gone: {gone_body}");
+
+    // A retry of that Complete gets the landed answer, though its parts are gone.
+    let streamed_mp_etag = s3_complete_multipart(
+        &s3_base, &host, &bucket_label, streamed_mp_key, &streamed_upload_id, &streamed_parts,
+    )
+    .await;
+    assert_eq!(streamed_mp_etag, format!("\"{}\"", listed.etag));
+    eprintln!("s3_gateway: retried Complete reused the landed answer");
     wait_pending_drained(&admin_base, OPERATOR_TOKEN, active_timeout).await;
     wait_s3_head_ok(&s3_base, &bucket_label, streamed_mp_key, Duration::from_secs(180)).await;
     let streamed_mp_read_etag = assert_s3_get_object(
@@ -1597,7 +1621,8 @@ async fn s3_complete_multipart(
         StatusCode::OK,
         "CompleteMultipartUpload should return 200, got {status}: {body}"
     );
-    extract_xml_tag(&body, "ETag").unwrap_or_default()
+    assert!(!body.contains("<Error>"), "CompleteMultipartUpload failed in its 200 body: {body}");
+    extract_xml_tag(&body, "ETag").expect("CompleteMultipartUpload result should carry an ETag")
 }
 
 /// Send a signed CompleteMultipartUpload, with an optional condition header, and

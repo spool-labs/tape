@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::io;
 use std::mem::take;
-use std::slice;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::vec;
 
 use bytes::Bytes;
 use futures::stream;
@@ -59,6 +59,8 @@ pub struct ValidatedUpload {
     pub parts: Vec<MultipartPart>,
     /// Object size in bytes, the sum of the parts
     pub size: u64,
+    /// Whether an earlier Complete began streaming this object
+    pub has_write_attempt: bool,
 }
 
 /// A snapshot of one persisted part, for ListParts rendering
@@ -97,6 +99,7 @@ pub fn create_upload(
         content_type,
         initiated: now_unix(),
         principal,
+        has_write_attempt: false,
     };
     store
         .put_multipart_upload(&upload_id, &upload)
@@ -426,7 +429,19 @@ pub fn validate(
         content_type: upload.content_type,
         parts: ordered,
         size: total,
+        has_write_attempt: upload.has_write_attempt,
     })
+}
+
+/// Record that a Complete began streaming this upload's object, so a retry
+/// after a failure resumes the chunk tracks it left
+pub fn mark_write_attempt(store: &impl MultipartOps, upload_id: &str) -> Result<(), S3Error> {
+    let mut upload = store
+        .get_multipart_upload(upload_id)
+        .map_err(store_error)?
+        .ok_or(S3Error::NoSuchUpload)?;
+    upload.has_write_attempt = true;
+    store.put_multipart_upload(upload_id, &upload).map_err(store_error)
 }
 
 /// Read a validated upload's object into memory, for an object the queue buffers
@@ -436,7 +451,8 @@ pub fn read_object(
     upload: &ValidatedUpload,
 ) -> Result<Vec<u8>, S3Error> {
     let mut data = Vec::with_capacity(upload.size as usize);
-    for chunk in PartChunks::new(store, upload_id, &upload.parts) {
+    let mut cursor = PartCursor::new(upload_id.to_string(), upload.parts.clone());
+    while let Some(chunk) = cursor.next(store) {
         let chunk = chunk.map_err(|error| S3Error::Internal(error.to_string()))?;
         data.extend_from_slice(&chunk);
     }
@@ -447,29 +463,46 @@ pub fn read_object(
 ///
 /// Memory stays at one `MULTIPART_CHUNK_BYTES` chunk whatever size the client
 /// chose for its parts.
-pub fn part_reader<'upload, Ops>(
-    store: &'upload Ops,
-    upload_id: &'upload str,
-    parts: &'upload [MultipartPart],
-) -> impl AsyncRead + Unpin + 'upload
+pub fn part_reader<PartStore>(
+    store: Arc<PartStore>,
+    upload_id: String,
+    parts: Vec<MultipartPart>,
+) -> impl AsyncRead + Unpin + Send + 'static
 where
-    Ops: MultipartOps,
+    PartStore: MultipartOps + Send + Sync + 'static,
 {
-    StreamReader::new(stream::iter(PartChunks::new(store, upload_id, parts)))
+    let chunks = PartChunks {
+        store,
+        cursor: PartCursor::new(upload_id, parts),
+    };
+    StreamReader::new(stream::iter(chunks))
 }
 
-/// The stored chunks of an upload's parts in order, each part checked against
-/// the ETag the client completed it with
-struct PartChunks<'upload, Ops> {
-    store: &'upload Ops,
-    upload_id: &'upload str,
-    parts: slice::Iter<'upload, MultipartPart>,
+/// The stored chunks of an upload's parts in order
+struct PartChunks<PartStore> {
+    store: Arc<PartStore>,
+    cursor: PartCursor,
+}
+
+impl<PartStore: MultipartOps> Iterator for PartChunks<PartStore> {
+    type Item = io::Result<Bytes>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.cursor.next(self.store.as_ref())
+    }
+}
+
+/// Read progress through an upload's parts, each part checked against the
+/// ETag the client completed it with
+struct PartCursor {
+    upload_id: String,
+    parts: vec::IntoIter<MultipartPart>,
     /// The part being read, if one is open
-    cursor: Option<PartCursor>,
+    open: Option<OpenPart>,
 }
 
 /// Read progress through one part
-struct PartCursor {
+struct OpenPart {
     part: MultipartPart,
     /// The next chunk to read
     chunk_index: u32,
@@ -479,24 +512,35 @@ struct PartCursor {
     digest: Sha256,
 }
 
-impl<'upload, Ops: MultipartOps> PartChunks<'upload, Ops> {
-    fn new(store: &'upload Ops, upload_id: &'upload str, parts: &'upload [MultipartPart]) -> Self {
+impl PartCursor {
+    fn new(upload_id: String, parts: Vec<MultipartPart>) -> Self {
         Self {
-            store,
             upload_id,
-            parts: parts.iter(),
-            cursor: None,
+            parts: parts.into_iter(),
+            open: None,
+        }
+    }
+
+    /// The next chunk of the object, ending the read at the first failure
+    fn next(&mut self, store: &impl MultipartOps) -> Option<io::Result<Bytes>> {
+        match self.next_chunk(store) {
+            Ok(chunk) => chunk.map(Ok),
+            Err(error) => {
+                self.parts = Vec::new().into_iter();
+                self.open = None;
+                Some(Err(error))
+            }
         }
     }
 
     /// The next chunk of the object, or `None` once every part is read
-    fn next_chunk(&mut self) -> io::Result<Option<Bytes>> {
+    fn next_chunk(&mut self, store: &impl MultipartOps) -> io::Result<Option<Bytes>> {
         loop {
-            let cursor = match &mut self.cursor {
-                Some(cursor) => cursor,
+            let open = match &mut self.open {
+                Some(open) => open,
                 None => match self.parts.next() {
-                    Some(part) => self.cursor.insert(PartCursor {
-                        part: *part,
+                    Some(part) => self.open.insert(OpenPart {
+                        part,
                         chunk_index: 0,
                         remaining: part.size,
                         digest: Sha256::new(),
@@ -504,64 +548,47 @@ impl<'upload, Ops: MultipartOps> PartChunks<'upload, Ops> {
                     None => return Ok(None),
                 },
             };
-            let part_number = cursor.part.part_number;
+            let part_number = open.part.part_number;
 
             let mut chunk = None;
-            if cursor.remaining > 0 {
-                let expected = cursor.remaining.min(MULTIPART_CHUNK_BYTES as u64);
-                let data = self
-                    .store
-                    .get_multipart_part_chunk(self.upload_id, part_number, cursor.chunk_index)
+            if open.remaining > 0 {
+                let expected = open.remaining.min(MULTIPART_CHUNK_BYTES as u64);
+                let data = store
+                    .get_multipart_part_chunk(&self.upload_id, part_number, open.chunk_index)
                     .map_err(|error| read_error(format!("multipart store: {error}")))?
                     .ok_or_else(|| {
                         read_error(format!(
                             "multipart part {part_number} chunk {} missing",
-                            cursor.chunk_index
+                            open.chunk_index
                         ))
                     })?;
                 if data.len() as u64 != expected {
                     return Err(read_error(format!(
                         "multipart part {part_number} chunk {} is {} bytes, expected {expected}",
-                        cursor.chunk_index,
+                        open.chunk_index,
                         data.len()
                     )));
                 }
-                cursor.digest.update(&data);
-                cursor.remaining -= expected;
-                cursor.chunk_index += 1;
+                open.digest.update(&data);
+                open.remaining -= expected;
+                open.chunk_index += 1;
                 chunk = Some(Bytes::from(data));
             }
 
             // The part's last chunk goes out only once the part still matches
             // its ETag, so an UploadPart that replaced it mid-stream fails the write.
-            if cursor.remaining == 0 {
-                let digest: [u8; 32] = take(&mut cursor.digest).finalize().into();
-                if Hash(digest) != cursor.part.etag {
+            if open.remaining == 0 {
+                let digest: [u8; 32] = take(&mut open.digest).finalize().into();
+                if Hash(digest) != open.part.etag {
                     return Err(read_error(format!(
                         "multipart part {part_number} changed after CompleteMultipartUpload began"
                     )));
                 }
-                self.cursor = None;
+                self.open = None;
             }
 
             if let Some(chunk) = chunk {
                 return Ok(Some(chunk));
-            }
-        }
-    }
-}
-
-impl<Ops: MultipartOps> Iterator for PartChunks<'_, Ops> {
-    type Item = io::Result<Bytes>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.next_chunk() {
-            Ok(chunk) => chunk.map(Ok),
-            Err(error) => {
-                // A failed read ends the object, so nothing after it is read.
-                self.parts = [].iter();
-                self.cursor = None;
-                Some(Err(error))
             }
         }
     }
@@ -1168,48 +1195,50 @@ mod tests {
     // the streamed reader returns the parts byte for byte, one stored chunk at a time
     #[tokio::test]
     async fn streamed_parts() {
-        let store = store();
+        let store = Arc::new(store());
         let bucket = bucket();
         let (upload_id, upload, object) = staged_upload(&store, bucket);
         assert_eq!(upload.size, object.len() as u64);
 
         let mut streamed = Vec::new();
-        part_reader(&store, &upload_id, &upload.parts)
+        part_reader(store.clone(), upload_id.clone(), upload.parts.clone())
             .read_to_end(&mut streamed)
             .await
             .expect("stream parts");
         assert_eq!(streamed, object);
 
-        let sizes: Vec<usize> = PartChunks::new(&store, upload_id.as_str(), &upload.parts)
-            .map(|chunk| chunk.expect("chunk").len())
-            .collect();
+        let chunks = PartChunks {
+            store: store.clone(),
+            cursor: PartCursor::new(upload_id.clone(), upload.parts.clone()),
+        };
+        let sizes: Vec<usize> = chunks.map(|chunk| chunk.expect("chunk").len()).collect();
         assert_eq!(
             sizes,
             vec![MULTIPART_CHUNK_BYTES, MULTIPART_CHUNK_BYTES, MULTIPART_CHUNK_BYTES, 7]
         );
 
-        assert_eq!(read_object(&store, &upload_id, &upload).expect("read"), object);
+        assert_eq!(read_object(store.as_ref(), &upload_id, &upload).expect("read"), object);
     }
 
     // a part replaced after validation fails the read before the object ends,
     // and the upload stays for a retry
     #[tokio::test]
     async fn replaced_part() {
-        let store = store();
+        let store = Arc::new(store());
         let bucket = bucket();
         let (upload_id, upload, _) = staged_upload(&store, bucket);
         put_part(&store, &upload_id, bucket, "obj", 2, pattern(MULTIPART_CHUNK_BYTES + 7, 9))
             .expect("replace part 2");
 
         let mut streamed = Vec::new();
-        let read = part_reader(&store, &upload_id, &upload.parts)
+        let read = part_reader(store.clone(), upload_id.clone(), upload.parts.clone())
             .read_to_end(&mut streamed)
             .await;
         assert!(read.is_err());
         // part 1 and the first chunk of part 2 went out, and the short last chunk was held back
         assert_eq!(streamed.len(), MULTIPART_CHUNK_BYTES * 3);
         assert!(matches!(
-            read_object(&store, &upload_id, &upload),
+            read_object(store.as_ref(), &upload_id, &upload),
             Err(S3Error::Internal(_))
         ));
 
@@ -1220,13 +1249,13 @@ mod tests {
     // an upload aborted after validation fails the read at the first missing chunk
     #[tokio::test]
     async fn aborted_upload() {
-        let store = store();
+        let store = Arc::new(store());
         let bucket = bucket();
         let (upload_id, upload, _) = staged_upload(&store, bucket);
         abort(&store, &upload_id, bucket, "obj").expect("abort");
 
         let mut streamed = Vec::new();
-        let read = part_reader(&store, &upload_id, &upload.parts)
+        let read = part_reader(store.clone(), upload_id.clone(), upload.parts.clone())
             .read_to_end(&mut streamed)
             .await;
         assert!(read.is_err());
@@ -1319,7 +1348,7 @@ mod tests {
 
     // a second upload of one part number waits until the first is published
     #[tokio::test]
-    async fn same_part_waits() {
+    async fn serialized_part() {
         let store = store();
         let bucket = bucket();
         let upload_id = create(&store, bucket, "obj", ContentType::Unknown);
@@ -1342,5 +1371,20 @@ mod tests {
         publish_part(&store, &upload_id, bucket, "obj", owner(), staged, None).expect("publish second");
         assert_eq!(store.get_multipart_part_data(&upload_id, 1).expect("data"), Some(second.clone()));
         assert!(PART_LOCKS.lock().expect("locks").get(&(upload_id.clone(), 1)).is_none());
+    }
+
+    // a Complete that began streaming marks its upload, and validation reports it
+    #[test]
+    fn write_attempt() {
+        let store = store();
+        let bucket = bucket();
+        let upload_id = create(&store, bucket, "obj", ContentType::Unknown);
+        let etag = put_part(&store, &upload_id, bucket, "obj", 1, b"tail".to_vec()).expect("p1");
+        let requested = [completed(1, etag)];
+        assert!(!validate(&store, &upload_id, bucket, "obj", &requested).expect("validate").has_write_attempt);
+
+        mark_write_attempt(&store, &upload_id).expect("mark");
+        assert!(validate(&store, &upload_id, bucket, "obj", &requested).expect("validate").has_write_attempt);
+        assert!(matches!(mark_write_attempt(&store, "missing"), Err(S3Error::NoSuchUpload)));
     }
 }

@@ -19,6 +19,7 @@ use axum::routing::get;
 use base64::{decode, encode};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::join;
+use tokio::spawn;
 use tokio::task::{JoinError, JoinHandle};
 
 use tape_rpc::{Rpc, RpcError};
@@ -32,7 +33,7 @@ use tape_core::types::{ContentType, StorageUnits};
 use tape_crypto::Hash;
 use tape_crypto::address::Address;
 use tape_protocol::Api;
-use tape_protocol::api::{with_share_token, ApiError};
+use tape_protocol::api::{current_request_id, with_request_id, with_share_token, ApiError};
 use tape_sdk::error::{TapedriveError, UploadError};
 use tape_sdk::stream::manifest::max_track_size;
 use tape_sdk::track::write::content_etag_named;
@@ -43,6 +44,7 @@ use crate::http::handlers::object::{
     CachePolicy, ObjectResponseMetadata, range_header, read_object_response,
 };
 use crate::http::handlers::track::track_with_pending;
+use crate::http::request_id::next_request_id;
 use crate::http::state::AppState;
 use crate::http::handlers::object::response::object_response_ranged;
 use crate::http::handlers::s3::response::head_response_parts;
@@ -54,6 +56,7 @@ use super::authz::{
 use crate::http::handlers::share::{node_share_token, tape_for_track};
 use super::chunked::{is_digest_mismatch, object_reader, BodyFraming, DigestCheck};
 use super::clock::now_unix;
+use super::complete::{self, Answer, Registration};
 use super::conditional::{Preconditions, ReadCondition, check_read, check_write};
 use super::error::S3Error;
 use super::multipart::{self, CompletedPartRef, ValidatedUpload};
@@ -69,7 +72,7 @@ use super::sigv4::{
 use super::write::S3WriteContext;
 use super::xml::{
     BucketEntry, DeleteErrorEntry, ListObjectsV1, ListObjectsV2, ObjectEntry, Owner, PartEntry,
-    STORAGE_CLASS_STANDARD, UploadEntry, complete_multipart_upload_body, delete_result_body,
+    STORAGE_CLASS_STANDARD, UploadEntry, complete_multipart_upload_element, delete_result_body,
     initiate_multipart_upload_body, list_all_my_buckets_body, list_multipart_uploads_body, location_constraint_body,
     list_objects_v1_body, list_objects_v2_body, list_parts_body, parse_complete_multipart_upload,
     parse_delete_objects,
@@ -1153,6 +1156,7 @@ where
                 &preconditions,
                 reader,
                 Some(producer),
+                false,
             )
             .await?
         }
@@ -1174,6 +1178,7 @@ where
                     &preconditions,
                     data.as_ref(),
                     None,
+                    false,
                 )
                 .await?
             } else {
@@ -1211,6 +1216,7 @@ async fn stream_object<Db, Cluster, Blockchain, Reader>(
     preconditions: &Preconditions,
     reader: Reader,
     producer: Option<JoinHandle<io::Result<()>>>,
+    resume: bool,
 ) -> Result<Hash, S3Error>
 where
     Db: Store + 'static,
@@ -1222,6 +1228,9 @@ where
     let _guard = state.staging.lock_tape(tape).await;
     if let Err(error) = check_conditional_write(state, preconditions, tape, key) {
         permit.refund(state);
+        if let Some(producer) = producer {
+            stop_producer(producer).await;
+        }
         return Err(error);
     }
 
@@ -1232,6 +1241,7 @@ where
         content_type,
         StorageUnits::from_bytes(size),
         reader,
+        resume,
     );
     let (written, produced) = match producer {
         Some(producer) => {
@@ -1257,6 +1267,15 @@ where
         .await
         .map_err(|error| S3Error::Internal(error.to_string()))?;
     Ok(etag)
+}
+
+/// Stop a body producer whose bytes nothing will read, and join it
+async fn stop_producer(producer: JoinHandle<io::Result<()>>) {
+    producer.abort();
+    // A producer that finished first may still report why its body broke off.
+    if let Ok(Err(error)) = producer.await {
+        tracing::debug!(%error, "s3 request body producer stopped");
+    }
 }
 
 /// Seconds an S3 client waits before retrying a write the queue had no room for.
@@ -2010,8 +2029,10 @@ where
         Err(S3Error::InvalidRequest(detail)) => {
             Err(body_producer_error(producer.await).unwrap_or(S3Error::InvalidRequest(detail)))
         }
-        // The producer ends at its next write into the closed pipe.
-        Err(error) => Err(error),
+        Err(error) => {
+            stop_producer(producer).await;
+            Err(error)
+        }
     };
     let etag = settle(permit, state, declared, part)?;
     upload_part_response(etag)
@@ -2124,10 +2145,13 @@ where
 
 /// `POST /{bucket}/{key}?uploadId=..` -> CompleteMultipartUpload
 ///
-/// Parses the part list from the request body and validates it against the
-/// buffered parts. An object within the buffer is concatenated in part-number
-/// order and queued for the drain; a larger one streams onto chunk tracks
-/// straight from the stored parts.
+/// Validates the client's part list against the staged parts, then answers 200
+/// at once and writes in a detached task, the way S3 does: the body keeps the
+/// connection open with whitespace and ends with the result or an `<Error>`.
+/// An object that fits one track is concatenated and queued for the drain, and
+/// a larger one streams onto chunk tracks straight from the stored parts. A
+/// retried Complete joins the write that runs or gets the answer of the one
+/// that landed.
 async fn complete_multipart_upload<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     auth: &Auth,
@@ -2142,12 +2166,15 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let write_ctx = require_write_ctx(state, "CompleteMultipartUpload")?;
+    let write_ctx = require_write_ctx(state, "CompleteMultipartUpload")?.clone();
     let bucket = parse_bucket(&bucket_label)?;
     let upload_id = require_upload_id(query)?;
     // Validation reads staged state and returns the size the write is authorized
     // against, so who is asking has to be settled before it runs.
     let principal = authorize_multipart_read(state, auth, bucket)?;
+    if let Some(outcome) = complete::attach(&upload_id, bucket, &key, principal) {
+        return Ok(complete::waiting_response(outcome));
+    }
     let store = state.context.store.as_ref();
 
     let body_text = std::str::from_utf8(&body).map_err(|_| {
@@ -2159,8 +2186,8 @@ where
         requested.push(CompletedPartRef { part_number, etag });
     }
 
-    // The upload is retained until the write below lands, so a failed write
-    // leaves it intact for the client to retry or abort.
+    // The upload is retained until the write lands, so a failed write leaves it
+    // intact for the client to retry or abort.
     let max_object_bytes = state.context.config.gateway.s3.max_object_bytes;
     let max_buffered_bytes = state.context.config.gateway.s3.max_buffered_bytes;
     let threshold = stream_threshold(max_buffered_bytes, state.context.params().profile);
@@ -2173,56 +2200,126 @@ where
         max_object_bytes,
         principal,
     )?;
-    let preconditions = Preconditions::from_headers(headers);
+    let is_streamed = upload.size > threshold;
 
-    let etag = if upload.size > threshold {
-        stream_upload(state, write_ctx, auth, bucket, &upload_id, &upload, &preconditions).await?
-    } else {
-        let data = multipart::read_object(store, &upload_id, &upload)?;
-
-        // Authorization chokepoint.
+    // Authorization chokepoint. Only an object that fits one track uses the queue.
+    if !is_streamed {
         check_queue_budget(state, upload.size)?;
-        let permit =
-            authorize_write(state, auth, bucket, &key, WriteOp::CompleteMultipart, upload.size)
-                .await?;
-        enqueue_put(
-            state,
-            permit,
-            bucket,
-            &upload.key,
-            upload.content_type,
-            Bytes::from(data),
-            &preconditions,
-        )
-        .await?
-    };
-
-    // The object is durable, so drop the persisted upload state. A failed delete
-    // only leaks reclaimable upload state, so it is logged and the write stands.
-    if let Err(error) = multipart::remove(store, &upload_id) {
-        tracing::warn!(?error, "s3 CompleteMultipartUpload: failed to drop upload state");
     }
+    let permit =
+        authorize_write(state, auth, bucket, &key, WriteOp::CompleteMultipart, upload.size).await?;
 
+    let answer = match complete::register(&upload_id, bucket, &key, principal) {
+        Registration::Started(answer) => answer,
+        Registration::Joined(outcome) => {
+            permit.refund(state);
+            return Ok(complete::waiting_response(outcome));
+        }
+    };
+    let outcome = answer.subscribe();
+    let request_id = current_request_id().unwrap_or_else(next_request_id);
     // Location is the configured public endpoint URL, else a path-style resource.
     let location = match &state.context.config.gateway.s3.public_endpoint {
         Some(endpoint) => format!("{}/{bucket_label}/{key}", endpoint.trim_end_matches('/')),
         None => format!("/{bucket_label}/{key}"),
     };
-    Ok(xml_ok_response(complete_multipart_upload_body(
-        &location,
-        &bucket_label,
-        &upload.key,
-        &etag.to_string(),
-    )))
+    let job = CompleteJob {
+        state: state.clone(),
+        write_ctx,
+        permit,
+        bucket,
+        bucket_label,
+        upload_id: upload_id.clone(),
+        upload,
+        preconditions: Preconditions::from_headers(headers),
+        is_streamed,
+        location,
+        request_id: request_id.clone(),
+    };
+    let task = spawn(with_request_id(request_id, finish_complete(job, answer)));
+    complete::track(&upload_id, task);
+    Ok(complete::waiting_response(outcome))
+}
+
+/// A Complete's write, owned by its detached task
+struct CompleteJob<Db: Store, Cluster: Api, Blockchain: Rpc> {
+    state: AppState<Db, Cluster, Blockchain>,
+    write_ctx: Arc<S3WriteContext>,
+    permit: WritePermit,
+    bucket: Address,
+    bucket_label: String,
+    upload_id: String,
+    upload: ValidatedUpload,
+    preconditions: Preconditions,
+    is_streamed: bool,
+    location: String,
+    request_id: String,
+}
+
+/// Run a Complete's write and publish its answer
+async fn finish_complete<Db, Cluster, Blockchain>(
+    job: CompleteJob<Db, Cluster, Blockchain>,
+    answer: Answer,
+) where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let CompleteJob {
+        state,
+        write_ctx,
+        permit,
+        bucket,
+        bucket_label,
+        upload_id,
+        upload,
+        preconditions,
+        is_streamed,
+        location,
+        request_id,
+    } = job;
+    let written = match is_streamed {
+        true => {
+            stream_upload(&state, &write_ctx, permit, bucket, &upload_id, &upload, &preconditions)
+                .await
+        }
+        false => queue_upload(&state, permit, bucket, &upload_id, &upload, &preconditions).await,
+    };
+    let (element, is_landed) = match written {
+        Ok(etag) => {
+            drop_upload(&state, &upload_id);
+            let etag = etag.to_string();
+            (complete_multipart_upload_element(&location, &bucket_label, &upload.key, &etag), true)
+        }
+        Err(error) => (error.element(&request_id), false),
+    };
+    complete::finish(&upload_id, answer, element, is_landed);
+}
+
+/// Drop a landed upload's staged parts
+///
+/// The object is durable, so the persisted upload state goes. A failed delete
+/// only leaks reclaimable upload state, so it is logged and the write stands.
+fn drop_upload<Db, Cluster, Blockchain>(state: &AppState<Db, Cluster, Blockchain>, upload_id: &str)
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    if let Err(error) = multipart::remove(state.context.store.as_ref(), upload_id) {
+        tracing::warn!(?error, "s3 CompleteMultipartUpload: failed to drop upload state");
+    }
 }
 
 /// Stream a validated upload's stored parts onto chunk tracks and record the landed put
 ///
-/// The reader holds one stored chunk at a time, so a large object never sits in memory.
+/// The reader holds one stored chunk at a time, so a large object never sits
+/// in memory. A Complete after one that began streaming resumes the chunk
+/// tracks that attempt left on the tape.
 async fn stream_upload<Db, Cluster, Blockchain>(
     state: &AppState<Db, Cluster, Blockchain>,
     write_ctx: &S3WriteContext,
-    auth: &Auth,
+    permit: WritePermit,
     bucket: Address,
     upload_id: &str,
     upload: &ValidatedUpload,
@@ -2233,11 +2330,15 @@ where
     Cluster: Api + 'static,
     Blockchain: Rpc + 'static,
 {
-    let size = upload.size;
-    // Authorization chokepoint.
-    let permit =
-        authorize_write(state, auth, bucket, &upload.key, WriteOp::CompleteMultipart, size).await?;
-    let reader = multipart::part_reader(state.context.store.as_ref(), upload_id, &upload.parts);
+    let store = &state.context.store;
+    let resume = upload.has_write_attempt;
+    if !resume {
+        if let Err(error) = multipart::mark_write_attempt(store.as_ref(), upload_id) {
+            permit.refund(state);
+            return Err(error);
+        }
+    }
+    let reader = multipart::part_reader(store.clone(), upload_id.to_string(), upload.parts.clone());
     stream_object(
         state,
         write_ctx,
@@ -2245,12 +2346,38 @@ where
         bucket,
         &upload.key,
         upload.content_type,
-        size,
+        upload.size,
         preconditions,
         reader,
         None,
+        resume,
     )
     .await
+}
+
+/// Concatenate a validated upload's parts and queue the object for the drain
+async fn queue_upload<Db, Cluster, Blockchain>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    permit: WritePermit,
+    bucket: Address,
+    upload_id: &str,
+    upload: &ValidatedUpload,
+    preconditions: &Preconditions,
+) -> Result<Hash, S3Error>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    let data = match multipart::read_object(state.context.store.as_ref(), upload_id, upload) {
+        Ok(data) => data,
+        Err(error) => {
+            permit.refund(state);
+            return Err(error);
+        }
+    };
+    let data = Bytes::from(data);
+    enqueue_put(state, permit, bucket, &upload.key, upload.content_type, data, preconditions).await
 }
 
 #[cfg(test)]

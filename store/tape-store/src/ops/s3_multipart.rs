@@ -294,6 +294,7 @@ mod tests {
             content_type: ContentType::TextPlain,
             initiated: 1_000,
             principal: Address::new_unique(),
+            has_write_attempt: false,
         }
     }
 

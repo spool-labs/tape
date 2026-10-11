@@ -56,6 +56,17 @@ pub enum S3Error {
 }
 
 impl S3Error {
+    /// This error as an `<Error>` element, for a 200 body that already sent its
+    /// declaration. A server error's detail is logged here, as a rendered response logs it.
+    pub fn element(&self, request_id: &str) -> String {
+        if self.status().is_server_error() {
+            let message = self.message();
+            let detail = self.internal_detail().unwrap_or(message.as_str());
+            tracing::error!(code = %self.code(), "s3 gateway error: {detail}");
+        }
+        xml::error_element(self.code(), &self.message(), "", request_id)
+    }
+
     /// Build a S3Error::SlowDown from a meter retry-after Duration.
     pub fn slow_down(retry_after: Duration) -> Self {
         Self::SlowDown {
