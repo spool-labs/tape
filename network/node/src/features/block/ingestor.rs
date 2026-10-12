@@ -124,7 +124,7 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
     }
 
     async fn ingest_once(&mut self, next_slot: SlotNumber) -> Result<SlotNumber, NodeError> {
-        let tip = self.refresh_tip().await?;
+        let tip = self.tip_for(next_slot).await?;
 
         if tip.saturating_sub(next_slot.0) < FETCH_PIPELINE_DEPTH as u64 {
             return self.fetch_parse_and_dispatch(next_slot, tip).await;
@@ -176,6 +176,17 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc>
 
         self.promote().await?;
         Ok(end_slot.next())
+    }
+
+    /// Reuse the last tip sample while the serial path still has a slot to read
+    /// under it, so a block near the tip costs one round trip; sample again once
+    /// ingest has read up to it
+    async fn tip_for(&self, next_slot: SlotNumber) -> Result<u64, NodeError> {
+        let reach = next_slot.0..next_slot.0 + FETCH_PIPELINE_DEPTH as u64;
+        match self.context.ingest.progress().known_tip() {
+            Some(tip) if reach.contains(&tip) => Ok(tip),
+            Some(_) | None => self.refresh_tip().await,
+        }
     }
 
     /// Sample the tip and record it, so lag and readiness stay current through a long catch-up
@@ -520,6 +531,41 @@ mod tests {
             progress.last_dispatched_slot(),
             start.0 + CATCH_UP_WINDOW_SLOTS - 1
         );
+    }
+
+    // near the tip, ingest reads up to the tip it was last told before it asks again
+    #[tokio::test]
+    async fn held_tip() {
+        let harness = harness().await;
+        let ctx = harness.ctx_for(NODE);
+        let start = SlotNumber(ctx.rpc.get_slot().await.expect("get tip") + 1);
+        harness
+            .rpc()
+            .warp_to_slot(start.0 + 1)
+            .expect("two slots to read");
+
+        let (senders, _receivers) = downstream_channels();
+        let mut ingestor = BlockIngestor::new(
+            ctx.clone(),
+            LiveStart { slot: start, parent: None },
+            senders,
+            CancellationToken::new(),
+        );
+        let progress = ctx.ingest.progress();
+
+        let second = ingestor.ingest_step(start).await.expect("first slot");
+        assert_eq!(progress.last_known_tip(), start.0 + 1);
+
+        // The chain moves on while a slot is still left under the sampled tip.
+        harness
+            .rpc()
+            .warp_to_slot(start.0 + 4)
+            .expect("move the tip");
+        let third = ingestor.ingest_step(second).await.expect("second slot");
+        assert_eq!(progress.last_known_tip(), start.0 + 1);
+
+        ingestor.ingest_step(third).await.expect("third slot");
+        assert_eq!(progress.last_known_tip(), start.0 + 4);
     }
 
     // the field stall: a block at the fetch tip must promote with nothing behind it
