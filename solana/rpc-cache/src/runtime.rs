@@ -44,7 +44,7 @@ const LONG_TERM_STORAGE_SLOT_SKIPPED_CODE: i64 = -32009;
 
 const BOOTSTRAP_CONCURRENCY: usize = 16;
 const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(30);
-const LIVE_TAIL_POLL: Duration = Duration::from_millis(400);
+const LIVE_TAIL_POLL: Duration = Duration::from_millis(100);
 const LIVE_TAIL_CONCURRENCY: usize = 4;
 /// Slots listed per getBlocks round trip while filling
 const FILL_WINDOW_SLOTS: u64 = 4096;
@@ -366,11 +366,13 @@ async fn live_tail(state: Arc<AppState>, cancel: CancellationToken) -> Result<()
 
         let newest = state.stats.newest_cached_slot.load(Ordering::Relaxed);
         if live <= newest {
+            state.stats.record_tail(newest);
             continue;
         }
 
         let covered = fill_range(&state, newest + 1, live, LIVE_TAIL_CONCURRENCY, &cancel).await;
         state.stats.newest_cached_slot.fetch_max(covered, Ordering::Relaxed);
+        state.stats.record_tail(covered);
     }
 }
 
@@ -948,5 +950,70 @@ mod tests {
         assert_eq!(fetched, expected);
         assert!(state.slot_store.contains_key(&11));
         assert!(!state.slot_store.contains_key(&31));
+    }
+
+    // the live tail fills the new slots, then reports the last one it holds
+    #[tokio::test]
+    async fn tail_slot() {
+        let mock = MockUpstream::start(|_, body| match body["method"].as_str() {
+            Some("getSlot") => Reply::result(json!(SLOT + 2)),
+            Some("getBlocks") => Reply::result(json!([SLOT + 1, SLOT + 2])),
+            Some("getBlock") => Reply::error(SKIPPED_SLOT_CODE, "Slot was skipped"),
+            Some(_) | None => Reply::status("400 Bad Request"),
+        })
+        .await;
+        let state = state(&mock.url);
+        state.stats.newest_cached_slot.store(SLOT, Ordering::Relaxed);
+        assert_eq!(state.stats.fresh_tail_slot(), None);
+
+        let cancel = CancellationToken::new();
+        let tail = tokio::spawn(live_tail(state.clone(), cancel.clone()));
+        let reported = tokio::time::timeout(Duration::from_secs(5), async {
+            while state.stats.fresh_tail_slot() != Some(SLOT + 2) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        cancel.cancel();
+        tail.await.expect("join tail").expect("tail");
+
+        assert!(reported.is_ok());
+        assert!(state.slot_store.contains_key(&(SLOT + 1)));
+        assert!(state.slot_store.contains_key(&(SLOT + 2)));
+    }
+
+    // a confirmed getSlot goes upstream until the tail has a reading, then is answered from it
+    #[tokio::test]
+    async fn tip_from_tail() {
+        let mock = MockUpstream::start(|_, body| match body["method"].as_str() {
+            Some("getSlot") => Reply::result(json!(SLOT + 9)),
+            Some(_) | None => Reply::status("400 Bad Request"),
+        })
+        .await;
+        let state = state(&mock.url);
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("http://{}/?api=key", listener.local_addr().expect("local address"));
+        let router = crate::server::router(state.clone())
+            .into_make_service_with_connect_info::<SocketAddr>();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await });
+
+        let client = reqwest::Client::new();
+        let mut tips = Vec::new();
+        for commitment in ["confirmed", "confirmed", "finalized"] {
+            let ask = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getSlot",
+                "params": [{"commitment": commitment}],
+            });
+            let response = client.post(&url).json(&ask).send().await.expect("send");
+            let reply: Value = response.json().await.expect("reply");
+            tips.push(reply["result"].as_u64());
+            state.stats.record_tail(SLOT);
+        }
+        server.abort();
+
+        assert_eq!(tips, [Some(SLOT + 9), Some(SLOT), Some(SLOT + 9)]);
+        assert_eq!(count(&mock, "getSlot"), 2);
     }
 }

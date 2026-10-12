@@ -1,9 +1,11 @@
-//! Axum server glue. Two distinct request paths:
+//! Axum server glue. Three distinct request paths:
 //!
 //! - `getBlock` is served from the in-memory slot store (filled by
 //!   bootstrap + live tail), in the encoding the request asks for: json,
 //!   the default, or base64. A confirmed miss fills the store from
 //!   upstream. Other encodings and commitments pass through to upstream.
+//! - A confirmed `getSlot` is answered with the slot the live tail holds
+//!   every block up to, while that reading is recent.
 //! - Everything else uses the original moka-based read-through cache
 //!   (per-method TTLs from `cache::Policy`). Submit methods are logged
 //!   and forwarded uncached.
@@ -19,7 +21,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::{
     Router,
@@ -48,6 +50,14 @@ use crate::upstream::{CALLER_RATE_LIMIT_WAIT, RpcEnvelope, Upstream, UpstreamErr
 /// one.
 const SKIPPED_SLOT_ERROR_CODE: i32 = -32007;
 
+/// A confirmed `getSlot` is answered from the live tail while its reading is
+/// this recent, which is as long as a cached answer lives. Past it the request
+/// goes upstream, so a tail that has stopped shows as an upstream fault.
+const TAIL_FRESH_FOR: Duration = Duration::from_secs(2);
+
+/// Held in `tail_read_ms` until the live tail records its first reading
+const NO_TAIL_READING: u64 = u64::MAX;
+
 /// The transaction encodings the slot store can answer
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BlockEncoding {
@@ -72,6 +82,8 @@ pub struct CacheStats {
     pub epoch_start_slot: AtomicU64,
     pub newest_cached_slot: AtomicU64,
     pub last_observed_live_slot: AtomicU64,
+    pub tail_slot: AtomicU64,
+    tail_read_ms: AtomicU64,
     pub slot_store_hits: AtomicU64,
     pub slot_store_misses: AtomicU64,
     pub slots_fetched: AtomicU64,
@@ -85,6 +97,11 @@ pub struct CacheStats {
 
 impl CacheStats {
     pub fn new() -> Self {
+        Self::started_at(Instant::now())
+    }
+
+    /// Stats whose clock began at `started`, so tests can age a tail reading
+    pub fn started_at(started: Instant) -> Self {
         Self {
             bootstrap_done: AtomicBool::new(false),
             bootstrap_target_slot: AtomicU64::new(0),
@@ -92,6 +109,8 @@ impl CacheStats {
             epoch_start_slot: AtomicU64::new(0),
             newest_cached_slot: AtomicU64::new(0),
             last_observed_live_slot: AtomicU64::new(0),
+            tail_slot: AtomicU64::new(0),
+            tail_read_ms: AtomicU64::new(NO_TAIL_READING),
             slot_store_hits: AtomicU64::new(0),
             slot_store_misses: AtomicU64::new(0),
             slots_fetched: AtomicU64::new(0),
@@ -100,8 +119,27 @@ impl CacheStats {
             public_refused: AtomicU64::new(0),
             public_callers_limited: AtomicU64::new(0),
             public_upstream_limited: AtomicU64::new(0),
-            started: Instant::now(),
+            started,
         }
+    }
+
+    /// Record that the live tail holds every block up to `slot`
+    pub fn record_tail(&self, slot: u64) {
+        self.tail_slot.store(slot, Ordering::Relaxed);
+        self.tail_read_ms
+            .store(self.started.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// The live tail's slot while its reading is recent
+    pub fn fresh_tail_slot(&self) -> Option<u64> {
+        let read_ms = self.tail_read_ms.load(Ordering::Relaxed);
+        if read_ms == NO_TAIL_READING {
+            return None;
+        }
+
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        let is_fresh = now_ms.saturating_sub(read_ms) <= TAIL_FRESH_FOR.as_millis() as u64;
+        is_fresh.then(|| self.tail_slot.load(Ordering::Relaxed))
     }
 
     /// Backfill rate/ETA derived from progress since process start. Only
@@ -279,6 +317,18 @@ async fn handle(
         return forward_passthrough(&state, &req, id).await;
     }
 
+    // The live tail holds every block up to its slot, so this tip moves a
+    // slot at a time and never runs ahead of the store.
+    if method == "getSlot" && commitment_at(&params, 0) == Some("confirmed") {
+        if let Some(slot) = state.stats.fresh_tail_slot() {
+            return (
+                StatusCode::OK,
+                axum::Json(json!({"jsonrpc": "2.0", "id": id, "result": slot})),
+            )
+                .into_response();
+        }
+    }
+
     match state.policy.classify(method) {
         MethodKind::Submit => {
             if state.log_submits {
@@ -326,11 +376,12 @@ fn parse_slot_param(params: &Value) -> Option<u64> {
 }
 
 fn is_confirmed_get_block(params: &Value) -> bool {
-    get_block_commitment(params) == Some("confirmed")
+    commitment_at(params, 1) == Some("confirmed")
 }
 
-fn get_block_commitment(params: &Value) -> Option<&str> {
-    let commitment = params.as_array()?.get(1)?.get("commitment")?;
+/// The commitment in the config object at `position` of a request's params
+fn commitment_at(params: &Value, position: usize) -> Option<&str> {
+    let commitment = params.as_array()?.get(position)?.get("commitment")?;
     match commitment {
         Value::String(value) => Some(value.as_str()),
         Value::Object(map) => map.get("commitment").and_then(Value::as_str),
@@ -567,6 +618,28 @@ mod tests {
     fn finalized_get_block_does_not_use_slot_store() {
         let p = json!([12345, {"encoding": "json", "commitment": "finalized"}]);
         assert!(!is_confirmed_get_block(&p));
+    }
+
+    // a getSlot carries its commitment in the first param, flat or nested
+    #[test]
+    fn slot_commitment() {
+        assert_eq!(commitment_at(&json!([{"commitment": "confirmed"}]), 0), Some("confirmed"));
+        assert_eq!(commitment_at(&json!([{"commitment": {"commitment": "finalized"}}]), 0), Some("finalized"));
+        assert_eq!(commitment_at(&json!([]), 0), None);
+        assert_eq!(commitment_at(&Value::Null, 0), None);
+    }
+
+    // the tail's slot is served only while its reading is recent
+    #[test]
+    fn stale_tail() {
+        let stats = CacheStats::started_at(Instant::now() - TAIL_FRESH_FOR * 3);
+        assert_eq!(stats.fresh_tail_slot(), None);
+
+        stats.record_tail(100);
+        assert_eq!(stats.fresh_tail_slot(), Some(100));
+
+        stats.tail_read_ms.store(0, Ordering::Relaxed);
+        assert_eq!(stats.fresh_tail_slot(), None);
     }
 
     #[test]
