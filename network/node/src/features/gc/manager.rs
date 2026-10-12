@@ -16,9 +16,12 @@ use tape_store::{TapeStore, ops::MetaOps};
 use crate::config::store::GcConfig;
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
-use crate::core::ingest::{AT_TIP_THRESHOLD_SLOTS, IngestState};
+use crate::core::ingest::IngestState;
 use crate::core::types::ServiceName;
 use crate::features::gc::sweep::sweep_epoch;
+
+/// The store may trail the known tip by this many slots and a sweep still runs
+const DURABLE_TIP_THRESHOLD_SLOTS: u64 = 5;
 
 pub struct GcManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -210,7 +213,7 @@ async fn run_epoch_sweep<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     Ok(true)
 }
 
-/// Whether the store has applied blocks to within the at-tip threshold of the finalized tip
+/// Whether the store has applied blocks to within the durable-tip threshold of the finalized tip
 pub fn at_durable_tip<Db: Store, Cluster: Api, Blockchain: Rpc>(
     context: &NodeContext<Db, Cluster, Blockchain>,
 ) -> Result<bool, NodeError> {
@@ -231,7 +234,7 @@ pub fn at_durable_tip<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Ok(false);
     };
 
-    Ok(finalized_tip.saturating_sub(cursor.0) <= AT_TIP_THRESHOLD_SLOTS)
+    Ok(finalized_tip.saturating_sub(cursor.0) <= DURABLE_TIP_THRESHOLD_SLOTS)
 }
 
 fn next_pending_epoch<Db: Store>(

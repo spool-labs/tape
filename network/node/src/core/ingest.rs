@@ -12,7 +12,10 @@ pub const SLOT_MS: u64 = 200;
 /// Threshold at which a node is considered caught up to the durable ingest
 /// edge. The block ingestor dispatch cursor is allowed to lag the confirmed
 /// tip by up to this many slots and still report `AtTip`.
-pub const AT_TIP_THRESHOLD_SLOTS: u64 = 5;
+///
+/// An RPC cache holds a tip reading for about 2 s, so the tip a node is told
+/// moves about ten slots at a step, and the slack is wider than one step.
+pub const AT_TIP_THRESHOLD_SLOTS: u64 = 15;
 
 /// The same slack as chain time, so a chain with a shorter slot gets the slots that come to it
 pub const AT_TIP_SLACK_MS: u64 = AT_TIP_THRESHOLD_SLOTS * SLOT_MS;
