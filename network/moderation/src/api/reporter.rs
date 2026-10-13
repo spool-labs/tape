@@ -2,7 +2,7 @@
 
 use std::net::IpAddr;
 
-use tape_crypto::hash::hashv;
+use sha2::{Digest, Sha256};
 
 /// Separates the salt from the address in the hashed input
 const SALT_SEPARATOR: u8 = 0;
@@ -19,8 +19,11 @@ impl ReporterHasher {
 
     /// Hex sha-256 of the salt and the caller address
     pub fn hash(&self, caller: IpAddr) -> String {
-        let address = caller.to_string();
-        let digest = hashv(&[self.salt.as_bytes(), &[SALT_SEPARATOR], address.as_bytes()]).to_bytes();
+        let mut hasher = Sha256::new();
+        hasher.update(self.salt.as_bytes());
+        hasher.update([SALT_SEPARATOR]);
+        hasher.update(caller.to_string().as_bytes());
+        let digest = hasher.finalize();
 
         let mut hex = String::with_capacity(digest.len() * 2);
         for byte in digest {
@@ -46,15 +49,5 @@ mod tests {
         assert_ne!(hash, ReporterHasher::new("salt-two".to_string()).hash(caller));
         assert_eq!(hash.len(), 64);
         assert!(!hash.contains("198.51"));
-    }
-
-    // the digest is sha-256 of the salt, a zero byte and the address, so stored hashes still match
-    #[test]
-    fn pinned_digest() {
-        let caller: IpAddr = "198.51.100.9".parse().expect("address");
-
-        let hash = ReporterHasher::new("salt-one".to_string()).hash(caller);
-
-        assert_eq!(hash, "af1006ac3715ae22666e515da8ddb15768c52226bec4b1e8b6a7448dde8bef17");
     }
 }

@@ -142,7 +142,7 @@ where
         reader.read_exact(&mut chunk).await?;
 
         // The chain advances only on a match, so chunks cannot be reordered.
-        let expected = chunk_signature(&chain, &previous, &chunk);
+        let expected = chunk_signature(&chain, &previous, &chunk)?;
         if !constant_time_eq(expected.as_bytes(), presented.as_bytes()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -217,14 +217,16 @@ fn chunk_signature(
     chain: &ChunkVerification,
     previous: &str,
     chunk: &[u8],
-) -> String {
+) -> io::Result<String> {
     let string_to_sign = format!(
         "{CHUNK_ALGORITHM}\n{date}\n{scope}\n{previous}\n{EMPTY_SHA256}\n{payload}",
         date = chain.date,
         scope = chain.scope,
         payload = sha256_hex(chunk),
     );
-    hex::encode(hmac_sha256(&chain.signing_key, string_to_sign.as_bytes()))
+    let signature = hmac_sha256(&chain.signing_key, string_to_sign.as_bytes())
+        .map_err(|_| io::Error::other("chunk signature hmac"))?;
+    Ok(hex::encode(signature))
 }
 
 /// Parse the hex chunk size from an `aws-chunked` header line
@@ -279,7 +281,7 @@ mod tests {
         let mut previous = chain.seed_signature.clone();
         let mut out = Vec::new();
         for chunk in chunks.iter().chain(std::iter::once(&b"".as_slice())) {
-            let signature = chunk_signature(chain, &previous, chunk);
+            let signature = chunk_signature(chain, &previous, chunk).expect("sign");
             out.extend_from_slice(
                 format!("{:x};chunk-signature={signature}\r\n", chunk.len()).as_bytes(),
             );
@@ -309,10 +311,12 @@ mod tests {
         ]
         .join("\n");
 
-        let expected = hex::encode(hmac_sha256(&chain.signing_key, expected_string_to_sign.as_bytes()));
+        let expected = hex::encode(
+            hmac_sha256(&chain.signing_key, expected_string_to_sign.as_bytes()).expect("hmac"),
+        );
 
         assert_eq!(
-            chunk_signature(&chain, &chain.seed_signature, chunk),
+            chunk_signature(&chain, &chain.seed_signature, chunk).expect("sign"),
             expected
         );
     }
@@ -379,8 +383,8 @@ mod tests {
     #[tokio::test]
     async fn reordered_chunks_are_refused() {
         let chain = chain();
-        let first = chunk_signature(&chain, &chain.seed_signature, b"hello");
-        let second = chunk_signature(&chain, &first, b" world");
+        let first = chunk_signature(&chain, &chain.seed_signature, b"hello").expect("sign");
+        let second = chunk_signature(&chain, &first, b" world").expect("sign");
 
         // The second chunk's own signature, presented in the first position.
         let mut framed = Vec::new();

@@ -26,7 +26,7 @@ use crate::http::state::AppState;
 /// Flat per-op SOL fee estimate (lamports) reserved before a cost-bearing write.
 const ESTIMATED_LAMPORTS_PER_OP: u64 = 5_000;
 
-pub fn peppered_secret_hmac(pepper: &str, secret: &str) -> [u8; 32] {
+pub fn peppered_secret_hmac(pepper: &str, secret: &str) -> Result<[u8; 32], S3Error> {
     sigv4::hmac_sha256(pepper.as_bytes(), secret.as_bytes())
 }
 
@@ -901,17 +901,17 @@ mod tests {
     // the peppered secret HMAC is deterministic and keyed by both inputs
     #[test]
     fn peppered_hmac() {
-        let a = peppered_secret_hmac("pepper", "secret");
-        let b = peppered_secret_hmac("pepper", "secret");
+        let a = peppered_secret_hmac("pepper", "secret").expect("hmac");
+        let b = peppered_secret_hmac("pepper", "secret").expect("hmac");
         assert_eq!(a, b, "same pepper+secret yields the same digest");
         assert_ne!(
             a,
-            peppered_secret_hmac("other-pepper", "secret"),
+            peppered_secret_hmac("other-pepper", "secret").expect("hmac"),
             "pepper is keyed into the digest"
         );
         assert_ne!(
             a,
-            peppered_secret_hmac("pepper", "other-secret"),
+            peppered_secret_hmac("pepper", "other-secret").expect("hmac"),
             "secret is hashed into the digest"
         );
     }

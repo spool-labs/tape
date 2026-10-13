@@ -24,8 +24,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use hmac::{Hmac, Mac};
 use reqwest::header::{CONTENT_TYPE, ETAG};
 use reqwest::StatusCode;
+use sha2::{Digest, Sha256};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::types::{BasisPoints, StorageUnits};
@@ -36,10 +38,6 @@ use tape_e2e_simnet::{
 use tape_gateway::admission::{Admission, AdmissionDeny, AdmissionRequest, WriteOp};
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_store::ops::LedgerOps;
-
-use common::sigv4::{derive_signing_key, hmac_sha256, sha256_hex};
-
-mod common;
 
 const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
 const TARGET_GROUPS: u64 = 1;
@@ -524,6 +522,26 @@ fn sigv4_headers_with_payload(
          SignedHeaders={SIGNED_HEADERS}, Signature={signature}"
     );
     (authorization, amz_date, payload_hash.to_string())
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hex::encode(hasher.finalize())
+}
+
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(data);
+    mac.finalize().into_bytes().into()
+}
+
+fn derive_signing_key(secret: &str, date_stamp: &str, region: &str, service: &str) -> [u8; 32] {
+    let k_secret = format!("AWS4{secret}");
+    let k_date = hmac_sha256(k_secret.as_bytes(), date_stamp.as_bytes());
+    let k_region = hmac_sha256(&k_date, region.as_bytes());
+    let k_service = hmac_sha256(&k_region, service.as_bytes());
+    hmac_sha256(&k_service, b"aws4_request")
 }
 
 /// Format unix seconds as the AWS basic-UTC timestamp.

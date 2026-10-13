@@ -49,7 +49,7 @@ use super::accounting;
 use super::authz::{
     Auth, WriteOp, WritePermit, authorize_hidden_read, authorize_multipart_read, authorize_write,
 };
-use crate::http::handlers::share::{node_share_token, tape_for_track};
+use crate::http::handlers::share::{is_hidden_tape, node_share_token, tape_for_track, tape_info};
 use super::chunked::{object_reader, BodyFraming};
 use super::clock::now_unix;
 use super::conditional::{Preconditions, ReadCondition, check_read, check_write};
@@ -864,6 +864,7 @@ where
 
     let tape = parse_bucket(&bucket)?;
     let (readable, track) = resolve_readable(&state, &bucket, &key)?;
+    authorize_read(&state, auth, tape, &readable, track.as_ref())?;
     if let Some(answer) = conditional_read_answer(preconditions, &readable)? {
         return Ok(answer);
     }
@@ -884,9 +885,7 @@ where
     };
     let block_time = resolved.block_time;
 
-    // Authorize ahead of the slice cache, whose entries are shared across callers.
     let token = if track.is_hidden() {
-        authorize_hidden_read(&state, auth, tape)?;
         node_share_token(&state, &track, &tape_for_track(&state, &track)?)
     } else {
         None
@@ -949,6 +948,7 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<Response, S3Error> {
     check_request_rate(state, caller)?;
     let (readable, track) = resolve_readable(state, bucket, key)?;
+    authorize_read(state, auth, parse_bucket(bucket)?, &readable, track.as_ref())?;
     if let Some(answer) = conditional_read_answer(preconditions, &readable)? {
         return Ok(answer);
     }
@@ -960,13 +960,28 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
             Some(object.block_time),
             range,
         ),
-        Readable::Track(resolved) => {
-            let track = track.ok_or(S3Error::NoSuchKey)?;
-            if track.is_hidden() {
-                authorize_hidden_read(state, auth, parse_bucket(bucket)?)?;
-            }
-            head_response(&resolved, range)
-        }
+        Readable::Track(resolved) => head_response(&resolved, range),
+    }
+}
+
+/// Refuse a hidden read before anything answers, a 304 included, since a 304 sends the ETag
+///
+/// Runs ahead of the slice cache, whose entries are shared across callers. A queued object
+/// has no track yet and lands with its tape's flags.
+fn authorize_read<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    auth: &Auth,
+    bucket: Address,
+    readable: &Readable,
+    track: Option<&CompressedTrack>,
+) -> Result<(), S3Error> {
+    let is_hidden = match readable {
+        Readable::Queued(_) => is_hidden_tape(tape_info(state, bucket)?.as_ref()),
+        Readable::Track(_) => track.is_some_and(CompressedTrack::is_hidden),
+    };
+    match is_hidden {
+        true => authorize_hidden_read(state, auth, bucket),
+        false => Ok(()),
     }
 }
 
