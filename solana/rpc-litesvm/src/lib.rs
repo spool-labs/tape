@@ -571,7 +571,7 @@ impl Rpc for LiteSvmRpc {
     }
 
     async fn get_account(&self, pubkey: &Address) -> Result<Account, RpcError> {
-        self.get_account_with_commitment(pubkey, self.commitment())
+        self.get_account_with_commitment(pubkey, self.commitment(), None)
             .await
     }
 
@@ -579,6 +579,7 @@ impl Rpc for LiteSvmRpc {
         &self,
         pubkey: &Address,
         _commitment: CommitmentLevel,
+        _min_slot: Option<u64>,
     ) -> Result<Account, RpcError> {
         let inner = self
             .inner

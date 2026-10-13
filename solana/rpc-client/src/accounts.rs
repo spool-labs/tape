@@ -16,7 +16,7 @@ use tape_api::program::tapedrive::{
 
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{Member, Peer};
-use tape_core::types::{EpochNumber, NodeId, TapeNumber};
+use tape_core::types::{EpochNumber, NodeId, SlotNumber, TapeNumber};
 use tape_crypto::address::Address;
 
 /// Fixed accounts read before the per-group ones in an epoch batch.
@@ -29,7 +29,7 @@ impl<R: Rpc> RpcClient<R> {
 
     /// Fetch the System singleton account
     pub async fn get_system(&self) -> Result<System, RpcError> {
-        self.get_system_with_commitment(self.rpc().commitment())
+        self.get_system_with_commitment(self.rpc().commitment(), None)
             .await
     }
 
@@ -37,6 +37,7 @@ impl<R: Rpc> RpcClient<R> {
     pub async fn get_system_with_commitment(
         &self,
         commitment: CommitmentLevel,
+        min_slot: Option<SlotNumber>,
     ) -> Result<System, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
@@ -44,7 +45,7 @@ impl<R: Rpc> RpcClient<R> {
         let result = async {
             let account = self
                 .rpc()
-                .get_account_with_commitment(&SYSTEM_ADDRESS, commitment)
+                .get_account_with_commitment(&SYSTEM_ADDRESS, commitment, min_slot.map(|slot| slot.0))
                 .await?;
 
             // Check account size before unpacking to avoid panic on partially initialized accounts
@@ -75,7 +76,7 @@ impl<R: Rpc> RpcClient<R> {
 
     /// Fetch the Epoch account for the given epoch number.
     pub async fn get_epoch(&self, epoch: EpochNumber) -> Result<Epoch, RpcError> {
-        self.get_epoch_with_commitment(epoch, self.rpc().commitment())
+        self.get_epoch_with_commitment(epoch, self.rpc().commitment(), None)
             .await
     }
 
@@ -84,6 +85,7 @@ impl<R: Rpc> RpcClient<R> {
         &self,
         epoch: EpochNumber,
         commitment: CommitmentLevel,
+        min_slot: Option<SlotNumber>,
     ) -> Result<Epoch, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
@@ -92,7 +94,7 @@ impl<R: Rpc> RpcClient<R> {
         let result = async {
             let account = self
                 .rpc()
-                .get_account_with_commitment(&address, commitment)
+                .get_account_with_commitment(&address, commitment, min_slot.map(|slot| slot.0))
                 .await?;
             Epoch::unpack_with_discriminator(&account.data).copied()
                 .map_err(|e| RpcError::Deserialization(e.to_string()))
@@ -112,7 +114,7 @@ impl<R: Rpc> RpcClient<R> {
 
     /// Fetch the active members for an epoch-scoped Committee account.
     pub async fn get_committee(&self, epoch: EpochNumber) -> Result<Vec<Member>, RpcError> {
-        self.get_committee_with_commitment(epoch, self.rpc().commitment())
+        self.get_committee_with_commitment(epoch, self.rpc().commitment(), None)
             .await
     }
 
@@ -121,6 +123,7 @@ impl<R: Rpc> RpcClient<R> {
         &self,
         epoch: EpochNumber,
         commitment: CommitmentLevel,
+        min_slot: Option<SlotNumber>,
     ) -> Result<(u64, Vec<Member>), RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
@@ -129,7 +132,7 @@ impl<R: Rpc> RpcClient<R> {
         let result = async {
             let account = self
                 .rpc()
-                .get_account_with_commitment(&address, commitment)
+                .get_account_with_commitment(&address, commitment, min_slot.map(|slot| slot.0))
                 .await?;
             let (committee, members) =
                 unpack_dynamic_entries::<Committee>(&account.data, "Committee")?;
@@ -161,8 +164,9 @@ impl<R: Rpc> RpcClient<R> {
         &self,
         epoch: EpochNumber,
         commitment: CommitmentLevel,
+        min_slot: Option<SlotNumber>,
     ) -> Result<Vec<Member>, RpcError> {
-        self.get_committee_account_with_commitment(epoch, commitment)
+        self.get_committee_account_with_commitment(epoch, commitment, min_slot)
             .await
             .map(|(_, members)| members)
     }
@@ -177,6 +181,7 @@ impl<R: Rpc> RpcClient<R> {
     pub async fn get_peer_set_account_with_commitment(
         &self,
         commitment: CommitmentLevel,
+        min_slot: Option<SlotNumber>,
     ) -> Result<(u64, Vec<Peer>), RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
@@ -184,7 +189,7 @@ impl<R: Rpc> RpcClient<R> {
         let result = async {
             let account = self
                 .rpc()
-                .get_account_with_commitment(&PEER_SET_ADDRESS, commitment)
+                .get_account_with_commitment(&PEER_SET_ADDRESS, commitment, min_slot.map(|slot| slot.0))
                 .await?;
             let (peer_set, peers) = unpack_dynamic_entries::<PeerSet>(&account.data, "PeerSet")?;
             Ok((peer_set.peers.capacity, peers))
@@ -207,7 +212,7 @@ impl<R: Rpc> RpcClient<R> {
         &self,
         commitment: CommitmentLevel,
     ) -> Result<Vec<Peer>, RpcError> {
-        self.get_peer_set_account_with_commitment(commitment)
+        self.get_peer_set_account_with_commitment(commitment, None)
             .await
             .map(|(_, peers)| peers)
     }
@@ -263,7 +268,7 @@ impl<R: Rpc> RpcClient<R> {
         let result = async {
             let account = self
                 .rpc()
-                .get_account_with_commitment(&address, commitment)
+                .get_account_with_commitment(&address, commitment, None)
                 .await?;
             unpack_group(&account.data, epoch, group)
         }
@@ -286,7 +291,7 @@ impl<R: Rpc> RpcClient<R> {
         epoch: EpochNumber,
         total_groups: u64,
     ) -> Result<Vec<Group>, RpcError> {
-        self.get_groups_with_commitment(epoch, total_groups, self.rpc().commitment())
+        self.get_groups_with_commitment(epoch, total_groups, self.rpc().commitment(), None)
             .await
     }
 
@@ -296,6 +301,7 @@ impl<R: Rpc> RpcClient<R> {
         epoch: EpochNumber,
         total_groups: u64,
         commitment: CommitmentLevel,
+        min_slot: Option<SlotNumber>,
     ) -> Result<Vec<Group>, RpcError> {
         #[cfg(feature = "metrics")]
         let timer = self.metrics.as_ref().map(|m| m.start_operation());
@@ -315,7 +321,7 @@ impl<R: Rpc> RpcClient<R> {
 
             let accounts = self
                 .rpc()
-                .get_multiple_accounts_with_commitment(&addresses, commitment)
+                .get_multiple_accounts_with_commitment(&addresses, commitment, min_slot.map(|slot| slot.0))
                 .await?;
 
             if accounts.len() != group_count {
@@ -689,7 +695,7 @@ impl<R: Rpc> RpcClient<R> {
 
         let accounts = self
             .rpc()
-            .get_multiple_accounts_with_commitment(&addresses, commitment)
+            .get_multiple_accounts_with_commitment(&addresses, commitment, None)
             .await?;
 
         if accounts.len() != addresses.len() {

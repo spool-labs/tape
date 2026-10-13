@@ -172,11 +172,14 @@ pub trait Rpc: Send + Sync {
 
     /// Fetch a single account's data at an explicit commitment.
     ///
-    /// Returns `Err(RpcError::AccountNotFound)` if the account doesn't exist.
+    /// With `min_slot` set, a backend that has not reached that slot refuses
+    /// the read. Returns `Err(RpcError::AccountNotFound)` if the account
+    /// doesn't exist.
     async fn get_account_with_commitment(
         &self,
         pubkey: &Address,
         commitment: CommitmentLevel,
+        min_slot: Option<u64>,
     ) -> Result<Account, RpcError>;
 
     /// Fetch multiple accounts in a single request
@@ -189,13 +192,15 @@ pub trait Rpc: Send + Sync {
 
     /// Fetch multiple accounts in a single request at an explicit commitment.
     ///
-    /// Returns `None` for accounts that don't exist.
+    /// With `min_slot` set, a backend that has not reached that slot refuses
+    /// the read. Returns `None` for accounts that don't exist.
     async fn get_multiple_accounts_with_commitment(
         &self,
         pubkeys: &[Address],
         commitment: CommitmentLevel,
+        min_slot: Option<u64>,
     ) -> Result<Vec<Option<Account>>, RpcError> {
-        let _ = commitment;
+        let _ = (commitment, min_slot);
         self.get_multiple_accounts(pubkeys).await
     }
 

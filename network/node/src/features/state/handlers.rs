@@ -15,10 +15,10 @@ use tape_core::system::{EpochPhase, NodePreferences, VoteKind};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::coin::TAPE;
-use tape_core::types::{BitmapRead, BitmapWrite, EpochNumber};
+use tape_core::types::{BitmapRead, BitmapWrite, EpochNumber, SlotNumber};
 use tape_crypto::address::Address;
 use tape_crypto::hash::Hash;
-use tape_protocol::{fetch::fetch_state, Api};
+use tape_protocol::{fetch::fetch_state_no_older_than, Api};
 use tape_retry::{retry_if, RetryConfig};
 #[cfg(feature = "metrics")]
 use tape_store::ops::MetaOps;
@@ -48,7 +48,11 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
         }
     }
 
-    pub async fn handle_advance_epoch(&self, epoch: EpochNumber) -> Result<(), NodeError> {
+    pub async fn handle_advance_epoch(
+        &self,
+        epoch: EpochNumber,
+        slot: SlotNumber,
+    ) -> Result<(), NodeError> {
         let previous_epoch = self.context.state().epoch();
         let context = self.context.clone();
 
@@ -58,7 +62,9 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
             move || {
                 let context = context.clone();
                 async move {
-                    let state = fetch_state(&context.rpc).await
+                    // The advance wrote the new epoch's phase in this block, and
+                    // an account read from before it shows the epoch unopened.
+                    let state = fetch_state_no_older_than(&context.rpc, slot).await
                         .map_err(NodeError::from)?;
 
                     if state.epoch() < epoch {
@@ -105,9 +111,9 @@ ProtocolStateHandlers<Db, Cluster, Blockchain> {
     /// the genesis epoch, but a node that booted before it ran is still cached at
     /// epoch 0 (and `StartNetwork` emits no event of its own). Treat it like an
     /// epoch advance so the node re-fetches and catches up to the live committee.
-    pub async fn handle_start_network(&self) -> Result<(), NodeError> {
+    pub async fn handle_start_network(&self, slot: SlotNumber) -> Result<(), NodeError> {
         if self.context.state().epoch().is_zero() {
-            self.handle_advance_epoch(EpochNumber(1)).await?;
+            self.handle_advance_epoch(EpochNumber(1), slot).await?;
         }
 
         Ok(())
@@ -529,7 +535,7 @@ fn apply_event_phase(state: &mut tape_protocol::ProtocolState, phase: u64) {
 mod tests {
     use tape_api::event::{NodeEvicted, PoolAdvanced, SpoolSynced};
     use tape_core::system::EpochPhase;
-    use tape_core::types::{BitmapRead, EpochNumber};
+    use tape_core::types::{BitmapRead, EpochNumber, SlotNumber};
     use tokio_util::sync::CancellationToken;
 
     use super::ProtocolStateHandlers;
@@ -537,6 +543,7 @@ mod tests {
     use crate::harness::NodeHarness;
 
     const EPOCH: EpochNumber = EpochNumber(3);
+    const SLOT: SlotNumber = SlotNumber(1);
     const NODE: usize = 7;
 
     #[tokio::test]
@@ -558,7 +565,7 @@ mod tests {
             .expect("submit advance epoch");
 
         handlers
-            .handle_advance_epoch(EPOCH.next())
+            .handle_advance_epoch(EPOCH.next(), SLOT)
             .await
             .expect("handle advance epoch");
 
@@ -701,7 +708,7 @@ mod tests {
         let handlers = ProtocolStateHandlers::new(ctx.clone(), CancellationToken::new());
 
         handlers
-            .handle_start_network()
+            .handle_start_network(SLOT)
             .await
             .expect("handle start network");
 

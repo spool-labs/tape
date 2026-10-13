@@ -249,7 +249,7 @@ where
         None => {
             let epoch = context
                 .rpc
-                .get_epoch_with_commitment(FIRST_LIVE_EPOCH, CommitmentLevel::Finalized)
+                .get_epoch_with_commitment(FIRST_LIVE_EPOCH, CommitmentLevel::Finalized, None)
                 .await?;
 
             execute_block_phase(
@@ -287,7 +287,7 @@ where
     if current_epoch.is_zero() {
         let epoch = context
             .rpc
-            .get_epoch_with_commitment(BOOTSTRAP_EPOCH, CommitmentLevel::Finalized)
+            .get_epoch_with_commitment(BOOTSTRAP_EPOCH, CommitmentLevel::Finalized, None)
             .await?;
 
         return execute_block_phase(
@@ -308,7 +308,7 @@ where
 
     let epoch = context
         .rpc
-        .get_epoch_with_commitment(FIRST_LIVE_EPOCH, CommitmentLevel::Finalized)
+        .get_epoch_with_commitment(FIRST_LIVE_EPOCH, CommitmentLevel::Finalized, None)
         .await?;
 
     execute_block_phase(
@@ -340,12 +340,12 @@ where
 {
     let epoch0 = context
         .rpc
-        .get_epoch_with_commitment(BOOTSTRAP_EPOCH, CommitmentLevel::Finalized)
+        .get_epoch_with_commitment(BOOTSTRAP_EPOCH, CommitmentLevel::Finalized, None)
         .await?;
 
     let epoch1 = context
         .rpc
-        .get_epoch_with_commitment(FIRST_LIVE_EPOCH, CommitmentLevel::Finalized)
+        .get_epoch_with_commitment(FIRST_LIVE_EPOCH, CommitmentLevel::Finalized, None)
         .await?;
 
     let Some(end_slot) = epoch1.start_slot.checked_prev() else {
@@ -514,7 +514,7 @@ where
         let epoch_number = EpochNumber(raw);
         let epoch = context
             .rpc
-            .get_epoch_with_commitment(epoch_number, CommitmentLevel::Finalized)
+            .get_epoch_with_commitment(epoch_number, CommitmentLevel::Finalized, None)
             .await?;
         // The block at an epoch's start slot opens in the epoch before it,
         // since the advance sits inside that block.

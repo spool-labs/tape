@@ -87,10 +87,10 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> StateManager<Db, Cluster, Blockch
                         .await?;
                 }
                 ParsedInstruction::AdvanceEpoch { event } => {
-                    handlers.handle_advance_epoch(event.new_epoch).await?;
+                    handlers.handle_advance_epoch(event.new_epoch, block.slot).await?;
                 }
                 ParsedInstruction::StartNetwork => {
-                    handlers.handle_start_network().await?;
+                    handlers.handle_start_network(block.slot).await?;
                 }
                 ParsedInstruction::SyncSpool { event, .. } => {
                     handlers.handle_sync_spool(*event).await?;

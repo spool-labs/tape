@@ -21,7 +21,7 @@ impl<R: Rpc> RpcClient<R> {
         let (address, _) = snapshot_tape_pda(epoch);
         let account = self
             .rpc()
-            .get_account_with_commitment(&address, commitment)
+            .get_account_with_commitment(&address, commitment, None)
             .await?;
 
         if account.data.len() < Tape::get_size() {

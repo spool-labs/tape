@@ -1,7 +1,7 @@
 use tape_rpc::{CommitmentLevel, Rpc, RpcError};
 use tape_rpc_client::{EpochBatch, RpcClient};
 use tape_api::state::Epoch;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, SlotNumber};
 
 use crate::{EpochBundle, Freshness, ProtocolState};
 
@@ -24,22 +24,35 @@ pub async fn fetch_state<R: Rpc>(rpc: &RpcClient<R>) -> Result<ProtocolState, Rp
     fetch_state_with_commitment(rpc, rpc.rpc().commitment()).await
 }
 
+/// Fetch the full protocol state from answers at `slot` or later
+///
+/// Separate reads can come from servers a slot apart, and a cache can hold an
+/// answer past the block that changed it. A caller reacting to a block passes
+/// that block's slot, so every account it reads has seen the block.
+pub async fn fetch_state_no_older_than<R: Rpc>(
+    rpc: &RpcClient<R>,
+    slot: SlotNumber,
+) -> Result<ProtocolState, RpcError> {
+    fetch_state_scoped(rpc, rpc.rpc().commitment(), Some(slot), FetchScope::Full).await
+}
+
 /// Fetch only what a client needs to route traffic.
 pub async fn fetch_state_current<R: Rpc>(rpc: &RpcClient<R>) -> Result<ProtocolState, RpcError> {
-    fetch_state_scoped(rpc, rpc.rpc().commitment(), FetchScope::Current).await
+    fetch_state_scoped(rpc, rpc.rpc().commitment(), None, FetchScope::Current).await
 }
 
 pub async fn fetch_state_with_commitment<R: Rpc>(
     rpc: &RpcClient<R>,
     commitment: CommitmentLevel,
 ) -> Result<ProtocolState, RpcError> {
-    fetch_state_scoped(rpc, commitment, FetchScope::Full).await
+    fetch_state_scoped(rpc, commitment, None, FetchScope::Full).await
 }
 
 /// Fetch protocol state, limited to what the scope asks for
 pub async fn fetch_state_scoped<R: Rpc>(
     rpc: &RpcClient<R>,
     commitment: CommitmentLevel,
+    min_slot: Option<SlotNumber>,
     scope: FetchScope,
 ) -> Result<ProtocolState, RpcError> {
     let want_full = matches!(scope, FetchScope::Full);
@@ -57,7 +70,7 @@ pub async fn fetch_state_scoped<R: Rpc>(
     }
 
     let system = rpc
-        .get_system_with_commitment(commitment)
+        .get_system_with_commitment(commitment, min_slot)
         .await?;
 
     let next = system.current_epoch.next();
@@ -79,27 +92,27 @@ pub async fn fetch_state_scoped<R: Rpc>(
         candidate_epoch,
         candidate_committee_account,
     ) = tokio::join!(
-        rpc.get_epoch_with_commitment(system.current_epoch, commitment),
-        rpc.get_committee_with_commitment(system.current_epoch, commitment),
-        rpc.get_peer_set_account_with_commitment(commitment),
+        rpc.get_epoch_with_commitment(system.current_epoch, commitment, min_slot),
+        rpc.get_committee_with_commitment(system.current_epoch, commitment, min_slot),
+        rpc.get_peer_set_account_with_commitment(commitment, min_slot),
         async {
             match has_previous {
-                true => rpc.get_epoch_with_commitment(prev, commitment).await.map(Some),
+                true => rpc.get_epoch_with_commitment(prev, commitment, min_slot).await.map(Some),
                 false => Ok(None),
             }
         },
         async {
             match has_previous {
-                true => rpc.get_committee_with_commitment(prev, commitment).await.map(Some),
+                true => rpc.get_committee_with_commitment(prev, commitment, min_slot).await.map(Some),
                 false => Ok(None),
             }
         },
-        when(want_full, rpc.get_epoch_with_commitment(next, commitment)),
-        when(want_full, rpc.get_committee_account_with_commitment(next, commitment)),
-        when(want_full, rpc.get_epoch_with_commitment(candidate, commitment)),
+        when(want_full, rpc.get_epoch_with_commitment(next, commitment, min_slot)),
+        when(want_full, rpc.get_committee_account_with_commitment(next, commitment, min_slot)),
+        when(want_full, rpc.get_epoch_with_commitment(candidate, commitment, min_slot)),
         when(
             want_full,
-            rpc.get_committee_account_with_commitment(candidate, commitment),
+            rpc.get_committee_account_with_commitment(candidate, commitment, min_slot),
         ),
     );
 
@@ -124,11 +137,16 @@ pub async fn fetch_state_scoped<R: Rpc>(
     let candidate_committee_capacity = candidate_committee_account?.map(|(capacity, _)| capacity);
 
     let (current_groups, prev_groups) = tokio::join!(
-        rpc.get_groups_with_commitment(current_epoch.id, current_epoch.total_groups, commitment),
+        rpc.get_groups_with_commitment(
+            current_epoch.id,
+            current_epoch.total_groups,
+            commitment,
+            min_slot,
+        ),
         async {
             match &prev_epoch {
                 Some(epoch) => rpc
-                    .get_groups_with_commitment(epoch.id, epoch.total_groups, commitment)
+                    .get_groups_with_commitment(epoch.id, epoch.total_groups, commitment, min_slot)
                     .await
                     .map(Some),
                 None => Ok(None),
@@ -205,7 +223,7 @@ pub async fn fetch_state_speculative<R: Rpc>(
 
     match assemble_speculative(batch, guess) {
         Some(state) => Ok(state),
-        None => fetch_state_scoped(rpc, commitment, FetchScope::Current).await,
+        None => fetch_state_scoped(rpc, commitment, None, FetchScope::Current).await,
     }
 }
 
@@ -256,7 +274,7 @@ pub async fn fetch_epoch_bundle_with_commitment<R: Rpc>(
     commitment: CommitmentLevel,
 ) -> Result<EpochBundle, RpcError> {
     let epoch = rpc
-        .get_epoch_with_commitment(epoch, commitment)
+        .get_epoch_with_commitment(epoch, commitment, None)
         .await?;
 
     build_epoch_bundle_with_commitment(rpc, epoch, commitment).await
@@ -269,11 +287,11 @@ async fn build_epoch_bundle_with_commitment<R: Rpc>(
 ) -> Result<EpochBundle, RpcError> {
 
     let committee = rpc
-        .get_committee_with_commitment(epoch.id, commitment)
+        .get_committee_with_commitment(epoch.id, commitment, None)
         .await?;
 
     let groups = rpc
-        .get_groups_with_commitment(epoch.id, epoch.total_groups, commitment)
+        .get_groups_with_commitment(epoch.id, epoch.total_groups, commitment, None)
         .await?;
 
     Ok(EpochBundle {

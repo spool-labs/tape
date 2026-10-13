@@ -197,6 +197,7 @@ fn is_retriable_message(msg: &str) -> bool {
     let msg = msg.to_lowercase();
     msg.contains("blockhash not found")
         || msg.contains("node is behind")
+        || msg.contains("minimum context slot")
         || msg.contains("block not available")
         || msg.contains("not yet available for slot")
         || msg.contains("timeout")
@@ -246,6 +247,15 @@ mod tests {
     fn block_status_race_is_retriable() {
         let err = RpcError::Request("Block status not yet available for slot 6549".into());
         assert!(err.is_retriable(), "a slot the validator has not committed yet is a retry");
+    }
+
+    #[test]
+    fn behind_min_slot_is_retriable() {
+        let err = RpcError::Request(
+            "RPC response error -32016: Minimum context slot has not been reached".into(),
+        );
+        assert!(err.is_retriable(), "a server behind the asked slot catches up");
+        assert!(!err.should_failover());
     }
 
     #[test]

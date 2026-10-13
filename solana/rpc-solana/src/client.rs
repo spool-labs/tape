@@ -543,6 +543,17 @@ fn block_request(slot: u64, commitment: CommitmentLevel) -> Result<serde_json::V
     }))
 }
 
+/// The config both account reads send. A server that has not reached
+/// `min_slot` refuses the read.
+fn account_config(commitment: CommitmentLevel, min_slot: Option<u64>) -> RpcAccountInfoConfig {
+    RpcAccountInfoConfig {
+        encoding: Some(UiAccountEncoding::Base64Zstd),
+        commitment: Some(CommitmentConfig { commitment }),
+        data_slice: None,
+        min_context_slot: min_slot,
+    }
+}
+
 /// Serialises to exactly the params `block_request` sends; commitment is
 /// filled in per call from the configured level.
 const BLOCK_CONFIG: RpcBlockConfig = RpcBlockConfig {
@@ -1110,7 +1121,7 @@ impl Rpc for SolanaRpc {
     }
 
     async fn get_account(&self, pubkey: &Address) -> Result<Account, RpcError> {
-        self.get_account_with_commitment(pubkey, self.config.commitment)
+        self.get_account_with_commitment(pubkey, self.config.commitment, None)
             .await
     }
 
@@ -1118,15 +1129,11 @@ impl Rpc for SolanaRpc {
         &self,
         pubkey: &Address,
         commitment: CommitmentLevel,
+        min_slot: Option<u64>,
     ) -> Result<Account, RpcError> {
         let pubkey = *pubkey;
         let solana_pubkey: Pubkey = pubkey.into();
-        let config = RpcAccountInfoConfig {
-            encoding: Some(UiAccountEncoding::Base64Zstd),
-            commitment: Some(CommitmentConfig { commitment }),
-            data_slice: None,
-            min_context_slot: None,
-        };
+        let config = account_config(commitment, min_slot);
 
         // The typed call reports every failure as a missing account, a refused
         // connection included, so the request is sent and read here.
@@ -1155,7 +1162,7 @@ impl Rpc for SolanaRpc {
         &self,
         pubkeys: &[Address],
     ) -> Result<Vec<Option<Account>>, RpcError> {
-        self.get_multiple_accounts_with_commitment(pubkeys, self.config.commitment)
+        self.get_multiple_accounts_with_commitment(pubkeys, self.config.commitment, None)
             .await
     }
 
@@ -1163,23 +1170,34 @@ impl Rpc for SolanaRpc {
         &self,
         pubkeys: &[Address],
         commitment: CommitmentLevel,
+        min_slot: Option<u64>,
     ) -> Result<Vec<Option<Account>>, RpcError> {
         let solana_pubkeys: Vec<Pubkey> = pubkeys.iter().copied().map(Into::into).collect();
-        let commitment = CommitmentConfig { commitment };
+        let config = account_config(commitment, min_slot);
 
         let response = self
             .with_retry("getMultipleAccounts", move |client| {
                 let pubkeys = solana_pubkeys.clone();
+                let config = config.clone();
                 async move {
                     client
-                        .get_multiple_accounts_with_commitment(&pubkeys, commitment)
+                        .get_multiple_ui_accounts_with_config(&pubkeys, config)
                         .await
                         .map_err(Self::convert_error)
                 }
             })
             .await?;
 
-        Ok(response.value)
+        response
+            .value
+            .into_iter()
+            .map(|account| match account {
+                Some(account) => account.to_account().map(Some).ok_or_else(|| {
+                    RpcError::Deserialization("account was not binary-decodable".to_string())
+                }),
+                None => Ok(None),
+            })
+            .collect()
     }
 
     async fn get_program_accounts(
@@ -1419,6 +1437,7 @@ mod tests {
     use solana_instruction_error::InstructionError;
     use solana_transaction::TransactionError;
     use crate::selector::EndpointStrategy;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
 /// A stand-in JSON-RPC endpoint, answering one reply per method until dropped.
@@ -1746,6 +1765,42 @@ async fn an_account_read_fails_over() {
     assert_eq!(live.served(), vec!["getAccountInfo".to_string()]);
 }
 
+/// A member behind the asked slot on its first answer, holding this account after it
+fn lagging_member(account: serde_json::Value) -> impl Fn(&str) -> serde_json::Value + Send + Sync + 'static {
+    let asked = AtomicUsize::new(0);
+    move |_method: &str| match asked.fetch_add(1, Ordering::Relaxed) {
+        0 => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": -32016,
+                "message": "Minimum context slot has not been reached",
+                "data": { "contextSlot": 41 },
+            },
+        }),
+        _ => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "context": { "slot": 42 }, "value": account.clone() },
+        }),
+    }
+}
+
+// a member behind the asked slot is asked again on the same endpoint
+#[tokio::test]
+async fn a_read_behind_the_min_slot_retries() {
+    let mock = MockEndpoint::start(lagging_member(held_account())).await;
+    let client = client_at(vec![mock.url.clone()]);
+
+    let account = client
+        .get_account_with_commitment(&Address::new_unique(), CommitmentLevel::Confirmed, Some(42))
+        .await
+        .expect("the member catches up");
+
+    assert_eq!(account.lamports, 5);
+    assert_eq!(mock.served(), vec!["getAccountInfo".to_string(); 2]);
+}
+
 /// A member that holds no block in the window and reports this tip
 fn empty_member(tip: u64) -> impl Fn(&str) -> serde_json::Value + Send + Sync + 'static {
     move |method: &str| match method {
@@ -1986,6 +2041,19 @@ async fn a_listed_window_reads_no_tip() {
         assert_eq!(params[1]["maxSupportedTransactionVersion"], 1);
         // Rendered by Display, so pin the wire spelling rather than trust it.
         assert_eq!(params[1]["commitment"], "confirmed");
+    }
+
+    // a pinned read carries its slot to the server, and an unpinned one sends none
+    #[test]
+    fn account_config_carries_the_min_slot() {
+        let pinned = serde_json::to_value(account_config(CommitmentLevel::Confirmed, Some(42)))
+            .expect("config encodes");
+        let unpinned = serde_json::to_value(account_config(CommitmentLevel::Confirmed, None))
+            .expect("config encodes");
+
+        assert_eq!(pinned["minContextSlot"], 42);
+        assert_eq!(pinned["commitment"], "confirmed");
+        assert!(unpinned["minContextSlot"].is_null());
     }
 
     // json is refused by the tapesvm daemon, which leaves the register event unreadable
