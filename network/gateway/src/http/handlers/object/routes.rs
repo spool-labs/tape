@@ -25,7 +25,7 @@ use super::response::{
 use crate::http::error::RouteError;
 use crate::http::handlers::resolve::{Readable, resolve_readable_with_pending};
 use crate::http::handlers::store_error;
-use crate::http::handlers::share::{authorize_signed_queued_read, authorize_signed_read};
+use crate::http::handlers::share::authorize_signed_read;
 use crate::http::handlers::track::{ensure_readable, parse_address, track_with_pending};
 use crate::http::state::AppState;
 use crate::meter::{GatewayMeterDecision, MeterCaller, rate_limited_response};
@@ -101,7 +101,6 @@ pub async fn get_bucket_object<
 
     let resolved = match readable {
         Readable::Queued(object) => {
-            authorize_signed_queued_read(&state, &headers, &method, uri.path(), tape, key.as_bytes())?;
             let bytes = state
                 .staging
                 .bytes(tape, key.as_bytes())

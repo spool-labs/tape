@@ -35,7 +35,7 @@ use tape_protocol::api::{with_share_token, ApiError};
 use tape_sdk::error::{TapedriveError, UploadError};
 use tape_sdk::track::write::content_etag_named;
 use tape_store::ops::{CredentialOps, ObjectListOps, ObjectListPage, TapeOps, object_has_left};
-use tape_store::types::{CredentialScope, ObjectListEntry, PendingOp, PendingWrite};
+use tape_store::types::{CredentialScope, ObjectListEntry, PendingOp, PendingWrite, TapeInfo};
 
 use crate::http::handlers::object::{
     CachePolicy, ObjectResponseMetadata, range_header, read_object_response,
@@ -49,7 +49,7 @@ use super::accounting;
 use super::authz::{
     Auth, WriteOp, WritePermit, authorize_hidden_read, authorize_multipart_read, authorize_write,
 };
-use crate::http::handlers::share::{is_hidden_tape, node_share_token, tape_for_track, tape_info};
+use crate::http::handlers::share::{node_share_token, tape_for_track};
 use super::chunked::{object_reader, BodyFraming};
 use super::clock::now_unix;
 use super::conditional::{Preconditions, ReadCondition, check_read, check_write};
@@ -249,6 +249,7 @@ where
 {
     let query = query.as_deref();
     if has_query_param(query, "list-type", Some("2")) {
+        authorize_list(&state, &auth, &bucket)?;
         list_objects_v2(&state, bucket, query)
     } else if has_query_param(query, "uploads", None) {
         list_multipart_uploads(&state, &auth, bucket)
@@ -263,8 +264,34 @@ where
         Err(not_implemented("bucket subresource"))
     } else {
         // Plain `GET /{bucket}` (prefix/marker/delimiter/max-keys) -> ListObjects V1.
+        authorize_list(&state, &auth, &bucket)?;
         list_objects_v1(&state, bucket, query)
     }
+}
+
+/// A hidden bucket lists its objects only to a caller who can read them
+fn authorize_list<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    state: &AppState<Db, Cluster, Blockchain>,
+    auth: &Auth,
+    bucket_label: &str,
+) -> Result<(), S3Error> {
+    let bucket = parse_bucket(bucket_label)?;
+    let in_store = state
+        .context
+        .store
+        .get_tape(bucket)
+        .map_err(|error| S3Error::Internal(format!("get tape: {error}")))?;
+    let info = state.context.pending.apply_to_tape(bucket, in_store);
+
+    match is_hidden_bucket(info.as_ref()) {
+        true => authorize_hidden_read(state, auth, bucket),
+        false => Ok(()),
+    }
+}
+
+/// Whether a bucket's objects land hidden. A tape this gateway hasn't seen counts as hidden
+fn is_hidden_bucket(info: Option<&TapeInfo>) -> bool {
+    info.is_none_or(|info| TapeFlags::is_hidden(info.flags))
 }
 
 /// Bucket subresource query flags that are recognized but unimplemented; a
@@ -864,7 +891,6 @@ where
 
     let tape = parse_bucket(&bucket)?;
     let (readable, track) = resolve_readable(&state, &bucket, &key)?;
-    authorize_read(&state, auth, tape, &readable, track.as_ref())?;
     if let Some(answer) = conditional_read_answer(preconditions, &readable)? {
         return Ok(answer);
     }
@@ -885,7 +911,9 @@ where
     };
     let block_time = resolved.block_time;
 
+    // Authorize ahead of the slice cache, whose entries are shared across callers.
     let token = if track.is_hidden() {
+        authorize_hidden_read(&state, auth, tape)?;
         node_share_token(&state, &track, &tape_for_track(&state, &track)?)
     } else {
         None
@@ -948,7 +976,6 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
 ) -> Result<Response, S3Error> {
     check_request_rate(state, caller)?;
     let (readable, track) = resolve_readable(state, bucket, key)?;
-    authorize_read(state, auth, parse_bucket(bucket)?, &readable, track.as_ref())?;
     if let Some(answer) = conditional_read_answer(preconditions, &readable)? {
         return Ok(answer);
     }
@@ -960,28 +987,13 @@ fn head_object_impl<Db: Store, Cluster: Api, Blockchain: Rpc>(
             Some(object.block_time),
             range,
         ),
-        Readable::Track(resolved) => head_response(&resolved, range),
-    }
-}
-
-/// Refuse a hidden read before anything answers, a 304 included, since a 304 sends the ETag
-///
-/// Runs ahead of the slice cache, whose entries are shared across callers. A queued object
-/// has no track yet and lands with its tape's flags.
-fn authorize_read<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
-    auth: &Auth,
-    bucket: Address,
-    readable: &Readable,
-    track: Option<&CompressedTrack>,
-) -> Result<(), S3Error> {
-    let is_hidden = match readable {
-        Readable::Queued(_) => is_hidden_tape(tape_info(state, bucket)?.as_ref()),
-        Readable::Track(_) => track.is_some_and(CompressedTrack::is_hidden),
-    };
-    match is_hidden {
-        true => authorize_hidden_read(state, auth, bucket),
-        false => Ok(()),
+        Readable::Track(resolved) => {
+            let track = track.ok_or(S3Error::NoSuchKey)?;
+            if track.is_hidden() {
+                authorize_hidden_read(state, auth, parse_bucket(bucket)?)?;
+            }
+            head_response(&resolved, range)
+        }
     }
 }
 
@@ -2142,7 +2154,7 @@ where
 #[cfg(test)]
 mod tests {
     use axum::http::HeaderValue;
-    use tape_core::types::{StorageUnits, TapeNumber};
+    use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_store::types::PendingState;
 
     use crate::http::handlers::s3::sigv4::ChunkVerification;
@@ -2467,5 +2479,16 @@ mod tests {
             body_framing(&plain, ChunkSigning(None)),
             Ok(BodyFraming::Plain)
         ));
+    }
+
+    // a hidden bucket lists only to a reader, a public one to anyone, an unknown one to no one
+    #[test]
+    fn hidden_bucket() {
+        let tape = |flags| TapeInfo::new(TapeNumber(1), flags, EpochNumber(10), TrackNumber(1));
+
+        assert!(!is_hidden_bucket(Some(&tape(TapeFlags::NONE))));
+        assert!(!is_hidden_bucket(Some(&tape(TapeFlags::IMMUTABLE))));
+        assert!(is_hidden_bucket(Some(&tape(TapeFlags::HIDDEN))));
+        assert!(is_hidden_bucket(None));
     }
 }
