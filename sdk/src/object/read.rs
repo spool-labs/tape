@@ -9,13 +9,16 @@ use crate::metrics::{Operation, Phase};
 use crate::stream::manifest::ChunkManifest;
 use crate::stream::read::{read_manifest_bytes, read_manifest_into};
 use crate::tapedrive::Tapedrive;
+use crate::track::ReadRole;
 
 impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// Read a named object from a bucket.
     pub async fn get_object(&self, bucket: &Address, name: &str) -> Result<Vec<u8>, TapedriveError> {
         let track = self.lookup_object(bucket, name).await?;
         let address = track.address();
-        let bytes = self.read_known(&address, track, Operation::ReadTrack).await?;
+        let bytes = self
+            .read_known(&address, track, Operation::ReadTrack, ReadRole::Lone)
+            .await?;
 
         // A stream's representing track is its manifest; detect and follow it.
         // (Hardening: a magic-prefixed manifest would make this unambiguous.)
@@ -46,7 +49,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     ) -> Result<u64, TapedriveError> {
         let track = self.lookup_object(bucket, name).await?;
         let address = track.address();
-        let bytes = self.read_known(&address, track, Operation::ReadTrack).await?;
+        let bytes = self
+            .read_known(&address, track, Operation::ReadTrack, ReadRole::Lone)
+            .await?;
 
         let profile = self.params().await?.profile;
         if let Ok(manifest) = ChunkManifest::from_bytes(&bytes, profile) {

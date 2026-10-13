@@ -14,6 +14,7 @@ use tape_protocol::{Api, api::CertifyRes};
 use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::metrics::{Operation, Phase};
+use crate::progress::{Step, UnitKind};
 use crate::stream::manifest::max_track_size;
 use crate::stream::write::{ChunkCertification, append_to_mirror, certify_chunk_run};
 use crate::tapedrive::Tapedrive;
@@ -23,12 +24,12 @@ use crate::track::write::{
     resolve_sent_raw, send_registers, upload_with_retry,
 };
 
+pub const MAX_OBJECT_BATCH_ITEMS: usize = 32;
+pub const MAX_OBJECT_BATCH_BYTES: u64 = 256 * 1024 * 1024;
+
 const MAX_ENCODE_WORKERS: usize = 4;
 const RESOLVE_CONCURRENCY: usize = 3;
 const COLLECT_CONCURRENCY: usize = 2;
-pub const MAX_OBJECT_BATCH_ITEMS: usize = 32;
-pub const MAX_OBJECT_BATCH_BYTES: u64 = 256 * 1024 * 1024;
-/// Batch items uploading at once unless the client pins a store depth
 const BATCH_STORE_DEPTH: usize = 4;
 
 #[derive(Clone)]
@@ -228,6 +229,14 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         bucket: &impl TapeOperator,
         objects: Vec<ObjectBatchItem>,
     ) -> Result<StoredObjectBatch, TapedriveError> {
+        if self.progress.is_some() {
+            let sizes = objects
+                .iter()
+                .map(|object| StorageUnits::from_bytes(object.data.len() as u64))
+                .collect();
+            self.report(Step::Planned { kind: UnitKind::Track, sizes });
+        }
+
         let tape = self.get_tape(&bucket.address()).await?;
         let mirror = Mutex::new(ArchiveMirror::new(&tape.tracks));
         let encode_workers = std::thread::available_parallelism()
@@ -258,7 +267,10 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                             object.name
                         )));
                     }
-                    None => encode_blob(self, object.data, Operation::WriteBatch).await?,
+                    None => {
+                        self.report(Step::Encoding { unit: index });
+                        encode_blob(self, object.data, Operation::WriteBatch).await?
+                    }
                 };
                 Ok(PreparedItem::Coded {
                     index,
@@ -283,7 +295,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                     data,
                 } => {
                     let bytes_written = data.len() as u64;
-                    registers.push(prepare_raw_register(
+                    let register = prepare_raw_register(
                         self,
                         bucket,
                         name.as_bytes(),
@@ -291,7 +303,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                         StorageUnits::from_bytes(bytes_written),
                         &data,
                         self.write_options.flags,
-                    )?);
+                    )?;
+                    registers.push(register.for_unit(index));
                     run.push(RunItem { index, name, bytes_written });
                 }
                 PreparedItem::Coded {
@@ -301,7 +314,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                     bytes_written,
                     plan,
                 } => {
-                    registers.push(prepare_blob_register(
+                    let register = prepare_blob_register(
                         self,
                         bucket,
                         name.as_bytes(),
@@ -309,7 +322,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                         StorageUnits::from_bytes(bytes_written),
                         *plan,
                         self.write_options.flags,
-                    )?);
+                    )?;
+                    registers.push(register.for_unit(index));
                     run.push(RunItem { index, name, bytes_written });
                 }
             }
@@ -376,6 +390,18 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
                 }
             };
             append_to_mirror(self, bucket, &mirror, written).await?;
+        }
+        for item in &resolved {
+            match item {
+                ResolvedItem::Coded { index, written, .. } => {
+                    self.report(Step::Storing { unit: *index, track: written.address });
+                }
+                // An inline object is whole and certified once its register lands.
+                ResolvedItem::Inline { index, written, .. } => {
+                    self.report(Step::Storing { unit: *index, track: written.address });
+                    self.report(Step::Done { track: written.address });
+                }
+            }
         }
 
         let store_depth = self.write_options.store_depth.unwrap_or(BATCH_STORE_DEPTH).max(1);

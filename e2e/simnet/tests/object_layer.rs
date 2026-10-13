@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
@@ -7,8 +7,43 @@ use tape_e2e_simnet::{NodeRuntimeMode, SimnetBuilder, TAPENET_GROUP_SIZE, run_si
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::metrics::{InMemory, Operation, Phase};
 use tape_sdk::object::{ListObjectsQuery, ObjectBatchItem};
+use tape_sdk::progress::{Progress, Step, UnitKind};
 
 const TARGET_GROUPS: u64 = 1;
+
+/// Keeps every step the client reports
+#[derive(Default)]
+struct Recorder {
+    steps: Mutex<Vec<Step>>,
+}
+
+impl Recorder {
+    /// Hand back the steps so far and start over
+    fn take(&self) -> Vec<Step> {
+        std::mem::take(&mut *self.steps.lock().expect("steps lock"))
+    }
+}
+
+impl Progress for Recorder {
+    fn report(&self, step: Step) {
+        self.steps.lock().expect("steps lock").push(step);
+    }
+}
+
+/// The units whose registers went out, in order, and how many tracks are done
+fn registered_and_done(steps: &[Step]) -> (Vec<usize>, usize) {
+    let mut registered = Vec::new();
+    let mut done = 0;
+    for step in steps {
+        if let Step::Registering { unit } = step {
+            registered.push(*unit);
+        }
+        if let Step::Done { .. } = step {
+            done += 1;
+        }
+    }
+    (registered, done)
+}
 
 #[test]
 fn object_layer_round_trip() {
@@ -65,7 +100,11 @@ async fn object_layer_round_trip_inner() {
     assert_eq!(epoch, 2, "expected epoch 2");
 
     let metrics = Arc::new(InMemory::new());
-    let sdk = scenario.sdk(harness.admin()).with_metrics(metrics.clone());
+    let progress = Arc::new(Recorder::default());
+    let sdk = scenario
+        .sdk(harness.admin())
+        .with_metrics(metrics.clone())
+        .with_progress(progress.clone());
     let bucket = TapeKey::generate();
     let name = "photos/cat.jpg";
     let data = b"named object bytes";
@@ -120,10 +159,19 @@ async fn object_layer_round_trip_inner() {
             plan: None,
         },
     ];
+    progress.take();
     let stored = sdk
         .store_objects_batch(&bucket, batch)
         .await
         .expect("store ordered object batch");
+    let steps = progress.take();
+    assert!(
+        matches!(steps.first(), Some(Step::Planned { kind: UnitKind::Track, sizes }) if sizes.len() == 3),
+        "a batch should plan every object as a track before anything else"
+    );
+    let (registered, done) = registered_and_done(&steps);
+    assert_eq!(registered, [0, 1, 2], "registers should be reported in caller order");
+    assert_eq!(done, 2, "an inline object should be done once its register lands");
     let receipts = stored.receipts;
     assert_eq!(
         receipts
@@ -145,6 +193,8 @@ async fn object_layer_round_trip_inner() {
     sdk.certify_objects_batch(&bucket, stored.verification)
         .await
         .expect("certify stored object batch");
+    let (_, done) = registered_and_done(&progress.take());
+    assert_eq!(done, 1, "the coded object should be done once its certify lands");
     // The store half's mirror carries into certification, so the one coded
     // object certifies without ever asking a peer for a proof.
     assert_eq!(

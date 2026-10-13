@@ -8,6 +8,7 @@ pub mod gateway;
 pub mod keys;
 pub mod metrics;
 pub mod object;
+pub mod progress;
 pub mod read_options;
 pub mod staking;
 pub mod stream;

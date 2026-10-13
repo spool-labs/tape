@@ -23,6 +23,7 @@ use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Metrics, Noop, Operation, Phase, Timer};
+use crate::progress::{Progress, Step};
 use crate::read_options::ReadOptions;
 use crate::write_options::WriteOptions;
 use crate::stream::{
@@ -43,6 +44,7 @@ pub struct Tapedrive<Blockchain: Rpc, Cluster: Api> {
     pub rpc: Arc<RpcClient<Blockchain>>,
     pub payer: Option<Keypair>,
     pub metrics: Arc<dyn Metrics>,
+    pub progress: Option<Arc<dyn Progress>>,
     pub write_options: WriteOptions,
     pub read_options: ReadOptions,
     pub reputation: Arc<Reputation>,
@@ -114,6 +116,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             rpc,
             payer,
             metrics: Arc::new(Noop),
+            progress: None,
             write_options: WriteOptions::default(),
             read_options: ReadOptions::default(),
             reputation: Arc::new(Reputation::detached()),
@@ -168,6 +171,19 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     pub fn with_metrics(mut self, metrics: Arc<dyn Metrics>) -> Self {
         self.metrics = metrics;
         self
+    }
+
+    /// Report every step of this client's writes to `progress`.
+    pub fn with_progress(mut self, progress: Arc<dyn Progress>) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
+    /// Tell the installed progress, if any, about a step.
+    pub(crate) fn report(&self, step: Step) {
+        if let Some(progress) = &self.progress {
+            progress.report(step);
+        }
     }
 
     /// Access the underlying RPC client.

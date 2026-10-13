@@ -19,6 +19,7 @@ mod read;
 pub mod write;
 
 pub(crate) use query::{query_track_proof, queryable_peers};
+pub(crate) use read::ReadRole;
 
 /// How long cached network state is trusted without checking the chain. Must
 /// stay below the shortest epoch so a client never acts on a stale committee.

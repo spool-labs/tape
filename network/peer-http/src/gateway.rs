@@ -207,6 +207,10 @@ impl Api for GatewayApi {
         Ok(GetSliceRes { data })
     }
 
+    async fn get_slice_window(&self, _node: Address, _req: &GetSliceWindowReq) -> Result<GetSliceWindowRes, ApiError> {
+        Err(unsupported("get_slice_window"))
+    }
+
     async fn get_track(&self, _node: Address, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {
         let bytes = self.get_bytes(track_url(&req.track.to_string())).await?;
         let wire: TrackResponse =

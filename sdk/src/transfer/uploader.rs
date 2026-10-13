@@ -14,6 +14,7 @@ use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use bytes::Bytes;
+use tape_peer_http::with_slice_watch;
 use tape_protocol::api::{Api, ApiError, CertifyRes, GetTrackReq, PutSliceReq, SlicePayload, SLICE_BODY_HEADROOM};
 use tape_protocol::ProtocolState;
 use tape_retry::{Backoff, RetryConfig, Retryable};
@@ -25,6 +26,7 @@ use tracing::{debug, info, warn};
 use crate::bootstrap::{counts_against_peer, Reputation};
 use crate::codec::encoder::SliceMerkleProof;
 use crate::error::UploadError;
+use crate::progress::{Progress, SliceReport};
 use crate::transfer::gate::{PushGate, PushPace};
 
 /// Longest a rate limited upload sleeps, whatever the server advertises
@@ -127,6 +129,7 @@ pub struct DistributedUploader {
     concurrency_limit: Arc<Semaphore>,
     reputation: Option<Arc<Reputation>>,
     gate: Option<Arc<PushGate>>,
+    steps: Option<Arc<dyn Progress>>,
     // one push task per owner; a call that gives up aborts them, a call that reached quorum hands them to the registry
     stragglers: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -210,8 +213,15 @@ impl DistributedUploader {
             concurrency_limit: Arc::new(Semaphore::new(concurrency.max(1))),
             reputation: None,
             gate: None,
+            steps: None,
             stragglers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Report every slice's push to the client's progress, when it has one.
+    pub fn with_progress(mut self, progress: Option<Arc<dyn Progress>>) -> Self {
+        self.steps = progress;
+        self
     }
 
     /// Run every push through the client's gate, so the pushes sharing its uplink each land in time.
@@ -319,6 +329,7 @@ impl DistributedUploader {
             };
             let reputation = self.reputation.clone();
             let gate = self.gate.clone();
+            let steps = self.steps.clone();
 
             let handle = tokio::spawn(async move {
                 let started = Instant::now();
@@ -330,6 +341,7 @@ impl DistributedUploader {
                     budget,
                     concurrency_limit,
                     gate,
+                    steps,
                 )
                 .await;
                 if let Some(reputation) = reputation {
@@ -485,6 +497,7 @@ async fn upload_node_slices<P: Api>(
     budget: AttemptBudget,
     concurrency_limit: Arc<Semaphore>,
     gate: Option<Arc<PushGate>>,
+    steps: Option<Arc<dyn Progress>>,
 ) -> Result<NodeUploadResult, UploadError> {
     let _permit = concurrency_limit
         .acquire()
@@ -493,6 +506,7 @@ async fn upload_node_slices<P: Api>(
 
     let uploads = slices.into_iter().map(|(global_spool, slice)| {
         let gate = gate.clone();
+        let report = steps.clone().map(|steps| SliceReport::new(steps, track, slice.index));
         async move {
             let payload_bytes = slice.data().len();
             let req = PutSliceReq {
@@ -501,9 +515,23 @@ async fn upload_node_slices<P: Api>(
                 body: slice.body.clone(),
             };
 
-            let result =
-                upload_slice_with_retry(peer_client, node, track, req, payload_bytes, budget, gate)
-                    .await;
+            let result = upload_slice_with_retry(
+                peer_client,
+                node,
+                track,
+                req,
+                payload_bytes,
+                budget,
+                gate,
+                report.as_ref(),
+            )
+            .await;
+            if let Some(report) = &report {
+                match &result {
+                    Ok(_) => report.stored(),
+                    Err(_) => report.failed(),
+                }
+            }
             (global_spool, result)
         }
     });
@@ -591,6 +619,7 @@ async fn upload_slice_with_retry<P: Api>(
     payload_bytes: usize,
     budget: AttemptBudget,
     gate: Option<Arc<PushGate>>,
+    report: Option<&SliceReport>,
 ) -> Result<CertifyRes, ApiError> {
     let mut started = None;
     let mut backoff = Backoff::new(slice_retry_config());
@@ -629,7 +658,8 @@ async fn upload_slice_with_retry<P: Api>(
         // Time spent waiting in the gate is not the owner's, so the straggler clock starts at the first push
         let started = *started.get_or_insert(attempt_started);
         pushes = pushes.saturating_add(1);
-        let result = peer_client.put_slice(node, &req).await;
+        let watch = report.map(SliceReport::watch);
+        let result = with_slice_watch(watch, peer_client.put_slice(node, &req)).await;
         if let Some(pass) = pass {
             pass.finish(PushPace::of(&result, attempt_started.elapsed()));
         }
@@ -712,6 +742,11 @@ async fn upload_slice_with_retry<P: Api>(
                     "slice upload failed, pushing again"
                 );
 
+                // An owner still ingesting the register answers not found, which is no fault of the push
+                if let Some(report) = report.filter(|_| !matches!(error, ApiError::NotFound)) {
+                    report.retried();
+                }
+
                 sleep(delay).await;
             }
         }
@@ -739,6 +774,7 @@ mod tests {
     use tape_crypto::address::Address;
 
     use crate::bootstrap::{NetworkKey, PeerRecord, QUARANTINE_THRESHOLD};
+    use crate::progress::Step;
 
     fn framed(data: &[u8]) -> Vec<u8> {
         let mut body = vec![0u8; SLICE_BODY_HEADROOM];
@@ -1082,6 +1118,41 @@ mod tests {
         assert!(attempts.load(Ordering::Relaxed) > 1);
         let record = peer_record(&reputation, straggler).expect("straggler recorded");
         assert_eq!(record.consecutive_failures, 1);
+    }
+
+    /// Keeps every step it hears
+    #[derive(Default)]
+    struct Recorder {
+        steps: Mutex<Vec<Step>>,
+    }
+
+    impl Progress for Recorder {
+        fn report(&self, step: Step) {
+            self.steps.lock().expect("recorder lock").push(step);
+        }
+    }
+
+    // an uploader with a progress reports every slice an owner stores, and each failed push as a retry
+    #[tokio::test(start_paused = true)]
+    async fn reports_slices() {
+        let state = make_test_state(WIDTH);
+        let straggler = state.current.committee[0].node;
+        let (api, _attempts) = api_with_straggler(straggler, move |attempt| match attempt < 3 {
+            true => refused(ApiError::Timeout),
+            false => accepted(straggler),
+        });
+        let recorder = Arc::new(Recorder::default());
+        let progress: Arc<dyn Progress> = recorder.clone();
+
+        let uploader = uploader_for(&state, ephemeral_reputation()).with_progress(Some(progress));
+        uploader.upload_all(api, &mut UploadProgress::default()).await.expect("quorum reached");
+        sleep(STRAGGLER_LIMIT).await;
+
+        let steps = recorder.steps.lock().expect("recorder lock");
+        let stored = steps.iter().filter(|step| matches!(step, Step::Stored { .. })).count();
+        let retried = steps.iter().filter(|step| matches!(step, Step::Retried { .. })).count();
+        assert_eq!(stored, WIDTH);
+        assert_eq!(retried, 2);
     }
 
     // the owners still pushing outlive the call and the uploader, up to the straggler limit

@@ -19,7 +19,9 @@ use tape_protocol::Api;
 
 use crate::error::TapedriveError;
 use crate::metrics::{Metrics, Operation, Phase, Timer};
+use crate::progress::{Step, UnitKind};
 use crate::tapedrive::Tapedrive;
+use crate::track::ReadRole;
 
 use super::error::StreamError;
 use super::manifest::{ChunkEntry, ChunkManifest};
@@ -53,7 +55,7 @@ pub(crate) async fn read_manifest<Blockchain: Rpc, Cluster: Api>(
     metadata.finish_result(&manifest_track);
     let manifest_track = manifest_track?;
     let manifest_bytes = client
-        .read_known(manifest_address, manifest_track, Operation::ReadStream)
+        .read_known(manifest_address, manifest_track, Operation::ReadStream, ReadRole::Part)
         .await?;
     let profile = client.params().await?.profile;
     let manifest = ChunkManifest::from_bytes(&manifest_bytes, profile)
@@ -83,6 +85,8 @@ pub(crate) async fn read_manifest_into<Blockchain: Rpc, Cluster: Api, Writer: As
     writer: &mut Writer,
 ) -> Result<(), TapedriveError> {
     let tape = manifest_track.tape;
+    let sizes = manifest.chunks.iter().map(|entry| entry.size).collect();
+    client.report(Step::Planned { kind: UnitKind::Chunk, sizes });
     let reads = manifest
         .chunks
         .iter()
@@ -119,7 +123,10 @@ async fn read_segment<Blockchain: Rpc, Cluster: Api>(
             entry.track
         ))));
     }
-    let data = client.read_known(&entry.track, track, Operation::ReadStream).await?;
+    client.report(Step::Fetching { unit: index, track: entry.track });
+    let data = client
+        .read_known(&entry.track, track, Operation::ReadStream, ReadRole::Part)
+        .await?;
     if StorageUnits::from_bytes(data.len() as u64) != entry.size {
         return Err(stream_error(StreamError::Chunk(format!(
             "segment {index} size mismatch: expected {}, got {}",

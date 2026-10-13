@@ -3,7 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tape_protocol::api::{
     Api, ApiError, CertifyReq, CertifyRes, ChallengeReq, ChallengeRes, FindTrackReq, FindTrackRes,
-    GetHealthReq, GetHealthRes, GetSliceReq, GetSliceRes, GetStatsReq, GetStatsRes,
+    GetHealthReq, GetHealthRes, GetSliceReq, GetSliceRes, GetSliceWindowReq, GetSliceWindowRes,
+    GetStatsReq, GetStatsRes,
     GetTrackByNumberReq, GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq,
     GetTrackProofRes, GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListObjectsReq,
     ListObjectsRes, ListTracksByTapeReq, ListTracksByTapeRes, PeerReq, PeerRes,
@@ -69,6 +70,10 @@ impl Api for MemoryApi {
 
     async fn get_slice(&self, node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError> {
         dispatch!(self, node, GetSliceReq { track: req.track, spool: req.spool }, GetSlice)
+    }
+
+    async fn get_slice_window(&self, _node: Address, _req: &GetSliceWindowReq) -> Result<GetSliceWindowRes, ApiError> {
+        Err(ApiError::Other("slice windows unsupported in memory api".into()))
     }
 
     async fn get_track(&self, node: Address, req: &GetTrackReq) -> Result<GetTrackRes, ApiError> {

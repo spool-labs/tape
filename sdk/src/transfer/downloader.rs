@@ -8,6 +8,7 @@ use bytes::Bytes;
 use futures::stream::{FuturesUnordered, StreamExt};
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
+use tape_peer_http::with_slice_watch;
 use tape_protocol::api::{Api, ApiError, GetSliceReq, GetSliceRes};
 use tape_retry::{Backoff, RetryConfig, Retryable};
 use tokio::sync::Semaphore;
@@ -16,6 +17,7 @@ use tracing::warn;
 
 use crate::bootstrap::{Reputation, counts_against_peer};
 use crate::error::DownloadError;
+use crate::progress::{Progress, SliceReport};
 
 /// Parallel downloader for retrieving slices from storage nodes.
 pub struct ParallelDownloader {
@@ -25,6 +27,7 @@ pub struct ParallelDownloader {
     min_slices: usize,
     exclude_slices: HashSet<SpoolIndex>,
     reputation: Option<Arc<Reputation>>,
+    steps: Option<Arc<dyn Progress>>,
 }
 
 impl ParallelDownloader {
@@ -44,12 +47,19 @@ impl ParallelDownloader {
             min_slices,
             exclude_slices: HashSet::new(),
             reputation: None,
+            steps: None,
         }
     }
 
     /// Schedule slices by how their owning node has been behaving.
     pub fn with_reputation(mut self, reputation: Arc<Reputation>) -> Self {
         self.reputation = Some(reputation);
+        self
+    }
+
+    /// Report every slice's fetch to the client's progress, when it has one.
+    pub fn with_progress(mut self, progress: Option<Arc<dyn Progress>>) -> Self {
+        self.steps = progress;
         self
     }
 
@@ -117,6 +127,10 @@ impl ParallelDownloader {
             let track = self.track;
             let sem = sem.clone();
             let reputation = self.reputation.clone();
+            let report = self
+                .steps
+                .clone()
+                .map(|steps| SliceReport::new(steps, track, slice_idx));
 
             futures.push(async move {
                 let _permit = sem.acquire().await.expect("semaphore closed");
@@ -126,8 +140,12 @@ impl ParallelDownloader {
                     node,
                     slice_idx,
                     reputation.as_deref(),
+                    report.as_ref(),
                 )
                 .await;
+                if let (Some(report), Ok(_)) = (&report, &result) {
+                    report.fetched();
+                }
                 (slice_idx, result)
             });
         }
@@ -171,6 +189,7 @@ impl ParallelDownloader {
             node,
             slice_idx,
             self.reputation.as_deref(),
+            None,
         )
         .await
             .map_err(|e| DownloadError::Node(e.to_string()))?;
@@ -185,6 +204,7 @@ async fn download_slice_with_retry<P: Api>(
     node: Address,
     slice_idx: SpoolIndex,
     reputation: Option<&Reputation>,
+    report: Option<&SliceReport>,
 ) -> Result<GetSliceRes, ApiError> {
     let req = GetSliceReq {
         track,
@@ -194,7 +214,8 @@ async fn download_slice_with_retry<P: Api>(
 
     loop {
         let started = Instant::now();
-        let outcome = peer_client.get_slice(node, &req).await;
+        let watch = report.map(SliceReport::watch);
+        let outcome = with_slice_watch(watch, peer_client.get_slice(node, &req)).await;
 
         // Scored per attempt, not per ladder, so a failing node is held out sooner.
         if let Some(reputation) = reputation {
@@ -252,6 +273,13 @@ async fn download_slice_with_retry<P: Api>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use peer_memory::MemoryApi;
+    use tape_protocol::api::{PeerReq, PeerRes};
+
+    use crate::progress::Step;
+
     use super::*;
 
     const TEST_CONCURRENCY: usize = 8;
@@ -261,6 +289,42 @@ mod tests {
         (0..count)
             .map(|i| (SpoolIndex::from(i as u64), Address::new_unique()))
             .collect()
+    }
+
+    /// Keeps every step it hears
+    #[derive(Default)]
+    struct Recorder {
+        steps: Mutex<Vec<Step>>,
+    }
+
+    impl Progress for Recorder {
+        fn report(&self, step: Step) {
+            self.steps.lock().expect("recorder lock").push(step);
+        }
+    }
+
+    // a downloader with a progress reports each slice that arrives whole, for its own track
+    #[tokio::test]
+    async fn reports_fetches() {
+        let api = MemoryApi::new(|_node, request| {
+            let PeerReq::GetSlice(_) = request else {
+                return PeerRes::GetSlice(Err(ApiError::Other("unexpected call".into())));
+            };
+            PeerRes::GetSlice(Ok(GetSliceRes { data: Bytes::from_static(b"slice") }))
+        });
+        let recorder = Arc::new(Recorder::default());
+        let progress: Arc<dyn Progress> = recorder.clone();
+        let track = Address::new_unique();
+        let needed = 3;
+
+        let downloader = ParallelDownloader::new(track, make_slice_map(4), needed, TEST_CONCURRENCY)
+            .with_progress(Some(progress));
+        let slices = downloader.download_enough_slices(&api).await.expect("enough slices");
+
+        let steps = recorder.steps.lock().expect("recorder lock");
+        let is_fetched = |step: &&Step| matches!(step, Step::Fetched { track: fetched, .. } if *fetched == track);
+        assert_eq!(slices.len(), needed);
+        assert!(steps.iter().filter(is_fetched).count() >= needed);
     }
 
     #[test]

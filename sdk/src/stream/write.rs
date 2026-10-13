@@ -33,6 +33,7 @@ use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Outcome, Phase};
+use crate::progress::{Step, UnitKind};
 use crate::tapedrive::Tapedrive;
 use crate::track::network_params;
 use crate::track::write::{
@@ -249,6 +250,33 @@ fn chunk_size(
     }
 }
 
+/// The payload size of every chunk a stream of `size` is cut into, first to last
+pub fn chunk_sizes(
+    size: StorageUnits,
+    profile: ErasureCode,
+) -> Result<Vec<StorageUnits>, StreamError> {
+    let chunk_count = chunk_count_for_size(size, profile)?;
+    let mut sizes = Vec::with_capacity(chunk_count.as_usize());
+    for chunk_index in 0..chunk_count.as_usize() {
+        sizes.push(chunk_size(chunk_index, chunk_count, size, profile)?);
+    }
+    Ok(sizes)
+}
+
+/// Tell the client's progress, when it has one, the chunks a stream is about to write
+fn report_plan<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    size: StorageUnits,
+    profile: ErasureCode,
+) -> Result<(), TapedriveError> {
+    if client.progress.is_none() {
+        return Ok(());
+    }
+    let sizes = chunk_sizes(size, profile).map_err(stream_error)?;
+    client.report(Step::Planned { kind: UnitKind::Chunk, sizes });
+    Ok(())
+}
+
 /// The manifest entry for the chunk at `chunk_index`, stored as the given track.
 fn chunk_entry(
     chunk_index: usize,
@@ -411,10 +439,12 @@ async fn resume_stream_reader<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead +
         .bytes(size.to_bytes());
     let result = async {
         let contents = TapeContents::load(client, operator.address()).await?;
+        report_plan(client, size, profile)?;
         let mut entries = Vec::with_capacity(chunk_count.as_usize());
         for chunk_index in 0..chunk_count.as_usize() {
             let chunk = read_chunk(&mut reader, chunk_index, chunk_count, size, profile).await?;
-            let track = resume_stream_chunk(client, operator, &contents, chunk).await?;
+            let track =
+                resume_stream_chunk(client, operator, &contents, chunk, chunk_index).await?;
             let entry = chunk_entry(
                 chunk_index, chunk_count, size, profile, track.address(),
             );
@@ -506,10 +536,13 @@ async fn resume_stream<Blockchain: Rpc, Cluster: Api>(
         .bytes(size.to_bytes());
     let result = async {
         let contents = TapeContents::load(client, tape_key.address()).await?;
+        report_plan(client, size, profile)?;
         let mut entries = Vec::with_capacity(chunk_count.as_usize());
         for chunk_index in 0..chunk_count.as_usize() {
             let chunk = stream_chunk(data, chunk_index, chunk_count, size, profile)?;
-            let track = resume_stream_chunk(client, tape_key, &contents, chunk.to_vec()).await?;
+            let track =
+                resume_stream_chunk(client, tape_key, &contents, chunk.to_vec(), chunk_index)
+                    .await?;
             let entry = chunk_entry(
                 chunk_index, chunk_count, size, profile, track.address(),
             );
@@ -553,9 +586,11 @@ async fn resume_stream_chunk<Blockchain: Rpc, Cluster: Api>(
     tape_key: &impl TapeOperator,
     contents: &TapeContents,
     chunk_data: Vec<u8>,
+    chunk_index: usize,
 ) -> Result<CompressedTrack, TapedriveError> {
     let logical_size = StorageUnits::from_bytes(chunk_data.len() as u64);
     let flags = contents.track_flags(client.write_options.flags);
+    client.report(Step::Encoding { unit: chunk_index });
     let plan = encode_blob(client, chunk_data, Operation::WriteStream).await?;
     let content = coded_content_address(
         tape_key.address(),
@@ -566,9 +601,11 @@ async fn resume_stream_chunk<Blockchain: Rpc, Cluster: Api>(
     )?;
 
     if let Some(existing) = contents.find(&content) {
-        return finish_coded_track(client, tape_key, existing, &plan, Operation::WriteStream).await;
+        let operation = Operation::WriteStream;
+        return finish_coded_track(client, tape_key, existing, &plan, operation, chunk_index).await;
     }
 
+    client.report(Step::Registering { unit: chunk_index });
     let (written, plan) = register_blob(
         client,
         tape_key,
@@ -580,8 +617,12 @@ async fn resume_stream_chunk<Blockchain: Rpc, Cluster: Api>(
         flags,
     )
     .await?;
+    client.report(Step::Storing { unit: chunk_index, track: written.address });
     let receipts = upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
-    certify_with_retry(client, tape_key, &written, Operation::WriteStream, &receipts).await
+    let certified =
+        certify_with_retry(client, tape_key, &written, Operation::WriteStream, &receipts).await?;
+    client.report(Step::Done { track: written.address });
+    Ok(certified)
 }
 
 /// Finish the manifest track when the tape already holds it, else write it.
@@ -663,6 +704,8 @@ where
     Cluster: Api,
     Chunks: Stream<Item = Result<Vec<u8>, TapedriveError>>,
 {
+    report_plan(client, size, profile)?;
+
     // The mirror seeds from the pre-stream track tree; the resolve stage
     // appends every registered track and the certify stage proves against
     // and updates the same tree, so both share it behind a mutex.
@@ -721,6 +764,7 @@ where
                     };
                     let data = chunk_data?;
                     let index = chunk_index;
+                    client.report(Step::Encoding { unit: index });
                     in_flight.push_back(async move {
                         encode_blob(client, data, Operation::WriteStream)
                             .await
@@ -741,6 +785,7 @@ where
         while let Some((chunk_index, plan)) = encoded_receiver.recv().await {
             let lease = register_tree.clone().read_owned().await;
             let logical_size = plan.storage_units;
+            client.report(Step::Registering { unit: chunk_index });
             let sent = register_blob_processed(
                 client,
                 tape_key,
@@ -788,6 +833,7 @@ where
                     let (chunk_index, (written, plan), lease) = resolved?;
                     append_to_mirror(client, tape_key, mirror, &written).await?;
                     drop(lease);
+                    client.report(Step::Storing { unit: chunk_index, track: written.address });
                     let entry = chunk_entry(
                         chunk_index,
                         chunk_count,
@@ -978,7 +1024,8 @@ struct BuiltCertification {
 /// the ones behind it back onto the one-at-a-time path, which rebuilds them
 /// against the mirror as it stands after the last certify that landed.
 ///
-/// Returns the signatures sent at processed, which the caller waits on.
+/// Returns the signatures sent at processed, which the caller waits on. Each
+/// track is reported done to the client's progress as its certify lands.
 pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -997,6 +1044,9 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
         let outcome = certify_run_once(client, tape_key, mirror, &pending, operation).await?;
         signatures.extend(outcome.signatures);
         let mut refused = pending.split_off(outcome.landed);
+        for landed in &pending {
+            client.report(Step::Done { track: landed.written.address });
+        }
         let Some(item) = refused.first() else {
             break;
         };
@@ -1028,6 +1078,7 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
         )
         .await?;
         signatures.extend(signature);
+        client.report(Step::Done { track: item.written.address });
         debug!(track = track.as_u64(), behind = refused.len(), "refused certify settled on its own");
         pending = refused;
     }
@@ -1215,6 +1266,7 @@ async fn certify_chunks_singly<Blockchain: Rpc, Cluster: Api>(
         )
         .await?;
         signatures.extend(signature);
+        client.report(Step::Done { track: item.written.address });
     }
 
     Ok(signatures)

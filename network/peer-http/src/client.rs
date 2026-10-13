@@ -15,7 +15,7 @@ use tape_crypto::ed25519::Keypair;
 
 use crate::builder::HttpApiBuilder;
 use crate::metrics::ApiMetrics;
-use crate::paced::{Watch, paced_body, silence};
+use crate::watch::{Watch, current_slice_watch, paced_body, silence, watched_body};
 
 /// Per-request timeout for vote calls.
 const VOTE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -262,7 +262,7 @@ impl Api for HttpApi {
         let url = format!("{base}{}", slice_url(&track_id, req.spool));
         let bytes_sent = req.body.len() as u64;
         let watch = Watch::new();
-        let body = paced_body(req.body.clone(), watch.clone());
+        let body = paced_body(req.body.clone(), watch.clone(), current_slice_watch());
         let start = Instant::now();
         // A slow link moves the push along slowly, so only a push that goes quiet gives up
         let exchange = async {
@@ -313,7 +313,10 @@ impl Api for HttpApi {
 
         self.record(node, "get_slice", &resp, start, 0);
         let resp = check_status(resp).await?;
-        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        let bytes = match current_slice_watch() {
+            Some(watch) => watched_body(resp, &watch).await.map_err(map_reqwest)?,
+            None => resp.bytes().await.map_err(map_reqwest)?,
+        };
         self.record_rx(node, "get_slice", bytes.len() as u64);
         Ok(GetSliceRes { data: bytes })
     }
@@ -902,6 +905,7 @@ async fn check_status(resp: reqwest::Response) -> Result<reqwest::Response, ApiE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::watch::{SliceWatch, with_slice_watch};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Arc;
 
@@ -1234,6 +1238,58 @@ mod tests {
         }
 
         assert_eq!(ports.lock().unwrap().len(), 1);
+    }
+
+    // a watched push hears each piece the connection takes, up to the whole body
+    #[tokio::test]
+    async fn watched_push() {
+        install_default_provider();
+        let tls = EdKeypair::new(&mut thread_rng());
+        let tls_pubkey = pubkey_of(&tls);
+        let (addr, _ports) = serve_receipts(tls).await;
+        let target = address(7);
+        let peer_manager = Arc::new(PeerManager::new());
+        peer_manager.add_peer(make_peer(target, addr.port(), tls_pubkey));
+        let api = HttpApi::with_default_timeouts(peer_manager);
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let watch: SliceWatch = {
+            let heard = heard.clone();
+            Arc::new(move |moved, _size| heard.lock().expect("heard lock").push(moved.to_bytes()))
+        };
+        let request = PutSliceReq {
+            track: address(9),
+            spool: SpoolIndex::from(0u64),
+            body: Bytes::from(vec![1u8; 200 * 1024]),
+        };
+
+        with_slice_watch(Some(watch), api.put_slice(target, &request)).await.expect("push");
+
+        assert_eq!(*heard.lock().expect("heard lock"), [65_536, 131_072, 196_608, 204_800]);
+    }
+
+    // a watched fetch hears the slice arrive, and ends having heard all of it
+    #[tokio::test]
+    async fn watched_fetch() {
+        install_default_provider();
+        let tls = EdKeypair::new(&mut thread_rng());
+        let tls_pubkey = pubkey_of(&tls);
+        let (addr, _ports) = serve_receipts(tls).await;
+        let target = address(7);
+        let peer_manager = Arc::new(PeerManager::new());
+        peer_manager.add_peer(make_peer(target, addr.port(), tls_pubkey));
+        let api = HttpApi::with_default_timeouts(peer_manager);
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let watch: SliceWatch = {
+            let heard = heard.clone();
+            Arc::new(move |moved, size| heard.lock().expect("heard lock").push((moved, size)))
+        };
+        let request = GetSliceReq { track: address(9), spool: SpoolIndex::from(0u64) };
+
+        let fetched = with_slice_watch(Some(watch), api.get_slice(target, &request)).await.expect("fetch");
+
+        let whole = StorageUnits::from_bytes(fetched.data.len() as u64);
+        let last = heard.lock().expect("heard lock").last().copied().expect("a piece was heard");
+        assert_eq!(last, (whole, whole));
     }
 
     // Plain-TcpListener warning suppression — tokio's import can otherwise go

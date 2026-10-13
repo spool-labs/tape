@@ -16,6 +16,7 @@ use crate::codec::decoder::BlobDecoder;
 use crate::codec::encoder::BlobEncoder;
 use crate::error::{ClientError, DownloadError, TapedriveError};
 use crate::metrics::{Operation, Phase};
+use crate::progress::{Step, UnitKind, LONE_UNIT};
 use crate::tapedrive::Tapedrive;
 use crate::track::{bootstrap_network_state, network_params, params_of};
 use crate::transfer::downloader::ParallelDownloader;
@@ -33,7 +34,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         track: &Address,
         operation: Operation,
     ) -> Result<Vec<u8>, TapedriveError> {
-        with_share_token(self.read_options.share_token, read_track(self, track, None, operation)).await
+        let read = read_track(self, track, None, operation, ReadRole::Lone);
+        with_share_token(self.read_options.share_token, read).await
     }
 
     /// Read a track whose record the caller already holds
@@ -42,8 +44,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         track: &Address,
         record: CompressedTrack,
         operation: Operation,
+        role: ReadRole,
     ) -> Result<Vec<u8>, TapedriveError> {
-        let read = read_track(self, track, Some(record), operation);
+        let read = read_track(self, track, Some(record), operation, role);
         with_share_token(self.read_options.share_token, read).await
     }
 
@@ -66,11 +69,21 @@ pub fn localize_slices(group: VirtualGroup, slices: &[(SpoolIndex, Bytes)]) -> V
         .collect()
 }
 
+/// What a track read is to the transfer it runs in
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadRole {
+    /// The whole transfer, unless the track turns out to be a stream's manifest
+    Lone,
+    /// A part of a larger read, whose caller reports where it belongs
+    Part,
+}
+
 pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     track: &Address,
     known: Option<CompressedTrack>,
     operation: Operation,
+    role: ReadRole,
 ) -> Result<Vec<u8>, TapedriveError> {
     let total = client.timer(operation, Phase::Total);
     let result = async {
@@ -110,6 +123,13 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
         };
         if blob.get_hash() != track_info.value_hash {
             return Err(TapedriveError::CommitmentMismatch);
+        }
+
+        // A stream's manifest is registered at the size of its stream, so a coded
+        // track whose blob is another size is one, and its stream plans itself.
+        if role == ReadRole::Lone && blob.size == track_info.size {
+            client.report(Step::Planned { kind: UnitKind::Track, sizes: vec![track_info.size] });
+            client.report(Step::Fetching { unit: LONE_UNIT, track: *track });
         }
 
         let group = track_info.group;
@@ -156,6 +176,11 @@ pub async fn read_track<Blockchain: Rpc, Cluster: Api>(
             Err(_) => decode,
         };
         decode.finish_result(&data);
+
+        if data.is_ok() {
+            client.report(Step::Done { track: *track });
+        }
+
         data
     }
     .await;
@@ -226,6 +251,7 @@ async fn download_slices<Blockchain: Rpc, Cluster: Api>(
         client.read_options.slice_concurrency.unwrap_or(k + 1),
     )
     .with_reputation(client.reputation.clone())
+    .with_progress(client.progress.clone())
     .download_enough_slices(client.api.as_ref())
     .await
 }

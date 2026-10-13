@@ -35,7 +35,7 @@ use tape_protocol::api::{with_share_token, ApiError};
 use tape_sdk::error::{TapedriveError, UploadError};
 use tape_sdk::track::write::content_etag_named;
 use tape_store::ops::{CredentialOps, ObjectListOps, ObjectListPage, TapeOps, object_has_left};
-use tape_store::types::{CredentialScope, ObjectListEntry, PendingOp, PendingWrite, TapeInfo};
+use tape_store::types::{CredentialScope, ObjectListEntry, PendingOp, PendingWrite};
 
 use crate::http::handlers::object::{
     CachePolicy, ObjectResponseMetadata, range_header, read_object_response,
@@ -249,7 +249,6 @@ where
 {
     let query = query.as_deref();
     if has_query_param(query, "list-type", Some("2")) {
-        authorize_list(&state, &auth, &bucket)?;
         list_objects_v2(&state, bucket, query)
     } else if has_query_param(query, "uploads", None) {
         list_multipart_uploads(&state, &auth, bucket)
@@ -264,34 +263,8 @@ where
         Err(not_implemented("bucket subresource"))
     } else {
         // Plain `GET /{bucket}` (prefix/marker/delimiter/max-keys) -> ListObjects V1.
-        authorize_list(&state, &auth, &bucket)?;
         list_objects_v1(&state, bucket, query)
     }
-}
-
-/// A hidden bucket lists its objects only to a caller who can read them
-fn authorize_list<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
-    auth: &Auth,
-    bucket_label: &str,
-) -> Result<(), S3Error> {
-    let bucket = parse_bucket(bucket_label)?;
-    let in_store = state
-        .context
-        .store
-        .get_tape(bucket)
-        .map_err(|error| S3Error::Internal(format!("get tape: {error}")))?;
-    let info = state.context.pending.apply_to_tape(bucket, in_store);
-
-    match is_hidden_bucket(info.as_ref()) {
-        true => authorize_hidden_read(state, auth, bucket),
-        false => Ok(()),
-    }
-}
-
-/// Whether a bucket's objects land hidden. A tape this gateway hasn't seen counts as hidden
-fn is_hidden_bucket(info: Option<&TapeInfo>) -> bool {
-    info.is_none_or(|info| TapeFlags::is_hidden(info.flags))
 }
 
 /// Bucket subresource query flags that are recognized but unimplemented; a
@@ -2154,7 +2127,7 @@ where
 #[cfg(test)]
 mod tests {
     use axum::http::HeaderValue;
-    use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
+    use tape_core::types::{StorageUnits, TapeNumber};
     use tape_store::types::PendingState;
 
     use crate::http::handlers::s3::sigv4::ChunkVerification;
@@ -2479,16 +2452,5 @@ mod tests {
             body_framing(&plain, ChunkSigning(None)),
             Ok(BodyFraming::Plain)
         ));
-    }
-
-    // a hidden bucket lists only to a reader, a public one to anyone, an unknown one to no one
-    #[test]
-    fn hidden_bucket() {
-        let tape = |flags| TapeInfo::new(TapeNumber(1), flags, EpochNumber(10), TrackNumber(1));
-
-        assert!(!is_hidden_bucket(Some(&tape(TapeFlags::NONE))));
-        assert!(!is_hidden_bucket(Some(&tape(TapeFlags::IMMUTABLE))));
-        assert!(is_hidden_bucket(Some(&tape(TapeFlags::HIDDEN))));
-        assert!(is_hidden_bucket(None));
     }
 }

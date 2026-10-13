@@ -29,17 +29,8 @@ pub const JSON_CONTENT: &str = "application/json";
 #[async_trait]
 pub trait Api: Send + Sync + 'static {
     async fn put_slice(&self, node: Address, req: &PutSliceReq) -> Result<PutSliceRes, ApiError>;
-
-    /// Slice bytes nodes have accepted from this client so far, which paces a long upload
-    fn accepted_bytes(&self) -> u64 {
-        0
-    }
     async fn get_slice(&self, node: Address, req: &GetSliceReq) -> Result<GetSliceRes, ApiError>;
-
-    /// Fetch part of a slice with its sidecar
-    async fn get_slice_window(&self, _node: Address, _req: &GetSliceWindowReq) -> Result<GetSliceWindowRes, ApiError> {
-        Err(ApiError::Other("slice windows are not served here".into()))
-    }
+    async fn get_slice_window(&self, node: Address, req: &GetSliceWindowReq) -> Result<GetSliceWindowRes, ApiError>;
     async fn get_track(&self, node: Address, req: &GetTrackReq) -> Result<GetTrackRes, ApiError>;
     async fn get_track_by_number(&self, node: Address, req: &GetTrackByNumberReq) -> Result<GetTrackByNumberRes, ApiError>;
     async fn find_track(&self, node: Address, req: &FindTrackReq) -> Result<FindTrackRes, ApiError>;
@@ -57,8 +48,6 @@ pub trait Api: Send + Sync + 'static {
     async fn get_stats(&self, node: Address, req: &GetStatsReq) -> Result<GetStatsRes, ApiError>;
     async fn get_observe_board(&self, node: Address) -> Result<Vec<u8>, ApiError>;
 
-    /// Whether one endpoint answers for every node, so a query needs a single request
-    fn is_gateway(&self) -> bool {
-        false
-    }
+    fn accepted_bytes(&self) -> u64 { 0 }
+    fn is_gateway(&self) -> bool { false }
 }

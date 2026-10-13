@@ -51,6 +51,7 @@ use crate::error::TapedriveError;
 use crate::keys::operator::TapeOperator;
 use crate::keys::tape_key::TapeKey;
 use crate::metrics::{Operation, Phase};
+use crate::progress::{Step, UnitKind, LONE_UNIT};
 use crate::stream::read::read_manifest;
 use crate::tapedrive::Tapedrive;
 use crate::track::{bootstrap_network_state, network_params, params_of, query};
@@ -520,6 +521,9 @@ async fn write_encoded_track<Blockchain: Rpc, Cluster: Api>(
             return Ok(ObjectWrite::inline(written.track));
         }
 
+        let size = StorageUnits::from_bytes(data.len() as u64);
+        client.report(Step::Planned { kind: UnitKind::Track, sizes: vec![size] });
+
         // The tape fetched before the register carries the track tree the
         // certify proof is built against; the processed-level register lets
         // the confirmed wait ride the event fetch.
@@ -528,8 +532,12 @@ async fn write_encoded_track<Blockchain: Rpc, Cluster: Api>(
 
         let plan = match plan {
             Some(plan) => plan,
-            None => encode_blob(client, data.to_vec(), Operation::WriteTrack).await?,
+            None => {
+                client.report(Step::Encoding { unit: LONE_UNIT });
+                encode_blob(client, data.to_vec(), Operation::WriteTrack).await?
+            }
         };
+        client.report(Step::Registering { unit: LONE_UNIT });
         let sent = register_blob_processed(
             client,
             tape_key,
@@ -543,6 +551,7 @@ async fn write_encoded_track<Blockchain: Rpc, Cluster: Api>(
         .await?;
         let (written, plan) = resolve_sent_blob(client, sent).await?;
         let commitment = plan.commitment_hash;
+        client.report(Step::Storing { unit: LONE_UNIT, track: written.address });
 
         // A register landing between the tape fetch and ours breaks the
         // mirror's sequence; those writes certify through the peer path.
@@ -551,15 +560,16 @@ async fn write_encoded_track<Blockchain: Rpc, Cluster: Api>(
         let receipts = upload_with_retry(client, &written, &plan, Operation::WriteTrack).await?;
 
         if !mirrored {
-            return certify_with_retry(
+            let track = certify_with_retry(
                 client,
                 tape_key,
                 &written,
                 Operation::WriteTrack,
                 &receipts,
             )
-            .await
-            .map(|track| ObjectWrite::coded(track, commitment));
+            .await?;
+            client.report(Step::Done { track: written.address });
+            return Ok(ObjectWrite::coded(track, commitment));
         }
 
         certify_with_mirror(
@@ -571,6 +581,7 @@ async fn write_encoded_track<Blockchain: Rpc, Cluster: Api>(
             &receipts,
         )
         .await?;
+        client.report(Step::Done { track: written.address });
 
         // The certify transaction is confirmed, so the on-chain leaf is
         // final; readers poll peers, so their visibility is not waited on.
@@ -616,6 +627,15 @@ pub(crate) struct PreparedRegister {
     instruction: Instruction,
     payload: RegisterPayload,
     bytes: u64,
+    unit: Option<usize>,
+}
+
+impl PreparedRegister {
+    /// Report this register as `unit` of its transfer when it goes out
+    pub(crate) fn for_unit(mut self, unit: usize) -> Self {
+        self.unit = Some(unit);
+        self
+    }
 }
 
 /// What a register's track row is made of once its event comes back. The
@@ -952,6 +972,7 @@ pub(crate) fn prepare_raw_register<Blockchain: Rpc, Cluster: Api>(
             value_hash: meta.value_hash,
         },
         bytes: raw.len() as u64,
+        unit: None,
     })
 }
 
@@ -968,10 +989,12 @@ pub(crate) async fn send_registers<Blockchain: Rpc, Cluster: Api>(
 ) -> Result<Vec<SentRegister>, TapedriveError> {
     let mut instructions = Vec::with_capacity(registers.len());
     let mut payloads = Vec::with_capacity(registers.len());
+    let mut units = Vec::with_capacity(registers.len());
     let mut bytes = 0;
     for register in registers {
         instructions.push(register.instruction);
         payloads.push(register.payload);
+        units.push(register.unit);
         bytes += register.bytes;
     }
 
@@ -979,7 +1002,7 @@ pub(crate) async fn send_registers<Blockchain: Rpc, Cluster: Api>(
         .timer(operation, Phase::Register)
         .bytes(bytes)
         .chunks(payloads.len() as u64);
-    let sent = submit_registers(client, tape_key, instructions).await;
+    let sent = submit_registers(client, tape_key, instructions, &units).await;
     register.finish_result(&sent);
 
     let mut out = Vec::with_capacity(payloads.len());
@@ -991,17 +1014,24 @@ pub(crate) async fn send_registers<Blockchain: Rpc, Cluster: Api>(
 }
 
 /// Submit the run and hand back a signature per register, in order.
+///
+/// `units` holds each register's unit of its transfer, where it has one, and
+/// the client's progress hears of each as its register goes out.
 async fn submit_registers<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     instructions: Vec<Instruction>,
+    units: &[Option<usize>],
 ) -> Result<Vec<Txid>, TapedriveError> {
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
     let mut signatures = Vec::with_capacity(instructions.len());
 
     if !client.rpc().rpc().executes_batches_in_order().await {
-        for instruction in instructions {
+        for (instruction, unit) in instructions.into_iter().zip(units) {
+            if let Some(unit) = unit {
+                client.report(Step::Registering { unit: *unit });
+            }
             signatures.push(
                 client
                     .rpc()
@@ -1020,6 +1050,10 @@ async fn submit_registers<Blockchain: Rpc, Cluster: Api>(
         return Ok(signatures);
     }
 
+    // The whole run goes out in one round trip.
+    for unit in units.iter().flatten() {
+        client.report(Step::Registering { unit: *unit });
+    }
     let blockhash = client.rpc().rpc().get_latest_blockhash().await?;
     let mut transactions = Vec::with_capacity(instructions.len());
     for instruction in instructions {
@@ -1235,6 +1269,7 @@ pub(crate) fn prepare_blob_register<Blockchain: Rpc, Cluster: Api>(
             plan: Box::new(plan),
         },
         bytes,
+        unit: None,
     })
 }
 
@@ -1329,7 +1364,8 @@ async fn upload_once<Blockchain: Rpc, Cluster: Api>(
     )
     .map_err(TapedriveError::Upload)?
     .with_reputation(client.reputation.clone())
-    .with_gate(client.push_gate.clone());
+    .with_gate(client.push_gate.clone())
+    .with_progress(client.progress.clone());
 
     let store = client
         .timer(operation, Phase::Store)
@@ -1952,7 +1988,9 @@ async fn resume_track<Blockchain: Rpc, Cluster: Api>(
     let content = coded_content_address(tape, contents.tape_number(), name, &plan, flags)?;
     match contents.find(&content) {
         Some(existing) => {
-            finish_coded_track(client, tape_key, existing, &plan, Operation::Write).await
+            let size = StorageUnits::from_bytes(data.len() as u64);
+            client.report(Step::Planned { kind: UnitKind::Track, sizes: vec![size] });
+            finish_coded_track(client, tape_key, existing, &plan, Operation::Write, LONE_UNIT).await
         }
         None => write_encoded_track(client, tape_key, name, content_type, data, Some(plan), flags)
             .await
@@ -2017,7 +2055,9 @@ pub(crate) async fn resume_or_write_track<Blockchain: Rpc, Cluster: Api>(
         return match coded_plan {
             Some(plan) => {
                 let commitment = plan.commitment_hash;
-                finish_coded_track(client, operator, existing_track, &plan, Operation::Write)
+                let size = StorageUnits::from_bytes(data.len() as u64);
+                client.report(Step::Planned { kind: UnitKind::Track, sizes: vec![size] });
+                finish_coded_track(client, operator, existing_track, &plan, Operation::Write, LONE_UNIT)
                     .await
                     .map(|track| ObjectWrite::coded(track, commitment))
             }
@@ -2054,22 +2094,30 @@ fn coded_key(name: &[u8], plan: &UploadPlan) -> Result<(Hash, Hash), TapedriveEr
 /// certified, else upload the missing slices and certify. Certification uses the
 /// order-independent peer-proof path, not write_track's mirror shortcut, whose
 /// proof is only valid for tracks certified in tape order.
+///
+/// `unit` is the track's unit in its transfer's plan, which the client's
+/// progress hears as skipped or as stored and done.
 pub(crate) async fn finish_coded_track<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     operator: &impl TapeOperator,
     existing: CompressedTrack,
     plan: &UploadPlan,
     operation: Operation,
+    unit: usize,
 ) -> Result<CompressedTrack, TapedriveError> {
     if existing.is_certified() {
+        client.report(Step::Skipped { unit });
         return Ok(existing);
     }
     let written = WrittenTrack {
         address: existing.address(),
         track: existing,
     };
+    client.report(Step::Storing { unit, track: written.address });
     let receipts = upload_with_retry(client, &written, plan, operation).await?;
-    certify_with_retry(client, operator, &written, operation, &receipts).await
+    let certified = certify_with_retry(client, operator, &written, operation, &receipts).await?;
+    client.report(Step::Done { track: written.address });
+    Ok(certified)
 }
 
 /// Certify a written track with a proof from a mirror seeded before its
@@ -2162,7 +2210,10 @@ pub(crate) async fn upload_with_retry<Blockchain: Rpc, Cluster: Api>(
     let mut backoff = Backoff::new(write_retry_config());
     loop {
         match upload(client, written, plan, operation, &mut progress).await {
-            Ok(receipts) => return Ok(receipts),
+            Ok(receipts) => {
+                client.report(Step::Certifying { track: written.address });
+                return Ok(receipts);
+            }
             Err(err) if should_retry_upload(&err) => {
                 ensure_on_tape(client, &written.track).await?;
                 warn!(error = %err, track = %written.address, "upload attempt failed; retrying");
