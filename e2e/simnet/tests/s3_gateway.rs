@@ -37,16 +37,14 @@
 //!   PutObject (with the credential re-issued and active) is denied.
 //!
 //! The SigV4 request signer is implemented in-test (see the `sigv4` helpers
-//! below) and mirrors the gateway's own canonicalization in
+//! below, on the HMAC and SHA-256 in `common::sigv4`) and mirrors the gateway's own canonicalization in
 //! `network/gateway/src/http/handlers/s3/sigv4.rs`, so no `aws-sigv4` dependency
 //! is pulled in.
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use hmac::{Hmac, Mac};
 use reqwest::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, ETAG};
 use reqwest::{Method, StatusCode};
-use sha2::{Digest, Sha256};
 use solana_signer::Signer;
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
@@ -63,6 +61,10 @@ use tape_e2e_simnet::{
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::object::{ListedObject, ListObjectsQuery};
 use tape_sdk::write_options::WriteOptions;
+
+use common::sigv4::{derive_signing_key, hmac_sha256, sha256_hex};
+
+mod common;
 
 const NODE_COUNT: usize = TAPENET_GROUP_SIZE;
 const TARGET_GROUPS: u64 = 1;
@@ -881,26 +883,6 @@ fn sigv4_headers_with_payload(
          SignedHeaders={SIGNED_HEADERS}, Signature={signature}"
     );
     (authorization, amz_date, payload_hash.to_string())
-}
-
-fn sha256_hex(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
-}
-
-fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(data);
-    mac.finalize().into_bytes().into()
-}
-
-fn derive_signing_key(secret: &str, date_stamp: &str, region: &str, service: &str) -> [u8; 32] {
-    let k_secret = format!("AWS4{secret}");
-    let k_date = hmac_sha256(k_secret.as_bytes(), date_stamp.as_bytes());
-    let k_region = hmac_sha256(&k_date, region.as_bytes());
-    let k_service = hmac_sha256(&k_region, service.as_bytes());
-    hmac_sha256(&k_service, b"aws4_request")
 }
 
 /// Format unix seconds as the AWS `YYYYMMDDTHHMMSSZ` basic-UTC timestamp, via the
