@@ -6,10 +6,8 @@ use axum::extract::{Request, State};
 use axum::http::{Method, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 
-use tape_crypto::hash::hash;
+use tape_crypto::hash::{hash, hashv, HASH_BYTES};
 use tape_node::config::gateway::S3Config;
 
 use super::authz::Auth;
@@ -41,6 +39,12 @@ const EMPTY_PAYLOAD_SHA256: &str =
     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 /// Presigned-URL signature query parameter (excluded from the canonical query)
 const AMZ_SIGNATURE_PARAM: &str = "X-Amz-Signature";
+/// HMAC-SHA256 pads its key to one SHA-256 block
+const HMAC_BLOCK_BYTES: usize = 64;
+/// RFC 2104 inner pad byte
+const HMAC_INNER_PAD: u8 = 0x36;
+/// RFC 2104 outer pad byte
+const HMAC_OUTER_PAD: u8 = 0x5c;
 
 /// Maximum clock skew tolerated between a signed request's timestamp and the
 /// gateway's clock, in seconds.
@@ -50,8 +54,6 @@ const MAX_CLOCK_SKEW_SECS: i64 = 900;
 const MAX_PRESIGNED_EXPIRY_SECS: i64 = 604_800;
 
 use super::clock::{SECONDS_PER_DAY, SECONDS_PER_HOUR, SECONDS_PER_MINUTE, days_from_civil};
-
-type HmacSha256 = Hmac<Sha256>;
 
 /// A SigV4 credential the gateway accepts on signed requests
 #[derive(Clone)]
@@ -147,9 +149,8 @@ impl SigV4Verifier {
             hash = sha256_hex(canonical_request.as_bytes()),
         );
 
-        let signing_key =
-            derive_signing_key(&credential.secret_access_key, date_stamp, region, service)?;
-        let expected = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
+        let signing_key = derive_signing_key(&credential.secret_access_key, date_stamp, region, service);
+        let expected = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes()));
 
         if !constant_time_eq(expected.as_bytes(), presented.signature.as_bytes()) {
             return Err(S3Error::SignatureDoesNotMatch);
@@ -573,20 +574,32 @@ fn derive_signing_key(
     date_stamp: &str,
     region: &str,
     service: &str,
-) -> Result<[u8; 32], S3Error> {
+) -> [u8; HASH_BYTES] {
     let signing_key_secret = format!("AWS4{secret}");
-    let signing_key_date = hmac_sha256(signing_key_secret.as_bytes(), date_stamp.as_bytes())?;
-    let signing_key_region = hmac_sha256(&signing_key_date, region.as_bytes())?;
-    let signing_key_service = hmac_sha256(&signing_key_region, service.as_bytes())?;
+    let signing_key_date = hmac_sha256(signing_key_secret.as_bytes(), date_stamp.as_bytes());
+    let signing_key_region = hmac_sha256(&signing_key_date, region.as_bytes());
+    let signing_key_service = hmac_sha256(&signing_key_region, service.as_bytes());
     hmac_sha256(&signing_key_service, AWS4_REQUEST.as_bytes())
 }
 
-/// Compute `HMAC-SHA256(key, data)`.
-pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<[u8; 32], S3Error> {
-    let mut mac = HmacSha256::new_from_slice(key)
-        .map_err(|error| S3Error::Internal(format!("hmac key init: {error}")))?;
-    mac.update(data);
-    Ok(mac.finalize().into_bytes().into())
+/// Compute `HMAC-SHA256(key, data)` per RFC 2104
+pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; HASH_BYTES] {
+    let mut block = [0u8; HMAC_BLOCK_BYTES];
+    if key.len() > HMAC_BLOCK_BYTES {
+        block[..HASH_BYTES].copy_from_slice(hash(key).as_ref());
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+
+    let mut inner_pad = [HMAC_INNER_PAD; HMAC_BLOCK_BYTES];
+    let mut outer_pad = [HMAC_OUTER_PAD; HMAC_BLOCK_BYTES];
+    for (index, byte) in block.iter().enumerate() {
+        inner_pad[index] ^= byte;
+        outer_pad[index] ^= byte;
+    }
+
+    let inner = hashv(&[&inner_pad, data]);
+    hashv(&[&outer_pad, inner.as_ref()]).to_bytes()
 }
 
 /// Compute the lowercase hex `SHA-256(data)`
@@ -810,8 +823,8 @@ mod tests {
             "{ALGORITHM}\n{date}\n{scope}\n{}",
             sha256_hex(canonical_request.as_bytes())
         );
-        let key = derive_signing_key(secret, parts[0], parts[1], parts[2]).expect("derive signing key");
-        hex::encode(hmac_sha256(&key, string_to_sign.as_bytes()).expect("hmac"))
+        let key = derive_signing_key(secret, parts[0], parts[1], parts[2]);
+        hex::encode(hmac_sha256(&key, string_to_sign.as_bytes()))
     }
 
     fn verifier() -> Arc<SigV4Verifier> {
@@ -843,17 +856,60 @@ mod tests {
         assert!(verify_signed_body(&signed, body).is_ok());
     }
 
-    // the body hash agrees with the sha2 crate across block edges and a multi-block body
+    // the body hash matches the FIPS 180-2 vectors across the padding edges and a long body
     #[test]
     fn body_hash_digest() {
-        use sha2::Digest;
+        let long_body = vec![b'a'; 1_000_000];
+        let vectors: [(&[u8], &str); 5] = [
+            (b"", EMPTY_PAYLOAD_SHA256),
+            (b"abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
+            (
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+                "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+            ),
+            (
+                b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
+                "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1",
+            ),
+            (&long_body, "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"),
+        ];
 
-        assert_eq!(sha256_hex(b""), EMPTY_PAYLOAD_SHA256);
-        let mut lengths: Vec<usize> = (0..=130).collect();
-        lengths.push(4 * 1024 * 1024 + 7);
-        for length in lengths {
-            let body: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
-            assert_eq!(sha256_hex(&body), hex::encode(sha2::Sha256::digest(&body)), "length {length}");
+        for (body, expected) in vectors {
+            assert_eq!(sha256_hex(body), expected, "length {}", body.len());
+        }
+    }
+
+    // the HMAC matches every RFC 4231 HMAC-SHA256 vector, short keys and keys longer than a block
+    #[test]
+    fn hmac_vectors() {
+        let jefe_key: &[u8] = b"Jefe";
+        let counting_key: Vec<u8> = (1..=25).collect();
+        let long_key = [0xaa_u8; 131];
+        let vectors: [(&[u8], &[u8], &str); 7] = [
+            (&[0x0b; 20], b"Hi There", "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"),
+            (
+                jefe_key,
+                b"what do ya want for nothing?",
+                "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+            ),
+            (&[0xaa; 20], &[0xdd; 50], "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe"),
+            (&counting_key, &[0xcd; 50], "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b"),
+            (&[0x0c; 20], b"Test With Truncation", "a3b6167473100ee06e0c796c2955552bfa6f7c0a6a8aef8b93f860aab0cd20c5"),
+            (
+                &long_key,
+                b"Test Using Larger Than Block-Size Key - Hash Key First",
+                "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54",
+            ),
+            (
+                &long_key,
+                b"This is a test using a larger than block-size key and a larger than block-size data. \
+                  The key needs to be hashed before being used by the HMAC algorithm.",
+                "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2",
+            ),
+        ];
+
+        for (case, (key, data, expected)) in vectors.iter().enumerate() {
+            assert_eq!(hex::encode(hmac_sha256(key, data)), *expected, "case {}", case + 1);
         }
     }
 
