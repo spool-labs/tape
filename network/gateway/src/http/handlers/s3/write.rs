@@ -27,7 +27,6 @@ use tape_sdk::stream::manifest::max_track_size;
 use tape_sdk::bootstrap::Reputation;
 use tape_sdk::object::{ObjectBatchItem, ObjectBatchReceipt};
 use tape_sdk::track::write::UploadPlan;
-use tape_sdk::write_options::WriteOptions;
 use tape_sdk::Tapedrive;
 use tokio::io::AsyncRead;
 use zeroize::Zeroizing;
@@ -191,9 +190,6 @@ impl S3WriteContext {
     }
 
     /// Stream a large object onto chunk tracks as the delegate, bounded in memory.
-    ///
-    /// With `resume`, the write lists the tape first and finishes or reuses the
-    /// tracks that already hold this content, segment by segment.
     pub async fn write_object_stream<Db, Cluster, Blockchain, Reader>(
         &self,
         context: &NodeContext<Db, Cluster, Blockchain>,
@@ -202,7 +198,6 @@ impl S3WriteContext {
         content_type: ContentType,
         size: StorageUnits,
         reader: Reader,
-        resume: bool,
     ) -> Result<(Hash, Address), TapedriveError>
     where
         Db: Store,
@@ -210,11 +205,7 @@ impl S3WriteContext {
         Blockchain: Rpc,
         Reader: AsyncRead + Unpin,
     {
-        let options = WriteOptions {
-            resume,
-            ..WriteOptions::default()
-        };
-        let client = self.client(context)?.with_write_options(options);
+        let client = self.client(context)?;
         let operator = self.operator(tape)?;
         let receipt = client
             .write_named_stream_as(&operator, name, content_type, size, reader)
