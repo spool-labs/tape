@@ -36,6 +36,7 @@ solana-program = { workspace = true }
 tracing = "0.1"
 
 # Solana
+solana-hash = { workspace = true }
 solana-instruction = { workspace = true }
 solana-keypair = { workspace = true }
 
