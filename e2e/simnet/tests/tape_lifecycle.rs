@@ -240,7 +240,7 @@ async fn tape_lifecycle_inner() {
     assert!(owner.get_tape(&closed_tape).await.is_err(), "the tape account is closed");
     wait_tracks(&owner, &closed_tape, 0).await;
 
-    // The tape's rent went past the tape key to the wallet that paid it.
+    // The tape's rent went to the wallet that paid it, and the tape key got none.
     let key_after = sol_balance_of(owner.rpc(), &closed_key).await.expect("tape key balance");
     let wallet_after = owner.sol_balance().await.expect("wallet balance");
     assert_eq!(key_after, key_before);

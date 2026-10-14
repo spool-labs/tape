@@ -210,7 +210,7 @@ pub fn build_close_tape_ix(
         program_id: tapedrive::ID,
         accounts: vec![
             AccountMeta::new(fee_payer.into(), true),
-            AccountMeta::new(authority.into(), true),
+            AccountMeta::new_readonly(authority.into(), true),
             AccountMeta::new(tape.into(), false),
             AccountMeta::new_readonly(system_address.into(), false),
         ],

@@ -258,7 +258,7 @@ mod tests {
     use solana_transaction::Signature;
     use solana_transaction::versioned::VersionedTransaction;
     use tape_api::helpers::build_authority_with_tokens_ix;
-    use tape_api::instruction::build_reserve_tape_ix;
+    use tape_api::instruction::{build_close_tape_ix, build_reserve_tape_ix};
     use tape_core::tape::TapeFlags;
     use tape_core::types::coin::TAPE;
     use tape_core::types::{EpochNumber, StorageUnits};
@@ -368,6 +368,19 @@ mod tests {
             EpochNumber(2),
             TapeFlags::NONE,
         ));
+
+        let verdict = gate.check_request("sendTransaction", &send(&v1(payer, &instructions)));
+
+        assert_eq!(verdict, Ok(()));
+    }
+
+    // the close transaction the CLI builds is relayed
+    #[test]
+    fn close_tape() {
+        let gate = Gate::new();
+        let payer = payer();
+        let tape_key = Address::new_unique();
+        let instructions = [build_close_tape_ix(payer, tape_key, Address::new_unique())];
 
         let verdict = gate.check_request("sendTransaction", &send(&v1(payer, &instructions)));
 

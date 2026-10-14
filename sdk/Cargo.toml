@@ -38,7 +38,6 @@ tracing = "0.1"
 # Solana
 solana-instruction = { workspace = true }
 solana-keypair = { workspace = true }
-solana-system-interface = { workspace = true }
 
 # Serialization (for keypair loading)
 serde_json = { workspace = true }

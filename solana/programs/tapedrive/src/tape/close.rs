@@ -22,8 +22,7 @@ pub fn process_close_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
         .is_writable()?;
 
     authority_info
-        .is_signer()?
-        .is_writable()?;
+        .is_signer()?;
 
     let system = system_info
         .is_system()?
@@ -53,9 +52,9 @@ pub fn process_close_tape(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramR
     }
     .log();
 
-    // A tape does not record who paid its rent, so the rent goes to the authority.
+    // A tape does not record who paid its rent, so the rent goes to the fee payer.
     // The capacity the tape reserved stays scheduled through its expiry.
-    close_account(tape_info, authority_info)
+    close_account(tape_info, fee_payer_info)
 }
 
 #[cfg(test)]
@@ -127,6 +126,7 @@ mod tests {
 
     fn close_case(tape: Tape, signer: Pubkey, outcome: Result<(), ProgramError>) {
         let fee_payer = Pubkey::new_unique();
+        let fee_payer_sol = 1_000_000_000;
         let (tape_address, _) = tape_pda(tape.authority);
         let (system_address, _) = system_pda();
 
@@ -136,7 +136,7 @@ mod tests {
         let tape_rent = tape_account.1.lamports;
 
         let accounts = vec![
-            sol(fee_payer, 1_000_000_000),
+            sol(fee_payer, fee_payer_sol),
             sol(signer, 0),
             tape_account,
             pda(system_address, system().pack(), tapedrive::ID),
@@ -164,13 +164,14 @@ mod tests {
             &[
                 Check::success(),
                 Check::account(&Pubkey::from(tape_address)).closed().build(),
-                Check::account(&signer).lamports(tape_rent).build(),
+                Check::account(&fee_payer).lamports(fee_payer_sol + tape_rent).build(),
+                Check::account(&signer).lamports(0).build(),
             ],
         );
     }
 
     // the authority closes a tape that still holds tracks, an immutable one
-    // among them, and gets the rent
+    // among them, and the fee payer gets the rent
     #[test]
     fn close_tape() {
         let authority = Pubkey::new_unique();
