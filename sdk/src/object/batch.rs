@@ -148,14 +148,9 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         result
     }
 
-    /// Store a bounded group of named, single-track objects without waiting
-    /// for final coded-track certification.
+    /// Store a bounded group of named single-track objects without waiting for their certification
     ///
-    /// Registrations are submitted in input order at processed commitment,
-    /// several to a transaction, while their confirmed event resolution and
-    /// the coded slice uploads overlap them. The returned receipts can be published immediately; pass
-    /// the returned verification handle to [`Self::certify_objects_batch`] to
-    /// finish the batch afterward.
+    /// The receipts can be published at once. Pass the verification handle to certify_objects_batch to finish.
     pub async fn store_objects_batch(
         &self,
         bucket: &impl TapeOperator,
@@ -344,11 +339,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         Ok(register)
     }
 
-    /// Send registers in input order, one transaction at a time, each as full
-    /// as the objects encoded so far allow.
-    ///
-    /// A transaction goes out once the one before it is processed, and its
-    /// confirmation wait moves to the resolve stage.
+    /// Send registers in input order, one transaction at a time, each as full as the encoded objects allow
     async fn register_stage(
         &self,
         bucket: &impl TapeOperator,
@@ -386,8 +377,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         }
     }
 
-    /// Read each register transaction's events once it confirms, and mirror
-    /// its tracks in order.
+    /// Read each register transaction's events once it confirms, and mirror its tracks in order
     async fn resolve_stage(
         &self,
         bucket: &impl TapeOperator,
@@ -399,16 +389,14 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         let mut is_registering = true;
         while is_registering || !in_flight.is_empty() {
             tokio::select! {
-                // Safe: recv is cancellation-safe and a transaction only leaves the
-                // channel when this branch completes.
+                // Safe: recv is cancellation-safe, and a transaction leaves the channel only here.
                 transaction = sent.recv(), if is_registering && in_flight.len() < RESOLVE_CONCURRENCY => {
                     match transaction {
                         Some(transaction) => in_flight.push_back(self.resolve_transaction(transaction)),
                         None => is_registering = false,
                     }
                 }
-                // Safe: FuturesOrdered::next only removes a future once it
-                // completes; a cancelled poll leaves every resolve in place.
+                // Safe: a cancelled poll of FuturesOrdered::next leaves every resolve in place.
                 transaction = in_flight.next(), if !in_flight.is_empty() => {
                     let Some(transaction) = transaction else { continue };
                     for item in transaction? {
@@ -451,8 +439,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         Ok(items)
     }
 
-    /// Upload each coded object as its register resolves, and collect its
-    /// certify signatures when the caller certifies straight after.
+    /// Upload each coded object as its register resolves, and collect its signatures when the caller certifies next
     async fn store_stage(
         &self,
         resolved: mpsc::Receiver<ResolvedItem>,

@@ -1004,11 +1004,7 @@ pub(crate) fn prepare_raw_register<Blockchain: Rpc, Cluster: Api>(
     })
 }
 
-/// Split a run of registers into transactions, in order, each holding as
-/// many registers as its size and compute budget allow.
-///
-/// Every write appends to the tape's tree without a proof, so the registers
-/// of one transaction land in its order.
+/// Split a run of registers into transactions in order, each as full as its size and compute budget allow
 pub(crate) fn pack_registers<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -1043,12 +1039,7 @@ fn register_units(count: usize) -> u32 {
     TRACK_WRITE_CU.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
-/// Send a run of registers in the order they were built, packed into as few
-/// transactions as hold them.
-///
-/// A chain that runs a JSON-RPC batch in order takes the whole run in one
-/// round trip, signed against one blockhash; anywhere else the transactions
-/// go one at a time, exactly as a lone register does.
+/// Send a run of registers in order, in as few transactions as hold them
 pub(crate) async fn send_registers<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,

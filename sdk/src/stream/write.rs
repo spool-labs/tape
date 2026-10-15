@@ -407,9 +407,7 @@ async fn store_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
     finish_manifest(client, tape_key, contents.as_ref(), name, content_type, size, profile, entries).await
 }
 
-/// The tape and segment count for a write, and on a resume one listing of what the tape holds
-///
-/// A resume skips the capacity preflight, since the segments it finds already use part of the tape.
+/// The tape and segment count for a write, plus one listing of the tape on a resume, which skips the capacity preflight
 async fn start_write<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -632,10 +630,8 @@ where
         encoded_sender,
     );
 
-    // Registers submit at processed level: the processed wait is enough to
-    // keep track numbers assigned in stream order, and the confirmed-level
-    // event wait moves into the resolve stage. On a resume, a segment the tape
-    // already holds is finished in place and never registered again.
+    // Registers wait only for processed, which keeps track numbers in stream order.
+    // On a resume, a segment the tape already holds is finished in place.
     let register_tree = tree.clone();
     let register_stage = async move {
         let mut resumed = Vec::new();
@@ -1202,12 +1198,7 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
     Ok(RunOutcome { landed, is_epoch_changed, signatures })
 }
 
-/// Certify chunks on a chain that promises no batch order, one transaction
-/// at a time.
-///
-/// A transaction holds as many certifies as fit, each proven against the
-/// mirror as the ones before it leave it. A pack the chain refuses goes back
-/// through the one-at-a-time path, which handles stale proofs and turned epochs.
+/// Certify segments one transaction at a time, as many to a transaction as fit, on a chain that promises no batch order
 async fn certify_chunks_packed<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
@@ -1250,10 +1241,10 @@ async fn certify_chunks_packed<Blockchain: Rpc, Cluster: Api>(
                     }
                     continue;
                 }
-                Err(err) => {
-                    let err = TapedriveError::Rpc(err);
+                Err(error) => {
+                    let error = TapedriveError::Rpc(error);
                     // Every entry left signed under an epoch that turned, so all of them sign again.
-                    if needs_fresh_signatures(&err) && recollects < EPOCH_RECOLLECT_ATTEMPTS {
+                    if needs_fresh_signatures(&error) && recollects < EPOCH_RECOLLECT_ATTEMPTS {
                         recollects += 1;
                         sleep(CERTIFY_CONFLICT_DELAY).await;
                         client.state().invalidate();
@@ -1261,7 +1252,7 @@ async fn certify_chunks_packed<Blockchain: Rpc, Cluster: Api>(
                         pending = recollect_run(client, pending.into(), operation).await?.into();
                         continue;
                     }
-                    debug!(entries = built.len(), %err, "certify pack refused; certifying its entries one at a time");
+                    debug!(entries = built.len(), %error, "certify pack refused; certifying its entries one at a time");
                 }
             }
         }
@@ -1294,8 +1285,7 @@ fn certify_units(count: usize) -> u32 {
     CERTIFY_TRACK_CU.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
-/// Build the certifies at the head of `pending` that fit one transaction,
-/// each proven against a copy of the mirror the ones before it moved.
+/// Build the certifies at the head of the queue that fit one transaction, each proven on a copy of the mirror
 async fn build_certify_pack<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,

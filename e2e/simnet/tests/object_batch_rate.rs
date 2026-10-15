@@ -41,8 +41,7 @@ const SLOT: Duration = Duration::from_millis(400);
 /// How long a sent transaction takes to reach confirmed
 const CONFIRM_LAG: Duration = Duration::from_millis(1200);
 
-/// A shared chain over the network: every call pays a round trip, a processed
-/// send waits a slot, and a signature confirms a few slots after it was sent.
+/// A shared chain where every call pays a round trip and a signature confirms a few slots after it is sent
 #[derive(Clone)]
 struct RemoteChain {
     inner: LiteSvmRpc,
@@ -221,8 +220,7 @@ fn object_batch_rate() {
     run_simnet_test(object_batch_rate_inner);
 }
 
-/// Time one full batch of small coded objects on the in-process chain and on
-/// a chain with devnet's latencies, and check every object reads back.
+/// Time one batch of small coded objects on the in-process chain and on a devnet-latency chain, and read each back
 async fn object_batch_rate_inner() {
     let node_count = TAPENET_GROUP_SIZE;
     let mut harness = SimnetBuilder::new()
