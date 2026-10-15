@@ -520,6 +520,18 @@ fn record(cf: &str, op: &str, ok: bool, elapsed: f64, read: usize, written: usiz
     }
 }
 
+/// Run one store call and count it, with no bytes to report
+fn counted<Output>(
+    cf: &str,
+    op: &str,
+    call: impl FnOnce() -> StoreResult<Output>,
+) -> StoreResult<Output> {
+    let timer = std::time::Instant::now();
+    let result = call();
+    record(cf, op, result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
+    result
+}
+
 impl Store for ReelStore {
     fn store_engine(&self) -> StoreEngine {
         StoreEngine::Reel
@@ -646,10 +658,9 @@ impl Store for ReelStore {
     }
 
     fn contains(&self, cf: &str, key: &[u8]) -> StoreResult<bool> {
-        let timer = std::time::Instant::now();
-        let result = EngineStoreTrait::contains(&self.inner, cf, key).map_err(crossed);
-        record(cf, "contains", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
-        result
+        counted(cf, "contains", || {
+            EngineStoreTrait::contains(&self.inner, cf, key).map_err(crossed)
+        })
     }
 
     fn write_batch(&self, staged: WriteBatch) -> StoreResult<()> {
@@ -679,31 +690,31 @@ impl Store for ReelStore {
     }
 
     fn iter(&self, cf: &str) -> StoreResult<StoreIter<'_>> {
-        let timer = std::time::Instant::now();
-        let result = EngineStoreTrait::iter(&self.inner, cf).map(rows).map_err(crossed);
-        record(cf, "iter", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
-        result
+        counted(cf, "iter", || {
+            EngineStoreTrait::iter(&self.inner, cf)
+                .map(rows)
+                .map_err(crossed)
+        })
     }
 
     fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<StoreIter<'_>> {
-        let timer = std::time::Instant::now();
-        let result = EngineStoreTrait::iter_prefix(&self.inner, cf, prefix).map(rows).map_err(crossed);
-        record(cf, "iter_prefix", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
-        result
+        counted(cf, "iter_prefix", || {
+            EngineStoreTrait::iter_prefix(&self.inner, cf, prefix)
+                .map(rows)
+                .map_err(crossed)
+        })
     }
 
     fn iter_keys_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<Vec<Vec<u8>>> {
-        let timer = std::time::Instant::now();
-        let result = EngineStoreTrait::iter_keys_prefix(&self.inner, cf, prefix).map_err(crossed);
-        record(cf, "iter_keys_prefix", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
-        result
+        counted(cf, "iter_keys_prefix", || {
+            EngineStoreTrait::iter_keys_prefix(&self.inner, cf, prefix).map_err(crossed)
+        })
     }
 
     fn count_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<u64> {
-        let timer = std::time::Instant::now();
-        let result = EngineStoreTrait::count_prefix(&self.inner, cf, prefix).map_err(crossed);
-        record(cf, "count_prefix", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
-        result
+        counted(cf, "count_prefix", || {
+            EngineStoreTrait::count_prefix(&self.inner, cf, prefix).map_err(crossed)
+        })
     }
 
     fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<Option<u64>> {
@@ -717,11 +728,9 @@ impl Store for ReelStore {
         from: Option<&[u8]>,
         limit: usize,
     ) -> StoreResult<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
-        let timer = std::time::Instant::now();
-        let result =
-            EngineStoreTrait::sweep_keys_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed);
-        record(cf, "sweep_keys_prefix", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
-        result
+        counted(cf, "sweep_keys_prefix", || {
+            EngineStoreTrait::sweep_keys_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)
+        })
     }
 
     fn sweep_prefix(
@@ -731,10 +740,9 @@ impl Store for ReelStore {
         from: Option<&[u8]>,
         limit: usize,
     ) -> StoreResult<(Vec<tape_store_api::KeyValue>, Option<Vec<u8>>)> {
-        let timer = std::time::Instant::now();
-        let swept = EngineStoreTrait::sweep_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed);
-        record(cf, "sweep_prefix", swept.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
-        let (rows, next) = swept?;
+        let (rows, next) = counted(cf, "sweep_prefix", || {
+            EngineStoreTrait::sweep_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)
+        })?;
         let mut owned = Vec::with_capacity(rows.len());
         for (key, value) in rows {
             owned.push((key, value.into_vec()));
@@ -748,10 +756,9 @@ impl Store for ReelStore {
         from: Option<&[u8]>,
         limit: usize,
     ) -> StoreResult<(Vec<tape_store_api::KeyValue>, Option<Vec<u8>>)> {
-        let timer = std::time::Instant::now();
-        let swept = EngineStoreTrait::sweep(&self.inner, cf, from, limit).map_err(crossed);
-        record(cf, "sweep", swept.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
-        let (rows, next) = swept?;
+        let (rows, next) = counted(cf, "sweep", || {
+            EngineStoreTrait::sweep(&self.inner, cf, from, limit).map_err(crossed)
+        })?;
         let mut owned = Vec::with_capacity(rows.len());
         for (key, value) in rows {
             owned.push((key, value.into_vec()));
@@ -760,21 +767,19 @@ impl Store for ReelStore {
     }
 
     fn iter_from(&self, cf: &str, start: &[u8], way: Direction) -> StoreResult<StoreIter<'_>> {
-        let timer = std::time::Instant::now();
-        let result = EngineStoreTrait::iter_from(&self.inner, cf, start, direction(way))
-            .map(rows)
-            .map_err(crossed);
-        record(cf, "iter_from", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
-        result
+        counted(cf, "iter_from", || {
+            EngineStoreTrait::iter_from(&self.inner, cf, start, direction(way))
+                .map(rows)
+                .map_err(crossed)
+        })
     }
 
     fn iter_range(&self, cf: &str, start: &[u8], end: &[u8]) -> StoreResult<StoreIter<'_>> {
-        let timer = std::time::Instant::now();
-        let result = EngineStoreTrait::iter_range(&self.inner, cf, start, end)
-            .map(rows)
-            .map_err(crossed);
-        record(cf, "iter_range", result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
-        result
+        counted(cf, "iter_range", || {
+            EngineStoreTrait::iter_range(&self.inner, cf, start, end)
+                .map(rows)
+                .map_err(crossed)
+        })
     }
 
     fn actual_size_bytes(&self) -> StoreResult<u64> {

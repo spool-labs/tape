@@ -383,7 +383,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = split(&dir.path().join("meta"), &dir.path().join("bulk"));
 
-        // each row written three times, as the node rewrites a tape row
+        // the node rewrites tape rows, so every row goes in three times
         for _ in 0..3 {
             for i in 0..50u8 {
                 store.put("meta", &[i], b"m").unwrap();
@@ -399,15 +399,18 @@ mod tests {
 
     // a batch read answers what one get per key would
     #[test]
-    fn get_many_routes() {
-        let dir = tempdir().unwrap();
+    fn batch_read() {
+        let dir = tempdir().expect("tempdir");
         let store = split(&dir.path().join("meta"), &dir.path().join("bulk"));
-        store.put("slice", b"a", b"one").unwrap();
-        store.put("slice", b"c", b"three").unwrap();
+        store.put("slice", b"a", b"one").expect("put");
+        store.put("slice", b"c", b"three").expect("put");
 
-        let values = store.get_many("slice", &[b"a", b"b", b"c"]).unwrap();
+        let found = store.get_many("slice", &[b"a", b"b", b"c"]).expect("get_many");
 
-        let values: Vec<Option<Vec<u8>>> = values.into_iter().map(|held| held.map(Value::into_vec)).collect();
+        let mut values = Vec::new();
+        for held in found {
+            values.push(held.map(Value::into_vec));
+        }
         assert_eq!(values, vec![Some(b"one".to_vec()), None, Some(b"three".to_vec())]);
     }
 

@@ -23,6 +23,9 @@ use tape_store_api::get_metrics;
 #[cfg(feature = "metrics")]
 use tape_metrics::OperationTimer;
 
+/// An exact key count is served this long before the keys are walked again
+const COUNT_TTL: Duration = Duration::from_secs(10);
+
 /// A family whose keys are mirrored, and the family that holds the mirror
 struct KeyIndex {
     family: String,
@@ -38,17 +41,25 @@ pub fn key_index_family(family: &str) -> String {
 ///
 /// Uses multi-threaded column family access for concurrent operations.
 pub struct RocksStore {
-    // Shared so an awaited write can take the database to a blocking thread.
+    /// Shared so an awaited write can take the database to a blocking thread
     db: Arc<DBWithThreadMode<MultiThreaded>>,
+    /// Directory the database opened at
     path: PathBuf,
+    /// Every column family the database opened with
     column_families: Vec<String>,
+    /// Families whose keys are mirrored into a keys family
     key_indexed: Arc<[KeyIndex]>,
-    counts: Mutex<HashMap<String, (Instant, u64)>>,
+    /// The last exact key count of each family
+    counts: Mutex<HashMap<String, KeyCount>>,
 }
 
-/// How long one family's exact key count is served before it is walked again.
-/// The node's stats are polled a few times a second.
-const COUNT_TTL: Duration = Duration::from_secs(10);
+/// One family's key count and when it was walked
+struct KeyCount {
+    /// Keys the walk found
+    keys: u64,
+    /// When the walk ran
+    counted_at: Instant,
+}
 
 impl RocksStore {
     /// Open a RocksDB database at the specified path.
@@ -432,37 +443,31 @@ impl Store for RocksStore {
         result.map(|held| held.map(Value::new))
     }
 
-    // One MultiGet for the batch, the way agave's blockstore reads one
     fn get_many(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Value>>> {
         let cf_handle = self
             .db
             .cf_handle(cf)
             .ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
 
-        let result: Result<Vec<Option<Value>>> = self
-            .db
-            .batched_multi_get_cf(&cf_handle, keys, false)
-            .into_iter()
-            .map(|found| {
-                found
-                    .map(|held| held.map(|slice| Value::new(slice.to_vec())))
-                    .map_err(|e| Error::Database(e.to_string()))
-            })
-            .collect();
-
-        #[cfg(feature = "metrics")]
-        if let Some(metrics) = get_metrics() {
-            let status = if result.is_ok() { "success" } else { "error" };
-            metrics.operations_total.with_label_values(&[cf, "get_many", status]).inc();
-            if let Ok(values) = &result {
-                let read: usize = values.iter().flatten().map(|value| value.len()).sum();
-                metrics.bytes_read_total.with_label_values(&[cf]).inc_by(read as u64);
-            } else {
-                metrics.errors_total.with_label_values(&[cf, "get_many", "database"]).inc();
+        let mut values = Vec::with_capacity(keys.len());
+        let mut read = 0usize;
+        let mut failure = None;
+        for found in self.db.batched_multi_get_cf(&cf_handle, keys, false) {
+            match found {
+                Ok(held) => {
+                    let value = held.map(|slice| Value::new(slice.to_vec()));
+                    read += value.as_ref().map_or(0, |value| value.len());
+                    values.push(value);
+                }
+                Err(error) => failure = Some(Error::Database(error.to_string())),
             }
         }
+        count_batch(cf, read, failure.is_none());
 
-        result
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(values),
+        }
     }
 
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
@@ -994,22 +999,20 @@ impl Store for RocksStore {
         Ok((keys, next))
     }
 
-    // RocksDB's estimate-num-keys counts every overwrite until compaction
-    // drops it, so a tape row rewritten on each write counted many times over.
-    // Walk the keys instead, at most once per COUNT_TTL.
+    // estimate-num-keys counts each overwrite until compaction, so walk the keys
     fn key_count_estimate(&self, cf: &str) -> Result<Option<u64>> {
         if self.db.cf_handle(cf).is_none() {
             return Ok(None);
         }
         let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some((at, count)) = counts.get(cf) {
-            if at.elapsed() < COUNT_TTL {
-                return Ok(Some(*count));
+        if let Some(count) = counts.get(cf) {
+            if count.counted_at.elapsed() < COUNT_TTL {
+                return Ok(Some(count.keys));
             }
         }
-        let count = self.count_prefix(cf, &[])?;
-        counts.insert(cf.to_string(), (Instant::now(), count));
-        Ok(Some(count))
+        let keys = self.count_prefix(cf, &[])?;
+        counts.insert(cf.to_string(), KeyCount { keys, counted_at: Instant::now() });
+        Ok(Some(keys))
     }
 
     fn cf_disk_usage(&self) -> Result<Vec<CfDiskUsage>> {
@@ -1270,7 +1273,7 @@ fn total_order() -> ReadOptions {
     options
 }
 
-/// Count one store call, the way the iterators count theirs
+/// Count one store call
 #[cfg(feature = "metrics")]
 fn count_op(cf: &str, op: &str) {
     if let Some(metrics) = get_metrics() {
@@ -1280,6 +1283,23 @@ fn count_op(cf: &str, op: &str) {
 
 #[cfg(not(feature = "metrics"))]
 fn count_op(_: &str, _: &str) {}
+
+/// Count one batch read and the bytes it found
+#[cfg(feature = "metrics")]
+fn count_batch(cf: &str, read: usize, is_ok: bool) {
+    let Some(metrics) = get_metrics() else {
+        return;
+    };
+    let status = if is_ok { "success" } else { "error" };
+    metrics.operations_total.with_label_values(&[cf, "get_many", status]).inc();
+    metrics.bytes_read_total.with_label_values(&[cf]).inc_by(read as u64);
+    if !is_ok {
+        metrics.errors_total.with_label_values(&[cf, "get_many", "database"]).inc();
+    }
+}
+
+#[cfg(not(feature = "metrics"))]
+fn count_batch(_: &str, _: usize, _: bool) {}
 
 /// Read options for a walk in key order that stops before `end`
 ///

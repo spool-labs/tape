@@ -60,9 +60,15 @@ impl Sampler {
             }
             None => 0.0,
         };
-        let (disk_total_bytes, disk_available_bytes) = statvfs(store_root)
-            .map(|stats| usable(stats.total_space(), stats.free_space(), stats.available_space()))
-            .unwrap_or_default();
+        let disk = statvfs(store_root);
+        let disk_total_bytes = disk
+            .as_ref()
+            .map(|stats| usable_total(stats.total_space(), stats.free_space(), stats.available_space()))
+            .unwrap_or(0);
+        let disk_available_bytes = disk
+            .as_ref()
+            .map(|stats| stats.available_space())
+            .unwrap_or(0);
         self.last = HostInfo {
             cores: cores as u64,
             cpu_pct: self.system.global_cpu_usage(),
@@ -77,12 +83,9 @@ impl Sampler {
     }
 }
 
-/// The filesystem's size and free space as the node sees them: (total, available).
-/// ext4 keeps 5% for root by default, and the node can't write there, so the
-/// total leaves those blocks out the way `df` does.
-fn usable(total: u64, free: u64, available: u64) -> (u64, u64) {
-    let used = total.saturating_sub(free);
-    (used.saturating_add(available), available)
+/// The filesystem's size less the blocks only root can write
+fn usable_total(total: u64, free: u64, available: u64) -> u64 {
+    total.saturating_sub(free).saturating_add(available)
 }
 
 fn refresh_process(system: &mut System, pid: Pid) {
@@ -111,17 +114,13 @@ mod tests {
         assert!(host.disk_available_bytes <= host.disk_total_bytes);
     }
 
-    // root's reserved blocks count as neither used nor available
+    // blocks kept for root count as neither used nor available
     #[test]
-    fn reserved_blocks_leave_the_total() {
-        // hz-03's tape2 disk: 800 GB reserved, 1.4 GB used
-        let total = 15_873_633_447_936;
-        let available = 15_072_208_764_928;
-        let free = available + 800_058_343_424;
+    fn reserved_blocks() {
+        let (total, free, available) = (1_000, 600, 550);
 
-        let (usable_total, usable_available) = usable(total, free, available);
+        let size = usable_total(total, free, available);
 
-        assert_eq!(usable_available, available);
-        assert_eq!(usable_total - usable_available, total - free);
+        assert_eq!(size - available, total - free);
     }
 }

@@ -1,5 +1,4 @@
-//! The reel counts every read call the way rocks does, so the board's store
-//! operations read the same on either engine
+//! Every read call on the reel counts as a store op
 
 #![cfg(feature = "metrics")]
 
@@ -24,7 +23,7 @@ fn calls(op: &str) -> u64 {
 
 // every read call adds one to its own counter
 #[test]
-fn read_calls_count() {
+fn read_calls() {
     MetricsRegistry::init();
     init_metrics();
     let dir = TempDir::new().expect("tempdir");
@@ -43,7 +42,10 @@ fn read_calls_count() {
         "sweep_prefix",
         "sweep_keys_prefix",
     ];
-    let before: Vec<u64> = ops.iter().map(|op| calls(op)).collect();
+    let mut before = Vec::with_capacity(ops.len());
+    for op in &ops {
+        before.push(calls(op));
+    }
 
     store.contains(CF, b"tape-0001").expect("contains");
     let _ = store.iter(CF).expect("iter");
