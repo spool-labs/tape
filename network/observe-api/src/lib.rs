@@ -467,7 +467,8 @@ pub struct HostInfo {
     pub process_cpu_pct: f32,
     pub memory_total_bytes: u64,
     pub memory_available_bytes: u64,
-    /// Size of the filesystem holding the store root.
+    /// Size of the filesystem holding the store root, less the blocks it
+    /// keeps for root.
     pub disk_total_bytes: u64,
     pub disk_available_bytes: u64,
 }

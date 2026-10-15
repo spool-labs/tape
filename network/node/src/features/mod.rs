@@ -6,6 +6,7 @@ pub mod challenge;
 pub mod gc;
 pub mod http;
 pub mod lifecycle;
+pub mod memory;
 pub mod replay;
 pub mod snapshot;
 pub mod spool;

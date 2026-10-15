@@ -1,6 +1,5 @@
 //! Stream write implementation.
 
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,7 +48,7 @@ use crate::track::write::{
 use crate::transfer::certify::CollectedSignatures;
 
 use super::error::StreamError;
-use super::pace::{Slot, Slots, coded_chunk_bytes, guard_memory, hold_slices, pace};
+use super::pace::{Slots, coded_chunk_bytes, guard_memory, hold_slices, pace};
 use super::manifest::{
     max_track_size, ChunkEntry, ChunkManifest, MAX_TRACKS_PER_TAPE, MANIFEST_VERSION,
 };
@@ -738,20 +737,45 @@ where
     // registers back until its run is sent.
     let tree = Arc::new(RwLock::new(()));
 
-    let encode_stage = encode_chunks(
-        chunk_sources,
-        &slots,
-        workers,
-        |index, data, slot| {
-            client.report(Step::Encoding { unit: index });
-            async move {
-                encode_blob(client, data, Operation::WriteStream)
-                    .await
-                    .map(|plan| (index, hold_slices(plan, slot)))
+    // Encoding is CPU-bound; encode several chunks on blocking threads at once
+    // so idle cores shorten the encode chain. Plans still reach the register
+    // stage in stream order, each as soon as it and the ones before it are done.
+    let encode_stage = async move {
+        let mut in_flight = FuturesOrdered::new();
+        let mut chunk_sources = std::pin::pin!(chunk_sources);
+        let mut chunk_index = 0usize;
+        let mut is_reading = true;
+        while is_reading || !in_flight.is_empty() {
+            tokio::select! {
+                biased;
+                // Safe: FuturesOrdered::next only removes a future once it
+                // completes; a cancelled poll leaves every encode in place.
+                encoded = in_flight.next(), if !in_flight.is_empty() => {
+                    let Some(encoded) = encoded else { continue };
+                    if encoded_sender.send(encoded?).await.is_err() {
+                        return Ok(());
+                    }
+                }
+                // Safe: a dropped acquire holds no slot and reads no chunk.
+                slot = slots.acquire(), if is_reading && in_flight.len() < workers => {
+                    let Some(chunk_data) = chunk_sources.next().await else {
+                        is_reading = false;
+                        continue;
+                    };
+                    let data = chunk_data?;
+                    let index = chunk_index;
+                    client.report(Step::Encoding { unit: index });
+                    in_flight.push_back(async move {
+                        encode_blob(client, data, Operation::WriteStream)
+                            .await
+                            .map(|plan| (index, hold_slices(plan, slot)))
+                    });
+                    chunk_index += 1;
+                }
             }
-        },
-        encoded_sender,
-    );
+        }
+        Ok::<_, TapedriveError>(())
+    };
 
     // Registers submit at processed level: the processed wait is enough to
     // keep track numbers assigned in stream order, and the confirmed-level
@@ -949,57 +973,6 @@ where
         certify_stage
     )?;
     Ok(pending_chunks)
-}
-
-/// Read chunks into slots and keep up to `workers` encodes in flight, so idle
-/// cores shorten the encode chain
-///
-/// Each result goes to `sender` in stream order once it and the ones before it
-/// are done. The next read is one of the select's futures, so a coded chunk goes
-/// out while a slow source is still filling the chunk after it.
-async fn encode_chunks<Chunks, Encode, Encoded, Output>(
-    chunk_sources: Chunks,
-    slots: &Arc<Slots>,
-    workers: usize,
-    encode: Encode,
-    sender: mpsc::Sender<Output>,
-) -> Result<(), TapedriveError>
-where
-    Chunks: Stream<Item = Result<Vec<u8>, TapedriveError>>,
-    Encode: Fn(usize, Vec<u8>, Slot) -> Encoded,
-    Encoded: Future<Output = Result<Output, TapedriveError>>,
-{
-    let mut in_flight = FuturesOrdered::new();
-    let mut chunk_sources = std::pin::pin!(chunk_sources);
-    let mut chunk_index = 0usize;
-    let mut is_reading = true;
-    while is_reading || !in_flight.is_empty() {
-        tokio::select! {
-            biased;
-            // Safe: FuturesOrdered::next only removes a future once it
-            // completes; a cancelled poll leaves every encode in place.
-            encoded = in_flight.next(), if !in_flight.is_empty() => {
-                let Some(encoded) = encoded else { continue };
-                if sender.send(encoded?).await.is_err() {
-                    return Ok(());
-                }
-            }
-            // Safe: a dropped acquire holds no slot, and a dropped next leaves
-            // the read in progress inside the stream for the next poll.
-            read = async {
-                let slot = slots.acquire().await;
-                chunk_sources.next().await.map(|chunk| (slot, chunk))
-            }, if is_reading && in_flight.len() < workers => {
-                let Some((slot, chunk_data)) = read else {
-                    is_reading = false;
-                    continue;
-                };
-                in_flight.push_back(encode(chunk_index, chunk_data?, slot));
-                chunk_index += 1;
-            }
-        }
-    }
-    Ok(())
 }
 
 /// Mirror a resolved register, reseeding from chain state when the register sequence moved on
@@ -1686,37 +1659,6 @@ mod tests {
 
     fn txid(byte: u8) -> Txid {
         Txid::from([byte; 64])
-    }
-
-    // a coded chunk goes to the register stage while the source still owes the next one
-    #[tokio::test(start_paused = true)]
-    async fn encode_overlaps_slow_source() {
-        let (_window_sender, window) = watch::channel(1);
-        let slots = Slots::new(window, TAPENET_PROFILE);
-        let (chunk_sender, chunk_receiver) = mpsc::channel(1);
-        let chunks = stream::unfold(chunk_receiver, |mut receiver| async move {
-            receiver.recv().await.map(|chunk| (chunk, receiver))
-        });
-        let (encoded_sender, mut encoded_receiver) = mpsc::channel(ENCODE_AHEAD);
-        // A real encode finishes on a blocking thread some polls after it starts.
-        let encode = |index: usize, data: Vec<u8>, slot: Slot| async move {
-            tokio::task::yield_now().await;
-            drop(slot);
-            Ok::<_, TapedriveError>((index, data.len()))
-        };
-        let stage = encode_chunks(chunks, &slots, MAX_ENCODE_WORKERS, encode, encoded_sender);
-
-        let source = async move {
-            chunk_sender.send(Ok(vec![1; 3])).await.expect("send chunk 0");
-            let first = tokio::time::timeout(Duration::from_secs(60), encoded_receiver.recv()).await;
-            assert_eq!(first.expect("chunk 0 goes out before chunk 1 arrives"), Some((0, 3)));
-            chunk_sender.send(Ok(vec![2; 5])).await.expect("send chunk 1");
-            drop(chunk_sender);
-            assert_eq!(encoded_receiver.recv().await, Some((1, 5)));
-            assert_eq!(encoded_receiver.recv().await, None);
-        };
-        let (staged, ()) = tokio::join!(stage, source);
-        staged.expect("encode stage");
     }
 
     // a run the chain took an entry of is a submit that moved something

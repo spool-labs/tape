@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use fs2::{available_space, total_space};
+use fs2::statvfs;
 use sysinfo::{
     get_current_pid, CpuRefreshKind, MemoryRefreshKind, Pid, ProcessRefreshKind, ProcessesToUpdate,
     RefreshKind, System,
@@ -60,6 +60,9 @@ impl Sampler {
             }
             None => 0.0,
         };
+        let (disk_total_bytes, disk_available_bytes) = statvfs(store_root)
+            .map(|stats| usable(stats.total_space(), stats.free_space(), stats.available_space()))
+            .unwrap_or_default();
         self.last = HostInfo {
             cores: cores as u64,
             cpu_pct: self.system.global_cpu_usage(),
@@ -67,11 +70,19 @@ impl Sampler {
             process_cpu_pct: if cores == 0 { 0.0 } else { process_cpu / cores as f32 },
             memory_total_bytes: self.system.total_memory(),
             memory_available_bytes: self.system.available_memory(),
-            disk_total_bytes: total_space(store_root).unwrap_or(0),
-            disk_available_bytes: available_space(store_root).unwrap_or(0),
+            disk_total_bytes,
+            disk_available_bytes,
         };
         self.sampled_at = Instant::now();
     }
+}
+
+/// The filesystem's size and free space as the node sees them: (total, available).
+/// ext4 keeps 5% for root by default, and the node can't write there, so the
+/// total leaves those blocks out the way `df` does.
+fn usable(total: u64, free: u64, available: u64) -> (u64, u64) {
+    let used = total.saturating_sub(free);
+    (used.saturating_add(available), available)
 }
 
 fn refresh_process(system: &mut System, pid: Pid) {
@@ -98,5 +109,19 @@ mod tests {
         assert!(host.memory_available_bytes <= host.memory_total_bytes);
         assert!(host.disk_total_bytes > 0);
         assert!(host.disk_available_bytes <= host.disk_total_bytes);
+    }
+
+    // root's reserved blocks count as neither used nor available
+    #[test]
+    fn reserved_blocks_leave_the_total() {
+        // hz-03's tape2 disk: 800 GB reserved, 1.4 GB used
+        let total = 15_873_633_447_936;
+        let available = 15_072_208_764_928;
+        let free = available + 800_058_343_424;
+
+        let (usable_total, usable_available) = usable(total, free, available);
+
+        assert_eq!(usable_available, available);
+        assert_eq!(usable_total - usable_available, total - free);
     }
 }

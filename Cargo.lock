@@ -11280,6 +11280,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "hyper",
+ "libc",
  "lz4_flex",
  "memory-stats",
  "openssl",

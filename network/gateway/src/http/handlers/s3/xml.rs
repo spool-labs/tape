@@ -85,12 +85,8 @@ pub fn iso8601(unix_seconds: i64) -> String {
 
 /// Build an S3 `<Error>` XML body
 pub fn error_body(code: &str, message: &str, resource: &str, request_id: &str) -> String {
-    format!("{XML_DECL}{}", error_element(code, message, resource, request_id))
-}
-
-/// Build an S3 `<Error>` element, for a body that already sent its declaration
-pub fn error_element(code: &str, message: &str, resource: &str, request_id: &str) -> String {
     let mut out = String::with_capacity(256);
+    out.push_str(XML_DECL);
     out.push_str("<Error>");
     push_element(&mut out, "Code", code);
     push_element(&mut out, "Message", message);
@@ -324,15 +320,15 @@ pub fn initiate_multipart_upload_body(bucket: &str, key: &str, upload_id: &str) 
     out
 }
 
-/// Build a `CompleteMultipartUploadResult` element. The Complete response sends
-/// the declaration first and this element once the write lands.
-pub fn complete_multipart_upload_element(
+/// Build a `CompleteMultipartUploadResult` body.
+pub fn complete_multipart_upload_body(
     location: &str,
     bucket: &str,
     key: &str,
     etag: &str,
 ) -> String {
     let mut out = String::with_capacity(256);
+    out.push_str(XML_DECL);
     out.push_str("<CompleteMultipartUploadResult xmlns=\"");
     out.push_str(S3_XMLNS);
     out.push_str("\">");
@@ -772,21 +768,12 @@ mod tests {
         assert!(body.contains("<UploadId>UPLOAD123</UploadId>"));
     }
 
-    // the complete element quotes the assembled ETag and carries no declaration
+    // the complete body quotes the assembled ETag
     #[test]
     fn complete_render() {
-        let element = complete_multipart_upload_element("/bucket/obj", "bucket", "obj", "abc123");
-        assert!(element.starts_with("<CompleteMultipartUploadResult"));
-        assert!(element.contains("<Location>/bucket/obj</Location>"));
-        assert!(element.contains("<ETag>\"abc123\"</ETag>"));
-    }
-
-    // an error element is the error body less its declaration
-    #[test]
-    fn error_element_render() {
-        let element = error_element("NoSuchKey", "missing", "", "REQ1");
-        assert!(element.starts_with("<Error><Code>NoSuchKey</Code>"));
-        assert_eq!(error_body("NoSuchKey", "missing", "", "REQ1"), format!("{XML_DECL}{element}"));
+        let body = complete_multipart_upload_body("/bucket/obj", "bucket", "obj", "abc123");
+        assert!(body.contains("<Location>/bucket/obj</Location>"));
+        assert!(body.contains("<ETag>\"abc123\"</ETag>"));
     }
 
     // the parts listing renders each buffered part

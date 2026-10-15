@@ -136,6 +136,10 @@ impl Store for SplitStore {
         self.route(cf).get(cf, key)
     }
 
+    fn get_many(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Value>>> {
+        self.route(cf).get_many(cf, keys)
+    }
+
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
         self.route(cf).put(cf, key, value)
     }
@@ -379,15 +383,32 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = split(&dir.path().join("meta"), &dir.path().join("bulk"));
 
-        for i in 0..50u8 {
-            store.put("meta", &[i], b"m").unwrap();
-            store.put("slice", &[i], b"s").unwrap();
+        // each row written three times, as the node rewrites a tape row
+        for _ in 0..3 {
+            for i in 0..50u8 {
+                store.put("meta", &[i], b"m").unwrap();
+                store.put("slice", &[i], b"s").unwrap();
+            }
+            store.flush().unwrap();
         }
-        store.flush().unwrap();
 
-        assert!(store.key_count_estimate("meta").unwrap().unwrap_or(0) > 0);
-        assert!(store.key_count_estimate("slice").unwrap().unwrap_or(0) > 0);
+        assert_eq!(store.key_count_estimate("meta").unwrap(), Some(50));
+        assert_eq!(store.key_count_estimate("slice").unwrap(), Some(50));
         assert!(store.live_data_size_bytes().unwrap().unwrap_or(0) > 0);
+    }
+
+    // a batch read answers what one get per key would
+    #[test]
+    fn get_many_routes() {
+        let dir = tempdir().unwrap();
+        let store = split(&dir.path().join("meta"), &dir.path().join("bulk"));
+        store.put("slice", b"a", b"one").unwrap();
+        store.put("slice", b"c", b"three").unwrap();
+
+        let values = store.get_many("slice", &[b"a", b"b", b"c"]).unwrap();
+
+        let values: Vec<Option<Vec<u8>>> = values.into_iter().map(|held| held.map(Value::into_vec)).collect();
+        assert_eq!(values, vec![Some(b"one".to_vec()), None, Some(b"three".to_vec())]);
     }
 
     // disk usage is reported as a primary and a bulk volume

@@ -1,8 +1,10 @@
 //! RocksDB implementation of the Store trait
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use fs2::available_space;
 use rocksdb::{
@@ -41,7 +43,12 @@ pub struct RocksStore {
     path: PathBuf,
     column_families: Vec<String>,
     key_indexed: Arc<[KeyIndex]>,
+    counts: Mutex<HashMap<String, (Instant, u64)>>,
 }
+
+/// How long one family's exact key count is served before it is walked again.
+/// The node's stats are polled a few times a second.
+const COUNT_TTL: Duration = Duration::from_secs(10);
 
 impl RocksStore {
     /// Open a RocksDB database at the specified path.
@@ -65,6 +72,7 @@ impl RocksStore {
         };
 
         Ok(Self {
+            counts: Mutex::default(),
             db: Arc::new(db),
             key_indexed: Arc::default(),
             path,
@@ -92,6 +100,7 @@ impl RocksStore {
         };
 
         Ok(Self {
+            counts: Mutex::default(),
             db: Arc::new(db),
             key_indexed: Arc::default(),
             path,
@@ -119,6 +128,7 @@ impl RocksStore {
         };
 
         Ok(Self {
+            counts: Mutex::default(),
             db: Arc::new(db),
             key_indexed: Arc::default(),
             path,
@@ -167,6 +177,7 @@ impl RocksStore {
         };
 
         Ok(Self {
+            counts: Mutex::default(),
             db: Arc::new(db),
             key_indexed: Arc::default(),
             path,
@@ -194,6 +205,7 @@ impl RocksStore {
         };
 
         Ok(Self {
+            counts: Mutex::default(),
             db: Arc::new(db),
             key_indexed: Arc::default(),
             path,
@@ -231,6 +243,7 @@ impl RocksStore {
         };
 
         Ok(Self {
+            counts: Mutex::default(),
             db: Arc::new(db),
             key_indexed: Arc::default(),
             path: secondary_path,
@@ -265,6 +278,7 @@ impl RocksStore {
         };
 
         Ok(Self {
+            counts: Mutex::default(),
             db: Arc::new(db),
             key_indexed: Arc::default(),
             path: secondary_path,
@@ -416,6 +430,39 @@ impl Store for RocksStore {
         }
 
         result.map(|held| held.map(Value::new))
+    }
+
+    // One MultiGet for the batch, the way agave's blockstore reads one
+    fn get_many(&self, cf: &str, keys: &[&[u8]]) -> Result<Vec<Option<Value>>> {
+        let cf_handle = self
+            .db
+            .cf_handle(cf)
+            .ok_or_else(|| Error::ColumnFamilyNotFound(cf.to_string()))?;
+
+        let result: Result<Vec<Option<Value>>> = self
+            .db
+            .batched_multi_get_cf(&cf_handle, keys, false)
+            .into_iter()
+            .map(|found| {
+                found
+                    .map(|held| held.map(|slice| Value::new(slice.to_vec())))
+                    .map_err(|e| Error::Database(e.to_string()))
+            })
+            .collect();
+
+        #[cfg(feature = "metrics")]
+        if let Some(metrics) = get_metrics() {
+            let status = if result.is_ok() { "success" } else { "error" };
+            metrics.operations_total.with_label_values(&[cf, "get_many", status]).inc();
+            if let Ok(values) = &result {
+                let read: usize = values.iter().flatten().map(|value| value.len()).sum();
+                metrics.bytes_read_total.with_label_values(&[cf]).inc_by(read as u64);
+            } else {
+                metrics.errors_total.with_label_values(&[cf, "get_many", "database"]).inc();
+            }
+        }
+
+        result
     }
 
     fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
@@ -833,6 +880,7 @@ impl Store for RocksStore {
     }
 
     fn count_prefix(&self, cf: &str, prefix: &[u8]) -> Result<u64> {
+        count_op(cf, "count_prefix");
         let mut rows = self.key_rows(cf, prefix)?;
 
         let mut count = 0u64;
@@ -881,6 +929,7 @@ impl Store for RocksStore {
         from: Option<&[u8]>,
         limit: usize,
     ) -> Result<(Vec<KeyValue>, Option<Vec<u8>>)> {
+        count_op(cf, "sweep_prefix");
         let cf_handle = self
             .db
             .cf_handle(cf)
@@ -920,6 +969,7 @@ impl Store for RocksStore {
         from: Option<&[u8]>,
         limit: usize,
     ) -> Result<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
+        count_op(cf, "sweep_keys_prefix");
         // The mark is the first key a page left out, so the next page starts on it.
         let mut rows = self.key_rows(cf, from.unwrap_or(prefix))?;
 
@@ -944,15 +994,22 @@ impl Store for RocksStore {
         Ok((keys, next))
     }
 
+    // RocksDB's estimate-num-keys counts every overwrite until compaction
+    // drops it, so a tape row rewritten on each write counted many times over.
+    // Walk the keys instead, at most once per COUNT_TTL.
     fn key_count_estimate(&self, cf: &str) -> Result<Option<u64>> {
-        let Some(handle) = self.db.cf_handle(cf) else {
+        if self.db.cf_handle(cf).is_none() {
             return Ok(None);
-        };
-        Ok(self
-            .db
-            .property_int_value_cf(&handle, "rocksdb.estimate-num-keys")
-            .ok()
-            .flatten())
+        }
+        let mut counts = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((at, count)) = counts.get(cf) {
+            if at.elapsed() < COUNT_TTL {
+                return Ok(Some(*count));
+            }
+        }
+        let count = self.count_prefix(cf, &[])?;
+        counts.insert(cf.to_string(), (Instant::now(), count));
+        Ok(Some(count))
     }
 
     fn cf_disk_usage(&self) -> Result<Vec<CfDiskUsage>> {
@@ -1212,6 +1269,17 @@ fn total_order() -> ReadOptions {
     options.set_total_order_seek(true);
     options
 }
+
+/// Count one store call, the way the iterators count theirs
+#[cfg(feature = "metrics")]
+fn count_op(cf: &str, op: &str) {
+    if let Some(metrics) = get_metrics() {
+        metrics.operations_total.with_label_values(&[cf, op, "success"]).inc();
+    }
+}
+
+#[cfg(not(feature = "metrics"))]
+fn count_op(_: &str, _: &str) {}
 
 /// Read options for a walk in key order that stops before `end`
 ///
