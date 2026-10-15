@@ -11,6 +11,7 @@ use tape_store::TapeStore;
 use tape_store::ops::{MetaOps, SliceOps, TrackOps};
 
 use crate::http::error::RouteError;
+use crate::http::handlers::s3::routes::max_object_size;
 use crate::http::handlers::store_error;
 use crate::http::state::AppState;
 
@@ -33,7 +34,10 @@ pub async fn s3_info<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Json(S3Info {
         endpoint: state.context.config.gateway.s3.public_endpoint.clone(),
         delegate: state.s3_delegate.map(|address| address.to_string()),
-        max_object_bytes: state.context.config.gateway.s3.max_object_bytes as u64,
+        max_object_bytes: max_object_size(
+            state.context.config.gateway.s3.max_object_bytes,
+            state.context.params().profile,
+        ),
     })
 }
 
