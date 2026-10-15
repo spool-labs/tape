@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use futures::stream::{self, StreamExt, TryStreamExt};
-use tokio::sync::Mutex;
+use futures::stream::{self, FuturesOrdered, StreamExt, TryStreamExt};
+use tokio::sync::{Mutex, mpsc};
 
 use tape_rpc::Rpc;
 use tape_core::encoding::ErasureCode;
@@ -19,10 +19,12 @@ use crate::stream::manifest::max_track_size;
 use crate::stream::write::{ChunkCertification, append_to_mirror, certify_chunk_run};
 use crate::tapedrive::Tapedrive;
 use crate::track::write::{
-    SentRegister, UploadPlan, WrittenTrack, collect_certification, confirm_certifies, encode_blob,
-    inline_write_fits, prepare_blob_register, prepare_raw_register, resolve_sent_blob,
-    resolve_sent_raw, send_registers, upload_with_retry,
+    PreparedRegister, ResolvedRegister, SentRegister, UploadPlan, WrittenTrack,
+    collect_certification, confirm_certifies, encode_blob, inline_write_fits, pack_registers,
+    prepare_blob_register, prepare_raw_register, resolve_registers, send_registers,
+    upload_with_retry,
 };
+use crate::transfer::certify::CollectedSignatures;
 
 pub const MAX_OBJECT_BATCH_ITEMS: usize = 32;
 pub const MAX_OBJECT_BATCH_BYTES: u64 = 256 * 1024 * 1024;
@@ -48,6 +50,7 @@ pub struct ObjectBatchReceipt {
     pub etag: Hash,
 }
 
+/// One object encoded and ready to register.
 enum PreparedItem {
     Inline {
         index: usize,
@@ -64,64 +67,25 @@ enum PreparedItem {
     },
 }
 
-/// What the batch knows about one register of a run, beside the transaction itself.
-struct RunItem {
+/// One object whose register landed, with what it still has to store.
+struct ResolvedItem {
     index: usize,
-    name: String,
-    bytes_written: u64,
+    written: WrittenTrack,
+    plan: Option<Box<UploadPlan>>,
 }
 
-enum SentItem {
-    Inline {
-        index: usize,
-        name: String,
-        bytes_written: u64,
-        sent: crate::track::write::SentRaw,
-    },
-    Coded {
-        index: usize,
-        name: String,
-        bytes_written: u64,
-        sent: Box<crate::track::write::SentBlob>,
-    },
-}
-
-enum ResolvedItem {
-    Inline {
-        index: usize,
-        name: String,
-        bytes_written: u64,
-        written: WrittenTrack,
-    },
-    Coded {
-        index: usize,
-        name: String,
-        bytes_written: u64,
-        written: WrittenTrack,
-        plan: Box<UploadPlan>,
-    },
-}
-
-enum StoredItem {
-    Inline {
-        index: usize,
-        name: String,
-        bytes_written: u64,
-        written: WrittenTrack,
-    },
-    Coded {
-        index: usize,
-        name: String,
-        bytes_written: u64,
-        written: WrittenTrack,
-        receipts: Vec<CertifyRes>,
-        etag: Hash,
-    },
+/// One object stored on peers. A coded object keeps what its certify needs.
+struct StoredItem {
+    index: usize,
+    address: Address,
+    etag: Hash,
+    certification: Option<StoredCertification>,
 }
 
 struct StoredCertification {
     written: WrittenTrack,
     receipts: Vec<CertifyRes>,
+    collected: Option<CollectedSignatures>,
 }
 
 /// The coded tracks left to certify after an object batch has landed on peers.
@@ -173,7 +137,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .bytes(total_bytes)
             .chunks(objects.len() as u64);
         let result = async {
-            let stored = self.store_objects_batch_inner(bucket, objects).await?;
+            let stored = self.store_objects_batch_inner(bucket, objects, true).await?;
             // Store and certify share this call; a rare outside write still lands on the conflict fallback.
             self.certify_objects_batch_inner(bucket, stored.verification, false)
                 .await?;
@@ -188,8 +152,8 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
     /// for final coded-track certification.
     ///
     /// Registrations are submitted in input order at processed commitment,
-    /// their confirmed event resolution overlaps, and coded slice uploads run
-    /// concurrently. The returned receipts can be published immediately; pass
+    /// several to a transaction, while their confirmed event resolution and
+    /// the coded slice uploads overlap them. The returned receipts can be published immediately; pass
     /// the returned verification handle to [`Self::certify_objects_batch`] to
     /// finish the batch afterward.
     pub async fn store_objects_batch(
@@ -204,7 +168,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .timer(Operation::WriteBatch, Phase::Total)
             .bytes(total_bytes)
             .chunks(objects.len() as u64);
-        let result = self.store_objects_batch_inner(bucket, objects).await;
+        let result = self.store_objects_batch_inner(bucket, objects, false).await;
         timer.finish_result(&result);
         result
     }
@@ -228,6 +192,7 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         &self,
         bucket: &impl TapeOperator,
         objects: Vec<ObjectBatchItem>,
+        should_collect: bool,
     ) -> Result<StoredObjectBatch, TapedriveError> {
         if self.progress.is_some() {
             let sizes = objects
@@ -243,250 +208,56 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
             .map(|cores| cores.get())
             .unwrap_or(1)
             .min(MAX_ENCODE_WORKERS);
-
-        let prepared: Vec<PreparedItem> = stream::iter(objects.into_iter().enumerate())
-            .map(|(index, object)| async move {
-                if inline_write_fits(object.name.as_bytes(), object.data.len()) {
-                    return Ok(PreparedItem::Inline {
-                        index,
-                        name: object.name,
-                        content_type: object.content_type,
-                        data: object.data,
-                    });
-                }
-                let bytes_written = object.data.len() as u64;
-                let plan = match object.plan {
-                    Some(plan)
-                        if plan.storage_units == StorageUnits::from_bytes(bytes_written) =>
-                    {
-                        plan
-                    }
-                    Some(_) => {
-                        return Err(TapedriveError::InvalidArgument(format!(
-                            "batch upload plan size does not match {}",
-                            object.name
-                        )));
-                    }
-                    None => {
-                        self.report(Step::Encoding { unit: index });
-                        encode_blob(self, object.data, Operation::WriteBatch).await?
-                    }
-                };
-                Ok(PreparedItem::Coded {
-                    index,
-                    name: object.name,
-                    content_type: object.content_type,
-                    bytes_written,
-                    plan: Box::new(plan),
-                })
-            })
-            .buffered(encode_workers)
-            .try_collect()
-            .await?;
-
-        let mut run = Vec::with_capacity(prepared.len());
-        let mut registers = Vec::with_capacity(prepared.len());
-        for item in prepared {
-            match item {
-                PreparedItem::Inline {
-                    index,
-                    name,
-                    content_type,
-                    data,
-                } => {
-                    let bytes_written = data.len() as u64;
-                    let register = prepare_raw_register(
-                        self,
-                        bucket,
-                        name.as_bytes(),
-                        content_type,
-                        StorageUnits::from_bytes(bytes_written),
-                        &data,
-                        self.write_options.flags,
-                    )?;
-                    registers.push(register.for_unit(index));
-                    run.push(RunItem { index, name, bytes_written });
-                }
-                PreparedItem::Coded {
-                    index,
-                    name,
-                    content_type,
-                    bytes_written,
-                    plan,
-                } => {
-                    let register = prepare_blob_register(
-                        self,
-                        bucket,
-                        name.as_bytes(),
-                        content_type,
-                        StorageUnits::from_bytes(bytes_written),
-                        *plan,
-                        self.write_options.flags,
-                    )?;
-                    registers.push(register.for_unit(index));
-                    run.push(RunItem { index, name, bytes_written });
-                }
-            }
-        }
-
-        let registered = send_registers(self, bucket, registers, Operation::WriteBatch).await?;
-        let mut sent = Vec::with_capacity(run.len());
-        for (item, register) in run.into_iter().zip(registered) {
-            sent.push(match register {
-                SentRegister::Raw(raw) => SentItem::Inline {
-                    index: item.index,
-                    name: item.name,
-                    bytes_written: item.bytes_written,
-                    sent: raw,
-                },
-                SentRegister::Blob(blob) => SentItem::Coded {
-                    index: item.index,
-                    name: item.name,
-                    bytes_written: item.bytes_written,
-                    sent: blob,
-                },
-            });
-        }
-
-        let resolved: Vec<ResolvedItem> = stream::iter(sent)
-            .map(|item| async move {
-                match item {
-                    SentItem::Inline {
-                        index,
-                        name,
-                        bytes_written,
-                        sent,
-                    } => Ok::<_, TapedriveError>(ResolvedItem::Inline {
-                        index,
-                        name,
-                        bytes_written,
-                        written: resolve_sent_raw(self, sent).await?,
-                    }),
-                    SentItem::Coded {
-                        index,
-                        name,
-                        bytes_written,
-                        sent,
-                    } => {
-                        let (written, plan) = resolve_sent_blob(self, *sent).await?;
-                        Ok(ResolvedItem::Coded {
-                            index,
-                            name,
-                            bytes_written,
-                            written,
-                            plan: Box::new(plan),
-                        })
-                    }
-                }
-            })
-            .buffered(RESOLVE_CONCURRENCY)
-            .try_collect()
-            .await?;
-
-        for item in &resolved {
-            let written = match item {
-                ResolvedItem::Inline { written, .. } | ResolvedItem::Coded { written, .. } => {
-                    written
-                }
-            };
-            append_to_mirror(self, bucket, &mirror, written).await?;
-        }
-        for item in &resolved {
-            match item {
-                ResolvedItem::Coded { index, written, .. } => {
-                    self.report(Step::Storing { unit: *index, track: written.address });
-                }
-                // An inline object is whole and certified once its register lands.
-                ResolvedItem::Inline { index, written, .. } => {
-                    self.report(Step::Storing { unit: *index, track: written.address });
-                    self.report(Step::Done { track: written.address });
-                }
-            }
-        }
-
         let store_depth = self.write_options.store_depth.unwrap_or(BATCH_STORE_DEPTH).max(1);
-        let stored: Vec<StoredItem> = stream::iter(resolved)
-            .map(|item| async move {
-                match item {
-                    ResolvedItem::Coded {
-                        index,
-                        name,
-                        bytes_written,
-                        written,
-                        plan,
-                    } => {
-                        let etag = plan.commitment_hash;
-                        let receipts = upload_with_retry(
-                            self,
-                            &written,
-                            &plan,
-                            Operation::WriteBatch,
-                        )
-                        .await?;
-                        Ok::<_, TapedriveError>(StoredItem::Coded {
-                            index,
-                            name,
-                            bytes_written,
-                            written,
-                            receipts,
-                            etag,
-                        })
-                    }
-                    ResolvedItem::Inline {
-                        index,
-                        name,
-                        bytes_written,
-                        written,
-                    } => Ok::<_, TapedriveError>(StoredItem::Inline {
-                        index,
-                        name,
-                        bytes_written,
-                        written,
-                    }),
-                }
-            })
-            .buffered(store_depth)
-            .try_collect()
-            .await?;
+        let count = objects.len();
+        let labels: Vec<(String, u64)> = objects
+            .iter()
+            .map(|object| (object.name.clone(), object.data.len() as u64))
+            .collect();
 
-        let mut receipts = vec![None; stored.len()];
+        // Every channel holds the whole batch, so no stage waits on a slower one to send.
+        let (prepared_sender, prepared_receiver) = mpsc::channel(count.max(1));
+        let (sent_sender, sent_receiver) = mpsc::channel(count.max(1));
+        let (resolved_sender, resolved_receiver) = mpsc::channel(count.max(1));
+
+        let encode_stage = async move {
+            let mut prepared = stream::iter(objects.into_iter().enumerate())
+                .map(|(index, object)| self.prepare_object(index, object))
+                .buffered(encode_workers);
+            while let Some(item) = prepared.next().await {
+                if prepared_sender.send(item?).await.is_err() {
+                    break;
+                }
+            }
+            Ok::<_, TapedriveError>(())
+        };
+        let register_stage = self.register_stage(bucket, prepared_receiver, sent_sender);
+        let resolve_stage = self.resolve_stage(bucket, &mirror, sent_receiver, resolved_sender);
+        let store_stage = self.store_stage(resolved_receiver, store_depth, should_collect);
+
+        let ((), (), (), stored) =
+            tokio::try_join!(encode_stage, register_stage, resolve_stage, store_stage)?;
+
+        let mut receipts = vec![None; count];
         let mut pending = Vec::new();
         for item in stored {
-            match item {
-                StoredItem::Inline {
-                    index,
-                    name,
-                    bytes_written,
-                    written,
-                } => {
-                    receipts[index] = Some(ObjectBatchReceipt {
-                        name,
-                        address: written.address,
-                        bytes_written,
-                        etag: written.track.value_hash,
-                    });
-                }
-                StoredItem::Coded {
-                    index,
-                    name,
-                    bytes_written,
-                    written,
-                    receipts: certify_receipts,
-                    etag,
-                } => {
-                    receipts[index] = Some(ObjectBatchReceipt {
-                        name,
-                        address: written.address,
-                        bytes_written,
-                        etag,
-                    });
-                    pending.push(StoredCertification {
-                        written,
-                        receipts: certify_receipts,
-                    });
-                }
+            let (name, bytes_written) = labels
+                .get(item.index)
+                .ok_or_else(|| TapedriveError::InvalidArgument("batch receipt was lost".into()))?;
+            if let Some(slot) = receipts.get_mut(item.index) {
+                *slot = Some(ObjectBatchReceipt {
+                    name: name.clone(),
+                    address: item.address,
+                    bytes_written: *bytes_written,
+                    etag: item.etag,
+                });
+            }
+            if let Some(certification) = item.certification {
+                pending.push(certification);
             }
         }
+        // Certifies prove against the mirror in track order.
+        pending.sort_by_key(|certification| certification.written.track.track_number);
 
         let receipts = receipts
             .into_iter()
@@ -503,6 +274,226 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
         })
     }
 
+    /// Encode one object, or keep it whole when it fits inline.
+    async fn prepare_object(
+        &self,
+        index: usize,
+        object: ObjectBatchItem,
+    ) -> Result<PreparedItem, TapedriveError> {
+        if inline_write_fits(object.name.as_bytes(), object.data.len()) {
+            return Ok(PreparedItem::Inline {
+                index,
+                name: object.name,
+                content_type: object.content_type,
+                data: object.data,
+            });
+        }
+        let bytes_written = object.data.len() as u64;
+        let plan = match object.plan {
+            Some(plan) if plan.storage_units == StorageUnits::from_bytes(bytes_written) => plan,
+            Some(_) => {
+                return Err(TapedriveError::InvalidArgument(format!(
+                    "batch upload plan size does not match {}",
+                    object.name
+                )));
+            }
+            None => {
+                self.report(Step::Encoding { unit: index });
+                encode_blob(self, object.data, Operation::WriteBatch).await?
+            }
+        };
+        Ok(PreparedItem::Coded {
+            index,
+            name: object.name,
+            content_type: object.content_type,
+            bytes_written,
+            plan: Box::new(plan),
+        })
+    }
+
+    /// Build the register for one prepared object.
+    fn prepare_register(
+        &self,
+        bucket: &impl TapeOperator,
+        item: PreparedItem,
+    ) -> Result<PreparedRegister, TapedriveError> {
+        let register = match item {
+            PreparedItem::Inline { index, name, content_type, data } => prepare_raw_register(
+                self,
+                bucket,
+                name.as_bytes(),
+                content_type,
+                StorageUnits::from_bytes(data.len() as u64),
+                &data,
+                self.write_options.flags,
+            )?
+            .for_unit(index),
+            PreparedItem::Coded { index, name, content_type, bytes_written, plan } => {
+                prepare_blob_register(
+                    self,
+                    bucket,
+                    name.as_bytes(),
+                    content_type,
+                    StorageUnits::from_bytes(bytes_written),
+                    *plan,
+                    self.write_options.flags,
+                )?
+                .for_unit(index)
+            }
+        };
+        Ok(register)
+    }
+
+    /// Send registers in input order, one transaction at a time, each as full
+    /// as the objects encoded so far allow.
+    ///
+    /// A transaction goes out once the one before it is processed, and its
+    /// confirmation wait moves to the resolve stage.
+    async fn register_stage(
+        &self,
+        bucket: &impl TapeOperator,
+        mut prepared: mpsc::Receiver<PreparedItem>,
+        sent: mpsc::Sender<Vec<(usize, SentRegister)>>,
+    ) -> Result<(), TapedriveError> {
+        let mut waiting: Vec<PreparedRegister> = Vec::new();
+        loop {
+            if waiting.is_empty() {
+                match prepared.recv().await {
+                    Some(item) => waiting.push(self.prepare_register(bucket, item)?),
+                    None => return Ok(()),
+                }
+            }
+            while let Ok(item) = prepared.try_recv() {
+                waiting.push(self.prepare_register(bucket, item)?);
+            }
+
+            let mut packed = pack_registers(self, bucket, std::mem::take(&mut waiting))?.into_iter();
+            let Some(transaction) = packed.next() else {
+                continue;
+            };
+            waiting = packed.flatten().collect();
+
+            let mut units = Vec::with_capacity(transaction.len());
+            for register in &transaction {
+                units.push(register.unit().ok_or_else(|| {
+                    TapedriveError::InvalidArgument("batch register has no unit".into())
+                })?);
+            }
+            let registered = send_registers(self, bucket, transaction, Operation::WriteBatch).await?;
+            if sent.send(units.into_iter().zip(registered).collect()).await.is_err() {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Read each register transaction's events once it confirms, and mirror
+    /// its tracks in order.
+    async fn resolve_stage(
+        &self,
+        bucket: &impl TapeOperator,
+        mirror: &Mutex<ArchiveMirror>,
+        mut sent: mpsc::Receiver<Vec<(usize, SentRegister)>>,
+        resolved: mpsc::Sender<ResolvedItem>,
+    ) -> Result<(), TapedriveError> {
+        let mut in_flight = FuturesOrdered::new();
+        let mut is_registering = true;
+        while is_registering || !in_flight.is_empty() {
+            tokio::select! {
+                // Safe: recv is cancellation-safe and a transaction only leaves the
+                // channel when this branch completes.
+                transaction = sent.recv(), if is_registering && in_flight.len() < RESOLVE_CONCURRENCY => {
+                    match transaction {
+                        Some(transaction) => in_flight.push_back(self.resolve_transaction(transaction)),
+                        None => is_registering = false,
+                    }
+                }
+                // Safe: FuturesOrdered::next only removes a future once it
+                // completes; a cancelled poll leaves every resolve in place.
+                transaction = in_flight.next(), if !in_flight.is_empty() => {
+                    let Some(transaction) = transaction else { continue };
+                    for item in transaction? {
+                        append_to_mirror(self, bucket, mirror, &item.written).await?;
+                        self.report(Step::Storing { unit: item.index, track: item.written.address });
+                        // An inline object is whole and certified once its register lands.
+                        if item.plan.is_none() {
+                            self.report(Step::Done { track: item.written.address });
+                        }
+                        if resolved.send(item).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn resolve_transaction(
+        &self,
+        transaction: Vec<(usize, SentRegister)>,
+    ) -> Result<Vec<ResolvedItem>, TapedriveError> {
+        let resolve = self
+            .timer(Operation::WriteBatch, Phase::Resolve)
+            .chunks(transaction.len() as u64);
+        let (indexes, registers): (Vec<usize>, Vec<SentRegister>) = transaction.into_iter().unzip();
+        let result = resolve_registers(self, registers).await;
+        resolve.finish_result(&result);
+
+        let mut items = Vec::with_capacity(indexes.len());
+        for (index, register) in indexes.into_iter().zip(result?) {
+            items.push(match register {
+                ResolvedRegister::Raw(written) => ResolvedItem { index, written, plan: None },
+                ResolvedRegister::Blob(written, plan) => {
+                    ResolvedItem { index, written, plan: Some(plan) }
+                }
+            });
+        }
+        Ok(items)
+    }
+
+    /// Upload each coded object as its register resolves, and collect its
+    /// certify signatures when the caller certifies straight after.
+    async fn store_stage(
+        &self,
+        resolved: mpsc::Receiver<ResolvedItem>,
+        store_depth: usize,
+        should_collect: bool,
+    ) -> Result<Vec<StoredItem>, TapedriveError> {
+        stream::unfold(resolved, |mut resolved| async move {
+            resolved.recv().await.map(|item| (item, resolved))
+        })
+            .map(|item| self.store_item(item, should_collect))
+            .buffer_unordered(store_depth)
+            .try_collect()
+            .await
+    }
+
+    async fn store_item(
+        &self,
+        item: ResolvedItem,
+        should_collect: bool,
+    ) -> Result<StoredItem, TapedriveError> {
+        let ResolvedItem { index, written, plan } = item;
+        let Some(plan) = plan else {
+            let etag = written.track.value_hash;
+            return Ok(StoredItem { index, address: written.address, etag, certification: None });
+        };
+
+        let receipts = upload_with_retry(self, &written, &plan, Operation::WriteBatch).await?;
+        let collected = match should_collect {
+            true => Some(
+                collect_certification(self, &written, Operation::WriteBatch, &receipts).await?,
+            ),
+            false => None,
+        };
+        Ok(StoredItem {
+            index,
+            address: written.address,
+            etag: plan.commitment_hash,
+            certification: Some(StoredCertification { written, receipts, collected }),
+        })
+    }
+
     async fn certify_objects_batch_inner(
         &self,
         bucket: &impl TapeOperator,
@@ -516,13 +507,18 @@ impl<Blockchain: Rpc, Cluster: Api> Tapedrive<Blockchain, Cluster> {
 
         let pending: Vec<ChunkCertification> = stream::iter(pending)
             .map(|stored| async move {
-                let collected = collect_certification(
-                    self,
-                    &stored.written,
-                    Operation::WriteBatch,
-                    &stored.receipts,
-                )
-                .await?;
+                let collected = match stored.collected {
+                    Some(collected) => collected,
+                    None => {
+                        collect_certification(
+                            self,
+                            &stored.written,
+                            Operation::WriteBatch,
+                            &stored.receipts,
+                        )
+                        .await?
+                    }
+                };
                 Ok::<_, TapedriveError>(ChunkCertification {
                     written: stored.written,
                     collected,

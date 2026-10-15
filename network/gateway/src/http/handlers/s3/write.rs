@@ -205,7 +205,9 @@ impl S3WriteContext {
         Blockchain: Rpc,
         Reader: AsyncRead + Unpin,
     {
-        let client = self.client(context)?;
+        let mut client = self.client(context)?;
+        // A retried upload reuses the segments the failed one landed.
+        client.write_options.resume = true;
         let operator = self.operator(tape)?;
         let receipt = client
             .write_named_stream_as(&operator, name, content_type, size, reader)
