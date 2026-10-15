@@ -1,6 +1,6 @@
 //! Builds a node's board from live context and the metric set.
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tape_rpc::Rpc;
@@ -370,11 +370,10 @@ pub(super) fn store_io_stats(families: &[MetricFamily]) -> StoreIo {
     io
 }
 
-/// Slices held and the bytes they occupy, from the slice column's own totals.
+/// Slices held and the bytes they occupy, from the slice column's own totals
 ///
-/// A backend that cannot weigh the column without reading it answers no bytes,
-/// reported as zero rather than as the volume's whole footprint. Cached either
-/// way, since the board polls hot.
+/// A backend that can't weigh the column without reading it answers no bytes,
+/// which reads as zero.
 fn stored_slices<Db, Cluster, Blockchain>(
     context: &NodeContext<Db, Cluster, Blockchain>,
 ) -> (u64, u64)
@@ -383,34 +382,8 @@ where
     Cluster: Api,
     Blockchain: Rpc,
 {
-    const SLICE_COUNT_TTL: std::time::Duration = std::time::Duration::from_secs(30);
-    static CACHE: Mutex<Option<(Instant, u64, u64)>> = Mutex::new(None);
-    static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-    fn refresh<Db: Store>(store: &tape_store::TapeStore<Db>) -> (u64, u64) {
-        let (count, bytes) = store.slice_totals().unwrap_or((0, None));
-        let bytes = bytes.unwrap_or_default().as_u64();
-        if let Ok(mut cache) = CACHE.lock() {
-            *cache = Some((Instant::now(), count, bytes));
-        }
-        (count, bytes)
-    }
-
-    // Serve the cached totals and refresh them off the request path.
-    if let Some((at, count, bytes)) = CACHE.lock().ok().and_then(|cache| *cache) {
-        if at.elapsed() >= SLICE_COUNT_TTL
-            && !REFRESHING.swap(true, std::sync::atomic::Ordering::AcqRel)
-        {
-            let store = context.store.clone();
-            tokio::task::spawn_blocking(move || {
-                refresh(&store);
-                REFRESHING.store(false, std::sync::atomic::Ordering::Release);
-            });
-        }
-        return (count, bytes);
-    }
-
-    refresh(&context.store)
+    let (count, bytes) = context.store.slice_totals().unwrap_or((0, None));
+    (count, bytes.unwrap_or_default().as_u64())
 }
 
 /// The local node's own stats for the network table, from cheap estimates only.

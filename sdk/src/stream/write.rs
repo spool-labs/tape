@@ -1,6 +1,5 @@
 //! Stream write implementation.
 
-use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,9 +12,7 @@ use tracing::{debug, warn};
 
 use tape_rpc::{CommitmentLevel, Rpc, RpcError};
 use tape_rpc_client::{parse_tape_error, sign_transaction};
-use solana_hash::Hash as Blockhash;
-use solana_instruction::Instruction;
-use tape_api::compute::{CERTIFY_TRACK_CU, MAX_COMPUTE_UNIT_LIMIT};
+use tape_api::compute::CERTIFY_TRACK_CU;
 use tape_api::errors::TapeError;
 use tape_api::instruction::build_certify_track_ix;
 use tape_api::program::tapedrive::TrackAddress;
@@ -57,9 +54,6 @@ use super::manifest::{
     max_track_size, ChunkEntry, ChunkManifest, MAX_TRACKS_PER_TAPE, MANIFEST_VERSION,
 };
 use super::receipt::StreamReceipt;
-
-/// Most certifies one transaction carries, by its compute budget
-const MAX_CERTIFIES_PER_TRANSACTION: usize = (MAX_COMPUTE_UNIT_LIMIT / CERTIFY_TRACK_CU) as usize;
 
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
 const MAX_TRACKS: TrackNumber = TrackNumber(MAX_TRACKS_PER_TAPE);
@@ -1067,7 +1061,7 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
     operation: Operation,
 ) -> Result<Vec<Txid>, TapedriveError> {
     if !client.rpc().rpc().executes_batches_in_order().await {
-        return certify_chunks_packed(client, tape_key, mirror, pending, operation).await;
+        return certify_chunks_singly(client, tape_key, mirror, pending, operation).await;
     }
 
     let mut pending = pending;
@@ -1277,13 +1271,9 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
     Ok(RunOutcome { landed, is_epoch_changed, signatures })
 }
 
-/// Certify chunks on a chain that promises no batch order, one transaction
-/// at a time.
-///
-/// A transaction carries as many certifies as fit, each proven against the
-/// mirror as the ones before it leave it. A pack the chain refuses goes back
-/// through the one-at-a-time path, which handles stale proofs and turned epochs.
-async fn certify_chunks_packed<Blockchain: Rpc, Cluster: Api>(
+/// Certify each chunk on its own, the way a chain that promises no batch
+/// order has to.
+async fn certify_chunks_singly<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     mirror: &Mutex<ArchiveMirror>,
@@ -1291,129 +1281,22 @@ async fn certify_chunks_packed<Blockchain: Rpc, Cluster: Api>(
     operation: Operation,
 ) -> Result<Vec<Txid>, TapedriveError> {
     let mut signatures = Vec::with_capacity(pending.len());
-    let mut pending: VecDeque<ChunkCertification> = pending.into();
-    let mut recollects = 0;
-    while !pending.is_empty() {
-        let (instructions, built) = build_certify_pack(client, tape_key, mirror, &pending).await?;
-        if built.len() > 1 {
-            let payer = client.payer()?;
-            let submit = client
-                .timer(operation, Phase::CertifySubmit)
-                .chunks(built.len() as u64);
-            let sent = client
-                .rpc()
-                .send_instructions_with_signers_and_compute_unit_limit(
-                    payer,
-                    certify_units(built.len()),
-                    instructions,
-                    &[tape_key.keypair()],
-                    CommitmentLevel::Processed,
-                    true,
-                )
-                .await;
-            submit.finish_result(&sent);
-            match sent {
-                Ok(signature) => {
-                    client.state().touch();
-                    signatures.push(signature);
-                    for build in &built {
-                        apply_certified_to_mirror(client, tape_key, mirror, &build.certified, Some(&build.proof))
-                            .await?;
-                        if let Some(item) = pending.pop_front() {
-                            client.report(Step::Done { track: item.written.address });
-                        }
-                    }
-                    continue;
-                }
-                Err(err) => {
-                    let err = TapedriveError::Rpc(err);
-                    // Every entry left signed under an epoch that turned, so all of them sign again.
-                    if needs_fresh_signatures(&err) && recollects < EPOCH_RECOLLECT_ATTEMPTS {
-                        recollects += 1;
-                        sleep(CERTIFY_CONFLICT_DELAY).await;
-                        client.state().invalidate();
-                        debug!(entries = pending.len(), attempt = recollects, "certify pack signed under a past epoch; signing again");
-                        pending = recollect_run(client, pending.into(), operation).await?.into();
-                        continue;
-                    }
-                    debug!(entries = built.len(), %err, "certify pack refused; certifying its entries one at a time");
-                }
-            }
-        }
-
-        // A lone entry, or every entry of a refused pack, goes on its own.
-        for _ in 0..built.len().max(1) {
-            let Some(item) = pending.pop_front() else {
-                break;
-            };
-            let signature = certify_chunk(
-                client,
-                tape_key,
-                mirror,
-                &item.written,
-                item.collected,
-                &item.receipts,
-                operation,
-            )
-            .await?;
-            signatures.extend(signature);
-            client.report(Step::Done { track: item.written.address });
-        }
+    for item in pending {
+        let signature = certify_chunk(
+            client,
+            tape_key,
+            mirror,
+            &item.written,
+            item.collected,
+            &item.receipts,
+            operation,
+        )
+        .await?;
+        signatures.extend(signature);
+        client.report(Step::Done { track: item.written.address });
     }
 
     Ok(signatures)
-}
-
-/// The compute budget of a transaction that carries `count` certifies
-fn certify_units(count: usize) -> u32 {
-    CERTIFY_TRACK_CU.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX))
-}
-
-/// Build the certifies at the head of `pending` that fit one transaction,
-/// each proven against a copy of the mirror the ones before it moved.
-async fn build_certify_pack<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
-    mirror: &Mutex<ArchiveMirror>,
-    pending: &VecDeque<ChunkCertification>,
-) -> Result<(Vec<Instruction>, Vec<BuiltCertification>), TapedriveError> {
-    let payer = client.payer()?;
-    let tape_signer = tape_key.keypair();
-    let mut working = mirror.lock().await.clone();
-    let mut instructions = Vec::with_capacity(MAX_CERTIFIES_PER_TRANSACTION);
-    let mut built = Vec::with_capacity(MAX_CERTIFIES_PER_TRANSACTION);
-    for item in pending.iter().take(MAX_CERTIFIES_PER_TRANSACTION) {
-        let certified = certified_track(&item.written.track);
-        let Ok(proof) = working.proof_for(certified.track_number) else {
-            break;
-        };
-        if working
-            .apply_certified_with_proof(certified.track_number, &certified, &proof)
-            .is_err()
-        {
-            break;
-        }
-        instructions.push(build_certify_track_ix(
-            payer.pubkey().into(),
-            tape_key.pubkey().into(),
-            proof,
-            EpochNumber(item.collected.epoch),
-            item.collected.group,
-            item.collected.bitmap,
-            item.collected.aggregated_signature,
-        ));
-        // The size check is all a sign needs, so any blockhash measures it.
-        let units = certify_units(instructions.len());
-        if instructions.len() > 1
-            && sign_transaction(payer, &[tape_signer], units, &instructions, Blockhash::default())
-                .is_err()
-        {
-            instructions.pop();
-            break;
-        }
-        built.push(BuiltCertification { proof, certified });
-    }
-    Ok((instructions, built))
 }
 
 /// Certify one stored chunk: mirror proof first, stale proof retried, dead signatures re-collected on the peer path
