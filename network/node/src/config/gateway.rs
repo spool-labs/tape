@@ -174,7 +174,8 @@ pub struct S3Config {
     #[serde(default)]
     pub write: S3WriteConfig,
 
-    /// Overall maximum object size (bytes) for a streamed PutObject.
+    /// Largest object a PutObject or a multipart upload may write. The gateway
+    /// also holds every object to the network's per-stream limit.
     #[serde(default = "default_s3_max_object_bytes")]
     pub max_object_bytes: usize,
 
@@ -233,9 +234,9 @@ fn default_s3_listen() -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3450)
 }
 
-/// Default overall object ceiling: AWS's single-object size of 5 GiB.
+/// Default overall object ceiling: 4 TiB, the per-stream limit of an empty tape.
 fn default_s3_max_object_bytes() -> usize {
-    5 * 1024 * 1024 * 1024
+    4 * 1024 * 1024 * 1024 * 1024
 }
 
 /// Default in-memory buffered-write ceiling: 256 MiB.
