@@ -58,7 +58,7 @@ use super::manifest::{
 };
 use super::receipt::StreamReceipt;
 
-/// Most certifies one transaction carries, by its compute budget
+/// Most certifies one transaction holds, by its compute budget
 const MAX_CERTIFIES_PER_TRANSACTION: usize = (MAX_COMPUTE_UNIT_LIMIT / CERTIFY_TRACK_CU) as usize;
 
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
@@ -1205,7 +1205,7 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
 /// Certify chunks on a chain that promises no batch order, one transaction
 /// at a time.
 ///
-/// A transaction carries as many certifies as fit, each proven against the
+/// A transaction holds as many certifies as fit, each proven against the
 /// mirror as the ones before it leave it. A pack the chain refuses goes back
 /// through the one-at-a-time path, which handles stale proofs and turned epochs.
 async fn certify_chunks_packed<Blockchain: Rpc, Cluster: Api>(
@@ -1289,7 +1289,7 @@ async fn certify_chunks_packed<Blockchain: Rpc, Cluster: Api>(
     Ok(signatures)
 }
 
-/// The compute budget of a transaction that carries `count` certifies
+/// The compute budget of a transaction that holds `count` certifies
 fn certify_units(count: usize) -> u32 {
     CERTIFY_TRACK_CU.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX))
 }

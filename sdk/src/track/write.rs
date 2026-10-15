@@ -65,7 +65,7 @@ const POLL_INTERVAL_MS: u64 = 400;
 /// How long to wait for a track to become visible before giving up.
 const VISIBILITY_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// Most registers one transaction carries, by its compute budget
+/// Most registers one transaction holds, by its compute budget
 const MAX_REGISTERS_PER_TRANSACTION: usize = (MAX_COMPUTE_UNIT_LIMIT / TRACK_WRITE_CU) as usize;
 
 pub const UNNAMED_TRACK: &[u8] = b"";
@@ -1038,7 +1038,7 @@ pub(crate) fn pack_registers<Blockchain: Rpc, Cluster: Api>(
     Ok(packed)
 }
 
-/// The compute budget of a transaction that carries `count` registers
+/// The compute budget of a transaction that holds `count` registers
 fn register_units(count: usize) -> u32 {
     TRACK_WRITE_CU.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX))
 }
