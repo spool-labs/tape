@@ -50,7 +50,6 @@ clap = { version = "4", features = ["derive"] }
 dirs = { workspace = true }
 axum = { workspace = true }
 futures = { workspace = true }
-libc = { workspace = true }
 http-body-util = { workspace = true }
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 rustls = "0.23"

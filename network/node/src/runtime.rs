@@ -24,7 +24,6 @@ use crate::features::block::ingestor::BlockIngestor;
 use crate::features::bootstrap::{self, LiveStart};
 use crate::features::assignment::manager::AssignmentManager;
 use crate::features::challenge::manager::ChallengeManager;
-use crate::features::memory;
 use crate::features::gc::manager::GcManager;
 use crate::features::http::server::HttpServer;
 use crate::features::lifecycle::manager::LifecycleManager;
@@ -379,8 +378,6 @@ where
             cancel.clone(),
         ).run(),
     );
-
-    supervisor.spawn(ServiceName::MemoryTrim, memory::trim::run(cancel.clone()));
 
     let store = Arc::clone(&context.store);
     supervisor.spawn(

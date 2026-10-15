@@ -20,7 +20,6 @@ pub enum ServiceName {
     AtlasObserve,
     BalanceMonitor,
     ObserveStream,
-    MemoryTrim,
 }
 
 impl ServiceName {
@@ -46,7 +45,6 @@ impl ServiceName {
             Self::AtlasObserve => "AtlasObserve",
             Self::BalanceMonitor => "BalanceMonitor",
             Self::ObserveStream => "ObserveStream",
-            Self::MemoryTrim => "MemoryTrim",
         }
     }
 }
