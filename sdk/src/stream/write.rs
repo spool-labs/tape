@@ -1,5 +1,6 @@
 //! Stream write implementation.
 
+use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +13,9 @@ use tracing::{debug, warn};
 
 use tape_rpc::{CommitmentLevel, Rpc, RpcError};
 use tape_rpc_client::{parse_tape_error, sign_transaction};
-use tape_api::compute::CERTIFY_TRACK_CU;
+use solana_hash::Hash as Blockhash;
+use solana_instruction::Instruction;
+use tape_api::compute::{CERTIFY_TRACK_CU, MAX_COMPUTE_UNIT_LIMIT};
 use tape_api::errors::TapeError;
 use tape_api::instruction::build_certify_track_ix;
 use tape_api::program::tapedrive::TrackAddress;
@@ -41,7 +44,7 @@ use crate::track::write::{
     certified_track, certify_submit_with_retry, certify_with_retry, coded_content_address,
     collect_certification, confirm_certifies, encode_blob, finish_coded_track,
     inline_content_address, inline_write_fits, TapeContents,
-    needs_fresh_signatures, plan_blob, register_blob, register_blob_processed, resolve_sent_blob,
+    needs_fresh_signatures, plan_blob, register_blob_processed, resolve_sent_blob,
     should_retry_certification, submit_blob_with_logical_size, submit_certification_with_proof,
     submit_raw_with_logical_size, upload_with_retry, UploadPlan,
     WrittenTrack, UNNAMED_TRACK, UNTYPED_TRACK,
@@ -54,6 +57,9 @@ use super::manifest::{
     max_track_size, ChunkEntry, ChunkManifest, MAX_TRACKS_PER_TAPE, MANIFEST_VERSION,
 };
 use super::receipt::StreamReceipt;
+
+/// Most certifies one transaction holds, by its compute budget
+const MAX_CERTIFIES_PER_TRANSACTION: usize = (MAX_COMPUTE_UNIT_LIMIT / CERTIFY_TRACK_CU) as usize;
 
 /// Maximum track slots in a tape (2^TRACK_TREE_HEIGHT).
 const MAX_TRACKS: TrackNumber = TrackNumber(MAX_TRACKS_PER_TAPE);
@@ -359,28 +365,17 @@ async fn store_bytes<Blockchain: Rpc, Cluster: Api>(
     validate_stream_size(size).map_err(stream_error)?;
     let profile = stream_profile(client).await?;
 
-    if client.write_options.resume {
-        let chunk_count = chunk_count_for_size(size, profile).map_err(stream_error)?;
-        return resume_stream(
-            client, tape_key, name, content_type, data, size, chunk_count, profile,
-        )
-        .await;
-    }
-
-    let (tape, chunk_count) = prepare_write(client, tape_key, name, size, profile).await?;
+    let (tape, chunk_count, contents) = start_write(client, tape_key, name, size, profile).await?;
     let chunk_sources = stream::iter(
         data.chunks(full_chunk_size(profile).as_usize())
             .map(|chunk| Ok::<_, TapedriveError>(chunk.to_vec())),
     );
-    let pending_chunks = pipeline_chunks(
-        client, tape_key, &tape, size, chunk_count, profile, chunk_sources,
+    let entries = pipeline_chunks(
+        client, tape_key, &tape, size, chunk_count, profile, contents.as_ref(), chunk_sources,
     )
     .await?;
 
-    store_manifest_for_chunks(
-        client, tape_key, name, content_type, size, profile, pending_chunks,
-    )
-    .await
+    finish_manifest(client, tape_key, contents.as_ref(), name, content_type, size, profile, entries).await
 }
 
 async fn store_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
@@ -394,15 +389,7 @@ async fn store_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
     validate_stream_size(size).map_err(stream_error)?;
     let profile = stream_profile(client).await?;
 
-    if client.write_options.resume {
-        let chunk_count = chunk_count_for_size(size, profile).map_err(stream_error)?;
-        return resume_stream_reader(
-            client, tape_key, name, content_type, size, chunk_count, profile, reader,
-        )
-        .await;
-    }
-
-    let (tape, chunk_count) = prepare_write(client, tape_key, name, size, profile).await?;
+    let (tape, chunk_count, contents) = start_write(client, tape_key, name, size, profile).await?;
     let chunk_sources =
         stream::unfold((&mut reader, 0usize), move |(reader, chunk_index)| async move {
             if chunk_index >= chunk_count.as_usize() {
@@ -411,55 +398,51 @@ async fn store_stream<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
             let result = read_chunk(reader, chunk_index, chunk_count, size, profile).await;
             Some((result, (reader, chunk_index + 1)))
         });
-    let pending_chunks = pipeline_chunks(
-        client, tape_key, &tape, size, chunk_count, profile, chunk_sources,
+    let entries = pipeline_chunks(
+        client, tape_key, &tape, size, chunk_count, profile, contents.as_ref(), chunk_sources,
     )
     .await?;
 
     verify_stream_drained(&mut reader).await?;
-    store_manifest_for_chunks(
-        client, tape_key, name, content_type, size, profile, pending_chunks,
-    )
-    .await
+    finish_manifest(client, tape_key, contents.as_ref(), name, content_type, size, profile, entries).await
 }
 
-/// Resume a reader stream: read each chunk and finish or write it in order,
-/// then the manifest.
-async fn resume_stream_reader<Blockchain: Rpc, Cluster: Api, Reader: AsyncRead + Unpin>(
+/// The tape and segment count for a write, plus one listing of the tape on a resume, which skips the capacity preflight
+async fn start_write<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    operator: &impl TapeOperator,
+    tape_key: &impl TapeOperator,
+    name: &[u8],
+    size: StorageUnits,
+    profile: ErasureCode,
+) -> Result<(Tape, TrackNumber, Option<TapeContents>), TapedriveError> {
+    if !client.write_options.resume {
+        let (tape, chunk_count) = prepare_write(client, tape_key, name, size, profile).await?;
+        return Ok((tape, chunk_count, None));
+    }
+    let chunk_count = chunk_count_for_size(size, profile).map_err(stream_error)?;
+    let contents = TapeContents::load(client, tape_key.address()).await?;
+    let tape = client.get_tape(&tape_key.address()).await?;
+    Ok((tape, chunk_count, Some(contents)))
+}
+
+/// Write the manifest, or on a resume finish the one the tape already holds
+#[allow(clippy::too_many_arguments)]
+async fn finish_manifest<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    contents: Option<&TapeContents>,
     name: &[u8],
     content_type: ContentType,
     size: StorageUnits,
-    chunk_count: TrackNumber,
     profile: ErasureCode,
-    mut reader: Reader,
+    entries: Vec<ChunkEntry>,
 ) -> Result<StoredManifest, TapedriveError> {
-    let timer = client
-        .timer(Operation::WriteStream, Phase::Total)
-        .bytes(size.to_bytes());
-    let result = async {
-        let contents = TapeContents::load(client, operator.address()).await?;
-        report_plan(client, size, profile)?;
-        let mut entries = Vec::with_capacity(chunk_count.as_usize());
-        for chunk_index in 0..chunk_count.as_usize() {
-            let chunk = read_chunk(&mut reader, chunk_index, chunk_count, size, profile).await?;
-            let track =
-                resume_stream_chunk(client, operator, &contents, chunk, chunk_index).await?;
-            let entry = chunk_entry(
-                chunk_index, chunk_count, size, profile, track.address(),
-            );
-            entries.push(entry.map_err(stream_error)?);
+    match contents {
+        Some(contents) => {
+            store_resumed_manifest(client, tape_key, contents, name, content_type, size, profile, entries).await
         }
-        verify_stream_drained(&mut reader).await?;
-        store_resumed_manifest(
-            client, operator, &contents, name, content_type, size, profile, entries,
-        )
-        .await
+        None => store_manifest_for_chunks(client, tape_key, name, content_type, size, profile, entries).await,
     }
-    .await;
-    timer.finish_result(&result);
-    result
 }
 
 /// Validate the write upfront, returning the fetched tape and the chunk
@@ -501,64 +484,6 @@ async fn prepare_write<Blockchain: Rpc, Cluster: Api>(
     result
 }
 
-/// The byte slice of chunk `chunk_index` in the source data.
-fn stream_chunk(
-    data: &[u8],
-    chunk_index: usize,
-    chunk_count: TrackNumber,
-    size: StorageUnits,
-    profile: ErasureCode,
-) -> Result<&[u8], TapedriveError> {
-    let start = chunk_offset(chunk_index, profile)
-        .map_err(stream_error)?
-        .as_usize();
-    let len = chunk_size(chunk_index, chunk_count, size, profile)
-        .map_err(stream_error)?
-        .as_usize();
-    data.get(start..start + len)
-        .ok_or_else(|| stream_error(StreamError::InvalidInput("chunk out of range".into())))
-}
-
-/// Resume a stream: finish or write every data chunk in order, then the
-/// manifest. Each chunk is matched by its content address against one listing
-/// of the tape, so the chunks a re-run finds are reused wherever they sit.
-async fn resume_stream<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
-    name: &[u8],
-    content_type: ContentType,
-    data: &[u8],
-    size: StorageUnits,
-    chunk_count: TrackNumber,
-    profile: ErasureCode,
-) -> Result<StoredManifest, TapedriveError> {
-    let timer = client
-        .timer(Operation::WriteStream, Phase::Total)
-        .bytes(size.to_bytes());
-    let result = async {
-        let contents = TapeContents::load(client, tape_key.address()).await?;
-        report_plan(client, size, profile)?;
-        let mut entries = Vec::with_capacity(chunk_count.as_usize());
-        for chunk_index in 0..chunk_count.as_usize() {
-            let chunk = stream_chunk(data, chunk_index, chunk_count, size, profile)?;
-            let track =
-                resume_stream_chunk(client, tape_key, &contents, chunk.to_vec(), chunk_index)
-                    .await?;
-            let entry = chunk_entry(
-                chunk_index, chunk_count, size, profile, track.address(),
-            );
-            entries.push(entry.map_err(stream_error)?);
-        }
-        store_resumed_manifest(
-            client, tape_key, &contents, name, content_type, size, profile, entries,
-        )
-        .await
-    }
-    .await;
-    timer.finish_result(&result);
-    result
-}
-
 /// Store (or verify) the manifest for a resumed stream.
 /// Both resume paths build the same manifest from the chunks they finished.
 async fn store_resumed_manifest<Blockchain: Rpc, Cluster: Api>(
@@ -575,55 +500,6 @@ async fn store_resumed_manifest<Blockchain: Rpc, Cluster: Api>(
     let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
     ensure_stream_manifest(client, operator, contents, name, content_type, size, &manifest_bytes)
         .await
-}
-
-/// Finish the chunk when the tape already holds its content, else write it.
-///
-/// Chunks are unnamed, so the content alone gives the content address, and a
-/// track another stream wrote serves as well as one this stream wrote. Chunks
-/// are always coded (the write pipeline never inlines them), even a small final one.
-async fn resume_stream_chunk<Blockchain: Rpc, Cluster: Api>(
-    client: &Tapedrive<Blockchain, Cluster>,
-    tape_key: &impl TapeOperator,
-    contents: &TapeContents,
-    chunk_data: Vec<u8>,
-    chunk_index: usize,
-) -> Result<CompressedTrack, TapedriveError> {
-    let logical_size = StorageUnits::from_bytes(chunk_data.len() as u64);
-    let flags = contents.track_flags(client.write_options.flags);
-    client.report(Step::Encoding { unit: chunk_index });
-    let plan = encode_blob(client, chunk_data, Operation::WriteStream).await?;
-    let content = coded_content_address(
-        tape_key.address(),
-        contents.tape_number(),
-        UNNAMED_TRACK,
-        &plan,
-        flags,
-    )?;
-
-    if let Some(existing) = contents.find(&content) {
-        let operation = Operation::WriteStream;
-        return finish_coded_track(client, tape_key, existing, &plan, operation, chunk_index).await;
-    }
-
-    client.report(Step::Registering { unit: chunk_index });
-    let (written, plan) = register_blob(
-        client,
-        tape_key,
-        UNNAMED_TRACK,
-        UNTYPED_TRACK,
-        logical_size,
-        plan,
-        Operation::WriteStream,
-        flags,
-    )
-    .await?;
-    client.report(Step::Storing { unit: chunk_index, track: written.address });
-    let receipts = upload_with_retry(client, &written, &plan, Operation::WriteStream).await?;
-    let certified =
-        certify_with_retry(client, tape_key, &written, Operation::WriteStream, &receipts).await?;
-    client.report(Step::Done { track: written.address });
-    Ok(certified)
 }
 
 /// Finish the manifest track when the tape already holds it, else write it.
@@ -698,8 +574,9 @@ async fn pipeline_chunks<Blockchain, Cluster, Chunks>(
     size: StorageUnits,
     chunk_count: TrackNumber,
     profile: ErasureCode,
+    contents: Option<&TapeContents>,
     chunk_sources: Chunks,
-) -> Result<Vec<PendingChunk>, TapedriveError>
+) -> Result<Vec<ChunkEntry>, TapedriveError>
 where
     Blockchain: Rpc,
     Cluster: Api,
@@ -753,12 +630,22 @@ where
         encoded_sender,
     );
 
-    // Registers submit at processed level: the processed wait is enough to
-    // keep track numbers assigned in stream order, and the confirmed-level
-    // event wait moves into the resolve stage.
+    // Registers wait only for processed, which keeps track numbers in stream order.
+    // On a resume, a segment the tape already holds is finished in place.
     let register_tree = tree.clone();
     let register_stage = async move {
+        let mut resumed = Vec::new();
         while let Some((chunk_index, plan)) = encoded_receiver.recv().await {
+            if let Some(existing) = held_segment(client, tape_key, contents, &plan)? {
+                let finished = finish_held_segment(
+                    client, tape_key, mirror, &register_tree, existing, &plan, chunk_index,
+                )
+                .await?;
+                let entry = chunk_entry(chunk_index, chunk_count, size, profile, finished.address());
+                resumed.push(entry.map_err(stream_error)?);
+                continue;
+            }
+
             let lease = register_tree.clone().read_owned().await;
             let logical_size = plan.storage_units;
             client.report(Step::Registering { unit: chunk_index });
@@ -774,10 +661,10 @@ where
             )
             .await?;
             if sent_sender.send((chunk_index, sent, lease)).await.is_err() {
-                break;
+                return Ok(resumed);
             }
         }
-        Ok::<_, TapedriveError>(())
+        Ok::<_, TapedriveError>(resumed)
     };
 
     // Resolving fetches each register's track-written event at confirmed
@@ -939,7 +826,7 @@ where
         Ok::<_, TapedriveError>(())
     };
 
-    let ((), (), (), (), (), (), pending_chunks) = tokio::try_join!(
+    let ((), (), resumed, (), (), (), pending_chunks) = tokio::try_join!(
         pace_stage,
         encode_stage,
         register_stage,
@@ -948,7 +835,47 @@ where
         collect_stage,
         certify_stage
     )?;
-    Ok(pending_chunks)
+
+    let mut entries: Vec<ChunkEntry> = pending_chunks.into_iter().map(|pending| pending.entry).collect();
+    entries.extend(resumed);
+    entries.sort_by_key(|entry| entry.offset);
+    Ok(entries)
+}
+
+/// The track a resumed stream already wrote for this segment, if the tape holds one
+fn held_segment<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    contents: Option<&TapeContents>,
+    plan: &UploadPlan,
+) -> Result<Option<CompressedTrack>, TapedriveError> {
+    let Some(contents) = contents else {
+        return Ok(None);
+    };
+    let flags = contents.track_flags(client.write_options.flags);
+    let content = coded_content_address(tape_key.address(), contents.tape_number(), UNNAMED_TRACK, plan, flags)?;
+    Ok(contents.find(&content))
+}
+
+/// Finish a segment the tape already holds, holding the tree while an uncertified one certifies
+async fn finish_held_segment<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    mirror: &Mutex<ArchiveMirror>,
+    tree: &RwLock<()>,
+    existing: CompressedTrack,
+    plan: &UploadPlan,
+    chunk_index: usize,
+) -> Result<CompressedTrack, TapedriveError> {
+    if existing.is_certified() {
+        return finish_coded_track(client, tape_key, existing, plan, Operation::WriteStream, chunk_index).await;
+    }
+
+    // The certify moves the root along a path the mirror never saw, so the mirror starts over from chain.
+    let _whole_tree = tree.write().await;
+    let finished = finish_coded_track(client, tape_key, existing, plan, Operation::WriteStream, chunk_index).await?;
+    *mirror.lock().await = reseed_mirror(client, tape_key).await?;
+    Ok(finished)
 }
 
 /// Read chunks into slots and keep up to `workers` encodes in flight, so idle
@@ -1044,12 +971,8 @@ struct BuiltCertification {
 
 /// Certify a run of stored chunks against the mirror the caller holds.
 ///
-/// A chain that runs a JSON-RPC batch in order takes the whole run in one
-/// round trip: every proof is built against the mirror in turn, every
-/// transaction signs against one blockhash, and the chain executes them in
-/// the order they were built. An entry the chain refuses drops that track and
-/// the ones behind it back onto the one-at-a-time path, which rebuilds them
-/// against the mirror as it stands after the last certify that landed.
+/// The certifies go out one transaction at a time, as many to a transaction
+/// as fit. On tapesvm the whole run goes out in one round trip instead.
 ///
 /// Returns the signatures sent at processed, which the caller waits on. Each
 /// track is reported done to the client's progress as its certify lands.
@@ -1060,15 +983,32 @@ pub(crate) async fn certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
     pending: Vec<ChunkCertification>,
     operation: Operation,
 ) -> Result<Vec<Txid>, TapedriveError> {
-    if !client.rpc().rpc().executes_batches_in_order().await {
-        return certify_chunks_singly(client, tape_key, mirror, pending, operation).await;
+    if client.rpc().rpc().is_tapesvm().await {
+        return tapesvm_certify_chunk_run(client, tape_key, mirror, pending, operation).await;
     }
 
+    certify_chunks_packed(client, tape_key, mirror, pending, operation).await
+}
+
+/// Certify a run on tapesvm in one round trip
+///
+/// Every proof is built against the mirror in turn, every transaction signs
+/// against one blockhash, and tapesvm runs them in the order they were built.
+/// An entry the chain refuses drops that track and the ones behind it back
+/// onto the one-at-a-time path, which rebuilds them against the mirror as it
+/// stands after the last certify that landed.
+async fn tapesvm_certify_chunk_run<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    mirror: &Mutex<ArchiveMirror>,
+    pending: Vec<ChunkCertification>,
+    operation: Operation,
+) -> Result<Vec<Txid>, TapedriveError> {
     let mut pending = pending;
     let mut recollects = 0;
     let mut signatures = Vec::with_capacity(pending.len());
     while !pending.is_empty() {
-        let outcome = certify_run_once(client, tape_key, mirror, &pending, operation).await?;
+        let outcome = tapesvm_certify_run_once(client, tape_key, mirror, &pending, operation).await?;
         signatures.extend(outcome.signatures);
         let mut refused = pending.split_off(outcome.landed);
         for landed in &pending {
@@ -1128,7 +1068,7 @@ fn submit_outcome<Failure>(verdicts: &Result<Vec<Result<Txid, RpcError>>, Failur
 }
 
 /// What one run of the batch did.
-struct RunOutcome {
+struct TapesvmRunOutcome {
     landed: usize,
     is_epoch_changed: bool,
     /// One per entry the chain took, in run order
@@ -1160,17 +1100,17 @@ async fn recollect_run<Blockchain: Rpc, Cluster: Api>(
 /// The caller's mirror is advanced over the entries that landed and left
 /// alone for the rest, so a refusal leaves it at the last certify the chain
 /// actually ran.
-async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
+async fn tapesvm_certify_run_once<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     mirror: &Mutex<ArchiveMirror>,
     pending: &[ChunkCertification],
     operation: Operation,
-) -> Result<RunOutcome, TapedriveError> {
+) -> Result<TapesvmRunOutcome, TapedriveError> {
     // An empty run proves nothing, so it pays for neither the mirror copy nor
     // a blockhash.
     if pending.is_empty() {
-        return Ok(RunOutcome { landed: 0, is_epoch_changed: false, signatures: Vec::new() });
+        return Ok(TapesvmRunOutcome { landed: 0, is_epoch_changed: false, signatures: Vec::new() });
     }
 
     let payer = client.payer()?;
@@ -1208,7 +1148,7 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
     // The blockhash comes after the proving, so a run the mirror can prove
     // nothing of costs no round trip and signs against a fresher one.
     if instructions.is_empty() {
-        return Ok(RunOutcome { landed: 0, is_epoch_changed: false, signatures: Vec::new() });
+        return Ok(TapesvmRunOutcome { landed: 0, is_epoch_changed: false, signatures: Vec::new() });
     }
 
     let blockhash = client.rpc().rpc().get_latest_blockhash().await?;
@@ -1268,12 +1208,11 @@ async fn certify_run_once<Blockchain: Rpc, Cluster: Api>(
         client.state().touch();
     }
 
-    Ok(RunOutcome { landed, is_epoch_changed, signatures })
+    Ok(TapesvmRunOutcome { landed, is_epoch_changed, signatures })
 }
 
-/// Certify each chunk on its own, the way a chain that promises no batch
-/// order has to.
-async fn certify_chunks_singly<Blockchain: Rpc, Cluster: Api>(
+/// Certify segments one transaction at a time, as many to a transaction as fit, on a chain that promises no batch order
+async fn certify_chunks_packed<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     mirror: &Mutex<ArchiveMirror>,
@@ -1281,22 +1220,128 @@ async fn certify_chunks_singly<Blockchain: Rpc, Cluster: Api>(
     operation: Operation,
 ) -> Result<Vec<Txid>, TapedriveError> {
     let mut signatures = Vec::with_capacity(pending.len());
-    for item in pending {
-        let signature = certify_chunk(
-            client,
-            tape_key,
-            mirror,
-            &item.written,
-            item.collected,
-            &item.receipts,
-            operation,
-        )
-        .await?;
-        signatures.extend(signature);
-        client.report(Step::Done { track: item.written.address });
+    let mut pending: VecDeque<ChunkCertification> = pending.into();
+    let mut recollects = 0;
+    while !pending.is_empty() {
+        let (instructions, built) = build_certify_pack(client, tape_key, mirror, &pending).await?;
+        if built.len() > 1 {
+            let payer = client.payer()?;
+            let submit = client
+                .timer(operation, Phase::CertifySubmit)
+                .chunks(built.len() as u64);
+            let sent = client
+                .rpc()
+                .send_instructions_with_signers_and_compute_unit_limit(
+                    payer,
+                    certify_units(built.len()),
+                    instructions,
+                    &[tape_key.keypair()],
+                    CommitmentLevel::Processed,
+                    true,
+                )
+                .await;
+            submit.finish_result(&sent);
+            match sent {
+                Ok(signature) => {
+                    client.state().touch();
+                    signatures.push(signature);
+                    for build in &built {
+                        apply_certified_to_mirror(client, tape_key, mirror, &build.certified, Some(&build.proof))
+                            .await?;
+                        if let Some(item) = pending.pop_front() {
+                            client.report(Step::Done { track: item.written.address });
+                        }
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    let error = TapedriveError::Rpc(error);
+                    // Every entry left signed under an epoch that turned, so all of them sign again.
+                    if needs_fresh_signatures(&error) && recollects < EPOCH_RECOLLECT_ATTEMPTS {
+                        recollects += 1;
+                        sleep(CERTIFY_CONFLICT_DELAY).await;
+                        client.state().invalidate();
+                        debug!(entries = pending.len(), attempt = recollects, "certify pack signed under a past epoch; signing again");
+                        pending = recollect_run(client, pending.into(), operation).await?.into();
+                        continue;
+                    }
+                    debug!(entries = built.len(), %error, "certify pack refused; certifying its entries one at a time");
+                }
+            }
+        }
+
+        // A lone entry, or every entry of a refused pack, goes on its own.
+        for _ in 0..built.len().max(1) {
+            let Some(item) = pending.pop_front() else {
+                break;
+            };
+            let signature = certify_chunk(
+                client,
+                tape_key,
+                mirror,
+                &item.written,
+                item.collected,
+                &item.receipts,
+                operation,
+            )
+            .await?;
+            signatures.extend(signature);
+            client.report(Step::Done { track: item.written.address });
+        }
     }
 
     Ok(signatures)
+}
+
+/// The compute budget of a transaction that holds `count` certifies
+fn certify_units(count: usize) -> u32 {
+    CERTIFY_TRACK_CU.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
+/// Build the certifies at the head of the queue that fit one transaction, each proven on a copy of the mirror
+async fn build_certify_pack<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    mirror: &Mutex<ArchiveMirror>,
+    pending: &VecDeque<ChunkCertification>,
+) -> Result<(Vec<Instruction>, Vec<BuiltCertification>), TapedriveError> {
+    let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
+    let mut working = mirror.lock().await.clone();
+    let mut instructions = Vec::with_capacity(MAX_CERTIFIES_PER_TRANSACTION);
+    let mut built = Vec::with_capacity(MAX_CERTIFIES_PER_TRANSACTION);
+    for item in pending.iter().take(MAX_CERTIFIES_PER_TRANSACTION) {
+        let certified = certified_track(&item.written.track);
+        let Ok(proof) = working.proof_for(certified.track_number) else {
+            break;
+        };
+        if working
+            .apply_certified_with_proof(certified.track_number, &certified, &proof)
+            .is_err()
+        {
+            break;
+        }
+        instructions.push(build_certify_track_ix(
+            payer.pubkey().into(),
+            tape_key.pubkey().into(),
+            proof,
+            EpochNumber(item.collected.epoch),
+            item.collected.group,
+            item.collected.bitmap,
+            item.collected.aggregated_signature,
+        ));
+        // The size check is all a sign needs, so any blockhash measures it.
+        let units = certify_units(instructions.len());
+        if instructions.len() > 1
+            && sign_transaction(payer, &[tape_signer], units, &instructions, Blockhash::default())
+                .is_err()
+        {
+            instructions.pop();
+            break;
+        }
+        built.push(BuiltCertification { proof, certified });
+    }
+    Ok((instructions, built))
 }
 
 /// Certify one stored chunk: mirror proof first, stale proof retried, dead signatures re-collected on the peer path
@@ -1598,12 +1643,8 @@ async fn store_manifest_for_chunks<Blockchain: Rpc, Cluster: Api>(
     content_type: ContentType,
     size: StorageUnits,
     profile: ErasureCode,
-    pending_chunks: Vec<PendingChunk>,
+    entries: Vec<ChunkEntry>,
 ) -> Result<StoredManifest, TapedriveError> {
-    let entries = pending_chunks
-        .into_iter()
-        .map(|pending_chunk| pending_chunk.entry)
-        .collect();
     let manifest = build_manifest(hash(name), size, entries, profile).map_err(stream_error)?;
     let manifest_bytes = manifest.to_bytes().map_err(stream_error)?;
 
@@ -1751,7 +1792,7 @@ mod tests {
         let mirror = Mutex::new(ArchiveMirror::new(&TrackArchive::zeroed()));
         let before = blockhash(&client).await;
 
-        let empty = certify_run_once(&client, &tape_key, &mirror, &[], Operation::Upload)
+        let empty = tapesvm_certify_run_once(&client, &tape_key, &mirror, &[], Operation::Upload)
             .await
             .expect("an empty run needs no chain");
 
@@ -1762,7 +1803,7 @@ mod tests {
         // The mirror holds no leaf for this chunk, so the run proves nothing of
         // it and still asks the chain for nothing.
         let unprovable = vec![chunk_certification(TrackNumber(7))];
-        let outcome = certify_run_once(&client, &tape_key, &mirror, &unprovable, Operation::Upload)
+        let outcome = tapesvm_certify_run_once(&client, &tape_key, &mirror, &unprovable, Operation::Upload)
             .await
             .expect("an unprovable run needs no chain");
 

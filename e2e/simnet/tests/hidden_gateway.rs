@@ -1,13 +1,15 @@
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reqwest::StatusCode;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, IF_MODIFIED_SINCE};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
 use tape_core::share::{unix_now, ReadRequest, ShareToken, ALL_TRACKS};
+use tape_core::tape::TapeFlags;
 use tape_core::track::types::TrackFlags;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_core::types::{BasisPoints, StorageUnits};
+use tape_crypto::address::Address;
 use tape_crypto::ed25519::Keypair as CryptoKeypair;
 use tape_crypto::hash::hash;
 use tape_e2e_simnet::{
@@ -20,12 +22,24 @@ use tape_protocol::api::{
 use tape_sdk::keys::tape_key::TapeKey;
 use tape_sdk::write_options::WriteOptions;
 
+use common::sigv4::{derive_signing_key, hmac_sha256, sha256_hex};
+
+mod common;
+
 const TARGET_GROUPS: u64 = 1;
 const GATEWAY_HEALTH_TIMEOUT: Duration = Duration::from_secs(180);
 const SHARE_TTL: Duration = Duration::from_secs(3600);
 const REQUEST_TTL: Duration = Duration::from_secs(60);
 
-// the gateway refuses unsigned native and S3 reads of a hidden object, and opens native routes to a reader who signs the call
+/// The key a signed S3 put writes to the hidden tape, read while the write queue still holds it
+const QUEUED_KEY: &str = "queued/note.txt";
+const ACCESS_KEY_ID: &str = "AKIAEXAMPLES3GATEWAY";
+const SECRET_ACCESS_KEY: &str = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+const SIGV4_REGION: &str = "us-east-1";
+const SIGV4_SERVICE: &str = "s3";
+const SIGNED_HEADERS: &str = "host;x-amz-content-sha256;x-amz-date";
+
+// the gateway refuses unsigned native and S3 reads of a hidden object, queued or landed, and opens native routes to a reader who signs the call
 #[test]
 fn hidden_gateway() {
     run_simnet_test(hidden_gateway_inner);
@@ -43,7 +57,9 @@ async fn hidden_gateway_inner() {
         .expect("build harness");
     let mut gateway =
         TestGateway::new(0, harness.chain().rpc().clone()).expect("build gateway fixture");
-    gateway.enable_s3().expect("enable s3 listener");
+    gateway
+        .enable_s3_writes(ACCESS_KEY_ID, SECRET_ACCESS_KEY)
+        .expect("enable s3 listener");
 
     let all: Vec<usize> = (0..node_count).collect();
     let active_timeout = Duration::from_secs(60);
@@ -92,6 +108,8 @@ async fn hidden_gateway_inner() {
     let gateway_token;
     let reader = CryptoKeypair::new(&mut rand::thread_rng());
     let reader_token;
+    let hidden_bucket = TapeKey::generate();
+    let queued_token;
     {
         let scenario = harness.scenario();
         let owner = scenario.sdk(harness.admin());
@@ -124,6 +142,25 @@ async fn hidden_gateway_inner() {
             )
             .await
             .expect("share with the reader");
+
+        // Every track on this tape lands hidden, and the gateway writes to it as delegate.
+        owner
+            .reserve_with_flags(&hidden_bucket, StorageUnits::mb(1), 4, TapeFlags::HIDDEN)
+            .await
+            .expect("reserve hidden bucket tape");
+        owner
+            .set_tape_delegate(&hidden_bucket, Address::from(gateway.authority()))
+            .await
+            .expect("delegate hidden bucket writes to the gateway");
+        queued_token = owner
+            .share(
+                &hidden_bucket,
+                hash(QUEUED_KEY.as_bytes()),
+                NetworkTlsPubkey::new(reader.pubkey().to_bytes()),
+                SHARE_TTL,
+            )
+            .await
+            .expect("share the queued object with the reader");
     }
 
     gateway.set_share_tokens(vec![encode_share_token(&gateway_token)]);
@@ -246,8 +283,160 @@ async fn hidden_gateway_inner() {
         );
     }
 
+    let hidden_bucket = hidden_bucket.address().to_string();
+    assert_queued_hidden(&gateway, &hidden_bucket, &queued_token, &reader).await;
+
     gateway.stop().await.expect("stop gateway");
     harness.stop_all().await.expect("stop runtimes");
+}
+
+/// Put an object to a hidden tape through S3, then read it while the write queue holds it
+async fn assert_queued_hidden(
+    gateway: &TestGateway,
+    bucket: &str,
+    token: &ShareToken,
+    reader: &CryptoKeypair,
+) {
+    let client = reqwest::Client::new();
+    let s3_base = gateway.s3_base_url();
+    let host = s3_base.trim_start_matches("http://").to_string();
+    let path = format!("/{bucket}/{QUEUED_KEY}");
+    let s3_url = format!("{s3_base}{path}");
+    let payload = vec![0x5au8; 16 * 1024];
+
+    let put = client
+        .put(&s3_url)
+        .headers(sigv4_headers("PUT", &host, &path, &payload))
+        .header(CONTENT_TYPE, "text/plain")
+        .body(payload.clone())
+        .send()
+        .await
+        .expect("signed put");
+    assert_eq!(put.status(), StatusCode::OK, "a signed put to a hidden tape should queue");
+
+    // The drain ticks every 500 ms and a write takes slots to land, so these reads find the queue.
+    let get = client.get(&s3_url).send().await.expect("anonymous get");
+    assert_eq!(
+        get.status(),
+        StatusCode::FORBIDDEN,
+        "an unsigned s3 get of a queued hidden object should be refused"
+    );
+
+    let head = client.head(&s3_url).send().await.expect("anonymous head");
+    assert_eq!(
+        head.status(),
+        StatusCode::FORBIDDEN,
+        "an unsigned s3 head of a queued hidden object should be refused"
+    );
+
+    let conditional = client
+        .get(&s3_url)
+        .header(IF_MODIFIED_SINCE, "Fri, 01 Jan 2100 00:00:00 GMT")
+        .send()
+        .await
+        .expect("anonymous conditional get");
+    assert_eq!(
+        conditional.status(),
+        StatusCode::FORBIDDEN,
+        "an unsigned conditional get of a queued hidden object should be refused before a 304"
+    );
+
+    let native_path = format!("/bucket{path}");
+    let native_url = format!("{}{native_path}", gateway.base_url());
+    let native = client.get(&native_url).send().await.expect("unsigned native read");
+    assert_eq!(
+        native.status(),
+        StatusCode::FORBIDDEN,
+        "an unsigned native read of a queued hidden object should be refused"
+    );
+
+    let opened = client
+        .get(&native_url)
+        .headers(signed_headers(token, reader, &native_path, unix_now() + 30))
+        .send()
+        .await
+        .expect("signed native read");
+    assert_eq!(
+        opened.status(),
+        StatusCode::OK,
+        "a share token for the object's name should open the queued object"
+    );
+    assert_eq!(opened.bytes().await.expect("body").as_ref(), payload.as_slice());
+
+    let signed = client
+        .get(&s3_url)
+        .headers(sigv4_headers("GET", &host, &path, b""))
+        .send()
+        .await
+        .expect("signed s3 get");
+    assert_eq!(
+        signed.status(),
+        StatusCode::OK,
+        "a signed s3 get should open the queued object"
+    );
+    assert_eq!(signed.bytes().await.expect("body").as_ref(), payload.as_slice());
+}
+
+/// SigV4 headers for a request with no query, signed with the gateway's bootstrap credential
+fn sigv4_headers(method: &str, host: &str, path: &str, body: &[u8]) -> HeaderMap {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_secs() as i64;
+    let amz_date = format_amz_datetime(now);
+    let date_stamp = &amz_date[..8];
+    let scope = format!("{date_stamp}/{SIGV4_REGION}/{SIGV4_SERVICE}/aws4_request");
+    let payload_hash = sha256_hex(body);
+
+    let canonical_headers =
+        format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n");
+    let canonical_request =
+        format!("{method}\n{path}\n\n{canonical_headers}\n{SIGNED_HEADERS}\n{payload_hash}");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}",
+        sha256_hex(canonical_request.as_bytes())
+    );
+
+    let key = derive_signing_key(SECRET_ACCESS_KEY, date_stamp,SIGV4_REGION, SIGV4_SERVICE);
+    let signature = hex::encode(hmac_sha256(&key, string_to_sign.as_bytes()));
+    let authorization = format!(
+        "AWS4-HMAC-SHA256 Credential={ACCESS_KEY_ID}/{scope}, \
+         SignedHeaders={SIGNED_HEADERS}, Signature={signature}"
+    );
+
+    let mut headers = HeaderMap::new();
+    for (name, value) in [
+        ("authorization", authorization),
+        ("x-amz-date", amz_date.clone()),
+        ("x-amz-content-sha256", payload_hash),
+    ] {
+        headers.insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_str(&value).expect("sigv4 header"),
+        );
+    }
+
+    headers
+}
+
+/// Unix seconds as the AWS `YYYYMMDDTHHMMSSZ` timestamp
+fn format_amz_datetime(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (hour, minute, second) = (rem / 3_600, (rem % 3_600) / 60, rem % 60);
+
+    // Howard Hinnant's civil_from_days
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+
+    format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z")
 }
 
 /// The three reader headers, signed with the given key and expiry

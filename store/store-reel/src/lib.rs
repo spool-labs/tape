@@ -21,7 +21,6 @@ mod split;
 
 use std::path::Path;
 
-use reel::reel::bias::MachineFacts;
 use reel::{
     ByteCount, CompactRate, IoBackend, RecordKey, ReelConfig,
     ReelStore as EngineStore, ServingBackend, SyncPolicy, ThreadBudget, MAP_EVERYTHING,
@@ -100,14 +99,7 @@ impl ReelStore {
     /// The one entry point that is not bench scoped. Everything else in this
     /// crate opens with `bench_config`, which turns durability off.
     pub fn open_node(root: impl AsRef<Path>, options: NodeStoreOptions) -> StoreResult<ReelStore> {
-        let root = root.as_ref();
-        let mut config = node_config(options);
-        if options.reserve == Reserve::Fleet {
-            let is_rotational = MachineFacts::read(root).is_rotational;
-            config.active_tails = fleet_tails(is_rotational);
-            tracing::info!(?is_rotational, tails = config.tail_count(), "picked the volume's tails");
-        }
-        ReelStore::open(root, config, TAPE_COLUMNS)
+        ReelStore::open(root, node_config(options), TAPE_COLUMNS)
     }
 
     /// Open a reel under this directory serving the given column families
@@ -214,12 +206,13 @@ pub const fn default_backend() -> IoBackend {
 /// The segment size and tail count a volume opens with
 ///
 /// A tail's segment file is sized to the segment but stays sparse, filling in
-/// windows as it is written. Gibibyte segments suit a fleet disk. A short run, or
-/// twenty nodes on a laptop, wants smaller segments on one tail.
+/// windows as it is written. Gibibyte segments and a tail per core suit a fleet
+/// disk. A short run, or twenty nodes on a laptop, wants smaller segments on one
+/// tail.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reserve {
-    /// Gibibyte segments, on one tail where the disk seeks and two where it doesn't
+    /// Gibibyte segments, a tail per core up to eight
     #[default]
     Fleet,
 
@@ -256,20 +249,6 @@ impl Default for NodeStoreOptions {
 
 /// Bytes a small volume seals a segment at
 const SMALL_SEGMENT_BYTES: u64 = 32 * 1024 * 1024;
-
-/// A spinning disk writes fastest from one tail, since more of them seek against each other
-const ROTATIONAL_TAILS: u32 = 1;
-
-/// Solid state runs two tails, since one tops out near a gigabyte a second
-const SOLID_STATE_TAILS: u32 = 2;
-
-/// The tails a fleet volume runs on a disk that does or doesn't seek
-pub fn fleet_tails(is_rotational: Option<bool>) -> ThreadBudget {
-    match is_rotational {
-        Some(true) => ThreadBudget::threads(ROTATIONAL_TAILS),
-        Some(false) | None => ThreadBudget::threads(SOLID_STATE_TAILS),
-    }
-}
 
 /// The config a node opens its volume with
 ///
@@ -541,6 +520,18 @@ fn record(cf: &str, op: &str, ok: bool, elapsed: f64, read: usize, written: usiz
     }
 }
 
+/// Run one store call and count it, with no bytes to report
+fn counted<Output>(
+    cf: &str,
+    op: &str,
+    call: impl FnOnce() -> StoreResult<Output>,
+) -> StoreResult<Output> {
+    let timer = std::time::Instant::now();
+    let result = call();
+    record(cf, op, result.is_ok(), timer.elapsed().as_secs_f64(), 0, 0);
+    result
+}
+
 impl Store for ReelStore {
     fn store_engine(&self) -> StoreEngine {
         StoreEngine::Reel
@@ -667,7 +658,9 @@ impl Store for ReelStore {
     }
 
     fn contains(&self, cf: &str, key: &[u8]) -> StoreResult<bool> {
-        EngineStoreTrait::contains(&self.inner, cf, key).map_err(crossed)
+        counted(cf, "contains", || {
+            EngineStoreTrait::contains(&self.inner, cf, key).map_err(crossed)
+        })
     }
 
     fn write_batch(&self, staged: WriteBatch) -> StoreResult<()> {
@@ -697,23 +690,31 @@ impl Store for ReelStore {
     }
 
     fn iter(&self, cf: &str) -> StoreResult<StoreIter<'_>> {
-        EngineStoreTrait::iter(&self.inner, cf)
-            .map(rows)
-            .map_err(crossed)
+        counted(cf, "iter", || {
+            EngineStoreTrait::iter(&self.inner, cf)
+                .map(rows)
+                .map_err(crossed)
+        })
     }
 
     fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<StoreIter<'_>> {
-        EngineStoreTrait::iter_prefix(&self.inner, cf, prefix)
-            .map(rows)
-            .map_err(crossed)
+        counted(cf, "iter_prefix", || {
+            EngineStoreTrait::iter_prefix(&self.inner, cf, prefix)
+                .map(rows)
+                .map_err(crossed)
+        })
     }
 
     fn iter_keys_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<Vec<Vec<u8>>> {
-        EngineStoreTrait::iter_keys_prefix(&self.inner, cf, prefix).map_err(crossed)
+        counted(cf, "iter_keys_prefix", || {
+            EngineStoreTrait::iter_keys_prefix(&self.inner, cf, prefix).map_err(crossed)
+        })
     }
 
     fn count_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<u64> {
-        EngineStoreTrait::count_prefix(&self.inner, cf, prefix).map_err(crossed)
+        counted(cf, "count_prefix", || {
+            EngineStoreTrait::count_prefix(&self.inner, cf, prefix).map_err(crossed)
+        })
     }
 
     fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> StoreResult<Option<u64>> {
@@ -727,7 +728,9 @@ impl Store for ReelStore {
         from: Option<&[u8]>,
         limit: usize,
     ) -> StoreResult<(Vec<Vec<u8>>, Option<Vec<u8>>)> {
-        EngineStoreTrait::sweep_keys_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)
+        counted(cf, "sweep_keys_prefix", || {
+            EngineStoreTrait::sweep_keys_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)
+        })
     }
 
     fn sweep_prefix(
@@ -737,8 +740,9 @@ impl Store for ReelStore {
         from: Option<&[u8]>,
         limit: usize,
     ) -> StoreResult<(Vec<tape_store_api::KeyValue>, Option<Vec<u8>>)> {
-        let (rows, next) =
-            EngineStoreTrait::sweep_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)?;
+        let (rows, next) = counted(cf, "sweep_prefix", || {
+            EngineStoreTrait::sweep_prefix(&self.inner, cf, prefix, from, limit).map_err(crossed)
+        })?;
         let mut owned = Vec::with_capacity(rows.len());
         for (key, value) in rows {
             owned.push((key, value.into_vec()));
@@ -752,7 +756,9 @@ impl Store for ReelStore {
         from: Option<&[u8]>,
         limit: usize,
     ) -> StoreResult<(Vec<tape_store_api::KeyValue>, Option<Vec<u8>>)> {
-        let (rows, next) = EngineStoreTrait::sweep(&self.inner, cf, from, limit).map_err(crossed)?;
+        let (rows, next) = counted(cf, "sweep", || {
+            EngineStoreTrait::sweep(&self.inner, cf, from, limit).map_err(crossed)
+        })?;
         let mut owned = Vec::with_capacity(rows.len());
         for (key, value) in rows {
             owned.push((key, value.into_vec()));
@@ -761,15 +767,19 @@ impl Store for ReelStore {
     }
 
     fn iter_from(&self, cf: &str, start: &[u8], way: Direction) -> StoreResult<StoreIter<'_>> {
-        EngineStoreTrait::iter_from(&self.inner, cf, start, direction(way))
-            .map(rows)
-            .map_err(crossed)
+        counted(cf, "iter_from", || {
+            EngineStoreTrait::iter_from(&self.inner, cf, start, direction(way))
+                .map(rows)
+                .map_err(crossed)
+        })
     }
 
     fn iter_range(&self, cf: &str, start: &[u8], end: &[u8]) -> StoreResult<StoreIter<'_>> {
-        EngineStoreTrait::iter_range(&self.inner, cf, start, end)
-            .map(rows)
-            .map_err(crossed)
+        counted(cf, "iter_range", || {
+            EngineStoreTrait::iter_range(&self.inner, cf, start, end)
+                .map(rows)
+                .map_err(crossed)
+        })
     }
 
     fn actual_size_bytes(&self) -> StoreResult<u64> {

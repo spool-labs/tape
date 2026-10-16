@@ -1,16 +1,23 @@
 //! Request-body readers for streamed (bounded-memory) S3 writes.
 
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
 use std::io;
+use std::mem::take;
+use std::pin::Pin;
+use std::task::{ready, Context, Poll};
 
 use axum::body::Body;
 use futures::TryStreamExt;
 use tokio::io::{
     copy, duplex, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
-    DuplexStream,
+    DuplexStream, ReadBuf,
 };
 use tokio::spawn;
 use tokio::task::JoinHandle;
 use tokio_util::io::StreamReader;
+
+use tape_crypto::hash::Sha256;
 
 use super::sigv4::{constant_time_eq, hmac_sha256, sha256_hex, ChunkVerification, CHUNK_ALGORITHM};
 
@@ -46,6 +53,76 @@ pub enum BodyFraming {
     Signed(Box<ChunkVerification>),
 }
 
+/// The body hashed to a value other than the signed `x-amz-content-sha256`
+#[derive(Debug)]
+pub struct DigestMismatch;
+
+/// A reader that hashes the bytes passing through and fails at end of body
+/// when they miss the SHA-256 the request signed
+///
+/// The stream writer drains the reader before it writes the manifest, so a
+/// body that fails here never becomes an object.
+pub struct DigestCheck<Reader> {
+    inner: Reader,
+    expected: Option<[u8; 32]>,
+    digest: Sha256,
+    is_match: Option<bool>,
+}
+
+impl Display for DigestMismatch {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("request body does not match x-amz-content-sha256")
+    }
+}
+
+impl Error for DigestMismatch {}
+
+impl<Reader> DigestCheck<Reader> {
+    pub fn new(inner: Reader, expected: Option<[u8; 32]>) -> Self {
+        Self {
+            inner,
+            expected,
+            digest: Sha256::new(),
+            is_match: None,
+        }
+    }
+}
+
+impl<Reader: AsyncRead + Unpin> AsyncRead for DigestCheck<Reader> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let Some(expected) = this.expected else {
+            return Pin::new(&mut this.inner).poll_read(context, buf);
+        };
+        if this.is_match == Some(false) {
+            return Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, DigestMismatch)));
+        }
+
+        let start = buf.filled().len();
+        let has_room = buf.remaining() > 0;
+        ready!(Pin::new(&mut this.inner).poll_read(context, buf))?;
+        let read = &buf.filled()[start..];
+        if !read.is_empty() {
+            this.digest.update(read);
+            return Poll::Ready(Ok(()));
+        }
+
+        // A read with room that returns nothing is the end of the body.
+        if has_room && this.is_match.is_none() {
+            let digest = take(&mut this.digest).finish();
+            this.is_match = Some(digest == expected);
+        }
+        match this.is_match {
+            Some(false) => Poll::Ready(Err(io::Error::new(io::ErrorKind::InvalidData, DigestMismatch))),
+            _ => Poll::Ready(Ok(())),
+        }
+    }
+}
+
 /// Build an AsyncRead yielding the raw object bytes from a request body,
 /// de-framing and verifying `aws-chunked` according to `framing`.
 pub fn object_reader(body: Body, framing: BodyFraming) -> (DuplexStream, JoinHandle<io::Result<()>>) {
@@ -61,6 +138,11 @@ pub fn object_reader(body: Body, framing: BodyFraming) -> (DuplexStream, JoinHan
     });
 
     (pipe_reader, handle)
+}
+
+/// Whether an I/O error is a [`DigestMismatch`]
+pub fn is_digest_mismatch(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<DigestMismatch>())
 }
 
 /// Forward a plain body verbatim into `sink`, then close it.
@@ -142,7 +224,7 @@ where
         reader.read_exact(&mut chunk).await?;
 
         // The chain advances only on a match, so chunks cannot be reordered.
-        let expected = chunk_signature(&chain, &previous, &chunk)?;
+        let expected = chunk_signature(&chain, &previous, &chunk);
         if !constant_time_eq(expected.as_bytes(), presented.as_bytes()) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -217,16 +299,14 @@ fn chunk_signature(
     chain: &ChunkVerification,
     previous: &str,
     chunk: &[u8],
-) -> io::Result<String> {
+) -> String {
     let string_to_sign = format!(
         "{CHUNK_ALGORITHM}\n{date}\n{scope}\n{previous}\n{EMPTY_SHA256}\n{payload}",
         date = chain.date,
         scope = chain.scope,
         payload = sha256_hex(chunk),
     );
-    let signature = hmac_sha256(&chain.signing_key, string_to_sign.as_bytes())
-        .map_err(|_| io::Error::other("chunk signature hmac"))?;
-    Ok(hex::encode(signature))
+    hex::encode(hmac_sha256(&chain.signing_key, string_to_sign.as_bytes()))
 }
 
 /// Parse the hex chunk size from an `aws-chunked` header line
@@ -247,6 +327,52 @@ fn parse_chunk_size(header: &[u8]) -> io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use tape_crypto::hash::hash;
+
+    fn sha256(data: &[u8]) -> [u8; 32] {
+        hash(data).to_bytes()
+    }
+
+    // a body matching the signed hash reads through to a clean end
+    #[tokio::test]
+    async fn digest_match() {
+        let body = vec![7u8; 100_000];
+        let mut reader = DigestCheck::new(body.as_slice(), Some(sha256(&body)));
+        let mut read = Vec::new();
+        reader.read_to_end(&mut read).await.expect("matching body");
+        assert_eq!(read, body);
+    }
+
+    // a body missing the signed hash hands over every byte, then fails at the end
+    #[tokio::test]
+    async fn digest_mismatch() {
+        let body = vec![7u8; 100_000];
+        let mut reader = DigestCheck::new(body.as_slice(), Some(sha256(b"other")));
+        let mut read = vec![0u8; body.len()];
+        reader.read_exact(&mut read).await.expect("bytes before the end");
+        assert_eq!(read, body);
+
+        let error = reader.read(&mut [0u8; 1]).await.expect_err("end of body fails");
+        assert!(is_digest_mismatch(&error));
+        let error = reader.read(&mut [0u8; 1]).await.expect_err("and keeps failing");
+        assert!(is_digest_mismatch(&error));
+    }
+
+    // a read with no room is no end of body, and no expected hash checks nothing
+    #[tokio::test]
+    async fn digest_unchecked() {
+        let body = b"abc".to_vec();
+        let mut reader = DigestCheck::new(body.as_slice(), Some(sha256(b"other")));
+        assert_eq!(reader.read(&mut []).await.expect("empty read"), 0);
+        let mut read = vec![0u8; body.len()];
+        reader.read_exact(&mut read).await.expect("bytes");
+
+        let mut reader = DigestCheck::new(body.as_slice(), None);
+        let mut read = Vec::new();
+        reader.read_to_end(&mut read).await.expect("unsigned body");
+        assert_eq!(read, body);
+    }
 
     // hex chunk sizes parse, with or without a chunk-signature extension
     #[test]
@@ -281,7 +407,7 @@ mod tests {
         let mut previous = chain.seed_signature.clone();
         let mut out = Vec::new();
         for chunk in chunks.iter().chain(std::iter::once(&b"".as_slice())) {
-            let signature = chunk_signature(chain, &previous, chunk).expect("sign");
+            let signature = chunk_signature(chain, &previous, chunk);
             out.extend_from_slice(
                 format!("{:x};chunk-signature={signature}\r\n", chunk.len()).as_bytes(),
             );
@@ -311,12 +437,10 @@ mod tests {
         ]
         .join("\n");
 
-        let expected = hex::encode(
-            hmac_sha256(&chain.signing_key, expected_string_to_sign.as_bytes()).expect("hmac"),
-        );
+        let expected = hex::encode(hmac_sha256(&chain.signing_key, expected_string_to_sign.as_bytes()));
 
         assert_eq!(
-            chunk_signature(&chain, &chain.seed_signature, chunk).expect("sign"),
+            chunk_signature(&chain, &chain.seed_signature, chunk),
             expected
         );
     }
@@ -383,8 +507,8 @@ mod tests {
     #[tokio::test]
     async fn reordered_chunks_are_refused() {
         let chain = chain();
-        let first = chunk_signature(&chain, &chain.seed_signature, b"hello").expect("sign");
-        let second = chunk_signature(&chain, &first, b" world").expect("sign");
+        let first = chunk_signature(&chain, &chain.seed_signature, b"hello");
+        let second = chunk_signature(&chain, &first, b" world");
 
         // The second chunk's own signature, presented in the first position.
         let mut framed = Vec::new();

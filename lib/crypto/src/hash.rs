@@ -11,6 +11,10 @@ use tape_sha256::{hash_messages, Message};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
+/// SHA-256 of a message that arrives in pieces
+#[cfg(not(target_os = "solana"))]
+pub use tape_sha256::Sha256;
+
 pub const HASH_BYTES: usize = 32;
 
 #[repr(C)]

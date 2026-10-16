@@ -49,12 +49,14 @@ tape-crypto.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
+solana-account.workspace = true
+solana-hash.workspace = true
+solana-transaction.workspace = true
+tape-blocks.workspace = true
 async-trait.workspace = true
 bytemuck.workspace = true
 spl-token.workspace = true
 tokio.workspace = true
 # In-test AWS SigV4 request signer for the S3 write path (mirrors the gateway's
 # own canonicalization in network/gateway/src/http/handlers/s3/sigv4.rs).
-sha2.workspace = true
-hmac.workspace = true
 hex.workspace = true

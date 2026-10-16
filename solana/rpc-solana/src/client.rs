@@ -24,7 +24,7 @@ use solana_transaction_status::{
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use tape_rpc::{BlockWindow, ChainKind, Rpc, RpcError, SimulationResult};
+use tape_rpc::{BlockWindow, Rpc, RpcError, SimulationResult};
 use tape_crypto::address::Address;
 use tape_blocks::wire::Block;
 use tape_crypto::tx::Txid;
@@ -60,9 +60,9 @@ pub struct SolanaRpc {
     /// Used by getBlock, which owns its request so the body is deserialised
     /// once. Shared across endpoints, since reqwest pools per host.
     http: reqwest::Client,
-    /// Which chain the endpoints answer for, probed on first ask. A backend
-    /// does not change kind under a client, so one probe settles it.
-    chain_kind: tokio::sync::OnceCell<ChainKind>,
+    /// Whether the endpoints are a tapesvm daemon, probed on first ask. A
+    /// backend does not change kind under a client, so one probe settles it.
+    is_tapesvm: tokio::sync::OnceCell<bool>,
     /// Every transaction waiting on confirmation shares one status call per tick
     statuses: Arc<StatusBatch>,
     /// Prometheus counters, absent when no registry is installed
@@ -120,30 +120,55 @@ impl SolanaRpc {
             // Declared here anyway so this path does not depend on another
             // crate's feature list to keep decompressing getBlock.
             http: reqwest::Client::new(),
-            chain_kind: tokio::sync::OnceCell::new(),
+            is_tapesvm: tokio::sync::OnceCell::new(),
             statuses: Arc::new(StatusBatch::new()),
             #[cfg(feature = "metrics")]
             metrics,
         })
     }
 
-    /// Which chain the endpoints behind this client answer for
+    /// Whether the endpoints behind this client are a tapesvm daemon
     ///
     /// A tapesvm daemon serves `getMembership`; an agave validator answers it
-    /// method not found. Anything that fails to answer at all is read as the
-    /// open network, which costs nothing but the one round trip.
-    async fn probe_chain_kind(&self) -> ChainKind {
-        let own = self
-            .with_retry_at("getMembership", |index| {
-                probe_membership(&self.http, &self.config.endpoints[index])
-            })
-            .await
-            .unwrap_or(false);
+    /// method not found. Anything that fails to answer at all is read as
+    /// agave, which costs nothing but the one round trip.
+    async fn tapesvm_probe(&self) -> bool {
+        self.with_retry_at("getMembership", |index| {
+            tapesvm_probe_membership(&self.http, &self.config.endpoints[index])
+        })
+        .await
+        .unwrap_or(false)
+    }
 
-        match own {
-            true => ChainKind::Own,
-            false => ChainKind::Shared,
+    /// Send a run of transactions to a tapesvm daemon as one JSON-RPC batch
+    ///
+    /// The daemon runs each call before it answers the next, so the run lands
+    /// in the order it was built.
+    async fn tapesvm_send_transactions(
+        &self,
+        transactions: &[VersionedTransaction],
+    ) -> Result<Vec<Result<Txid, RpcError>>, RpcError> {
+        if transactions.is_empty() {
+            return Ok(Vec::new());
         }
+
+        let body = send_batch_request(transactions)?;
+        let count = transactions.len();
+
+        let (mut sent, endpoint) = self
+            .with_retry_where("sendTransaction:batch", |index| {
+                send_batch(
+                    &self.http,
+                    &self.config.endpoints[index],
+                    &body,
+                    count,
+                )
+            })
+            .await?;
+
+        self.settle_replayed(endpoint, &mut sent, transactions).await;
+
+        Ok(sent)
     }
 
     /// Read the chain's own verdict for every entry it answered as replayed
@@ -670,23 +695,23 @@ struct JsonRpcError {
 ///
 /// Transport and HTTP failures come back as errors so the caller fails over;
 /// a JSON-RPC refusal is an answer, and it says this is an agave validator.
-async fn probe_membership(http: &reqwest::Client, endpoint: &str) -> Result<bool, RpcError> {
+async fn tapesvm_probe_membership(http: &reqwest::Client, endpoint: &str) -> Result<bool, RpcError> {
     let request = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": MEMBERSHIP_METHOD,
+        "method": TAPESVM_MEMBERSHIP_METHOD,
         "params": [],
     });
 
-    post_json(http, endpoint, MEMBERSHIP_METHOD, &request, |body| {
-        Ok(serves_membership(body))
+    post_json(http, endpoint, TAPESVM_MEMBERSHIP_METHOD, &request, |body| {
+        Ok(tapesvm_serves_membership(body))
     })
     .await
 }
 
 /// True when a getMembership reply came from a daemon that serves it
-fn serves_membership(body: &[u8]) -> bool {
-    let reply: MembershipReply = match serde_json::from_slice(body) {
+fn tapesvm_serves_membership(body: &[u8]) -> bool {
+    let reply: TapesvmMembershipReply = match serde_json::from_slice(body) {
         Ok(reply) => reply,
         Err(_) => return false,
     };
@@ -696,7 +721,7 @@ fn serves_membership(body: &[u8]) -> bool {
 
 /// What a getMembership post answers with, read only for which half is filled.
 #[derive(serde::Deserialize)]
-struct MembershipReply {
+struct TapesvmMembershipReply {
     #[serde(default)]
     result: Option<serde_json::Value>,
     #[serde(default)]
@@ -874,7 +899,7 @@ struct SendEnvelope {
 }
 
 /// The method only a tapesvm daemon serves, which is what tells the two apart
-const MEMBERSHIP_METHOD: &str = "getMembership";
+const TAPESVM_MEMBERSHIP_METHOD: &str = "getMembership";
 
 /// agave's getBlock error codes
 const JSON_RPC_SERVER_ERROR_BLOCK_NOT_AVAILABLE: i64 = -32004;
@@ -958,10 +983,10 @@ impl Rpc for SolanaRpc {
         self.config.commitment
     }
 
-    async fn chain_kind(&self) -> ChainKind {
+    async fn is_tapesvm(&self) -> bool {
         *self
-            .chain_kind
-            .get_or_init(|| self.probe_chain_kind())
+            .is_tapesvm
+            .get_or_init(|| self.tapesvm_probe())
             .await
     }
 
@@ -1255,25 +1280,14 @@ impl Rpc for SolanaRpc {
         &self,
         transactions: &[VersionedTransaction],
     ) -> Result<Vec<Result<Txid, RpcError>>, RpcError> {
-        if transactions.is_empty() {
-            return Ok(Vec::new());
+        if self.is_tapesvm().await {
+            return self.tapesvm_send_transactions(transactions).await;
         }
 
-        let body = send_batch_request(transactions)?;
-        let count = transactions.len();
-
-        let (mut sent, endpoint) = self
-            .with_retry_where("sendTransaction:batch", |index| {
-                send_batch(
-                    &self.http,
-                    &self.config.endpoints[index],
-                    &body,
-                    count,
-                )
-            })
-            .await?;
-
-        self.settle_replayed(endpoint, &mut sent, transactions).await;
+        let mut sent = Vec::with_capacity(transactions.len());
+        for transaction in transactions {
+            sent.push(self.send_transaction(transaction).await);
+        }
 
         Ok(sent)
     }
@@ -1587,27 +1601,25 @@ fn agave_reply(method: &str) -> serde_json::Value {
     }
 }
 
-// a daemon that serves getMembership is a chain the operator runs
+// a daemon that serves getMembership is tapesvm
 #[tokio::test]
-async fn tapesvm_answer_takes_the_ordered_path() {
+async fn tapesvm_answer_reads_as_tapesvm() {
     let mock = MockEndpoint::start(tapesvm_reply).await;
     let client = client_for(&[&mock], EndpointStrategy::PreferPrimary);
 
-    assert_eq!(client.chain_kind().await, ChainKind::Own);
-    assert!(client.executes_batches_in_order().await);
+    assert!(client.is_tapesvm().await);
     // The probe settles once, so a second ask costs no round trip.
-    assert!(client.executes_batches_in_order().await);
+    assert!(client.is_tapesvm().await);
     assert_eq!(mock.served(), vec!["getMembership".to_string()]);
 }
 
-// an agave validator answers a send before it executes, so its batch is unordered
+// an agave validator answers getMembership method not found
 #[tokio::test]
-async fn agave_answer_stays_on_the_unordered_path() {
+async fn agave_answer_reads_as_agave() {
     let mock = MockEndpoint::start(agave_reply).await;
     let client = client_for(&[&mock], EndpointStrategy::PreferPrimary);
 
-    assert_eq!(client.chain_kind().await, ChainKind::Shared);
-    assert!(!client.executes_batches_in_order().await);
+    assert!(!client.is_tapesvm().await);
 }
 
 /// A stand-in endpoint that answers every post with one raw HTTP response
@@ -1885,7 +1897,7 @@ async fn a_replayed_send_that_landed_reads_as_landed() {
     let client = client_for(&[&member], EndpointStrategy::PreferPrimary);
 
     let sent = client
-        .send_transactions(&[signed_transaction(7)])
+        .tapesvm_send_transactions(&[signed_transaction(7)])
         .await
         .expect("the batch is answered");
 
@@ -1911,7 +1923,7 @@ async fn a_replayed_send_that_failed_stays_refused() {
     let client = client_for(&[&member], EndpointStrategy::PreferPrimary);
 
     let sent = client
-        .send_transactions(&[signed_transaction(9)])
+        .tapesvm_send_transactions(&[signed_transaction(9)])
         .await
         .expect("the batch is answered");
 
@@ -1943,7 +1955,7 @@ async fn a_replayed_send_reads_its_own_endpoint() {
     let client = client_for(&[&other, &member], EndpointStrategy::RoundRobin);
 
     let sent = client
-        .send_transactions(&[signed_transaction(11)])
+        .tapesvm_send_transactions(&[signed_transaction(11)])
         .await
         .expect("the batch is answered");
 

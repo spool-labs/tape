@@ -326,9 +326,9 @@ impl<Db: Store, Cluster: Api, Blockchain: Rpc> NodeContextBuilder<Db, Cluster, B
         let node_id = Self::resolve_node_id(&self.rpc, &self.keypair).await?;
         let params = fetch_network_params(&self.rpc).await?;
         let (node_address, _) = node_pda(self.keypair.address());
-        let chain = self.rpc.rpc().chain_kind().await;
-        let admitted = self.config.http.admission(chain);
-        tracing::info!(?chain, ?admitted, "http admission resolved");
+        let is_tapesvm = self.rpc.rpc().is_tapesvm().await;
+        let admitted = self.config.http.admission(is_tapesvm);
+        tracing::info!(is_tapesvm, ?admitted, "http admission resolved");
         let admission = Arc::new(AdmissionLimiter::new(admitted));
 
         self.store

@@ -33,7 +33,7 @@ use crate::http::handlers::object::{
 };
 use crate::http::handlers::object::response::object_response_ranged;
 use crate::http::handlers::resolve::{Readable, resolve_readable_with_pending};
-use crate::http::handlers::share::authorize_signed_read;
+use crate::http::handlers::share::{authorize_signed_queued_read, authorize_signed_read};
 use crate::http::handlers::store_error;
 use crate::http::handlers::track::{ensure_readable, parse_address, track_with_pending};
 use crate::http::state::AppState;
@@ -261,7 +261,11 @@ async fn serve_site<
             ensure_readable(&state, resolved.track_address, track.tape)?;
             Some(track)
         }
-        Readable::Queued(_) => None,
+        Readable::Queued(_) => {
+            let name = served_name.as_bytes();
+            authorize_signed_queued_read(&state, headers, &call.method, &call.path, tape, name)?;
+            None
+        }
     };
 
     // A revalidation hit answers before any decode work happens; the etag is
@@ -277,7 +281,7 @@ async fn serve_site<
     let metadata = site_metadata(readable.content_type(), served_name, download, max_age_secs);
     let resolved = match readable {
         Readable::Queued(object) => {
-            let bytes = staged_bytes(&state, tape, &name)?.ok_or(RouteError::NotFound)?;
+            let bytes = staged_bytes(&state, tape, served_name)?.ok_or(RouteError::NotFound)?;
             return object_response_ranged(
                 bytes,
                 &metadata,

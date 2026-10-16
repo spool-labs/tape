@@ -9,13 +9,14 @@ use tape_rpc::{
     CommitmentLevel, EncodedConfirmedTransactionWithStatusMeta, Rpc, RpcError, TransactionError,
 };
 use tape_rpc_client::{parse_tape_error, sign_transaction};
-use tape_api::compute::{CERTIFY_TRACK_CU, TRACK_WRITE_CU};
+use tape_api::compute::{CERTIFY_TRACK_CU, MAX_COMPUTE_UNIT_LIMIT, TRACK_WRITE_CU};
 use tape_api::errors::TapeError;
 use tape_api::event::TrackWritten;
 use tape_api::instruction::{
     build_certify_track_ix, build_track_write_ix, track_write_ix_len, MAX_INLINE_WRITE,
 };
 use tape_api::program::tapedrive::TrackAddress;
+use solana_hash::Hash as Blockhash;
 use solana_instruction::Instruction;
 use tape_blocks::{parse_event_data, TapedriveEvent};
 use tape_core::erasure::MAX_GROUP_SIZE;
@@ -63,6 +64,9 @@ const POLL_INTERVAL_MS: u64 = 400;
 
 /// How long to wait for a track to become visible before giving up.
 const VISIBILITY_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Most registers one transaction holds, by its compute budget
+const MAX_REGISTERS_PER_TRANSACTION: usize = (MAX_COMPUTE_UNIT_LIMIT / TRACK_WRITE_CU) as usize;
 
 pub const UNNAMED_TRACK: &[u8] = b"";
 pub const UNTYPED_TRACK: ContentType = ContentType::Unknown;
@@ -606,6 +610,7 @@ enum TrackCompletionError {
 /// registrations can overlap the confirmation wait without losing track order.
 pub(crate) struct SentRaw {
     signature: Txid,
+    event: usize,
     key: Hash,
     kind: u64,
     state: u64,
@@ -617,6 +622,7 @@ pub(crate) struct SentRaw {
 /// event has not been resolved yet.
 pub(crate) struct SentBlob {
     signature: Txid,
+    event: usize,
     blob: BlobEncoding,
     key: Hash,
     plan: UploadPlan,
@@ -635,6 +641,11 @@ impl PreparedRegister {
     pub(crate) fn for_unit(mut self, unit: usize) -> Self {
         self.unit = Some(unit);
         self
+    }
+
+    /// The unit of its transfer this register reports as, where it has one
+    pub(crate) fn unit(&self) -> Option<usize> {
+        self.unit
     }
 }
 
@@ -661,12 +672,29 @@ pub(crate) enum SentRegister {
     Blob(Box<SentBlob>),
 }
 
+impl SentRegister {
+    /// The transaction this register went out in
+    pub(crate) fn signature(&self) -> Txid {
+        match self {
+            SentRegister::Raw(raw) => raw.signature,
+            SentRegister::Blob(blob) => blob.signature,
+        }
+    }
+}
+
+/// A register whose event came back, whichever shape it registered.
+pub(crate) enum ResolvedRegister {
+    Raw(WrittenTrack),
+    Blob(WrittenTrack, Box<UploadPlan>),
+}
+
 impl RegisterPayload {
-    fn into_sent(self, signature: Txid) -> SentRegister {
+    fn into_sent(self, signature: Txid, event: usize) -> SentRegister {
         match self {
             RegisterPayload::Raw { key, kind, state, size, value_hash } => {
                 SentRegister::Raw(SentRaw {
                     signature,
+                    event,
                     key,
                     kind,
                     state,
@@ -675,7 +703,7 @@ impl RegisterPayload {
                 })
             }
             RegisterPayload::Blob { blob, key, plan } => SentRegister::Blob(Box::new(
-                SentBlob { signature, blob: *blob, key, plan: *plan },
+                SentBlob { signature, event, blob: *blob, key, plan: *plan },
             )),
         }
     }
@@ -976,95 +1004,151 @@ pub(crate) fn prepare_raw_register<Blockchain: Rpc, Cluster: Api>(
     })
 }
 
-/// Send a run of register transactions in the order they were built.
-///
-/// A chain that runs a JSON-RPC batch in order takes the whole run in one
-/// round trip, signed against one blockhash; anywhere else they go one at a
-/// time, exactly as a lone register does.
+/// Split a run of registers into transactions in order, each as full as its size and compute budget allow
+pub(crate) fn pack_registers<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    registers: Vec<PreparedRegister>,
+) -> Result<Vec<Vec<PreparedRegister>>, TapedriveError> {
+    let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
+    let mut packed: Vec<Vec<PreparedRegister>> = Vec::new();
+    let mut instructions = Vec::with_capacity(MAX_REGISTERS_PER_TRANSACTION);
+    for register in registers {
+        if let Some(open) = packed.last_mut() {
+            instructions.push(register.instruction.clone());
+            let units = register_units(instructions.len());
+            // The size check is all a sign needs, so any blockhash measures it.
+            let is_fit = instructions.len() <= MAX_REGISTERS_PER_TRANSACTION
+                && sign_transaction(payer, &[tape_signer], units, &instructions, Blockhash::default())
+                    .is_ok();
+            if is_fit {
+                open.push(register);
+                continue;
+            }
+            instructions.clear();
+        }
+        instructions.push(register.instruction.clone());
+        packed.push(vec![register]);
+    }
+    Ok(packed)
+}
+
+/// The compute budget of a transaction that holds `count` registers
+fn register_units(count: usize) -> u32 {
+    TRACK_WRITE_CU.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX))
+}
+
+/// Send a run of registers in order, in as few transactions as hold them
 pub(crate) async fn send_registers<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
     registers: Vec<PreparedRegister>,
     operation: Operation,
 ) -> Result<Vec<SentRegister>, TapedriveError> {
-    let mut instructions = Vec::with_capacity(registers.len());
-    let mut payloads = Vec::with_capacity(registers.len());
-    let mut units = Vec::with_capacity(registers.len());
+    let count = registers.len();
+    let mut transactions = Vec::new();
+    let mut payloads = Vec::with_capacity(count);
+    let mut units = Vec::new();
     let mut bytes = 0;
-    for register in registers {
-        instructions.push(register.instruction);
-        payloads.push(register.payload);
-        units.push(register.unit);
-        bytes += register.bytes;
+    for packed in pack_registers(client, tape_key, registers)? {
+        let mut instructions = Vec::with_capacity(packed.len());
+        let mut packed_units = Vec::with_capacity(packed.len());
+        let mut packed_payloads = Vec::with_capacity(packed.len());
+        for register in packed {
+            instructions.push(register.instruction);
+            packed_payloads.push(register.payload);
+            packed_units.push(register.unit);
+            bytes += register.bytes;
+        }
+        transactions.push(instructions);
+        payloads.push(packed_payloads);
+        units.push(packed_units);
     }
 
     let register = client
         .timer(operation, Phase::Register)
         .bytes(bytes)
-        .chunks(payloads.len() as u64);
-    let sent = submit_registers(client, tape_key, instructions, &units).await;
+        .chunks(count as u64);
+    let sent = submit_registers(client, tape_key, transactions, &units).await;
     register.finish_result(&sent);
 
-    let mut out = Vec::with_capacity(payloads.len());
-    for (payload, signature) in payloads.into_iter().zip(sent?) {
-        out.push(payload.into_sent(signature));
+    let mut out = Vec::with_capacity(count);
+    for (packed, signature) in payloads.into_iter().zip(sent?) {
+        for (event, payload) in packed.into_iter().enumerate() {
+            out.push(payload.into_sent(signature, event));
+        }
     }
 
     Ok(out)
 }
 
-/// Submit the run and hand back a signature per register, in order.
+/// Submit the run and hand back a signature per transaction, in order.
 ///
 /// `units` holds each register's unit of its transfer, where it has one, and
 /// the client's progress hears of each as its register goes out.
 async fn submit_registers<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     tape_key: &impl TapeOperator,
-    instructions: Vec<Instruction>,
-    units: &[Option<usize>],
+    transactions: Vec<Vec<Instruction>>,
+    units: &[Vec<Option<usize>>],
+) -> Result<Vec<Txid>, TapedriveError> {
+    if client.rpc().rpc().is_tapesvm().await {
+        return tapesvm_submit_registers(client, tape_key, transactions, units).await;
+    }
+
+    let payer = client.payer()?;
+    let tape_signer = tape_key.keypair();
+    let mut signatures = Vec::with_capacity(transactions.len());
+    for (instructions, units) in transactions.into_iter().zip(units) {
+        for unit in units.iter().flatten() {
+            client.report(Step::Registering { unit: *unit });
+        }
+        signatures.push(
+            client
+                .rpc()
+                .send_instructions_with_signers_and_compute_unit_limit(
+                    payer,
+                    register_units(instructions.len()),
+                    instructions,
+                    &[tape_signer],
+                    CommitmentLevel::Processed,
+                    true,
+                )
+                .await?,
+        );
+    }
+
+    Ok(signatures)
+}
+
+/// Submit the run to tapesvm in one round trip, signed against one blockhash
+///
+/// tapesvm runs each send of a JSON-RPC batch before the next, so the run lands in order.
+async fn tapesvm_submit_registers<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    tape_key: &impl TapeOperator,
+    transactions: Vec<Vec<Instruction>>,
+    units: &[Vec<Option<usize>>],
 ) -> Result<Vec<Txid>, TapedriveError> {
     let payer = client.payer()?;
     let tape_signer = tape_key.keypair();
-    let mut signatures = Vec::with_capacity(instructions.len());
-
-    if !client.rpc().rpc().executes_batches_in_order().await {
-        for (instruction, unit) in instructions.into_iter().zip(units) {
-            if let Some(unit) = unit {
-                client.report(Step::Registering { unit: *unit });
-            }
-            signatures.push(
-                client
-                    .rpc()
-                    .send_instructions_with_signers_and_compute_unit_limit(
-                        payer,
-                        TRACK_WRITE_CU,
-                        vec![instruction],
-                        &[tape_signer],
-                        CommitmentLevel::Processed,
-                        true,
-                    )
-                    .await?,
-            );
-        }
-
-        return Ok(signatures);
-    }
-
-    // The whole run goes out in one round trip.
-    for unit in units.iter().flatten() {
+    let mut signatures = Vec::with_capacity(transactions.len());
+    for unit in units.iter().flatten().flatten() {
         client.report(Step::Registering { unit: *unit });
     }
     let blockhash = client.rpc().rpc().get_latest_blockhash().await?;
-    let mut transactions = Vec::with_capacity(instructions.len());
-    for instruction in instructions {
-        transactions.push(sign_transaction(
+    let mut signed = Vec::with_capacity(transactions.len());
+    for instructions in transactions {
+        signed.push(sign_transaction(
             payer,
             &[tape_signer],
-            TRACK_WRITE_CU,
-            &[instruction],
+            register_units(instructions.len()),
+            &instructions,
             blockhash,
         )?);
     }
+    let transactions = signed;
 
     for (index, sent) in client
         .rpc()
@@ -1092,11 +1176,37 @@ async fn submit_registers<Blockchain: Rpc, Cluster: Api>(
     Ok(signatures)
 }
 
-pub(crate) async fn resolve_sent_raw<Blockchain: Rpc, Cluster: Api>(
+/// Resolve the registers of one transaction from a single read of its events.
+pub(crate) async fn resolve_registers<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
-    sent: SentRaw,
-) -> Result<WrittenTrack, TapedriveError> {
-    let written = fetch_track_written_event(client, &sent.signature).await?;
+    sent: Vec<SentRegister>,
+) -> Result<Vec<ResolvedRegister>, TapedriveError> {
+    let Some(signature) = sent.first().map(SentRegister::signature) else {
+        return Ok(Vec::new());
+    };
+    if sent.iter().any(|register| register.signature() != signature) {
+        return Err(TapedriveError::InvalidArgument(
+            "registers resolved together must share a transaction".into(),
+        ));
+    }
+
+    let events = fetch_track_written_events(client, &signature).await?;
+    let mut resolved = Vec::with_capacity(sent.len());
+    for register in sent {
+        resolved.push(match register {
+            SentRegister::Raw(raw) => ResolvedRegister::Raw(raw_written(raw, &events)?),
+            SentRegister::Blob(blob) => {
+                let (written, plan) = blob_written(*blob, &events)?;
+                ResolvedRegister::Blob(written, Box::new(plan))
+            }
+        });
+    }
+    Ok(resolved)
+}
+
+/// Build an inline register's track from its transaction's events
+fn raw_written(sent: SentRaw, events: &[TrackWritten]) -> Result<WrittenTrack, TapedriveError> {
+    let written = events.get(sent.event).ok_or(TapedriveError::NotFound)?;
     let track = CompressedTrack {
         tape: written.tape,
         tape_number: written.tape_number,
@@ -1109,7 +1219,7 @@ pub(crate) async fn resolve_sent_raw<Blockchain: Rpc, Cluster: Api>(
         group: written.group,
         value_hash: sent.value_hash,
     };
-    debug_assert_eq!(track.get_hash(), written.track_hash);
+    check_event(&track, written)?;
     Ok(WrittenTrack {
         address: written.track,
         track,
@@ -1210,7 +1320,26 @@ pub(crate) async fn resolve_sent_blob<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     sent: SentBlob,
 ) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
-    let written = fetch_track_written_event(client, &sent.signature).await?;
+    let events = fetch_track_written_events(client, &sent.signature).await?;
+    blob_written(sent, &events)
+}
+
+/// Refuse an event that wrote some other leaf than the register built
+fn check_event(track: &CompressedTrack, written: &TrackWritten) -> Result<(), TapedriveError> {
+    if track.get_hash() != written.track_hash {
+        return Err(TapedriveError::InvalidArgument(
+            "track written event does not match its register".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Build a coded register's track from its transaction's events
+fn blob_written(
+    sent: SentBlob,
+    events: &[TrackWritten],
+) -> Result<(WrittenTrack, UploadPlan), TapedriveError> {
+    let written = events.get(sent.event).ok_or(TapedriveError::NotFound)?;
     let track_address: Address = written.track;
     let meta = BlobDataSlice::Coded(sent.blob).meta(sent.plan.profile)
         .ok_or(TapedriveError::InvalidArgument("invalid blob commitment".into()))?;
@@ -1228,7 +1357,7 @@ pub(crate) async fn resolve_sent_blob<Blockchain: Rpc, Cluster: Api>(
         value_hash: meta.value_hash,
     };
 
-    debug_assert_eq!(track.get_hash(), written.track_hash);
+    check_event(&track, written)?;
 
     Ok((
         WrittenTrack {
@@ -1336,7 +1465,7 @@ async fn send_blob<Blockchain: Rpc, Cluster: Api>(
         )
         .await?;
 
-    resolve_sent_blob(client, SentBlob { signature, blob, key, plan }).await
+    resolve_sent_blob(client, SentBlob { signature, event: 0, blob, key, plan }).await
 }
 
 async fn upload_once<Blockchain: Rpc, Cluster: Api>(
@@ -2327,6 +2456,18 @@ async fn fetch_track_written_event<Blockchain: Rpc, Cluster: Api>(
     client: &Tapedrive<Blockchain, Cluster>,
     signature: &Txid,
 ) -> Result<TrackWritten, TapedriveError> {
+    fetch_track_written_events(client, signature)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(TapedriveError::NotFound)
+}
+
+/// Every track a confirmed transaction wrote, in instruction order
+async fn fetch_track_written_events<Blockchain: Rpc, Cluster: Api>(
+    client: &Tapedrive<Blockchain, Cluster>,
+    signature: &Txid,
+) -> Result<Vec<TrackWritten>, TapedriveError> {
     let transaction = read_after_confirmation(
         || client.rpc().rpc().wait_for_signature(signature),
         || client.rpc().get_transaction(signature),
@@ -2334,7 +2475,7 @@ async fn fetch_track_written_event<Blockchain: Rpc, Cluster: Api>(
     .await
     .map_err(TapedriveError::Rpc)?;
 
-    extract_track_written_event(&transaction)
+    extract_track_written_events(&transaction)
 }
 
 /// Read a sent transaction once it has confirmed
@@ -2383,9 +2524,9 @@ fn completion_poll_config() -> RetryConfig {
     }
 }
 
-fn extract_track_written_event(
+fn extract_track_written_events(
     transaction: &EncodedConfirmedTransactionWithStatusMeta,
-) -> Result<TrackWritten, TapedriveError> {
+) -> Result<Vec<TrackWritten>, TapedriveError> {
     let logs = transaction
         .transaction
         .meta
@@ -2393,15 +2534,19 @@ fn extract_track_written_event(
         .and_then(|meta| meta.log_messages.as_ref().map(|logs| logs))
         .ok_or_else(|| TapedriveError::InvalidArgument("transaction missing log messages".into()))?;
 
+    let mut events = Vec::new();
     for log in logs {
         if let Some(TapedriveEvent::TrackWritten(event)) = parse_event_data(log)
             .map_err(|error| TapedriveError::InvalidArgument(format!("parse event: {error}")))?
         {
-            return Ok(event);
+            events.push(event);
         }
     }
 
-    Err(TapedriveError::NotFound)
+    if events.is_empty() {
+        return Err(TapedriveError::NotFound);
+    }
+    Ok(events)
 }
 
 #[cfg(test)]
@@ -2417,11 +2562,20 @@ mod tests {
         is_epoch_changed, listed_root, needs_fresh_signatures, plan_blob, prepare_plan,
         read_after_confirmation, should_retry_certification, CompressedTrack, ErasureCode, Hash,
         RpcError, StorageUnits, TapeError, TapeNumber, TrackArchive, TrackNumber, TrackState,
-        VirtualGroup, MAX_INLINE_WRITE,
+        VirtualGroup, MAX_INLINE_WRITE, Blockhash, ContentType, PreparedRegister,
+        pack_registers, prepare_blob_register, prepare_raw_register, register_units,
+        MAX_REGISTERS_PER_TRANSACTION,
     };
     use bytemuck::Zeroable;
+    use rpc_litesvm::LiteSvmRpc;
     use tape_api::instruction::build_track_write_ix;
     use tape_core::encoding::{RSParams, TAPENET_PROFILE};
+    use tape_crypto::ed25519::Keypair;
+    use tape_peer_http::HttpApi;
+    use tape_rpc_client::sign_transaction;
+
+    use crate::keys::tape_key::TapeKey;
+    use crate::tapedrive::Tapedrive;
     use tape_core::track::data::{BlobData, BlobInfo};
     use tape_core::track::types::{TrackFlags, TrackKind};
     use tape_crypto::prelude::Address;
@@ -2691,5 +2845,94 @@ mod tests {
         // both still retry, so the run only changes which way it retries
         assert!(should_retry_certification(&turned));
         assert!(should_retry_certification(&bad_proof));
+    }
+
+    fn packing_client() -> Tapedrive<LiteSvmRpc, HttpApi> {
+        Tapedrive::new(LiteSvmRpc::new(), Keypair::new(&mut rand::thread_rng()))
+    }
+
+    // Each packed run signs into one transaction, in input order.
+    fn check_packed(
+        client: &Tapedrive<LiteSvmRpc, HttpApi>,
+        tape_key: &TapeKey,
+        packed: &[Vec<PreparedRegister>],
+        count: usize,
+    ) {
+        let payer = client.payer().expect("payer");
+        let mut units = Vec::new();
+        for run in packed {
+            assert!(run.len() <= MAX_REGISTERS_PER_TRANSACTION, "a run stays in the compute budget");
+            let instructions: Vec<_> = run.iter().map(|register| register.instruction.clone()).collect();
+            sign_transaction(
+                payer,
+                &[tape_key.keypair()],
+                register_units(run.len()),
+                &instructions,
+                Blockhash::default(),
+            )
+            .expect("a packed run fits one transaction");
+            units.extend(run.iter().map(|register| register.unit().expect("unit")));
+        }
+        assert_eq!(units, (0..count).collect::<Vec<_>>(), "packing keeps input order");
+    }
+
+    // a full batch of small coded objects shares a few transactions
+    #[test]
+    fn coded_registers_pack() {
+        let client = packing_client();
+        let tape_key = TapeKey::generate();
+        let registers = (0..32)
+            .map(|index| {
+                let plan = prepare_plan(TAPENET_PROFILE, &blob(4 * 1024)).expect("plan");
+                prepare_blob_register(
+                    &client,
+                    &tape_key,
+                    format!("site/assets/object-{index:02}.bin").as_bytes(),
+                    ContentType::Unknown,
+                    StorageUnits::from_bytes(4 * 1024),
+                    plan,
+                    TrackFlags::NONE,
+                )
+                .expect("register")
+                .for_unit(index)
+            })
+            .collect();
+
+        let packed = pack_registers(&client, &tape_key, registers).expect("pack");
+
+        check_packed(&client, &tape_key, &packed, 32);
+        assert!(packed.len() < 32 / 3, "{} transactions for 32 registers", packed.len());
+    }
+
+    // the largest inline writes still pack more than one to a transaction
+    #[test]
+    fn inline_registers_pack() {
+        let client = packing_client();
+        let tape_key = TapeKey::generate();
+        let name = b"a.txt";
+        let size = (0..=MAX_INLINE_WRITE)
+            .rev()
+            .find(|size| inline_write_fits(name, *size))
+            .expect("an inline size");
+        let registers = (0..8)
+            .map(|index| {
+                prepare_raw_register(
+                    &client,
+                    &tape_key,
+                    name,
+                    ContentType::TextPlain,
+                    StorageUnits::from_bytes(size as u64),
+                    &blob(size),
+                    TrackFlags::NONE,
+                )
+                .expect("register")
+                .for_unit(index)
+            })
+            .collect();
+
+        let packed = pack_registers(&client, &tape_key, registers).expect("pack");
+
+        check_packed(&client, &tape_key, &packed, 8);
+        assert!(packed.len() < 8, "{} transactions for 8 registers", packed.len());
     }
 }

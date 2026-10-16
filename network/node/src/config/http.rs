@@ -5,7 +5,6 @@ use tape_core::types::coin::{Coin, TAPE};
 use tape_protocol::api::SLICE_BODY_LIMIT;
 
 use tape_forwarded::cidr::CidrBlock;
-use tape_rpc::ChainKind;
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct NetworkConfig {
@@ -70,18 +69,16 @@ impl Default for HttpConfig {
 }
 
 impl HttpConfig {
-    /// What this node admits, once startup has resolved the chain it runs on
+    /// What this node admits, once startup has asked whether the chain is tapesvm
     ///
-    /// A node on a chain the operator runs serves the operator's own clients,
-    /// so it admits every caller. On the open network the buckets stay on. An
-    /// http.admission block in the yaml wins over both.
-    pub fn admission(&self, chain: ChainKind) -> Admission {
+    /// A node on tapesvm serves the operator's own clients, so it admits every
+    /// caller. On agave the buckets stay on. An http.admission block in the
+    /// yaml wins over both.
+    pub fn admission(&self, is_tapesvm: bool) -> Admission {
         match &self.admission {
             Some(explicit) => Admission::Metered(explicit.clone()),
-            None => match chain {
-                ChainKind::Own => Admission::Open,
-                ChainKind::Shared => Admission::Metered(AdmissionConfig::default()),
-            },
+            None if is_tapesvm => Admission::Open,
+            None => Admission::Metered(AdmissionConfig::default()),
         }
     }
 }
@@ -287,21 +284,20 @@ mod tests {
         }
     }
 
-    // a tapesvm daemon or an in-process litesvm is the operator's own chain,
-    // and a node there serves the operator's own clients
+    // a node on tapesvm, or litesvm standing in for it, serves the operator's own clients
     #[test]
-    fn own_chain_admits_every_caller() {
+    fn tapesvm_admits_every_caller() {
         let http = HttpConfig::default();
 
-        assert_eq!(http.admission(ChainKind::Own), Admission::Open);
+        assert_eq!(http.admission(true), Admission::Open);
     }
 
-    // an agave validator is the open network, where the buckets stay on
+    // on agave the buckets stay on
     #[test]
-    fn shared_chain_keeps_the_metered_defaults() {
+    fn agave_keeps_the_metered_defaults() {
         let http = HttpConfig::default();
 
-        let policy = http.admission(ChainKind::Shared);
+        let policy = http.admission(false);
         assert_eq!(metered(&policy), &AdmissionConfig::default());
         assert_eq!(metered(&policy).anonymous_write_per_sec, 16);
     }
@@ -318,7 +314,7 @@ mod tests {
             ..HttpConfig::default()
         };
 
-        assert_eq!(metered(&http.admission(ChainKind::Own)), &explicit);
-        assert_eq!(metered(&http.admission(ChainKind::Shared)), &explicit);
+        assert_eq!(metered(&http.admission(true)), &explicit);
+        assert_eq!(metered(&http.admission(false)), &explicit);
     }
 }

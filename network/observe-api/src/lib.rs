@@ -458,17 +458,21 @@ pub struct StorageInfo {
 /// the first sample.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub struct HostInfo {
+    /// Logical cores on the machine
     pub cores: u64,
-    /// Busy share of every core together, 0 to 100.
+    /// Busy share of every core together, 0 to 100
     #[wincode(with = "Pod<f32>")]
     pub cpu_pct: f32,
-    /// This process's share of every core together, 0 to 100.
+    /// This process's share of every core together, 0 to 100
     #[wincode(with = "Pod<f32>")]
     pub process_cpu_pct: f32,
+    /// The machine's memory
     pub memory_total_bytes: u64,
+    /// Memory the machine can still hand out
     pub memory_available_bytes: u64,
-    /// Size of the filesystem holding the store root.
+    /// Size of the filesystem holding the store root, less the blocks kept for root
     pub disk_total_bytes: u64,
+    /// Space on that filesystem the node can still write
     pub disk_available_bytes: u64,
 }
 

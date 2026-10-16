@@ -13,7 +13,7 @@ use block::{RecordedTransaction, SlotData};
 use convert::{tx_result_to_status_result, tx_result_to_transaction_status};
 use litesvm::types::TransactionResult;
 use litesvm::LiteSVM;
-use tape_rpc::{ChainKind, Rpc, RpcError, SimulationResult};
+use tape_rpc::{Rpc, RpcError, SimulationResult};
 use solana_account::{Account, ReadableAccount as SvmReadableAccount};
 use solana_client::rpc_config::RpcProgramAccountsConfig;
 use solana_client::rpc_filter::RpcFilterType;
@@ -426,8 +426,9 @@ impl Rpc for LiteSvmRpc {
         CommitmentLevel::Finalized
     }
 
-    async fn chain_kind(&self) -> ChainKind {
-        ChainKind::Own
+    // litesvm stands in for tapesvm: it runs each send before the next, like the daemon
+    async fn is_tapesvm(&self) -> bool {
+        true
     }
 
     async fn get_slot(&self) -> Result<u64, RpcError> {
@@ -792,11 +793,10 @@ fn transaction_error(
 mod tests {
     use super::*;
 
-    // litesvm runs every call in the process that asked, so a batch keeps its order
+    // litesvm runs every call in the process that asked, so it stands in for tapesvm
     #[tokio::test]
-    async fn litesvm_takes_the_ordered_path() {
+    async fn litesvm_reads_as_tapesvm() {
         let rpc = LiteSvmRpc::new();
-        assert_eq!(rpc.chain_kind().await, ChainKind::Own);
-        assert!(rpc.executes_batches_in_order().await);
+        assert!(rpc.is_tapesvm().await);
     }
 }

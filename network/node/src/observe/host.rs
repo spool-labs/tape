@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use fs2::{available_space, total_space};
+use fs2::statvfs;
 use sysinfo::{
     get_current_pid, CpuRefreshKind, MemoryRefreshKind, Pid, ProcessRefreshKind, ProcessesToUpdate,
     RefreshKind, System,
@@ -60,6 +60,15 @@ impl Sampler {
             }
             None => 0.0,
         };
+        let disk = statvfs(store_root);
+        let disk_total_bytes = disk
+            .as_ref()
+            .map(|stats| usable_total(stats.total_space(), stats.free_space(), stats.available_space()))
+            .unwrap_or(0);
+        let disk_available_bytes = disk
+            .as_ref()
+            .map(|stats| stats.available_space())
+            .unwrap_or(0);
         self.last = HostInfo {
             cores: cores as u64,
             cpu_pct: self.system.global_cpu_usage(),
@@ -67,11 +76,16 @@ impl Sampler {
             process_cpu_pct: if cores == 0 { 0.0 } else { process_cpu / cores as f32 },
             memory_total_bytes: self.system.total_memory(),
             memory_available_bytes: self.system.available_memory(),
-            disk_total_bytes: total_space(store_root).unwrap_or(0),
-            disk_available_bytes: available_space(store_root).unwrap_or(0),
+            disk_total_bytes,
+            disk_available_bytes,
         };
         self.sampled_at = Instant::now();
     }
+}
+
+/// The filesystem's size less the blocks only root can write
+fn usable_total(total: u64, free: u64, available: u64) -> u64 {
+    total.saturating_sub(free).saturating_add(available)
 }
 
 fn refresh_process(system: &mut System, pid: Pid) {
@@ -98,5 +112,15 @@ mod tests {
         assert!(host.memory_available_bytes <= host.memory_total_bytes);
         assert!(host.disk_total_bytes > 0);
         assert!(host.disk_available_bytes <= host.disk_total_bytes);
+    }
+
+    // blocks kept for root count as neither used nor available
+    #[test]
+    fn reserved_blocks() {
+        let (total, free, available) = (1_000, 600, 550);
+
+        let size = usable_total(total, free, available);
+
+        assert_eq!(size - available, total - free);
     }
 }

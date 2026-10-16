@@ -62,7 +62,7 @@ struct BucketState {
 
 pub struct AdmissionLimiter {
     config: AdmissionConfig,
-    /// Off on a chain the operator runs, where every caller is the operator's own
+    /// Off on tapesvm, where every caller is the operator's own
     is_metered: bool,
     buckets: Mutex<HashMap<BucketKey, BucketState>>,
     checks: AtomicUsize,

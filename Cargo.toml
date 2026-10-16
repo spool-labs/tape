@@ -201,7 +201,6 @@ solana-transaction-status = { version = "=4.2.1", features = ["agave-unstable-ap
 solana-account-decoder = "=4.2.1"
 solana-transaction-status-client-types = { version = "=4.2.1", features = ["agave-unstable-api"] }
 solana-curve25519 = "=2.3"
-solana-sha256-hasher = { version = "=3.1.0", features = ["sha2"] }
 
 spl-token = { version = "=9.0.0", features = ["no-entrypoint"] }
 spl-associated-token-account = { version = "=8.0.0", features = [ "no-entrypoint" ] }
@@ -210,13 +209,12 @@ spl-associated-token-account-interface = { version = "=2.0.0", features = ["bors
 
 # client-specific
 sha2 = "0.10.8"
-tape-sha256 = "0.1.0"
+tape-sha256 = "0.2.2"
 libc = "0.2"
 crc32fast = "1.4"
 crc32c = "0.6"
 crc64fast-nvme = "1.2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-hmac = "0.12"
 zeroize = "1"
 anyhow = "1.0"
 flate2 = "1.0"

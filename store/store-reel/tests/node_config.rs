@@ -111,15 +111,3 @@ fn small_claims_little() {
         "a fresh small volume claimed {claimed} bytes"
     );
 }
-
-// a fleet volume runs one tail on a spinning disk and two otherwise
-#[test]
-fn fleet_tails() {
-    let spinning = tape_store_reel::fleet_tails(Some(true));
-    let solid = tape_store_reel::fleet_tails(Some(false));
-    let unknown = tape_store_reel::fleet_tails(None);
-
-    assert_eq!(spinning.resolve_tails(), 1);
-    assert_eq!(solid.resolve_tails(), 2);
-    assert_eq!(unknown.resolve_tails(), 2);
-}
