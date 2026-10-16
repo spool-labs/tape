@@ -1071,7 +1071,6 @@ fn submit_outcome<Failure>(verdicts: &Result<Vec<Result<Txid, RpcError>>, Failur
 struct TapesvmRunOutcome {
     landed: usize,
     is_epoch_changed: bool,
-    /// One per entry the chain took, in run order
     signatures: Vec<Txid>,
 }
 
