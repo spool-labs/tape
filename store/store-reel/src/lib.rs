@@ -21,6 +21,7 @@ mod split;
 
 use std::path::Path;
 
+use reel::reel::bias::MachineFacts;
 use reel::{
     ByteCount, CompactRate, IoBackend, RecordKey, ReelConfig,
     ReelStore as EngineStore, ServingBackend, SyncPolicy, ThreadBudget, MAP_EVERYTHING,
@@ -99,7 +100,14 @@ impl ReelStore {
     /// The one entry point that is not bench scoped. Everything else in this
     /// crate opens with `bench_config`, which turns durability off.
     pub fn open_node(root: impl AsRef<Path>, options: NodeStoreOptions) -> StoreResult<ReelStore> {
-        ReelStore::open(root, node_config(options), TAPE_COLUMNS)
+        let root = root.as_ref();
+        let mut config = node_config(options);
+        if options.reserve == Reserve::Fleet {
+            let is_rotational = MachineFacts::read(root).is_rotational;
+            config.active_tails = fleet_tails(is_rotational);
+            tracing::info!(?is_rotational, tails = config.tail_count(), "picked the volume's tails");
+        }
+        ReelStore::open(root, config, TAPE_COLUMNS)
     }
 
     /// Open a reel under this directory serving the given column families
@@ -206,13 +214,12 @@ pub const fn default_backend() -> IoBackend {
 /// The segment size and tail count a volume opens with
 ///
 /// A tail's segment file is sized to the segment but stays sparse, filling in
-/// windows as it is written. Gibibyte segments and a tail per core suit a fleet
-/// disk. A short run, or twenty nodes on a laptop, wants smaller segments on one
-/// tail.
+/// windows as it is written. Gibibyte segments suit a fleet disk. A short run, or
+/// twenty nodes on a laptop, wants smaller segments on one tail.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reserve {
-    /// Gibibyte segments, a tail per core up to eight
+    /// Gibibyte segments, on one tail where the disk seeks and two where it doesn't
     #[default]
     Fleet,
 
@@ -249,6 +256,20 @@ impl Default for NodeStoreOptions {
 
 /// Bytes a small volume seals a segment at
 const SMALL_SEGMENT_BYTES: u64 = 32 * 1024 * 1024;
+
+/// A spinning disk writes fastest from one tail, since more of them seek against each other
+const ROTATIONAL_TAILS: u32 = 1;
+
+/// Solid state runs two tails, since one tops out near a gigabyte a second
+const SOLID_STATE_TAILS: u32 = 2;
+
+/// The tails a fleet volume runs on a disk that does or doesn't seek
+pub fn fleet_tails(is_rotational: Option<bool>) -> ThreadBudget {
+    match is_rotational {
+        Some(true) => ThreadBudget::threads(ROTATIONAL_TAILS),
+        Some(false) | None => ThreadBudget::threads(SOLID_STATE_TAILS),
+    }
+}
 
 /// The config a node opens its volume with
 ///
