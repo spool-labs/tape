@@ -105,14 +105,20 @@ pub fn clear_pending_repairs<Db: Store>(
     group: VirtualGroup,
     profile: ErasureCode,
 ) -> Result<(), NodeError> {
+    // A delete of a missing row still leaves a grave in the store's index, and
+    // the gc sweep clears a dead track's rows again every epoch, so look first.
     for slice_index in 0..usize::from(profile.n()) {
         let spool_id = group.spool_at(slice_index);
-        store
-            .remove_pending_repair(spool_id, track)
-            .map_err(store_error)?;
-        store
-            .remove_pending_recovery(spool_id, track)
-            .map_err(store_error)?;
+        if store.has_pending_repair(spool_id, track).map_err(store_error)? {
+            store
+                .remove_pending_repair(spool_id, track)
+                .map_err(store_error)?;
+        }
+        if store.has_pending_recovery(spool_id, track).map_err(store_error)? {
+            store
+                .remove_pending_recovery(spool_id, track)
+                .map_err(store_error)?;
+        }
     }
 
     Ok(())
@@ -172,6 +178,8 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tape_store_api::{Direction, StoreIter, Value, WriteBatch};
     use tape_store_memory::MemoryStore;
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::tape::TapeFlags;
@@ -352,5 +360,78 @@ mod tests {
 
         assert_eq!(stats.tracks_deleted, old.len());
         assert!(store.has_track(written_after).unwrap());
+    }
+
+    /// A memory store that counts the deletes sent to it
+    struct CountingStore {
+        inner: MemoryStore,
+        deletes: AtomicUsize,
+    }
+
+    impl Store for CountingStore {
+        fn store_engine(&self) -> tape_store_api::StoreEngine {
+            self.inner.store_engine()
+        }
+        fn get(&self, cf: &str, key: &[u8]) -> tape_store_api::Result<Option<Value>> {
+            self.inner.get(cf, key)
+        }
+        fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> tape_store_api::Result<()> {
+            self.inner.put(cf, key, value)
+        }
+        fn delete(&self, cf: &str, key: &[u8]) -> tape_store_api::Result<()> {
+            self.deletes.fetch_add(1, Ordering::Relaxed);
+            self.inner.delete(cf, key)
+        }
+        fn contains(&self, cf: &str, key: &[u8]) -> tape_store_api::Result<bool> {
+            self.inner.contains(cf, key)
+        }
+        fn write_batch(&self, batch: WriteBatch) -> tape_store_api::Result<()> {
+            self.inner.write_batch(batch)
+        }
+        fn iter(&self, cf: &str) -> tape_store_api::Result<StoreIter<'_>> {
+            self.inner.iter(cf)
+        }
+        fn iter_prefix(&self, cf: &str, prefix: &[u8]) -> tape_store_api::Result<StoreIter<'_>> {
+            self.inner.iter_prefix(cf, prefix)
+        }
+        fn bytes_prefix(&self, cf: &str, prefix: &[u8]) -> tape_store_api::Result<Option<u64>> {
+            self.inner.bytes_prefix(cf, prefix)
+        }
+        fn iter_from(&self, cf: &str, start: &[u8], direction: Direction) -> tape_store_api::Result<StoreIter<'_>> {
+            self.inner.iter_from(cf, start, direction)
+        }
+        fn iter_range(&self, cf: &str, start: &[u8], end: &[u8]) -> tape_store_api::Result<StoreIter<'_>> {
+            self.inner.iter_range(cf, start, end)
+        }
+        fn live_data_size_bytes(&self) -> tape_store_api::Result<Option<u64>> {
+            self.inner.live_data_size_bytes()
+        }
+        fn key_count_estimate(&self, cf: &str) -> tape_store_api::Result<Option<u64>> {
+            self.inner.key_count_estimate(cf)
+        }
+    }
+
+    // the gc sweep clears a dead track's repair rows every epoch, and on the reel
+    // a delete of a missing row leaves a grave, so only rows that exist get one
+    #[test]
+    fn repeated_clears_delete_only_rows_that_exist() {
+        let store = TapeStore::new(CountingStore {
+            inner: MemoryStore::new(),
+            deletes: AtomicUsize::new(0),
+        });
+        let group = VirtualGroup::from(3);
+        let track = Address::new_unique();
+        let repair = group.spool_at(2);
+        let recovery = group.spool_at(5);
+        store.add_pending_repair(repair, track).unwrap();
+        store.add_pending_recovery(recovery, track).unwrap();
+
+        for _ in 0..EXPIRY.0 {
+            clear_pending_repairs(&store, track, group, TAPENET_PROFILE).unwrap();
+        }
+
+        assert!(!store.has_pending_repair(repair, track).unwrap());
+        assert!(!store.has_pending_recovery(recovery, track).unwrap());
+        assert_eq!(store.inner().inner().deletes.load(Ordering::Relaxed), 2);
     }
 }
