@@ -10,6 +10,16 @@ use tape_node::core::limits::check_fd_limit;
 use tape_node::runtime::{build_runtime, init_tracing, run_application};
 use tracing::info;
 
+/// glibc keeps freed memory in its arenas, and jemalloc gives it back to the system
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+/// Purge from a background thread, ten seconds after a page goes unused
+#[cfg(target_os = "linux")]
+#[export_name = "malloc_conf"]
+static MALLOC_CONF: &[u8] = b"background_thread:true,dirty_decay_ms:10000\0";
+
 #[derive(Parser)]
 #[command(
     name = "tape-node",
