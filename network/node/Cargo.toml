@@ -75,9 +75,6 @@ reqwest = { workspace = true }
 # with native-tls; vendored=1 builds libssl from source via openssl-src.
 openssl = { version = "0.10", features = ["vendored"] }
 
-[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-tikv-jemallocator = { version = "0.7", features = ["unprefixed_malloc_on_supported_platforms"] }
-
 [dev-dependencies]
 anyhow = { workspace = true }
 tempfile = "3"
