@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use tape_protocol::api::{
     Api, ApiError, CertifyReq, CertifyRes, ChallengeReq, ChallengeRes, FindTrackReq, FindTrackRes,
     GetHealthReq, GetHealthRes, GetSliceReq, GetSliceRes, GetSliceWindowReq, GetSliceWindowRes,
-    GetStatsReq, GetStatsRes,
     GetTrackByNumberReq, GetTrackByNumberRes, GetTrackDataReq, GetTrackDataRes, GetTrackProofReq,
     GetTrackProofRes, GetTrackReq, GetTrackRes, InvalidateReq, InvalidateRes, ListObjectsReq,
     ListObjectsRes, ListTracksByTapeReq, ListTracksByTapeRes, PeerReq, PeerRes,
@@ -43,7 +42,6 @@ impl MemoryApi {
             PeerReq::Vote(_) => PeerRes::Vote(Err(not_impl())),
             PeerReq::Challenge(_) => PeerRes::Challenge(Err(not_impl())),
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
-            PeerReq::GetStats(_) => PeerRes::GetStats(Err(not_impl())),
         })
     }
 }
@@ -166,13 +164,6 @@ impl Api for MemoryApi {
         dispatch!(self, node, GetHealthReq, GetHealth)
     }
 
-    async fn get_stats(&self, node: Address, _req: &GetStatsReq) -> Result<GetStatsRes, ApiError> {
-        dispatch!(self, node, GetStatsReq, GetStats)
-    }
-
-    async fn get_observe_board(&self, _node: Address) -> Result<Vec<u8>, ApiError> {
-        Err(ApiError::Other("observe snapshot unsupported in memory api".into()))
-    }
 }
 
 #[cfg(test)]

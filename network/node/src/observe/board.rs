@@ -16,7 +16,7 @@ use tape_observe_api::{
     NodeStats, ResourceInfo, SpoolStat, StatsSource, StorageContents, StorageInfo,
     StorageVolume,
     StoreIo, ThroughputTotals, CACHE_RESULTS, DECODE_RESULTS, DECODE_SLICE_OUTCOMES, SPOOL_OPS,
-    SPOOL_OP_RECOVER, SPOOL_OP_REPAIR, SPOOL_OP_SYNC, SPOOL_STAGES, SPOOL_STAGE_FETCHED,
+    SPOOL_STAGES,
 };
 use tape_protocol::{Api, ProtocolState};
 
@@ -441,67 +441,6 @@ where
     }
 }
 
-/// A lite board synthesized from a node's public stats, for peers that don't
-/// serve the full observe board.
-pub fn lite_board(address: String, stats: &NodeStats) -> Board {
-    let mut spool = Vec::with_capacity(SPOOL_OPS.len());
-    for (op, bytes) in [
-        (SPOOL_OP_SYNC, stats.sync_bytes),
-        (SPOOL_OP_REPAIR, stats.repair_bytes),
-        (SPOOL_OP_RECOVER, stats.recover_bytes),
-    ] {
-        spool.push(SpoolStat { op: op.to_string(), stage: SPOOL_STAGE_FETCHED.to_string(), bytes });
-    }
-
-    Board {
-        source: StatsSource::Public,
-        generated_at: now_secs(),
-        node: NodeInfo {
-            address,
-            status: "active".to_string(),
-            version: stats.version.clone(),
-            store_engine: stats.store_engine.clone(),
-            uptime_secs: 0,
-            restarts: stats.restarts,
-        },
-        epoch: EpochInfo {
-            number: stats.current_epoch,
-            shards_owned: stats.owned_spools,
-            ..Default::default()
-        },
-        ingest: IngestInfo {
-            lag_slots: stats.ingest_lag_slots,
-            state: stats.ingest_state.clone(),
-            at_tip: stats.bootstrap_ready && stats.ingest_state == "at_tip",
-            ..Default::default()
-        },
-        bootstrap: BootstrapInfo {
-            ready: stats.bootstrap_ready,
-            target_slot: stats.bootstrap_behind_slots,
-            ..Default::default()
-        },
-        storage: StorageInfo {
-            disk_used_bytes: stats.store_disk_bytes,
-            disk_free_bytes: stats.free_disk_bytes,
-            owned_spools: stats.owned_spools,
-            volumes: Vec::new(),
-            data_bytes: stats.store_data_bytes,
-        },
-        contents: StorageContents {
-            tracks: stats.tracks_stored,
-            slices: stats.slices_stored,
-            ..Default::default()
-        },
-        throughput: ThroughputTotals {
-            blocks_processed: stats.blocks_processed,
-            bytes_uploaded: stats.upload_bytes,
-            ..Default::default()
-        },
-        spool,
-        ..Default::default()
-    }
-}
-
 /// Build the whole-network view from this node's on-chain state: the committee
 /// and every spool's owner.
 pub fn build_network<Db, Cluster, Blockchain>(
@@ -515,13 +454,12 @@ where
     let state = context.state();
     let me = context.node_address();
 
-    // Identify ourselves; everyone else takes status/source/stats from the latest
-    // aggregator probe, falling back to Unknown when the aggregator is off or stale.
+    // Only this node's own figures are known here
     let liveness = |node: tape_crypto::Address| {
         if node == me {
             (LinkStatus::Local, StatsSource::Observe, Some(local_stats(context)))
         } else {
-            super::peers::lookup(node).unwrap_or((LinkStatus::Unknown, StatsSource::None, None))
+            (LinkStatus::Unknown, StatsSource::None, None)
         }
     };
     let name_of = |node: tape_crypto::Address| {
@@ -803,6 +741,7 @@ fn synced_groups(state: &ProtocolState) -> u64 {
 mod tests {
     use tape_core::types::SpoolBitmap;
     use tape_core::types::bitmap::BitmapWrite;
+    use tape_observe_api::{SPOOL_OP_REPAIR, SPOOL_STAGE_FETCHED};
 
     use super::*;
     use crate::harness::{NodeHarness, TestContext};
@@ -907,16 +846,13 @@ mod tests {
         assert!(uploaded >= 4_096);
     }
 
-    // the store engine reaches the node's board, its row in the network view,
-    // and the board built from a peer's public stats
+    // the store engine reaches the node's board and its row in the network view
     #[tokio::test]
     async fn store_engine_travels() {
         let context = test_context().await;
-        let stats = NodeStats { store_engine: "rocksdb".to_string(), ..NodeStats::default() };
 
         let board = build(&context);
         let network = build_network(&context);
-        let peer = lite_board("peer".to_string(), &stats);
 
         let local = network
             .committee
@@ -925,26 +861,5 @@ mod tests {
             .expect("local node stats");
         assert_eq!(board.node.store_engine, "memory");
         assert_eq!(local.store_engine, "memory");
-        assert_eq!(peer.node.store_engine, "rocksdb");
-    }
-
-    // a peer reachable only over public stats still charts every transfer path
-    #[tokio::test]
-    async fn lite_board_transfer() {
-        let stats = NodeStats {
-            sync_bytes: 11,
-            repair_bytes: 22,
-            recover_bytes: 33,
-            upload_bytes: 44,
-            ..NodeStats::default()
-        };
-
-        let board = lite_board("peer".to_string(), &stats);
-
-        assert_eq!(board.spool_bytes(SPOOL_OP_SYNC, SPOOL_STAGE_FETCHED), 11);
-        assert_eq!(board.spool_bytes(SPOOL_OP_REPAIR, SPOOL_STAGE_FETCHED), 22);
-        assert_eq!(board.spool_bytes(SPOOL_OP_RECOVER, SPOOL_STAGE_FETCHED), 33);
-        assert_eq!(board.throughput.bytes_uploaded, 44);
-        assert!(board.generated_at > 0);
     }
 }
