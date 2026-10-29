@@ -2,12 +2,14 @@ pub mod http;
 pub mod board;
 pub mod stream;
 
+mod aggregator;
 mod balance;
 mod bandwidth;
 mod cache;
 pub mod collectors;
 mod epoch;
 mod host;
+mod peers;
 
 use std::sync::Arc;
 
@@ -24,9 +26,11 @@ use crate::features::replay::types::ReplayBatch;
 
 use collectors::{CapacityFn, ChannelCollector, NodeStatusCollector, StoreStatsCollector};
 
+pub use aggregator::PeerAggregator;
 pub use balance::BalanceMonitor;
 pub use cache::{cached_network, cached_board};
 pub use stream::StreamPublisher;
+pub use peers::lookup as peer_liveness;
 pub use epoch::{current_epoch_progress, last_epoch, lifetime, roll_epoch};
 
 /// Register the context-dependent pull collectors and the per-epoch roller. The

@@ -1,21 +1,53 @@
+use std::collections::HashMap;
 use std::fmt::Display;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
+use tokio::sync::Mutex;
 use tracing::debug;
 
 use tape_core::types::SlotNumber;
 use tape_rpc::Rpc;
-use tape_store_api::{DiskVolume, Store, StoreVolume};
+use tape_store_api::{Column, DiskVolume, Store, StoreVolume};
 use tape_protocol::{Api, api::{NodeStats, VolumeStats}};
+use tape_store::columns::TrackCol;
 use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
+use tape_store::TapeStore;
 
 use crate::context::NodeContext;
 use crate::core::bootstrap::BootstrapSnapshot;
+use crate::core::error::NodeError;
 use crate::core::ingest::IngestState;
 use crate::features::http::error::RouteError;
 use crate::features::http::state::AppState;
+
+/// A read of the store totals that took this long or more is reused
+const SLOW_TOTALS_READ: Duration = Duration::from_millis(100);
+/// A slow read is reused for 100 times its own duration, so reads take at most 1% of the time
+const TOTALS_REUSE_FACTOR: u32 = 100;
+/// The longest a slow read is reused
+const TOTALS_REUSE_MAX: Duration = Duration::from_secs(60);
+
+/// The figures in `/v1/stats` that cost a read of the store
+#[derive(Clone, Debug)]
+pub struct StoreTotals {
+    pub owned_spools: u64,
+    pub tracks_stored: u64,
+    pub slices_stored: u64,
+    pub slice_payload_bytes: u64,
+    pub store_disk_bytes: u64,
+    pub store_data_bytes: u64,
+    pub free_disk_bytes: Option<u64>,
+    pub disk_volumes: Vec<VolumeStats>,
+}
+
+pub struct CachedTotals {
+    pub fresh_until: Instant,
+    pub totals: Arc<StoreTotals>,
+}
 
 /// Map a backend disk volume to its wire representation.
 fn volume_stats(volume: DiskVolume) -> VolumeStats {
@@ -136,10 +168,9 @@ pub fn health_of<Db: Store, Cluster: Api, Blockchain: Rpc>(
     )
 }
 
-pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
+pub async fn stats<Db: Store + 'static, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
 ) -> Result<Json<NodeStats>, RouteError> {
-
     let store = &state.context.store;
     let current_state = state.context.state();
     let metrics = state.context.metrics.snapshot();
@@ -153,39 +184,7 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
     let (ingest_tip_slot, _, ingest_lag_slots) = ingest_progress.tip_and_lag();
     let ingest_state = state.context.ingest_state().label().to_string();
     let bootstrap = state.context.bootstrap.snapshot();
-
-    let owned_spools = store
-        .iter_all_spools()
-        .map_err(store_error)?;
-
-    // Zero bytes from a backend that can't weigh the column without reading it
-    let (slices_stored, slice_bytes) = store.slice_totals().map_err(store_error)?;
-    let slice_payload_bytes = slice_bytes.unwrap_or_default().as_u64();
-
-    let store_disk_bytes = store
-        .inner()
-        .inner()
-        .actual_size_bytes()
-        .map_err(store_error)?;
-    let store_data_bytes = store
-        .inner()
-        .inner()
-        .live_data_size_bytes()
-        .map_err(store_error)?
-        .unwrap_or(0);
-    let free_disk_bytes = store
-        .inner()
-        .inner()
-        .available_disk_bytes()
-        .map_err(store_error)?;
-    let disk_volumes = store
-        .inner()
-        .inner()
-        .disk_volumes()
-        .map_err(store_error)?
-        .into_iter()
-        .map(volume_stats)
-        .collect();
+    let totals = store_totals(store).await.map_err(store_error)?;
 
     let stats = NodeStats {
         version: crate::VERSION.to_string(),
@@ -194,17 +193,15 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
         blocks_processed: metrics.blocks_processed_total,
         epoch_transitions: metrics.epoch_transitions_total,
         current_epoch: current_state.epoch().0,
-        owned_spools: owned_spools.len() as u64,
-        tracks_stored: store
-            .count_tracks()
-            .map_err(store_error)? as u64,
-        slice_payload_bytes,
-        store_disk_bytes,
-        store_data_bytes,
-        free_disk_bytes,
-        disk_volumes,
+        owned_spools: totals.owned_spools,
+        tracks_stored: totals.tracks_stored,
+        slice_payload_bytes: totals.slice_payload_bytes,
+        store_disk_bytes: totals.store_disk_bytes,
+        store_data_bytes: totals.store_data_bytes,
+        free_disk_bytes: totals.free_disk_bytes,
+        disk_volumes: totals.disk_volumes.clone(),
         reclaim_pending: state.context.is_reclaim_pending(),
-        slices_stored,
+        slices_stored: totals.slices_stored,
         bytes_uploaded: metrics.bytes_uploaded,
         bytes_downloaded: metrics.bytes_downloaded,
         sync_bytes_fetched: metrics.sync_bytes_fetched,
@@ -234,20 +231,93 @@ pub async fn stats<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok(Json(stats))
 }
 
+/// One slot per store, since tests and simnet run several nodes in a process
+fn totals_slot(key: usize) -> Arc<Mutex<Option<CachedTotals>>> {
+    static SLOTS: OnceLock<StdMutex<HashMap<usize, Arc<Mutex<Option<CachedTotals>>>>>> = OnceLock::new();
+    let slots = SLOTS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut slots = slots.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(slots.entry(key).or_default())
+}
+
+/// The store figures, read by one caller per store at a time, with a slow read reused for a while
+pub async fn store_totals<Db: Store + 'static>(store: &Arc<TapeStore<Db>>) -> Result<Arc<StoreTotals>, NodeError> {
+    let slot = totals_slot(Arc::as_ptr(store) as usize);
+    let store = Arc::clone(store);
+    // A spawned task finishes its read when the caller goes away, so a timed out caller never starts a second one
+    let task = tokio::spawn(async move {
+        let mut cached = slot.lock().await;
+        if let Some(fresh) = cached.as_ref().filter(|cached| Instant::now() < cached.fresh_until) {
+            return Ok(Arc::clone(&fresh.totals));
+        }
+
+        let started = Instant::now();
+        let read = tokio::task::spawn_blocking(move || read_store_totals(&store)).await;
+        let read = read.map_err(|error| NodeError::Store(format!("store totals task: {error}")))?;
+        let totals = Arc::new(read?);
+        *cached = reuse_for(started.elapsed())
+            .map(|reuse| CachedTotals { fresh_until: Instant::now() + reuse, totals: Arc::clone(&totals) });
+        Ok(totals)
+    });
+    task.await.map_err(|error| NodeError::Store(format!("store totals task: {error}")))?
+}
+
+/// How long to reuse a read that took `took`, and None for a fast read
+pub fn reuse_for(took: Duration) -> Option<Duration> {
+    if took < SLOW_TOTALS_READ {
+        return None;
+    }
+    Some((took * TOTALS_REUSE_FACTOR).min(TOTALS_REUSE_MAX))
+}
+
+fn read_store_totals<Db: Store>(store: &TapeStore<Db>) -> Result<StoreTotals, NodeError> {
+    let backend = store.inner().inner();
+    let owned_spools = store.iter_all_spools().map_err(totals_error)?;
+    // Zero bytes from a backend that can't weigh the column without reading it
+    let (slices_stored, slice_bytes) = store.slice_totals().map_err(totals_error)?;
+
+    let mut disk_volumes = Vec::new();
+    for volume in backend.disk_volumes().map_err(totals_error)? {
+        disk_volumes.push(volume_stats(volume));
+    }
+
+    Ok(StoreTotals {
+        owned_spools: owned_spools.len() as u64,
+        tracks_stored: track_count(store)?,
+        slices_stored,
+        slice_payload_bytes: slice_bytes.unwrap_or_default().as_u64(),
+        store_disk_bytes: backend.actual_size_bytes().map_err(totals_error)?,
+        store_data_bytes: backend.live_data_size_bytes().map_err(totals_error)?.unwrap_or(0),
+        free_disk_bytes: backend.available_disk_bytes().map_err(totals_error)?,
+        disk_volumes,
+    })
+}
+
+/// The engine's cached track count, or an exact count from an engine without one
+fn track_count<Db: Store>(store: &TapeStore<Db>) -> Result<u64, NodeError> {
+    match store.inner().inner().key_count_estimate(TrackCol::CF_NAME).map_err(totals_error)? {
+        Some(count) => Ok(count),
+        None => Ok(store.count_tracks().map_err(totals_error)? as u64),
+    }
+}
+
+fn totals_error(error: impl Display) -> NodeError {
+    NodeError::Store(format!("store totals: {error}"))
+}
+
 fn store_error(error: impl Display) -> RouteError {
     RouteError::Internal(error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use axum::extract::State;
     use axum::http::StatusCode;
 
     use tape_core::types::SlotNumber;
 
-    use super::{health, stats, HealthStatus};
+    use super::{health, reuse_for, stats, HealthStatus};
     use crate::core::ingest::IngestState;
     use crate::features::http::state::AppState;
     use crate::harness::{NodeHarness, TestContext};
@@ -321,4 +391,13 @@ mod tests {
 
         assert_eq!(body.0.version, crate::VERSION);
     }
+
+    // a fast read is never reused, and a slow one for longer the slower it was
+    #[test]
+    fn reuse_rule() {
+        assert_eq!(reuse_for(Duration::from_millis(5)), None);
+        assert_eq!(reuse_for(Duration::from_millis(200)), Some(Duration::from_secs(20)));
+        assert_eq!(reuse_for(Duration::from_secs(5)), Some(Duration::from_secs(60)));
+    }
+
 }

@@ -787,6 +787,49 @@ impl Api for HttpApi {
         })
     }
 
+    async fn get_stats(
+        &self,
+        node: Address,
+        _req: &GetStatsReq,
+    ) -> Result<GetStatsRes, ApiError> {
+        let (client, base) = self.resolve(node)?;
+        let url = format!("{base}{}", NODE_STATS_PATH);
+
+        let start = Instant::now();
+        let resp = client
+            .get(&url)
+            .header("accept", JSON_CONTENT)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record(node, "get_stats", &resp, start, 0);
+        let resp = check_status(resp).await?;
+        let stats = resp
+            .json()
+            .await
+            .map_err(|e| ApiError::Serialization(format!("json: {e}")))?;
+        Ok(GetStatsRes { stats })
+    }
+
+    async fn get_observe_board(&self, node: Address) -> Result<Vec<u8>, ApiError> {
+        let (client, base) = self.resolve(node)?;
+        let url = format!("{base}{}", OBSERVE_BOARD_PATH);
+
+        let start = Instant::now();
+        let resp = client
+            .get(&url)
+            .header("accept", JSON_CONTENT)
+            .send()
+            .await
+            .map_err(map_reqwest)?;
+
+        self.record(node, "get_observe_board", &resp, start, 0);
+        let resp = check_status(resp).await?;
+        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        self.record_rx(node, "get_observe_board", bytes.len() as u64);
+        Ok(bytes.to_vec())
+    }
 }
 
 /// Stamp the in-scope correlation id and share token on an outbound request, so

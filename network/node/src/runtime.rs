@@ -274,6 +274,19 @@ where
         );
     }
 
+    #[cfg(feature = "metrics")]
+    if config.metrics.enabled && config.metrics.aggregate_peers {
+        supervisor.spawn(
+            ServiceName::PeerAggregator,
+            crate::observe::PeerAggregator::new(
+                context.clone(),
+                config.metrics.aggregate_interval_secs,
+                cancel.clone(),
+            )
+            .run(),
+        );
+    }
+
     supervisor.spawn(ServiceName::HttpServer, join_http_server(http_server));
 
     supervisor.spawn(
