@@ -1,7 +1,7 @@
 //! Axum server glue. Three distinct request paths:
 //!
-//! - `getBlock` is served from the in-memory slot store (filled by
-//!   bootstrap + live tail), in the encoding the request asks for: json,
+//! - `getBlock` is served from the slot store (filled by bootstrap + live
+//!   tail), in the encoding the request asks for: json,
 //!   the default, or base64. A confirmed miss fills the store from
 //!   upstream. Other encodings and commitments pass through to upstream.
 //! - A confirmed `getSlot` is answered with the slot the live tail holds
@@ -31,7 +31,6 @@ use axum::{
     routing::{get, post},
 };
 use bytes::Bytes;
-use moka::future::Cache as MokaCache;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tape_crypto::address::Address;
@@ -41,6 +40,8 @@ use crate::cache::{CacheStore, MethodKind, Policy};
 use crate::key::CacheKey;
 use crate::public::{PUBLIC_BODY_LIMIT, Public, serve_public};
 use crate::runtime::fetch_slot_block;
+use crate::store::block::CachedBlock;
+use crate::store::slot_store::SlotStore;
 use crate::submit_log;
 use crate::upstream::{CALLER_RATE_LIMIT_WAIT, RpcEnvelope, Upstream, UpstreamError};
 
@@ -63,16 +64,6 @@ const NO_TAIL_READING: u64 = u64::MAX;
 pub enum BlockEncoding {
     Json,
     Base64,
-}
-
-#[derive(Clone)]
-pub enum CachedBlock {
-    /// Pre-serialized JSON-RPC `result` bodies for a confirmed, filtered
-    /// block, one per encoding. Wrapped in an envelope at serve time.
-    Present { base64: Bytes, json: Bytes },
-    /// The slot was skipped or never produced. Replays the standard
-    /// upstream error envelope.
-    Skipped,
 }
 
 pub struct CacheStats {
@@ -180,7 +171,7 @@ pub struct AppState {
     /// require this, and a public instance has none.
     pub api_key: Option<String>,
     pub public: Option<Public>,
-    pub slot_store: MokaCache<u64, CachedBlock>,
+    pub slot_store: SlotStore,
     pub program_ids: Vec<Address>,
     pub stats: CacheStats,
 }
@@ -226,9 +217,7 @@ async fn stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let live = s.last_observed_live_slot.load(Ordering::Relaxed);
     let lag = live.saturating_sub(newest);
 
-    state.slot_store.run_pending_tasks().await;
-    let entries = state.slot_store.entry_count();
-    let bytes = state.slot_store.weighted_size();
+    let memory = state.slot_store.memory_usage().await;
 
     let (slots_per_sec, eta_secs) = match s.bootstrap_rate() {
         Some((rate, eta)) => ((rate * 10.0).round() / 10.0, Some(eta)),
@@ -245,8 +234,8 @@ async fn stats(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "newest_cached_slot": newest,
         "last_observed_live_slot": live,
         "lag_from_live_slot": lag,
-        "slot_store_entries": entries,
-        "slot_store_approximate_bytes": bytes,
+        "slot_store_entries": memory.entries,
+        "slot_store_approximate_bytes": memory.bytes,
         "slot_store_hits": s.slot_store_hits.load(Ordering::Relaxed),
         "slot_store_misses": s.slot_store_misses.load(Ordering::Relaxed),
         "slots_fetched": s.slots_fetched.load(Ordering::Relaxed),
@@ -304,9 +293,13 @@ async fn handle(
     if method == "getBlock" {
         if is_confirmed_get_block(&params) {
             if let (Some(slot), Some(encoding)) = (parse_slot_param(&params), get_block_encoding(&params)) {
-                if let Some(cached) = state.slot_store.get(&slot).await {
-                    state.stats.slot_store_hits.fetch_add(1, Ordering::Relaxed);
-                    return serve_cached_block(id, cached, encoding);
+                match state.slot_store.get(slot).await {
+                    Ok(Some(cached)) => {
+                        state.stats.slot_store_hits.fetch_add(1, Ordering::Relaxed);
+                        return serve_cached_block(id, cached, encoding);
+                    }
+                    Ok(None) => {}
+                    Err(error) => warn!(slot, %error, "slot store read failed; filling from upstream"),
                 }
                 state.stats.slot_store_misses.fetch_add(1, Ordering::Relaxed);
                 return fill_and_serve_cached_block(&state, id, slot, encoding).await;
@@ -418,14 +411,8 @@ async fn fill_and_serve_cached_block(
     slot: u64,
     encoding: BlockEncoding,
 ) -> Response {
-    let fetch_state = Arc::clone(state);
-    match state
-        .slot_store
-        .try_get_with(slot, async move {
-            fetch_slot_block(fetch_state.as_ref(), slot, CALLER_RATE_LIMIT_WAIT).await
-        })
-        .await
-    {
+    let fetch = fetch_slot_block(state, slot, CALLER_RATE_LIMIT_WAIT);
+    match state.slot_store.fill(slot, fetch).await {
         Ok(cached) => serve_cached_block(id, cached, encoding),
         Err(error) => slot_fill_err(id, error.as_str()).into_response(),
     }

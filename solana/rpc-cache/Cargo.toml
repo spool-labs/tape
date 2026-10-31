@@ -35,6 +35,7 @@ moka = { version = "0.12", features = ["future"] }
 openssl = { version = "0.10", features = ["vendored"] }
 regex = "1"
 reqwest = { workspace = true }
+rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = "0.9"

@@ -9,7 +9,7 @@ use tape_core::track::types::CompressedTrackProof;
 use tape_crypto::prelude::{Address, Hash};
 
 use crate::api::types::{
-    ChallengeProof, InconsistencyProof, NodeStats, StripeSubChunkRequest, SyncSliceEntry,
+    ChallengeProof, InconsistencyProof, StripeSubChunkRequest, SyncSliceEntry,
     VoteCandidate, ObjectListItem,
 };
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -226,14 +226,6 @@ pub struct GetHealthRes {
     pub ok: bool,
 }
 
-#[derive(Clone, Debug)]
-pub struct GetStatsReq;
-
-#[derive(Clone, Debug)]
-pub struct GetStatsRes {
-    pub stats: NodeStats,
-}
-
 
 pub enum PeerReq {
     PutSlice(PutSliceReq),
@@ -252,7 +244,6 @@ pub enum PeerReq {
     Vote(VoteReq),
     Challenge(ChallengeReq),
     GetHealth(GetHealthReq),
-    GetStats(GetStatsReq),
 }
 
 pub enum PeerRes {
@@ -272,5 +263,4 @@ pub enum PeerRes {
     Vote(Result<VoteRes, ApiError>),
     Challenge(Result<ChallengeRes, ApiError>),
     GetHealth(Result<GetHealthRes, ApiError>),
-    GetStats(Result<GetStatsRes, ApiError>),
 }

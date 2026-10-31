@@ -18,6 +18,9 @@ use solana_transaction_status::{
 
 use tape_crypto::address::Address;
 
+/// Bump when the filter keeps different data, so the stored blocks are fetched again
+pub const FILTER_VERSION: u32 = 1;
+
 /// A filtered block: the block with its kept transactions as upstream sent
 /// them (base64), and the json rendering of each, in the same order
 pub struct FilteredBlock {
@@ -46,6 +49,17 @@ pub fn filter_block(mut block: UiConfirmedBlock, program_ids: &[Address]) -> Fil
     }
     block.transactions = Some(kept);
     FilteredBlock { block, json_transactions }
+}
+
+/// Describe the chain, filter version and programs behind a filtered block.
+/// The slot store fetches again every block it stored under another fingerprint.
+pub fn block_fingerprint(genesis_hash: &str, program_ids: &[Address]) -> String {
+    let mut programs = Vec::with_capacity(program_ids.len());
+    for program_id in program_ids {
+        programs.push(program_id.to_string());
+    }
+    programs.sort();
+    format!("{genesis_hash}|{FILTER_VERSION}|{}", programs.join(","))
 }
 
 /// The decoded transaction when it succeeded and touches a tracked program
@@ -373,5 +387,17 @@ mod tests {
         assert!(log_invokes_program(&format!("Program {p_str} invoke [1]"), p_str));
         assert!(!log_invokes_program(&format!("Program {p_str}EXTRA invoke [1]"), p_str));
         assert!(!log_invokes_program(&format!("Program {p_str} success"), p_str));
+    }
+
+    // the fingerprint ignores program order and changes with the chain or the programs
+    #[test]
+    fn fingerprint() {
+        let (first, second) = (pid(), pid());
+
+        let fingerprint = block_fingerprint("genesis", &[first, second]);
+
+        assert_eq!(fingerprint, block_fingerprint("genesis", &[second, first]));
+        assert_ne!(fingerprint, block_fingerprint("other", &[first, second]));
+        assert_ne!(fingerprint, block_fingerprint("genesis", &[first]));
     }
 }

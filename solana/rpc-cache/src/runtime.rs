@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
-use moka::future::Cache as MokaCache;
 use tape_rpc::skip::{TRUSTED_SKIP_RUN, slots_to_fetch, trusted_skip};
 use serde_json::{Value, json};
 use solana_client::rpc_config::RpcBlockConfig;
@@ -30,9 +29,11 @@ use tracing::{debug, info, warn};
 
 use crate::cache::{CacheStore, Policy};
 use crate::config::Config;
-use crate::filter::filter_block;
+use crate::filter::{block_fingerprint, filter_block};
 use crate::public::Public;
-use crate::server::{AppState, CacheStats, CachedBlock};
+use crate::server::{AppState, CacheStats};
+use crate::store::block::CachedBlock;
+use crate::store::slot_store::SlotStore;
 use crate::upstream::{RateLimitWait, Upstream, UpstreamError};
 
 /// A rooted skip: permanent, stored as a tombstone
@@ -46,7 +47,7 @@ const BOOTSTRAP_CONCURRENCY: usize = 16;
 const PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(30);
 const LIVE_TAIL_POLL: Duration = Duration::from_millis(100);
 const LIVE_TAIL_CONCURRENCY: usize = 4;
-/// Slots listed per getBlocks round trip while filling
+const PRUNE_INTERVAL: Duration = Duration::from_secs(3600);
 const FILL_WINDOW_SLOTS: u64 = 4096;
 const MAX_BLOCK_FETCH_ATTEMPTS: u32 = 5;
 const RETRY_BASE: Duration = Duration::from_millis(100);
@@ -70,15 +71,16 @@ const BLOCK_FETCH_CONFIG: RpcBlockConfig = RpcBlockConfig {
 enum BlockOutcome {
     Present(UiConfirmedBlock),
     Skipped,
-    /// No block, and no word yet on whether the slot was skipped
     NotAvailable(String),
-    /// Gone from this upstream's ledger for good
     Pruned(String),
     Retriable(String),
 }
 
 pub async fn run_application(config: Config) -> Result<()> {
-    let state = build_state(&config)?;
+    let upstream = build_upstream(&config);
+    let program_ids = parse_program_ids(&config.filter_program_ids)?;
+    let slot_store = open_slot_store(&config, &upstream, &program_ids).await?;
+    let state = build_state(&config, upstream, program_ids, slot_store);
     let cancel = CancellationToken::new();
 
     let listener = TcpListener::bind(&config.listen)
@@ -167,6 +169,12 @@ pub async fn run_application(config: Config) -> Result<()> {
     let tail_cancel = cancel.clone();
     let mut tail_task = tokio::spawn(async move { live_tail(tail_state, tail_cancel).await });
 
+    let prune_state = state.clone();
+    let prune_cancel = cancel.clone();
+    let lookback_epochs = config.bootstrap_lookback_epochs;
+    let mut prune_task =
+        tokio::spawn(async move { prune_loop(prune_state, lookback_epochs, prune_cancel).await });
+
     let signal_cancel = cancel.clone();
     tokio::select! {
         _ = wait_shutdown_signal() => {
@@ -183,48 +191,58 @@ pub async fn run_application(config: Config) -> Result<()> {
             warn!(result = ?r, "live tail exited before shutdown");
             signal_cancel.cancel();
         }
+        r = &mut prune_task => {
+            let r = join_result(r);
+            warn!(result = ?r, "prune loop exited before shutdown");
+            signal_cancel.cancel();
+        }
     }
 
     Ok(())
 }
 
-fn build_state(config: &Config) -> Result<Arc<AppState>> {
-    let policy = Policy::new(config.ttls.clone());
-    let cache = CacheStore::new(config.max_entries);
-    let upstream = Upstream::new(
-        config.upstream.clone(),
-        config.min_429_delay,
-        config.upstream_headers.clone(),
-        config.upstream_max_in_flight,
-    );
-    let slot_store = build_slot_store(config.slot_store_max_bytes);
-    let program_ids = parse_program_ids(&config.filter_program_ids)?;
-    let stats = CacheStats::new();
-
-    Ok(Arc::new(AppState {
-        policy,
-        cache,
+fn build_state(
+    config: &Config,
+    upstream: Upstream,
+    program_ids: Vec<Address>,
+    slot_store: SlotStore,
+) -> Arc<AppState> {
+    Arc::new(AppState {
+        policy: Policy::new(config.ttls.clone()),
+        cache: CacheStore::new(config.max_entries),
         upstream,
         log_submits: config.log_submits,
         api_key: config.api_key.clone(),
         public: config.public.as_ref().map(Public::new),
         slot_store,
         program_ids,
-        stats,
-    }))
+        stats: CacheStats::new(),
+    })
 }
 
-fn build_slot_store(max_bytes: u64) -> MokaCache<u64, CachedBlock> {
-    MokaCache::builder()
-        .weigher(|_key: &u64, value: &CachedBlock| match value {
-            CachedBlock::Present { base64, json } => (base64.len() + json.len()).min(u32::MAX as usize) as u32,
-            // Tombstone — small fixed weight. Big enough that they
-            // can't dominate the cache, small enough that they
-            // don't crowd out real blocks.
-            CachedBlock::Skipped => 64,
-        })
-        .max_capacity(max_bytes)
-        .build()
+fn build_upstream(config: &Config) -> Upstream {
+    Upstream::new(
+        config.upstream.clone(),
+        config.min_429_delay,
+        config.upstream_headers.clone(),
+        config.upstream_max_in_flight,
+    )
+}
+
+/// Open the block file for the chain upstream serves. A public instance
+/// serves no blocks, so its store stays empty in memory.
+async fn open_slot_store(config: &Config, upstream: &Upstream, program_ids: &[Address]) -> Result<SlotStore> {
+    if config.public.is_some() {
+        return SlotStore::try_in_memory(config.slot_store_max_bytes).context("opening the in-memory slot store");
+    }
+
+    let genesis_hash = fetch_genesis_hash(upstream)
+        .await
+        .context("fetching the genesis hash for the slot store")?;
+    let fingerprint = block_fingerprint(&genesis_hash, program_ids);
+    SlotStore::try_open(&config.slot_store_path, config.slot_store_max_bytes, fingerprint)
+        .await
+        .with_context(|| format!("opening slot store {}", config.slot_store_path.display()))
 }
 
 fn parse_program_ids(raw: &[String]) -> Result<Vec<Address>> {
@@ -253,7 +271,8 @@ async fn bootstrap(
     // bootstraps from an older snapshot finds its blocks here. Falls back to
     // the current epoch's start when the older epoch account is gone.
     let fill_start = bootstrap_floor(&state, system.current_epoch, lookback_epochs, epoch_start)
-        .await;
+        .await
+        .unwrap_or(epoch_start);
     state.stats.bootstrap_fill_start_slot.store(fill_start, Ordering::Relaxed);
 
     let live = fetch_live_slot(&state.upstream)
@@ -304,24 +323,25 @@ async fn bootstrap(
     Ok(())
 }
 
-/// Choose the lowest slot to fill at bootstrap. Walk back `lookback_epochs`
-/// from the current epoch and use that epoch's start slot, so the cache retains
+/// Choose the lowest slot the cache keeps. Walk back `lookback_epochs` from
+/// the current epoch and use that epoch's start slot, so the cache retains
 /// older blocks a lagging reader may still ask for. Falls back to the current
-/// epoch's start (`current_start`) when the lookback is zero, would reach epoch
-/// 0, or the older epoch account can't be read.
+/// epoch's start (`current_start`) when the lookback is zero or would reach
+/// epoch 0. None when the older epoch account can't be read, so the bootstrap
+/// fills from `current_start` and the prune deletes nothing.
 async fn bootstrap_floor(
     state: &AppState,
     current_epoch: EpochNumber,
     lookback_epochs: u64,
     current_start: u64,
-) -> u64 {
+) -> Option<u64> {
     if lookback_epochs == 0 {
-        return current_start;
+        return Some(current_start);
     }
 
     let target = EpochNumber(current_epoch.0.saturating_sub(lookback_epochs));
     if target.0 == 0 {
-        return current_start;
+        return Some(current_start);
     }
 
     match fetch_epoch_account(&state.upstream, target).await {
@@ -331,18 +351,62 @@ async fn bootstrap_floor(
                 floor = epoch.start_slot.0,
                 "rpc-cache: widened bootstrap floor to retain older epochs"
             );
-            epoch.start_slot.0
+            Some(epoch.start_slot.0)
         }
-        Ok(_) => current_start,
+        Ok(_) => Some(current_start),
         Err(error) => {
             warn!(
                 lookback_epoch = target.0,
                 %error,
-                "rpc-cache: lookback epoch account unavailable; filling from current epoch start"
+                "rpc-cache: lookback epoch account unavailable"
             );
-            current_start
+            None
         }
     }
+}
+
+/// Delete the stored blocks below the lookback floor at once, then every `PRUNE_INTERVAL`
+async fn prune_loop(state: Arc<AppState>, lookback_epochs: u64, cancel: CancellationToken) -> Result<()> {
+    let mut interval = tokio::time::interval(PRUNE_INTERVAL);
+    loop {
+        tokio::select! {
+            // Safe: neither future holds partial state
+            _ = cancel.cancelled() => return Ok(()),
+            _ = interval.tick() => {}
+        }
+        tokio::select! {
+            // Safe: a pass dropped between batches keeps the ones it committed
+            _ = cancel.cancelled() => return Ok(()),
+            _ = prune_below_floor(&state, lookback_epochs) => {}
+        }
+    }
+}
+
+/// One prune pass. An unknown floor deletes nothing.
+async fn prune_below_floor(state: &AppState, lookback_epochs: u64) {
+    let floor = match lookback_floor(state, lookback_epochs).await {
+        Ok(floor) => floor,
+        Err(error) => {
+            warn!(%error, "lookback floor unavailable; prune skipped");
+            return;
+        }
+    };
+    // bootstrap_floor has logged why the floor is unknown
+    let Some(floor) = floor else {
+        return;
+    };
+
+    match state.slot_store.prune_below(floor).await {
+        Ok(pruned) => info!(floor, pruned, "pruned stored blocks below the lookback floor"),
+        Err(error) => warn!(floor, %error, "slot store prune failed"),
+    }
+}
+
+/// Read the current epoch and give its lookback floor
+async fn lookback_floor(state: &AppState, lookback_epochs: u64) -> Result<Option<u64>> {
+    let system = fetch_system_account(&state.upstream).await?;
+    let epoch = fetch_epoch_account(&state.upstream, system.current_epoch).await?;
+    Ok(bootstrap_floor(state, system.current_epoch, lookback_epochs, epoch.start_slot.0).await)
 }
 
 async fn live_tail(state: Arc<AppState>, cancel: CancellationToken) -> Result<()> {
@@ -435,15 +499,35 @@ async fn fill_window(
         return Ok(None);
     };
 
+    // A restart keeps the stored blocks, so only the rest are filled
+    let stored = state
+        .slot_store
+        .stored_in(from, last)
+        .await
+        .map_err(|error| format!("slot store listing: {error}"))?;
     let fetch = slots_to_fetch(from, &produced);
+
+    let mut skipped = Vec::new();
     for slot in skipped_slots(from, last, &fetch) {
-        // Never overwrite a block a fill already cached.
-        if !state.slot_store.contains_key(&slot) {
-            state.slot_store.insert(slot, CachedBlock::Skipped).await;
-            state.stats.slots_skipped.fetch_add(1, Ordering::Relaxed);
+        if !stored.contains(&slot) {
+            skipped.push(slot);
         }
     }
-    fetch_slots(state, &fetch, concurrency, cancel).await;
+    let skipped_count = skipped.len() as u64;
+    state
+        .slot_store
+        .insert_skipped(skipped)
+        .await
+        .map_err(|error| format!("slot store skips: {error}"))?;
+    state.stats.slots_skipped.fetch_add(skipped_count, Ordering::Relaxed);
+
+    let mut missing = Vec::new();
+    for slot in fetch {
+        if !stored.contains(&slot) {
+            missing.push(slot);
+        }
+    }
+    fetch_slots(state, &missing, concurrency, cancel).await;
     Ok(Some(last))
 }
 
@@ -471,7 +555,8 @@ async fn fetch_slots(
         if cancel.is_cancelled() {
             break;
         }
-        if state.slot_store.contains_key(&slot) {
+        // A request may have filled the slot since the window was listed
+        if state.slot_store.is_in_memory(slot) {
             continue;
         }
         while set.len() >= concurrency {
@@ -512,15 +597,17 @@ fn log_fill_progress(slot: u64, done: u64, total: u64, started: Instant) {
 }
 
 async fn fetch_and_store(state: &AppState, slot: u64) {
-    match fetch_slot_block(state, slot, RateLimitWait::Unbounded).await {
-        Ok(cached) => {
-            state.slot_store.insert(slot, cached).await;
-            state.stats.newest_cached_slot.fetch_max(slot, Ordering::Relaxed);
-        }
+    let cached = match fetch_slot_block(state, slot, RateLimitWait::Unbounded).await {
+        Ok(cached) => cached,
         Err(msg) => {
             warn!(slot, error = %msg, "block fetch failed; leaving slot uncached");
+            return;
         }
+    };
+    if let Err(error) = state.slot_store.insert(slot, cached).await {
+        warn!(slot, %error, "slot store write failed; the block stays in memory only");
     }
+    state.stats.newest_cached_slot.fetch_max(slot, Ordering::Relaxed);
 }
 
 /// Fetch one slot's block
@@ -708,6 +795,24 @@ async fn fetch_live_slot(upstream: &Upstream) -> Result<u64> {
         .ok_or_else(|| anyhow!("getSlot result not a number: {result}"))
 }
 
+async fn fetch_genesis_hash(upstream: &Upstream) -> Result<String> {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getGenesisHash",
+        "params": [],
+    });
+    let env = upstream
+        .forward(&body, RateLimitWait::Unbounded)
+        .await
+        .map_err(|e| anyhow!("getGenesisHash upstream: {e}"))?;
+    let result = env.result.ok_or_else(|| anyhow!("getGenesisHash returned no result"))?;
+    result
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("getGenesisHash result not a string: {result}"))
+}
+
 async fn fetch_system_account(upstream: &Upstream) -> Result<System> {
     let body = json!({
         "jsonrpc": "2.0",
@@ -802,11 +907,23 @@ mod tests {
     use super::*;
 
     const SLOT: u64 = 100;
+    const MAX_BYTES: u64 = 1 << 20;
 
     fn state(upstream: &str) -> Arc<AppState> {
+        let slot_store = SlotStore::try_in_memory(MAX_BYTES).expect("slot store");
+        state_with(upstream, slot_store)
+    }
+
+    fn state_with(upstream: &str, slot_store: SlotStore) -> Arc<AppState> {
         let yaml = format!("listen: \"127.0.0.1:0\"\nupstream: \"{upstream}\"\napi_key: \"key\"\n");
         let config: Config = serde_yaml::from_str(&yaml).expect("test config");
-        build_state(&config).expect("test state")
+        let program_ids = parse_program_ids(&config.filter_program_ids).expect("program ids");
+        build_state(&config, build_upstream(&config), program_ids, slot_store)
+    }
+
+    /// Whether the store holds the slot, in memory or the file
+    async fn is_stored(state: &AppState, slot: u64) -> bool {
+        state.slot_store.get(slot).await.expect("slot store read").is_some()
     }
 
     /// An upstream answering every getBlock with this error and every getBlocks with this listing
@@ -828,6 +945,17 @@ mod tests {
             }
         }
         matched
+    }
+
+    // a lookback epoch that can't be read gives no floor, so nothing is pruned
+    #[tokio::test]
+    async fn unknown_floor() {
+        let mock = MockUpstream::start(|_, _| Reply::status("400 Bad Request")).await;
+        let state = state(&mock.url);
+
+        assert_eq!(bootstrap_floor(&state, EpochNumber(10), 1, 500).await, None);
+        assert_eq!(bootstrap_floor(&state, EpochNumber(10), 0, 500).await, Some(500));
+        assert_eq!(bootstrap_floor(&state, EpochNumber(1), 1, 500).await, Some(500));
     }
 
     // retry delays grow, then cap
@@ -933,7 +1061,7 @@ mod tests {
     async fn window_plan() {
         let mock = upstream(SKIPPED_SLOT_CODE, "Slot was skipped", json!([10, 12, 30])).await;
         let state = state(&mock.url);
-        state.slot_store.insert(13, CachedBlock::Skipped).await;
+        state.slot_store.insert(13, CachedBlock::Skipped).await.expect("store skip");
 
         let last = fill_window(&state, 10, 40, LIVE_TAIL_CONCURRENCY, &CancellationToken::new()).await;
 
@@ -948,8 +1076,33 @@ mod tests {
         expected.extend(14..=30);
         assert_eq!(last, Ok(Some(30)));
         assert_eq!(fetched, expected);
-        assert!(state.slot_store.contains_key(&11));
-        assert!(!state.slot_store.contains_key(&31));
+        assert!(is_stored(&state, 11).await);
+        assert!(!is_stored(&state, 31).await);
+    }
+
+    // a window filled before a restart fetches no block after it
+    #[tokio::test]
+    async fn restart_fill() {
+        let mock = upstream(SKIPPED_SLOT_CODE, "Slot was skipped", json!([10, 12, 30])).await;
+        let directory = std::env::temp_dir().join(format!("rpc-cache-restart-fill-{}", std::process::id()));
+        std::fs::remove_dir_all(&directory).ok();
+        std::fs::create_dir_all(&directory).expect("temp directory");
+        let path = directory.join("blocks.db");
+        let cancel = CancellationToken::new();
+        let store = SlotStore::try_open(&path, MAX_BYTES, "test".to_string()).await.expect("open");
+        let first = state_with(&mock.url, store);
+        fill_window(&first, 10, 40, LIVE_TAIL_CONCURRENCY, &cancel).await.expect("first fill");
+        let fetched = count(&mock, "getBlock");
+        drop(first);
+
+        let reopened = SlotStore::try_open(&path, MAX_BYTES, "test".to_string()).await.expect("reopen");
+        let second = state_with(&mock.url, reopened);
+        let last = fill_window(&second, 10, 40, LIVE_TAIL_CONCURRENCY, &cancel).await;
+
+        assert_eq!(last, Ok(Some(30)));
+        assert_eq!(count(&mock, "getBlock"), fetched);
+        assert!(is_stored(&second, 11).await);
+        std::fs::remove_dir_all(&directory).ok();
     }
 
     // the live tail fills the new slots, then reports the last one it holds
@@ -978,8 +1131,8 @@ mod tests {
         tail.await.expect("join tail").expect("tail");
 
         assert!(reported.is_ok());
-        assert!(state.slot_store.contains_key(&(SLOT + 1)));
-        assert!(state.slot_store.contains_key(&(SLOT + 2)));
+        assert!(is_stored(&state, SLOT + 1).await);
+        assert!(is_stored(&state, SLOT + 2).await);
     }
 
     // a confirmed getSlot goes upstream until the tail has a reading, then is answered from it

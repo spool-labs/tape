@@ -6858,6 +6858,7 @@ dependencies = [
  "openssl",
  "regex",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",

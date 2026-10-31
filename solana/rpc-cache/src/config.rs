@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -66,10 +66,15 @@ pub struct Config {
     #[serde(default)]
     pub public: Option<PublicConfig>,
 
-    /// Soft byte ceiling for the slot store (filtered confirmed blocks).
-    /// Moka's weigher evicts oldest entries past this. 4 GiB by default.
+    /// Soft byte ceiling for the blocks the slot store keeps in memory, in
+    /// front of its file. The least recently read go first. 4 GiB by default.
     #[serde(default = "default_slot_store_max_bytes")]
     pub slot_store_max_bytes: u64,
+
+    /// The slot store's SQLite file, relative to the working directory. It
+    /// keeps the filtered blocks across restarts. A public instance opens none.
+    #[serde(default = "default_slot_store_path")]
+    pub slot_store_path: PathBuf,
 
     /// How many whole epochs of history to fill below the current epoch at
     /// bootstrap. 0 = current epoch only (from its start slot); 1 = also the
@@ -157,6 +162,10 @@ fn default_capacity() -> u64 {
 
 fn default_slot_store_max_bytes() -> u64 {
     4 * 1024 * 1024 * 1024
+}
+
+fn default_slot_store_path() -> PathBuf {
+    PathBuf::from("rpc-cache-blocks.db")
 }
 
 fn default_bootstrap_lookback_epochs() -> u64 {

@@ -57,6 +57,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     tracing::info!(
         listen = %config.listen,
         upstream = %config.upstream,
+        slot_store_path = %config.slot_store_path.display(),
         slot_store_max_bytes = config.slot_store_max_bytes,
         max_entries = config.max_entries,
         "rpc-cache starting"

@@ -80,7 +80,6 @@ fn unexpected_peer_response(request: &PeerReq) -> PeerRes {
         PeerReq::Challenge(_) => PeerRes::Challenge(Err(unexpected_error())),
         PeerReq::Invalidate(_) => PeerRes::Invalidate(Err(unexpected_error())),
         PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(unexpected_error())),
-        PeerReq::GetStats(_) => PeerRes::GetStats(Err(unexpected_error())),
         PeerReq::PutSlice(_) => PeerRes::PutSlice(Err(unexpected_error())),
         PeerReq::GetSlice(_) => PeerRes::GetSlice(Err(unexpected_error())),
     }
@@ -286,7 +285,6 @@ fn setup() -> Fixture {
             PeerReq::Challenge(_) => unexpected_peer_response(&req),
             PeerReq::Invalidate(_) => unexpected_peer_response(&req),
             PeerReq::GetHealth(_) => unexpected_peer_response(&req),
-            PeerReq::GetStats(_) => unexpected_peer_response(&req),
             PeerReq::PutSlice(_) => unexpected_peer_response(&req),
             PeerReq::GetSlice(_) => unexpected_peer_response(&req),
         }
@@ -356,7 +354,6 @@ fn request_kind(request: &PeerReq) -> &'static str {
         PeerReq::Challenge(_) => "challenge",
         PeerReq::Invalidate(_) => "invalidate",
         PeerReq::GetHealth(_) => "get_health",
-        PeerReq::GetStats(_) => "get_stats",
         PeerReq::PutSlice(_) => "put_slice",
         PeerReq::GetSlice(_) => "get_slice",
     }

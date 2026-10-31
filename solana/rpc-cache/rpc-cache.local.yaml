@@ -7,7 +7,8 @@
 # slot store, so a lagging reader can always catch up.
 #
 # Values come from the environment (set by the Makefile recipe). To run the
-# binary by hand, export CACHE_BIND / CACHE_UPSTREAM / CACHE_API_KEY first.
+# binary by hand, export CACHE_BIND / CACHE_UPSTREAM / CACHE_API_KEY /
+# CACHE_STORE first.
 listen: "${CACHE_BIND}"
 upstream: "${CACHE_UPSTREAM}"
 api_key: "${CACHE_API_KEY}"
@@ -17,9 +18,12 @@ min_429_delay: "10s"
 log_submits: false
 max_entries: 10000
 
-# Keep a wide block window (4 GiB) so a reader that bootstraps from an older
-# snapshot can still tail forward through the cache without hitting a gap.
+# Blocks kept in memory in front of the block file (4 GiB)
 slot_store_max_bytes: 4294967296
+
+# The block file outlives a restart. A new validator ledger has a new genesis
+# hash, so the cache empties the file when it starts against one.
+slot_store_path: "${CACHE_STORE}"
 
 # Also fill the previous epoch at bootstrap (not just the current one), so a
 # reader bootstrapping from the previous epoch's snapshot lands inside the

@@ -378,25 +378,6 @@ impl Api for GatewayApi {
         })
     }
 
-    async fn get_stats(&self, _node: Address, _req: &GetStatsReq) -> Result<GetStatsRes, ApiError> {
-        let response = self
-            .client
-            .get(self.url(NODE_STATS_PATH.to_string()))
-            .header("accept", JSON_CONTENT)
-            .send()
-            .await
-            .map_err(map_reqwest)?;
-        let response = check_status(response).await?;
-        let stats = response
-            .json()
-            .await
-            .map_err(|e| ApiError::Serialization(format!("json: {e}")))?;
-        Ok(GetStatsRes { stats })
-    }
-
-    async fn get_observe_board(&self, _node: Address) -> Result<Vec<u8>, ApiError> {
-        self.get_bytes(OBSERVE_BOARD_PATH.to_string()).await
-    }
 }
 
 fn normalize_base_url(mut base_url: String) -> Result<String, ApiError> {

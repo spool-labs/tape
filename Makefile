@@ -63,6 +63,7 @@ LOCALNET_UPLOAD_EPOCHS ?= 4
 CACHE_BIND ?= 127.0.0.1:8890
 CACHE_UPSTREAM ?= $(LOCALNET_RPC_URL)
 CACHE_API_KEY ?= local
+CACHE_STORE ?= $(CURDIR)/target/rpc-cache-local.db
 CACHE_CONFIG ?= $(CURDIR)/solana/rpc-cache/rpc-cache.local.yaml
 
 # Explorer reads through the rpc-cache, not the validator directly, so it can
@@ -145,7 +146,7 @@ run-localnet-upload-file:
 # validator will later prune. CACHE_* override the bind/upstream/api-key.
 run-cache:
 	cargo build --release -p rpc-cache --bin rpc-cache
-	CACHE_BIND="$(CACHE_BIND)" CACHE_UPSTREAM="$(CACHE_UPSTREAM)" CACHE_API_KEY="$(CACHE_API_KEY)" \
+	CACHE_BIND="$(CACHE_BIND)" CACHE_UPSTREAM="$(CACHE_UPSTREAM)" CACHE_API_KEY="$(CACHE_API_KEY)" CACHE_STORE="$(CACHE_STORE)" \
 		cargo run --release -p rpc-cache --bin rpc-cache -- --config $(CACHE_CONFIG)
 
 # Serve the explorer through the rpc-cache (see EXPLORER_RPC above). Separate

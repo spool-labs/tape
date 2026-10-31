@@ -7,11 +7,11 @@
 //! Caller-facing protocol is standard JSON-RPC over HTTP. Batch requests
 //! are passed through uncached (v1 simplification).
 //!
-//! `getBlock` takes a separate fast path: a slot-keyed in-memory store
-//! pre-warmed at boot with confirmed blocks from the current tape epoch
-//! start to the live edge, filtered down to tape-relevant data only.
-//! See [`runtime`] for the bootstrap/live-tail tasks and [`filter`] for
-//! the per-block reduction.
+//! `getBlock` takes a separate fast path: a slot-keyed block file with an
+//! LRU layer in memory (see [`store`]), pre-warmed at boot with confirmed
+//! blocks from the lookback floor to the live edge, filtered down to
+//! tape-relevant data only. See [`runtime`] for the bootstrap/live-tail
+//! tasks and [`filter`] for the per-block reduction.
 
 pub mod cache;
 pub mod config;
@@ -24,5 +24,6 @@ pub mod mock_upstream;
 pub mod public;
 pub mod runtime;
 pub mod server;
+pub mod store;
 pub mod submit_log;
 pub mod upstream;
