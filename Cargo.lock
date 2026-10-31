@@ -11880,6 +11880,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "wincode 0.1.2",
 ]
 
 [[package]]
