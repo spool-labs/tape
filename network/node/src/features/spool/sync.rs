@@ -321,7 +321,9 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
 ) -> usize {
     let mut cursor: Option<Vec<u8>> = None;
     let mut synced = 0usize;
+    let mut asked = 0usize;
     let group = GroupIndex::containing(spool);
+    let position = leaf_position(spool).as_usize();
 
     loop {
         if token.is_cancelled() {
@@ -354,7 +356,8 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
                 }
             }
 
-            let peers = track_data_peers(ctx.as_ref(), track.group);
+            let peers = track_data_peers(ctx.as_ref(), track.group, position + asked);
+            asked += 1;
 
             match fetch_track_data_from_group(ctx.as_ref(), *track_addr, &peers, token).await {
                 Ok(data) => {
@@ -382,22 +385,31 @@ pub async fn sync_track_data<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>
 fn track_data_peers<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
     group: VirtualGroup,
+    turn: usize,
 ) -> Vec<Address> {
     let state = ctx.state();
+    let node = ctx.node_address();
     let mut peers = Vec::new();
 
     // Last epoch's holders come first. After the group count drops they are
     // the only nodes that hold a retired group's inline payloads.
-    let holders = state
-        .group_peers_prev(group)
-        .into_iter()
-        .chain(state.group_peers(group));
-
-    for (_, node_id) in holders {
-        if node_id == ctx.node_address() || peers.contains(&node_id) {
-            continue;
+    for (_, node_id) in state.group_peers_prev(group) {
+        if node_id != node && !peers.contains(&node_id) {
+            peers.push(node_id);
         }
-        peers.push(node_id);
+    }
+    let leading = peers.len();
+    for (_, node_id) in state.group_peers(group) {
+        if node_id != node && !peers.contains(&node_id) {
+            peers.push(node_id);
+        }
+    }
+
+    // Each track starts one holder further on, so new holders of a group spread
+    // their asks over it. Only the leading set turns, so it stays first.
+    let leading = if leading > 0 { leading } else { peers.len() };
+    if leading > 0 {
+        peers[..leading].rotate_left(turn % leading);
     }
 
     peers
@@ -409,12 +421,13 @@ async fn fetch_track_data_from_group<Db: Store, Cluster: Api + 'static, Blockcha
     peers: &[Address],
     token: &CancellationToken,
 ) -> Result<BlobData, ()> {
+    // One ask per holder. The next holder in the list is the retry.
     for &node_id in peers {
         let req = GetTrackDataReq { track };
 
         match call_peer(
             &ctx.peer_manager,
-            RetryConfig::three(),
+            RetryConfig::none(),
             node_id,
             Some(token),
             || ctx.api.get_track_data(node_id, &req),
@@ -442,7 +455,7 @@ mod tests {
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
     use tape_crypto::merkle::root_from_leaf_hashes;
-    use tape_protocol::api::ops::{PeerReq, PeerRes, SyncSlicesRes};
+    use tape_protocol::api::ops::{GetTrackDataRes, PeerReq, PeerRes, SyncSlicesRes};
     use tape_protocol::api::types::SyncSliceEntry;
     use tape_slicer::{ErasureCoder, SliceMetadata, Slicer};
     use tape_core::system::{SpoolState, SpoolStatus};
@@ -475,6 +488,21 @@ mod tests {
         NodeHarness::builder()
             .nodes(live_groups as usize * WIDTH + 5)
             .current_group_count(live_groups)
+            .no_prev_snapshot_tape()
+            .api(api)
+            .build()
+            .await
+            .expect("build harness")
+            .ctx_for(SPOOL.as_usize())
+    }
+
+    /// Last epoch ran one group on nodes 0 to 19, and this epoch runs the same
+    async fn context_with_prev(api: MemoryApi) -> TestContext {
+        NodeHarness::builder()
+            .nodes(WIDTH + 5)
+            .prev_committee_nodes(0..WIDTH)
+            .prev_group_count(1)
+            .current_group_count(1)
             .no_prev_snapshot_tape()
             .api(api)
             .build()
@@ -540,6 +568,37 @@ mod tests {
             group: VirtualGroup::containing(SPOOL),
             value_hash: blob.get_hash(),
         }
+    }
+
+    fn inline_track(track_number: TrackNumber) -> CompressedTrack {
+        CompressedTrack {
+            tape: Address::from([0; 32]),
+            tape_number: TapeNumber(1),
+            key: Hash::new_unique(),
+            track_number,
+            kind: TrackKind::Inline as u64,
+            state: TrackState::Certified as u64,
+            flags: TrackFlags::NONE,
+            size: StorageUnits::from_bytes(4),
+            group: VirtualGroup::containing(SPOOL),
+            value_hash: Hash::default(),
+        }
+    }
+
+    /// Last epoch's holders of the spool's group, leaving out this node, in position order
+    fn prev_holders(ctx: &TestContext) -> Vec<Address> {
+        ctx.state()
+            .group_peers_prev(VirtualGroup::containing(SPOOL))
+            .into_iter()
+            .map(|(_, node)| node)
+            .filter(|node| *node != ctx.node_address())
+            .collect()
+    }
+
+    async fn sync_inline(ctx: &TestContext) -> usize {
+        let state = ctx.state();
+        let fold = state.fold_at(state.epoch()).expect("fold for the epoch");
+        sync_track_data(ctx.clone(), SPOOL, fold, 16, &CancellationToken::new()).await
     }
 
     fn local_slice(fill: u8, size: usize) -> (CompressedTrack, BlobEncoding, Vec<u8>) {
@@ -885,5 +944,72 @@ mod tests {
         );
         assert!(!ctx.store.has_slice(SPOOL, a).unwrap());
         assert!(!ctx.store.has_slice(carried_spool(other), a).unwrap());
+    }
+
+    // each missing track asks the next holder first, starting at this node's own position
+    #[tokio::test]
+    async fn turns_holders() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = asked.clone();
+
+        let ctx = context_with_prev(MemoryApi::new(move |node, req| match req {
+            PeerReq::GetTrackData(_) => {
+                seen.lock().expect("peer list").push(node);
+                PeerRes::GetTrackData(Ok(GetTrackDataRes { data: BlobData::Inline(vec![1; 4]) }))
+            }
+            _ => panic!("unexpected request"),
+        }))
+        .await;
+
+        let tracks = [addr(1), addr(2), addr(3)];
+        for (number, track) in tracks.iter().enumerate() {
+            ctx.store.put_track(*track, inline_track(TrackNumber(number as u64))).unwrap();
+        }
+
+        let synced = sync_inline(&ctx).await;
+
+        let holders = prev_holders(&ctx);
+        let start = leaf_position(SPOOL).as_usize();
+        let expected: Vec<Address> = (0..tracks.len())
+            .map(|k| holders[(start + k) % holders.len()])
+            .collect();
+
+        assert_eq!(synced, tracks.len());
+        assert_eq!(*asked.lock().expect("peer list"), expected);
+    }
+
+    // a holder that fails is asked once, and the next holder answers
+    #[tokio::test]
+    async fn one_ask_per_holder() {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = asked.clone();
+
+        let ctx = context_with_prev(MemoryApi::new(move |node, req| match req {
+            PeerReq::GetTrackData(_) => {
+                let mut seen = seen.lock().expect("peer list");
+                seen.push(node);
+                if seen.len() == 1 {
+                    return PeerRes::GetTrackData(Err(ApiError::Timeout));
+                }
+                PeerRes::GetTrackData(Ok(GetTrackDataRes { data: BlobData::Inline(vec![1; 4]) }))
+            }
+            _ => panic!("unexpected request"),
+        }))
+        .await;
+
+        let track = addr(1);
+        ctx.store.put_track(track, inline_track(TrackNumber(0))).unwrap();
+
+        let synced = sync_inline(&ctx).await;
+
+        let holders = prev_holders(&ctx);
+        let start = leaf_position(SPOOL).as_usize();
+
+        assert_eq!(synced, 1);
+        assert!(ctx.store.has_track_data(track).unwrap());
+        assert_eq!(
+            *asked.lock().expect("peer list"),
+            [holders[start % holders.len()], holders[(start + 1) % holders.len()]],
+        );
     }
 }
