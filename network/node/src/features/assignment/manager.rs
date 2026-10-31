@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
@@ -16,6 +16,7 @@ use tape_protocol::{Api, ProtocolState};
 use tape_retry::RetryConfig;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tape_store::ops::{ObjectInfoOps, TapeOps, TapeTrackScan, TrackDataOps};
 use tape_store::types::ObjectInfo;
@@ -38,6 +39,37 @@ use crate::features::vote::all_vote_groups_signed;
 
 const ASSIGNMENT_HEARTBEAT: Duration = Duration::from_secs(5);
 const BLACKLIST_BATCH: usize = 256;
+const MISMATCH_REBUILD_DELAY: Duration = Duration::from_secs(60);
+
+/// Holds the last candidate this node built and serves it for that candidate's epochs
+#[derive(Default)]
+struct CandidateCache {
+    candidate: Option<AssignmentCandidate>,
+    rebuild_after: Option<Instant>,
+}
+
+impl CandidateCache {
+    fn get(&self, voting_epoch: EpochNumber, target_epoch: EpochNumber) -> Option<&AssignmentCandidate> {
+        self.candidate
+            .as_ref()
+            .filter(|cached| cached.voting_epoch == voting_epoch && cached.target_epoch == target_epoch)
+    }
+
+    fn may_build(&self, now: Instant) -> bool {
+        self.rebuild_after.is_none_or(|after| now >= after)
+    }
+
+    fn keep(&mut self, candidate: AssignmentCandidate) {
+        self.candidate = Some(candidate);
+        self.rebuild_after = None;
+    }
+
+    /// Drop a candidate whose hash differs from the chain's, and hold off the next build
+    fn reject(&mut self, now: Instant) {
+        self.candidate = None;
+        self.rebuild_after = Some(now + MISMATCH_REBUILD_DELAY);
+    }
+}
 
 pub struct AssignmentManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     context: Arc<NodeContext<Db, Cluster, Blockchain>>,
@@ -46,6 +78,7 @@ pub struct AssignmentManager<Db: Store, Cluster: Api, Blockchain: Rpc> {
     vote_round: Option<JoinHandle<()>>,
     finalize: Option<JoinHandle<()>>,
     proposed: Arc<Mutex<HashSet<(EpochNumber, Hash)>>>,
+    cache: CandidateCache,
 }
 
 impl<Db, Cluster, Blockchain> AssignmentManager<Db, Cluster, Blockchain>
@@ -66,11 +99,14 @@ where
             vote_round: None,
             finalize: None,
             proposed: Arc::new(Mutex::new(HashSet::new())),
+            cache: CandidateCache::default(),
         }
     }
 
     pub async fn run(mut self) -> Result<(), NodeError> {
         let mut heartbeat = tokio::time::interval(ASSIGNMENT_HEARTBEAT);
+
+        heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -201,6 +237,7 @@ where
                 canonical_hash = %hash,
                 "assignment: local candidate does not match canonical assignment"
             );
+            self.cache.reject(Instant::now());
             return Ok(());
         }
 
@@ -216,14 +253,29 @@ where
     }
 
     async fn build_candidate(
-        &self,
+        &mut self,
         state: Arc<ProtocolState>,
     ) -> Result<Option<AssignmentCandidate>, NodeError> {
+        let Some(target_epoch) = state.next_epoch.as_ref().map(|next| next.id) else {
+            return Ok(None);
+        };
+        if let Some(cached) = self.cache.get(state.epoch(), target_epoch) {
+            return Ok(Some(cached.clone()));
+        }
+        // A store behind the tip builds the wrong candidate, and its votes wait anyway
+        if !self.context.ingest.is_at_tip() || !self.cache.may_build(Instant::now()) {
+            return Ok(None);
+        }
+
         if !self.sync_blacklists(state.as_ref()).await? {
             return Ok(None);
         }
 
-        build_assignment(&self.context, state, &self.cancel).await
+        let candidate = build_assignment(&self.context, state, &self.cancel).await?;
+        if let Some(candidate) = &candidate {
+            self.cache.keep(candidate.clone());
+        }
+        Ok(candidate)
     }
 
     async fn sync_blacklists(&self, state: &ProtocolState) -> Result<bool, NodeError> {
@@ -458,6 +510,89 @@ mod tests {
     use super::*;
     use crate::core::ingest::IngestState;
     use crate::harness::NodeHarness;
+
+    fn candidate(voting_epoch: EpochNumber, target_epoch: EpochNumber) -> AssignmentCandidate {
+        AssignmentCandidate {
+            voting_epoch,
+            target_epoch,
+            nonce: Hash::default(),
+            hash: Hash::new_unique(),
+            groups: Vec::new(),
+        }
+    }
+
+    // a kept candidate serves its own epochs and no others
+    #[test]
+    fn cache_epochs() {
+        let mut cache = CandidateCache::default();
+        let kept = candidate(EpochNumber(5), EpochNumber(6));
+        cache.keep(kept.clone());
+
+        assert_eq!(cache.get(EpochNumber(5), EpochNumber(6)).map(|cached| cached.hash), Some(kept.hash));
+        assert!(cache.get(EpochNumber(6), EpochNumber(7)).is_none());
+        assert!(cache.get(EpochNumber(5), EpochNumber(7)).is_none());
+    }
+
+    // a rejected candidate is dropped, and the next build waits out the delay
+    #[test]
+    fn mismatch_backoff() {
+        let mut cache = CandidateCache::default();
+        let now = Instant::now();
+        cache.keep(candidate(EpochNumber(5), EpochNumber(6)));
+        assert!(cache.may_build(now));
+
+        cache.reject(now);
+
+        assert!(cache.get(EpochNumber(5), EpochNumber(6)).is_none());
+        assert!(!cache.may_build(now + MISMATCH_REBUILD_DELAY / 2));
+        assert!(cache.may_build(now + MISMATCH_REBUILD_DELAY));
+        cache.keep(candidate(EpochNumber(5), EpochNumber(6)));
+        assert!(cache.may_build(now));
+    }
+
+    // the heartbeat in Closing builds once and serves the same candidate after
+    #[tokio::test]
+    async fn builds_once() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .phase(EpochPhase::Closing)
+            .next_committee_size(20)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(0);
+        ctx.ingest.publish(IngestState::AtTip);
+        let (_block_tx, block_rx) = mpsc::channel(1);
+        let mut manager = AssignmentManager::new(ctx.clone(), block_rx, CancellationToken::new());
+
+        let first = manager.build_candidate(ctx.state()).await.expect("build").expect("a candidate");
+        assert!(manager.cache.get(first.voting_epoch, first.target_epoch).is_some());
+        let second = manager.build_candidate(ctx.state()).await.expect("build").expect("a candidate");
+
+        assert_eq!(first.hash, second.hash);
+    }
+
+    // a node behind the tip builds nothing, and builds once it reaches the tip
+    #[tokio::test]
+    async fn tip_gate() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .phase(EpochPhase::Closing)
+            .next_committee_size(20)
+            .build()
+            .await
+            .expect("build harness");
+        let ctx = harness.ctx_for(0);
+        ctx.ingest.publish(IngestState::Stalled { since: Instant::now() });
+        let (_block_tx, block_rx) = mpsc::channel(1);
+        let mut manager = AssignmentManager::new(ctx.clone(), block_rx, CancellationToken::new());
+
+        assert!(manager.build_candidate(ctx.state()).await.expect("build").is_none());
+        assert!(manager.cache.candidate.is_none());
+
+        ctx.ingest.publish(IngestState::AtTip);
+        assert!(manager.build_candidate(ctx.state()).await.expect("build").is_some());
+    }
 
     // a proposal for a hash no node holds, landing in the commit block, leaves
     // a node free to propose its own
