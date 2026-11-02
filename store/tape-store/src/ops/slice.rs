@@ -18,6 +18,9 @@ pub trait SliceOps {
     /// Get slice data
     fn get_slice(&self, spool_id: SpoolIndex, track_address: Address) -> Result<Option<Vec<u8>>>;
 
+    /// Get several slices in one read, answered in the order asked
+    fn get_slices(&self, slices: &[(SpoolIndex, Address)]) -> Result<Vec<Option<Vec<u8>>>>;
+
     /// Store slice data with the sidecar its bytes imply
     ///
     /// Takes anything that converts into a `SliceWrite`, so a caller with raw
@@ -76,17 +79,6 @@ pub trait SliceOps {
         limit: usize,
     ) -> Result<Vec<(Address, Vec<u8>)>>;
 
-    /// One page of a spool's slices, in no promised order, resumed by a mark.
-    ///
-    /// The spool is the slice key's shard prefix, so this is one shard's walk on
-    /// either backend rather than a scan of the family.
-    fn sweep_slices_by_spool(
-        &self,
-        spool_id: SpoolIndex,
-        from: Option<&[u8]>,
-        limit: usize,
-    ) -> Result<(Vec<(Address, Vec<u8>)>, Option<Vec<u8>>)>;
-
     /// One page of a spool's slice keys, in no promised order, resumed by a mark.
     fn sweep_slice_keys_by_spool(
         &self,
@@ -136,6 +128,20 @@ impl<S: Store> SliceOps for TapeStore<S> {
         let key = serialize_slice_key(&SliceKey::new(spool_id, track_address))?;
         let stored = self.inner().inner().get(SliceCol::CF_NAME, &key)?;
         Ok(stored.map(|value| slice::payload(&value).to_vec()))
+    }
+
+    fn get_slices(&self, slices: &[(SpoolIndex, Address)]) -> Result<Vec<Option<Vec<u8>>>> {
+        let keys = slices
+            .iter()
+            .map(|(spool_id, track_address)| serialize_slice_key(&SliceKey::new(*spool_id, *track_address)))
+            .collect::<Result<Vec<_>>>()?;
+        let keys: Vec<&[u8]> = keys.iter().map(Vec::as_slice).collect();
+
+        let stored = self.inner().inner().get_many(SliceCol::CF_NAME, &keys)?;
+        Ok(stored
+            .into_iter()
+            .map(|value| value.map(|value| slice::payload(&value).to_vec()))
+            .collect())
     }
 
     fn put_slice(
@@ -264,27 +270,6 @@ impl<S: Store> SliceOps for TapeStore<S> {
             }
         }
         Ok(results)
-    }
-
-    fn sweep_slices_by_spool(
-        &self,
-        spool_id: SpoolIndex,
-        from: Option<&[u8]>,
-        limit: usize,
-    ) -> Result<(Vec<(Address, Vec<u8>)>, Option<Vec<u8>>)> {
-        let prefix = SliceKey::spool_prefix(spool_id)?;
-        let (rows, next) =
-            self.inner()
-                .inner()
-                .sweep_prefix(SliceCol::CF_NAME, &prefix, from, limit)?;
-
-        let mut slices = Vec::with_capacity(rows.len());
-        for (key_bytes, value_bytes) in rows {
-            let key: SliceKey = wincode::deserialize(&key_bytes)
-                .map_err(|e| TapeStoreError::Serialization(format!("slice key: {}", e)))?;
-            slices.push((key.track_address, slice::payload(&value_bytes).to_vec()));
-        }
-        Ok((slices, next))
     }
 
     fn sweep_slice_keys_by_spool(
@@ -517,6 +502,22 @@ mod tests {
 
         let retrieved = store.get_slice(spool_id, track).unwrap().unwrap();
         assert_eq!(retrieved, data);
+    }
+
+    // a batch read answers in the order asked, with nothing for a slice not held
+    #[test]
+    fn slices_in_order() {
+        let store = test_store();
+        let first = (SpoolIndex(4), Address::new_unique());
+        let second = (SpoolIndex(9), Address::new_unique());
+        let absent = (SpoolIndex(4), Address::new_unique());
+
+        store.put_slice(first.0, first.1, vec![1u8; 300]).unwrap();
+        store.put_slice(second.0, second.1, vec![2u8; 300_000]).unwrap();
+
+        let read = store.get_slices(&[second, absent, first]).unwrap();
+        assert_eq!(read, vec![Some(vec![2u8; 300_000]), None, Some(vec![1u8; 300])]);
+        assert!(store.get_slices(&[]).unwrap().is_empty());
     }
 
     // Validates that stored slices larger than the default wincode vector cap still roundtrip.

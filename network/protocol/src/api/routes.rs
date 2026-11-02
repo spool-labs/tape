@@ -21,6 +21,7 @@ pub const CHALLENGE_PATH: &str = "/v1/challenges";
 pub const CHALLENGE_BOARD_PATH: &str = "/v1/challenges/board";
 
 pub const SYNC_SLICES_PATH: &str = "/v1/sync/slices";
+pub const SYNC_TRACK_DATA_PATH: &str = "/v1/sync/track-data";
 
 pub const TAPE_TRACK_PATH: &str = "/v1/tapes/{tape_id}/tracks/{track_number}";
 pub const TAPE_TRACK_FIND_PATH: &str = "/v1/tapes/{tape_id}/tracks/find";

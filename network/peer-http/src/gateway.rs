@@ -338,6 +338,14 @@ impl Api for GatewayApi {
         Err(unsupported("sync_slices"))
     }
 
+    async fn sync_track_data(
+        &self,
+        _node: Address,
+        _req: &SyncTrackDataReq,
+    ) -> Result<SyncTrackDataRes, ApiError> {
+        Err(unsupported("sync_track_data"))
+    }
+
     async fn repair(&self, _node: Address, _req: &RepairReq) -> Result<RepairRes, ApiError> {
         Err(unsupported("repair"))
     }

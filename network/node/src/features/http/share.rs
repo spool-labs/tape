@@ -10,6 +10,7 @@ use tape_protocol::Api;
 use tape_protocol::api::{decode_share_token, SHARE_TOKEN_HEADER};
 use tape_store::ops::TapeOps;
 
+use crate::context::NodeContext;
 use crate::features::http::auth::ActivePeer;
 use crate::features::http::error::RouteError;
 use crate::features::http::peer_identity::PeerIdentity;
@@ -27,7 +28,7 @@ pub fn check_share_token<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Ok(());
     }
 
-    if holds_group_spool(state, track, active_peer) {
+    if holds_group_spool(&state.context, track, active_peer) {
         return Ok(());
     }
 
@@ -70,8 +71,8 @@ pub fn check_share_token<Db: Store, Cluster: Api, Blockchain: Rpc>(
 }
 
 /// Whether the caller is an active peer holding a spool in the track's group, so sync and repair pass
-fn holds_group_spool<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    state: &AppState<Db, Cluster, Blockchain>,
+pub(crate) fn holds_group_spool<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    ctx: &NodeContext<Db, Cluster, Blockchain>,
     track: &CompressedTrack,
     active_peer: Option<ActivePeer>,
 ) -> bool {
@@ -79,9 +80,7 @@ fn holds_group_spool<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return false;
     };
 
-    state
-        .context
-        .state()
+    ctx.state()
         .spool_for_node_in_group(track.group, peer.node)
         .is_some()
 }

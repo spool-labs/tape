@@ -7,10 +7,6 @@ pub struct RecoveryConfig {
     #[serde(default = "default_max_workers")]
     pub max_workers: usize,
 
-    /// Page size for spool sync requests.
-    #[serde(default = "default_sync_batch")]
-    pub sync_batch: usize,
-
     /// Batch size for local scan passes.
     #[serde(default = "default_scan_batch")]
     pub scan_batch: usize,
@@ -28,7 +24,6 @@ impl Default for RecoveryConfig {
     fn default() -> Self {
         Self {
             max_workers: default_max_workers(),
-            sync_batch: default_sync_batch(),
             scan_batch: default_scan_batch(),
             repair_batch: default_repair_batch(),
             recover_batch: default_recover_batch(),
@@ -38,10 +33,6 @@ impl Default for RecoveryConfig {
 
 fn default_max_workers() -> usize {
     50
-}
-
-fn default_sync_batch() -> usize {
-    100
 }
 
 fn default_scan_batch() -> usize {

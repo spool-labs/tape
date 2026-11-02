@@ -22,7 +22,7 @@ use tape_store::ops::{
 };
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn, Instrument};
+use tracing::{debug, info, warn, Instrument};
 
 use crate::config::recovery::RecoveryConfig;
 use crate::context::NodeContext;
@@ -32,7 +32,8 @@ use crate::features::spool::types::RepairResult;
 const REPAIR_FETCH_CONCURRENCY: usize = 4;
 
 // Purpose: Bandwidth-optimal Clay repair for missing slices.
-//          Drains the pending_repairs queue populated by Scan.
+//          Drains the pending_repairs queue that Sync, Scan and the
+//          certify hook fill.
 //          Tracks that cannot be Clay-repaired are escalated to the
 //          pending_recoveries queue for the Recover task.
 //
@@ -156,7 +157,7 @@ pub async fn run<Db: Store, Cluster: Api + 'static, Blockchain: Rpc>(
             // If slice already exists, just remove from pending_repairs and skip.
             if has_slice {
                 let _ = ctx.store.remove_pending_repair(spool, track);
-                info!(spool = %spool, track = %track, "slice already present, skipping");
+                debug!(spool = %spool, track = %track, "slice already present, skipping");
                 continue;
             }
 

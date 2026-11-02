@@ -15,7 +15,7 @@ use tape_crypto::ed25519::Keypair;
 
 use crate::builder::HttpApiBuilder;
 use crate::metrics::ApiMetrics;
-use crate::watch::{Watch, current_slice_watch, paced_body, silence, watched_body};
+use crate::watch::{Watch, current_slice_watch, paced_body, silence, touched_body, watched_body};
 
 /// Per-request timeout for vote calls.
 const VOTE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -25,8 +25,9 @@ const CHALLENGE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Connections a peer's slice bodies spread over; one h2 client holds one socket.
 const SLICE_CONNECTIONS: usize = 8;
-/// A push goes quiet before this unless it trickles for a day, so it only stops a stuck one
-const PUT_SLICE_CEILING: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A push or a sync goes quiet before this unless it trickles for a day, so it only stops a stuck one
+const TRANSFER_CEILING: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Receive windows wide enough for a whole slice body in one round trip.
 const H2_STREAM_WINDOW: u32 = 16 * 1024 * 1024;
@@ -113,7 +114,7 @@ pub struct HttpApi {
     pub metrics: Option<Arc<ApiMetrics>>,
     pub connect_timeout: Duration,
     pub request_timeout: Duration,
-    pub put_slice_idle: Duration,
+    pub transfer_idle: Duration,
     pub accepted_bytes: Arc<AtomicU64>,
     pub get_slice_timeout: Duration,
     pub local_identity: Option<Arc<Keypair>>,
@@ -268,7 +269,7 @@ impl Api for HttpApi {
         let exchange = async {
             let resp = client
                 .put(&url)
-                .timeout(PUT_SLICE_CEILING)
+                .timeout(TRANSFER_CEILING)
                 .header("content-type", BINARY_CONTENT)
                 .header("content-length", bytes_sent)
                 .body(body)
@@ -284,7 +285,7 @@ impl Api for HttpApi {
         };
         let bytes = tokio::select! {
             bytes = exchange => bytes?,
-            () = silence(&watch, self.put_slice_idle) => return Err(ApiError::Timeout),
+            () = silence(&watch, self.transfer_idle) => return Err(ApiError::Timeout),
         };
         self.record_rx(node, "put_slice", bytes.len() as u64);
 
@@ -581,26 +582,35 @@ impl Api for HttpApi {
         let wire_req = SyncSlicesRequest {
             spool_index: req.spool_index,
             live_groups: req.live_groups,
-            cursor: req.cursor.clone(),
-            limit: req.limit,
+            tracks: req.tracks.clone(),
+            max_bytes: req.max_bytes,
         };
         let body =
             wincode::serialize(&wire_req)
             .map_err(|e| ApiError::Serialization(e.to_string()))?;
 
         let bytes_sent = body.len() as u64;
+        let watch = Watch::new();
         let start = Instant::now();
-        let resp = client
-            .post(&url)
-            .header("content-type", BINARY_CONTENT)
-            .body(body)
-            .send()
-            .await
-            .map_err(map_reqwest)?;
-
-        self.record(node, "sync_slices", &resp, start, bytes_sent);
-        let resp = check_status(resp).await?;
-        let bytes = resp.bytes().await.map_err(map_reqwest)?;
+        // A slow owner moves the response along slowly, so only one that goes quiet gives up
+        let exchange = async {
+            let resp = client
+                .post(&url)
+                .timeout(TRANSFER_CEILING)
+                .header("content-type", BINARY_CONTENT)
+                .body(body)
+                .send()
+                .await
+                .map_err(map_reqwest)?;
+            watch.touch();
+            self.record(node, "sync_slices", &resp, start, bytes_sent);
+            let resp = check_status(resp).await?;
+            touched_body(resp, &watch).await.map_err(map_reqwest)
+        };
+        let bytes = tokio::select! {
+            bytes = exchange => bytes?,
+            () = silence(&watch, self.transfer_idle) => return Err(ApiError::Timeout),
+        };
         self.record_rx(node, "sync_slices", bytes.len() as u64);
         let wire_res: SyncSlicesResponse =
             wincode::deserialize(&bytes)
@@ -608,7 +618,55 @@ impl Api for HttpApi {
 
         Ok(SyncSlicesRes {
             entries: wire_res.entries,
-            next_cursor: wire_res.next_cursor,
+            missing: wire_res.missing,
+        })
+    }
+
+    async fn sync_track_data(
+        &self,
+        node: Address,
+        req: &SyncTrackDataReq,
+    ) -> Result<SyncTrackDataRes, ApiError> {
+        let (client, base) = self.resolve(node)?;
+        let url = format!("{base}{}", SYNC_TRACK_DATA_PATH);
+        let wire_req = SyncTrackDataRequest {
+            tracks: req.tracks.clone(),
+            max_bytes: req.max_bytes,
+        };
+        let body =
+            wincode::serialize(&wire_req)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        let bytes_sent = body.len() as u64;
+        let watch = Watch::new();
+        let start = Instant::now();
+        // A slow holder moves the response along slowly, so only one that goes quiet gives up
+        let exchange = async {
+            let resp = client
+                .post(&url)
+                .timeout(TRANSFER_CEILING)
+                .header("content-type", BINARY_CONTENT)
+                .body(body)
+                .send()
+                .await
+                .map_err(map_reqwest)?;
+            watch.touch();
+            self.record(node, "sync_track_data", &resp, start, bytes_sent);
+            let resp = check_status(resp).await?;
+            touched_body(resp, &watch).await.map_err(map_reqwest)
+        };
+        let bytes = tokio::select! {
+            bytes = exchange => bytes?,
+            () = silence(&watch, self.transfer_idle) => return Err(ApiError::Timeout),
+        };
+        self.record_rx(node, "sync_track_data", bytes.len() as u64);
+        let wire_res: SyncTrackDataResponse =
+            wincode::deserialize(&bytes)
+            .map_err(|e| ApiError::Serialization(e.to_string()))?;
+
+        Ok(SyncTrackDataRes {
+            entries: wire_res.entries,
+            missing: wire_res.missing,
         })
     }
 
@@ -1247,6 +1305,91 @@ mod tests {
         let whole = StorageUnits::from_bytes(fetched.data.len() as u64);
         let last = heard.lock().expect("heard lock").last().copied().expect("a piece was heard");
         assert_eq!(last, (whole, whole));
+    }
+
+    /// Answer a sync with `body` split into one piece per pause, each sent after its pause
+    async fn serve_sync(tls_keypair: EdKeypair, body: Vec<u8>, pauses: Vec<Duration>) -> SocketAddr {
+        use futures::StreamExt;
+
+        let piece = body.len().div_ceil(pauses.len());
+        let router = Router::new().route(
+            SYNC_SLICES_PATH,
+            post(move |_: Bytes| {
+                let pieces: Vec<(Bytes, Duration)> = body
+                    .chunks(piece)
+                    .map(Bytes::copy_from_slice)
+                    .zip(pauses.clone())
+                    .collect();
+                async move {
+                    let stream = futures::stream::iter(pieces).then(|(piece, pause)| async move {
+                        tokio::time::sleep(pause).await;
+                        Ok::<Bytes, std::io::Error>(piece)
+                    });
+                    axum::body::Body::from_stream(stream)
+                }
+            }),
+        );
+        serve_tls(tls_keypair, router).await.0
+    }
+
+    fn sync_response() -> SyncSlicesResponse {
+        SyncSlicesResponse {
+            entries: vec![SyncSliceEntry {
+                track_address: [9; 32],
+                slice_data: vec![5u8; 64 * 1024],
+            }],
+            missing: vec![address(3)],
+        }
+    }
+
+    fn sync_request() -> SyncSlicesReq {
+        SyncSlicesReq {
+            spool_index: SpoolIndex::from(0u64),
+            live_groups: 1,
+            tracks: vec![address(9), address(3)],
+            max_bytes: SYNC_MAX_BYTES,
+        }
+    }
+
+    fn sync_api(addr: SocketAddr, tls_pubkey: NetworkTlsPubkey, idle: Duration) -> HttpApi {
+        let peer_manager = Arc::new(PeerManager::new());
+        peer_manager.add_peer(make_peer(address(7), addr.port(), tls_pubkey));
+        HttpApiBuilder::new()
+            .request_timeout(Duration::from_millis(250))
+            .transfer_idle(idle)
+            .build(peer_manager)
+            .expect("api")
+    }
+
+    // a sync that keeps moving outlasts the client's request timeout
+    #[tokio::test]
+    async fn slow_sync_arrives() {
+        install_default_provider();
+        let tls = EdKeypair::new(&mut thread_rng());
+        let tls_pubkey = pubkey_of(&tls);
+        let body = wincode::serialize(&sync_response()).unwrap();
+        let addr = serve_sync(tls, body, vec![Duration::from_millis(100); 6]).await;
+        let api = sync_api(addr, tls_pubkey, Duration::from_secs(2));
+
+        let synced = api.sync_slices(address(7), &sync_request()).await.expect("sync");
+
+        assert_eq!(synced.entries, sync_response().entries);
+        assert_eq!(synced.missing, vec![address(3)]);
+    }
+
+    // a sync that goes quiet for the idle limit gives up
+    #[tokio::test]
+    async fn quiet_sync_times_out() {
+        install_default_provider();
+        let tls = EdKeypair::new(&mut thread_rng());
+        let tls_pubkey = pubkey_of(&tls);
+        let body = wincode::serialize(&sync_response()).unwrap();
+        let addr = serve_sync(tls, body, vec![Duration::ZERO, Duration::from_secs(30)]).await;
+        let api = sync_api(addr, tls_pubkey, Duration::from_millis(300));
+
+        let synced = api.sync_slices(address(7), &sync_request()).await;
+
+        assert!(matches!(synced, Err(ApiError::Timeout)));
     }
 
     // Plain-TcpListener warning suppression — tokio's import can otherwise go

@@ -247,6 +247,15 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
                     )),
             )
             .route(
+                api_routes::SYNC_TRACK_DATA_PATH,
+                post(handlers::track::sync::sync_track_data::<Db, Cluster, Blockchain>)
+                    .layer(peer_body_limit)
+                    .layer(from_fn_with_state(
+                        state.clone(),
+                        admission::metered_route_admission::<Db, Cluster, Blockchain>,
+                    )),
+            )
+            .route(
                 api_routes::VOTE_PATH,
                 post(handlers::vote::vote::<Db, Cluster, Blockchain>)
                     .layer(peer_body_limit)

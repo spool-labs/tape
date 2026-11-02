@@ -27,6 +27,7 @@ pub struct Metrics {
     pub epoch_transitions_total: IntCounter,
     pub repair_escalations_total: IntCounter,
     pub spool_bytes_total: IntCounterVec,
+    pub sync_tracks_total: IntCounterVec,
 
     pub decode_duration: HistogramVec,
     pub decode_output_bytes_total: IntCounter,
@@ -108,6 +109,13 @@ impl Metrics {
                 registry
             )
             .expect("register tape_node_spool_bytes_total"),
+            sync_tracks_total: register_int_counter_vec_with_registry!(
+                "tape_node_sync_tracks_total",
+                "Spool sync track outcomes",
+                &["outcome"],
+                registry
+            )
+            .expect("register tape_node_sync_tracks_total"),
 
             decode_duration: register_histogram_vec_with_registry!(
                 "tape_gw_decode_duration_seconds",

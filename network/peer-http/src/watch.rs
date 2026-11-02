@@ -95,6 +95,17 @@ pub(crate) fn paced_body(body: Bytes, watch: Arc<Watch>, slice_watch: Option<Sli
     reqwest::Body::wrap_stream(pieces)
 }
 
+/// Read a response's body piece by piece, touching `watch` as each piece arrives
+pub(crate) async fn touched_body(mut resp: reqwest::Response, watch: &Watch) -> Result<Bytes, reqwest::Error> {
+    let size = resp.content_length().unwrap_or_default();
+    let mut body = BytesMut::with_capacity(size as usize);
+    while let Some(piece) = resp.chunk().await? {
+        watch.touch();
+        body.extend_from_slice(&piece);
+    }
+    Ok(body.freeze())
+}
+
 /// Read a response's body piece by piece, telling `watch` how much has arrived after each
 pub(crate) async fn watched_body(mut resp: reqwest::Response, watch: &SliceWatch) -> Result<Bytes, reqwest::Error> {
     let size = resp.content_length().unwrap_or_default();

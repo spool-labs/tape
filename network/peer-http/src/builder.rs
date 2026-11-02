@@ -13,7 +13,7 @@ use crate::metrics::ApiMetrics;
 pub struct HttpApiBuilder {
     connect_timeout: Duration,
     request_timeout: Duration,
-    put_slice_idle: Duration,
+    transfer_idle: Duration,
     get_slice_timeout: Duration,
     metrics: Option<Arc<ApiMetrics>>,
     local_identity: Option<Arc<Keypair>>,
@@ -31,7 +31,7 @@ impl HttpApiBuilder {
         Self {
             connect_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(30),
-            put_slice_idle: Duration::from_secs(30),
+            transfer_idle: Duration::from_secs(30),
             get_slice_timeout: Duration::from_secs(120),
             metrics: None,
             local_identity: None,
@@ -49,9 +49,8 @@ impl HttpApiBuilder {
         self
     }
 
-    /// A push that moves no byte for this long gives up
-    pub fn put_slice_idle(mut self, idle: Duration) -> Self {
-        self.put_slice_idle = idle;
+    pub fn transfer_idle(mut self, idle: Duration) -> Self {
+        self.transfer_idle = idle;
         self
     }
 
@@ -70,7 +69,6 @@ impl HttpApiBuilder {
         self
     }
 
-    /// Callback invoked for every peer call that moved payload bytes.
     pub fn transfer_sink(mut self, sink: TransferSink) -> Self {
         self.transfer_sink = Some(sink);
         self
@@ -84,7 +82,7 @@ impl HttpApiBuilder {
             metrics: self.metrics,
             connect_timeout: self.connect_timeout,
             request_timeout: self.request_timeout,
-            put_slice_idle: self.put_slice_idle,
+            transfer_idle: self.transfer_idle,
             accepted_bytes: Arc::new(AtomicU64::new(0)),
             get_slice_timeout: self.get_slice_timeout,
             local_identity: self.local_identity,

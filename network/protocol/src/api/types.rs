@@ -19,6 +19,18 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 
 use crate::api::ops::FindTrackVersion;
 
+/// Most tracks one sync request asks for
+pub const SYNC_MAX_TRACKS: usize = 1_000;
+
+/// Most slice bytes one sync response carries, past its first slice
+pub const SYNC_MAX_BYTES: StorageUnits = StorageUnits(8 * 1024 * 1024);
+
+/// Bytes the wire body puts ahead of the slice bytes
+pub const SLICE_BODY_HEADROOM: usize = size_of::<u64>();
+
+/// Bytes the wire body puts after the slice bytes
+pub const SLICE_BODY_TAILROOM: usize = Hash::LEN + size_of::<u64>() + SLICE_TREE_HEIGHT * Hash::LEN;
+
 pub const SLICE_BYTES_LIMIT: usize = 10 * 1024 * 1024;
 pub const SLICE_BODY_LIMIT: usize = size_of::<u64>()
     + SLICE_BYTES_LIMIT
@@ -48,18 +60,14 @@ pub struct VoteRequest {
 /// Request for inconsistency attestation.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct InconsistencyRequest {
-    /// Signed proof from committee members that a node should trust.
     pub proof: InconsistencyProof,
 }
 
 /// Committee proof data for inconsistency reporting.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct InconsistencyProof {
-    /// Bitmap of spool positions inside the track's group that produced the proof signature.
     pub spool_bitmap: SpoolBitmap,
-    /// Aggregated BLS signature over an invalidation message.
     pub signature: BlsSignature,
-    /// Merkle root computed from re-encoded recovery material.
     pub observed_root: Hash,
 }
 
@@ -98,7 +106,6 @@ pub struct VolumeStats {
 pub struct NodeStats {
     #[serde(default)]
     pub version: String,
-    /// The store engine the node runs on, empty from a peer too old to say.
     #[serde(default)]
     pub store_engine: String,
     #[serde(default)]
@@ -159,7 +166,6 @@ pub struct NodeStats {
     pub bootstrap_target_slot: u64,
     #[serde(default)]
     pub fee_payer_lamports: Option<u64>,
-    /// Zero from a peer too old to keep the tally, the same as never restarted.
     #[serde(default)]
     pub restarts: u64,
 }
@@ -217,11 +223,6 @@ impl SlicePayload {
     }
 }
 
-/// Bytes the wire body puts ahead of the slice bytes
-pub const SLICE_BODY_HEADROOM: usize = size_of::<u64>();
-
-/// Bytes the wire body puts after the slice bytes
-pub const SLICE_BODY_TAILROOM: usize = Hash::LEN + size_of::<u64>() + SLICE_TREE_HEIGHT * Hash::LEN;
 
 impl SlicePayload {
     /// Write the wire form around slice bytes held after a headroom gap, in place
@@ -309,20 +310,24 @@ fn read_hash(body: &Bytes, at: &mut usize) -> Result<Hash, String> {
     Ok(Hash::from(raw))
 }
 
+
 /// Request for slice synchronization.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncSlicesRequest {
     pub spool_index: SpoolIndex,
     pub live_groups: u64,
-    pub cursor: Option<Vec<u8>>,
-    pub limit: u32,
+    pub tracks: Vec<Address>,
+    pub max_bytes: StorageUnits,
 }
 
 /// Response from slice synchronization.
+///
+/// Asked-for tracks in neither list were left out to stay within the byte
+/// budget, and the caller asks for them again.
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
 pub struct SyncSlicesResponse {
     pub entries: Vec<SyncSliceEntry>,
-    pub next_cursor: Option<Vec<u8>>,
+    pub missing: Vec<Address>,
 }
 
 /// A single slice entry in a sync response.
@@ -331,6 +336,24 @@ pub struct SyncSliceEntry {
     pub track_address: [u8; 32],
     #[wincode(with = "SliceBytes")]
     pub slice_data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SyncTrackDataRequest {
+    pub tracks: Vec<Address>,
+    pub max_bytes: StorageUnits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SyncTrackDataResponse {
+    pub entries: Vec<SyncTrackDataEntry>,
+    pub missing: Vec<Address>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
+pub struct SyncTrackDataEntry {
+    pub track: Address,
+    pub payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -728,8 +751,8 @@ mod tests {
         let req = SyncSlicesRequest {
             spool_index: SpoolIndex(42),
             live_groups: 4,
-            cursor: Some(vec![0xAA; 32]),
-            limit: 100,
+            tracks: vec![Address::new([0xAA; 32]), Address::new([0xBB; 32])],
+            max_bytes: SYNC_MAX_BYTES,
         };
         let bytes = wincode::serialize(&req).unwrap();
         let decoded: SyncSlicesRequest = wincode::deserialize(&bytes).unwrap();
@@ -749,7 +772,7 @@ mod tests {
                     slice_data: vec![4, 5, 6],
                 },
             ],
-            next_cursor: Some(vec![0x22; 32]),
+            missing: vec![Address::new([0x33; 32])],
         };
         let bytes = wincode::serialize(&resp).unwrap();
         let decoded: SyncSlicesResponse = wincode::deserialize(&bytes).unwrap();
@@ -757,10 +780,30 @@ mod tests {
     }
 
     #[test]
+    fn sync_track_data_roundtrip() {
+        let req = SyncTrackDataRequest {
+            tracks: vec![Address::new([0x44; 32])],
+            max_bytes: SYNC_MAX_BYTES,
+        };
+        let bytes = wincode::serialize(&req).unwrap();
+        assert_eq!(req, wincode::deserialize::<SyncTrackDataRequest>(&bytes).unwrap());
+
+        let resp = SyncTrackDataResponse {
+            entries: vec![SyncTrackDataEntry {
+                track: Address::new([0x44; 32]),
+                payload: vec![7; 1024],
+            }],
+            missing: vec![Address::new([0x55; 32])],
+        };
+        let bytes = wincode::serialize(&resp).unwrap();
+        assert_eq!(resp, wincode::deserialize::<SyncTrackDataResponse>(&bytes).unwrap());
+    }
+
+    #[test]
     fn sync_slices_empty() {
         let resp = SyncSlicesResponse {
             entries: vec![],
-            next_cursor: None,
+            missing: vec![],
         };
         let bytes = wincode::serialize(&resp).unwrap();
         let decoded: SyncSlicesResponse = wincode::deserialize(&bytes).unwrap();

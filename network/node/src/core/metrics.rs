@@ -115,12 +115,57 @@ impl NodeMetrics {
         tape_metrics::metrics().repair_escalations_total.inc();
     }
 
+    pub fn add_sync_stored(&self, n: u64) {
+        self.add_sync_tracks("stored", n);
+    }
+
+    pub fn add_sync_taken_back(&self, n: u64) {
+        self.add_sync_tracks("taken_back", n);
+    }
+
+    pub fn add_sync_window(&self, n: u64) {
+        self.add_sync_tracks("window", n);
+    }
+
+    pub fn add_sync_missing(&self, n: u64) {
+        self.add_sync_tracks("missing", n);
+    }
+
+    pub fn add_sync_invalid(&self, n: u64) {
+        self.add_sync_tracks("invalid", n);
+    }
+
+    pub fn add_sync_failed(&self, n: u64) {
+        self.add_sync_tracks("failed", n);
+    }
+
+    pub fn add_sync_in_flight(&self, n: u64) {
+        self.add_sync_tracks("in_flight", n);
+    }
+
+    pub fn add_sync_inline_stored(&self, n: u64) {
+        self.add_sync_tracks("inline_stored", n);
+    }
+
+    pub fn add_sync_inline_missing(&self, n: u64) {
+        self.add_sync_tracks("inline_missing", n);
+    }
+
     #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
     fn add_spool(&self, op: &str, stage: &str, n: u64) {
         #[cfg(feature = "metrics")]
         tape_metrics::metrics()
             .spool_bytes_total
             .with_label_values(&[op, stage])
+            .inc_by(n);
+    }
+
+    #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
+    fn add_sync_tracks(&self, outcome: &str, n: u64) {
+        #[cfg(feature = "metrics")]
+        tape_metrics::metrics()
+            .sync_tracks_total
+            .with_label_values(&[outcome])
             .inc_by(n);
     }
 }

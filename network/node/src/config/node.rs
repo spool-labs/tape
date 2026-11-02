@@ -536,7 +536,6 @@ gateway:
     trusted_proxies: ["203.0.113.7", "173.245.48.0/20"]
 recovery:
   max_workers: 42
-  sync_batch: 99
   scan_batch: 77
   repair_batch: 8
   recover_batch: 6
@@ -614,7 +613,6 @@ metrics:
             ]
         );
         assert_eq!(config.recovery.max_workers, 42);
-        assert_eq!(config.recovery.sync_batch, 99);
         assert_eq!(config.recovery.scan_batch, 77);
         assert_eq!(config.recovery.repair_batch, 8);
         assert_eq!(config.recovery.recover_batch, 6);
@@ -790,7 +788,7 @@ recovery:
 
         assert_eq!(config.recovery.max_workers, 42);
         assert_eq!(config.recovery.repair_batch, 12);
-        assert_eq!(config.recovery.sync_batch, 100);
+        assert_eq!(config.recovery.scan_batch, 100);
     }
 
     // challenge rounds are off unless the yaml turns them on

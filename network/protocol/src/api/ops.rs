@@ -10,7 +10,7 @@ use tape_crypto::prelude::{Address, Hash};
 
 use crate::api::types::{
     ChallengeProof, InconsistencyProof, StripeSubChunkRequest, SyncSliceEntry,
-    VoteCandidate, ObjectListItem,
+    SyncTrackDataEntry, VoteCandidate, ObjectListItem,
 };
 use wincode_derive::{SchemaRead, SchemaWrite};
 
@@ -150,14 +150,26 @@ pub struct GetTrackProofRes {
 pub struct SyncSlicesReq {
     pub spool_index: SpoolIndex,
     pub live_groups: u64,
-    pub cursor: Option<Vec<u8>>,
-    pub limit: u32,
+    pub tracks: Vec<Address>,
+    pub max_bytes: StorageUnits,
 }
 
 #[derive(Clone, Debug)]
 pub struct SyncSlicesRes {
     pub entries: Vec<SyncSliceEntry>,
-    pub next_cursor: Option<Vec<u8>>,
+    pub missing: Vec<Address>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SyncTrackDataReq {
+    pub tracks: Vec<Address>,
+    pub max_bytes: StorageUnits,
+}
+
+#[derive(Clone, Debug)]
+pub struct SyncTrackDataRes {
+    pub entries: Vec<SyncTrackDataEntry>,
+    pub missing: Vec<Address>,
 }
 
 #[derive(Clone, Debug)]
@@ -238,6 +250,7 @@ pub enum PeerReq {
     GetTrackData(GetTrackDataReq),
     GetTrackProof(GetTrackProofReq),
     SyncSlices(SyncSlicesReq),
+    SyncTrackData(SyncTrackDataReq),
     Repair(RepairReq),
     Certify(CertifyReq),
     Invalidate(InvalidateReq),
@@ -257,6 +270,7 @@ pub enum PeerRes {
     GetTrackData(Result<GetTrackDataRes, ApiError>),
     GetTrackProof(Result<GetTrackProofRes, ApiError>),
     SyncSlices(Result<SyncSlicesRes, ApiError>),
+    SyncTrackData(Result<SyncTrackDataRes, ApiError>),
     Repair(Result<RepairRes, ApiError>),
     Certify(Result<CertifyRes, ApiError>),
     Invalidate(Result<InvalidateRes, ApiError>),
