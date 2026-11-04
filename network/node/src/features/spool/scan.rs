@@ -25,7 +25,8 @@ use crate::features::spool::types::ScanResult;
 //
 // Scan is local-only (no remote calls) and fast. No cursor needed,
 // if interrupted, the next scan restarts from the beginning.
-// Adds are idempotent (presence-based queue), so re-scanning is safe.
+// An add keeps a row the track already has, its ready slot included, so
+// re-scanning is safe and never cuts a certify grace short.
 //
 // Algorithm:
 // 1. Sweep the store for the live spool's coded tracks with no local slice,
@@ -338,6 +339,23 @@ mod tests {
         assert_eq!(result, ScanResult::Done { gaps: 1 });
 
         assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
+    }
+
+    // a gap already in the recovery queue gets a repair row too, and keeps its recovery row
+    #[tokio::test]
+    async fn gap_in_recovery() {
+        let ctx = test_context().await;
+        let a = addr(1);
+        let group = VirtualGroup::containing(SPOOL);
+        ctx.store.put_track(a, track(group)).unwrap();
+        ctx.store.put_object_info(a, certified(a)).unwrap();
+        ctx.store.add_pending_recovery(SPOOL, a).unwrap();
+
+        let result = scan(&ctx).await;
+
+        assert_eq!(result, ScanResult::Done { gaps: 1 });
+        assert!(ctx.store.has_pending_repair(SPOOL, a).unwrap());
+        assert!(ctx.store.has_pending_recovery(SPOOL, a).unwrap());
     }
 
     // with two live groups, a track of the other one is another node's to hold

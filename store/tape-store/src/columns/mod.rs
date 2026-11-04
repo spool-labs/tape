@@ -18,8 +18,10 @@
 //!
 //! ## Spool Columns (NOT epoch-namespaced)
 //! - `spool_status`: Spool status (SpoolIndexKey -> SpoolStatus)
-//! - `spool_pending_repair`: Pending repair (SliceKey -> ready slot)
-//! - `spool_pending_recovery`: Pending recovery (SliceKey -> ())
+//! - `spool_pending_repair`: Pending repair, in ready order (QueueKey -> ())
+//! - `spool_repair_index`: Pending repair by track (SliceKey -> ready slot)
+//! - `spool_pending_recovery`: Pending recovery, in ready order (QueueKey -> ())
+//! - `spool_recovery_index`: Pending recovery by track (SliceKey -> ready slot)
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Slice data, sidecar and payload under one key (SliceKey -> stored slice)
@@ -87,7 +89,10 @@ pub use s3_multipart::{S3MultipartPartCol, S3MultipartPartDataCol, S3MultipartUp
 pub use s3_pending::{S3PendingWriteCol, S3PendingWriteDataCol};
 pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
-pub use spool::{SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolStatusCol};
+pub use spool::{
+    SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolRecoveryIndexCol, SpoolRepairIndexCol,
+    SpoolStatusCol,
+};
 pub use sync_cursor::{SyncCursor, SyncCursorCol};
 pub use tape::TapeCol;
 pub use track::TrackCol;
@@ -109,7 +114,9 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "gc",
     "spool_status",
     "spool_pending_repair",
+    "spool_repair_index",
     "spool_pending_recovery",
+    "spool_recovery_index",
     "slice",
     "event_log",
     "vote_sig",

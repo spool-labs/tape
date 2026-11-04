@@ -177,10 +177,10 @@ pub fn encode_chunk(
     let commitment = root_from_leaf_hashes::<SLICE_TREE_HEIGHT>(&leaves[..slices.len()]);
 
     let stripe_size = slicer.stripe_size();
-    let stripe_count = num_stripes(symbol.len(), stripe_size);
+    let stripe_count = num_stripes(packed.len(), stripe_size);
 
     let blob = BlobEncoding {
-        size: StorageUnits::from_bytes(symbol.len() as u64),
+        size: StorageUnits::from_bytes(packed.len() as u64),
         commitment,
         stripe_size: StorageUnits::from_bytes(stripe_size as u64),
         stripe_count: StripeCount(stripe_count as u64),
@@ -209,6 +209,7 @@ mod tests {
     use tape_crypto::tx::Txid;
 
     use tape_core::encoding::{ClayParams, RSParams, RepParams, TAPENET_PROFILE};
+    use tape_slicer::{SliceMetadata, STRIPE_CAP};
 
     use super::*;
     use crate::{assemble_snapshot_log, decode_chunk_payload};
@@ -351,6 +352,27 @@ mod tests {
             assert_eq!(c.track.tape, tape);
             assert_eq!(c.track.key, snapshot_chunk_key(epoch, c.group, c.chunk));
             assert_eq!(c.track.value_hash, c.blob.get_hash());
+        }
+    }
+
+    // a chunk's blob records the length its slices encode, also when the
+    // header pushes the packed payload into a second stripe
+    #[test]
+    fn blob_matches_slices() {
+        let lengths = [1, 3_000, STRIPE_CAP - SnapshotChunkPayload::HEADER_SIZE / 2];
+        for len in lengths {
+            let symbol: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            let built =
+                encode_chunk(EpochNumber(9), VirtualGroup(0), ChunkNumber(0), &symbol, TAPENET_PROFILE).unwrap();
+            let metadata = SliceMetadata::parse(&built.slices[0]).unwrap();
+
+            assert_eq!(built.blob.size.as_usize(), metadata.blob_len(), "symbol {len}");
+            assert_eq!(built.blob.stripe_size.as_usize(), metadata.stripe_size(), "symbol {len}");
+            assert_eq!(
+                built.blob.stripe_count.0 as usize,
+                num_stripes(metadata.blob_len(), metadata.stripe_size()),
+                "symbol {len}"
+            );
         }
     }
 

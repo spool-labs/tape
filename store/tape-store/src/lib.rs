@@ -26,7 +26,9 @@
 //! ## Spool Columns (NOT epoch-namespaced)
 //! - `spool_status`: Spool status
 //! - `spool_pending_repair`: Pending repair queue
+//! - `spool_repair_index`: Pending repair queue by track
 //! - `spool_pending_recovery`: Pending recovery queue
+//! - `spool_recovery_index`: Pending recovery queue by track
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Erasure-coded slice data
@@ -40,6 +42,7 @@ pub mod types;
 
 #[cfg(feature = "rocks")]
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 
 use tape_store_api::{Store, TypedStore};
 #[cfg(feature = "rocks")]
@@ -49,6 +52,9 @@ use tape_store_rocks::{RocksStore, SplitStore};
 /// Wrapper around TypedStore providing tape-specific storage operations
 pub struct TapeStore<S: Store> {
     inner: TypedStore<S>,
+    /// Held across a queue row's read and its write, so a row and its index
+    /// entry never part
+    queue_lock: Mutex<()>,
 }
 
 impl<S: Store> TapeStore<S> {
@@ -56,7 +62,16 @@ impl<S: Store> TapeStore<S> {
     pub fn new(store: S) -> Self {
         Self {
             inner: TypedStore::new(store),
+            queue_lock: Mutex::new(()),
         }
+    }
+
+    /// Hold the queues for one read and write
+    ///
+    /// The lock guards no data, so a holder that panicked leaves nothing to
+    /// distrust.
+    pub fn lock_queues(&self) -> MutexGuard<'_, ()> {
+        self.queue_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Get the inner TypedStore

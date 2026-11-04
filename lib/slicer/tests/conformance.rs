@@ -2,8 +2,8 @@
 //!
 //! Runs identical invariants at several stripe caps, so single-stripe and
 //! many-stripe blobs go through one code path under a fixed test surface:
-//! roundtrip from any k slices, bit-exact single-slice repair, params-versus-
-//! reference repair plan equality, padding bounds, and parser acceptance.
+//! roundtrip from any k slices, bit-exact single-slice repair, repair plan
+//! geometry against the encoded slices, padding bounds, and parser acceptance.
 
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -141,10 +141,10 @@ fn repair_is_bit_exact() {
     }
 }
 
-// the plan the node computes from stored params equals the plan computed from
-// a reference slice; this is the live repair path's correctness dependency
+// the plan the node computes from stored params lays out the slices the writer
+// encoded; this is the live repair path's correctness dependency
 #[test]
-fn repair_plan_params_match_reference() {
+fn plan_geometry() {
     for cap in CAPS {
         let slicer = slicer_at(cap);
         let n = slicer.n();
@@ -155,25 +155,23 @@ fn repair_plan_params_match_reference() {
             let stripe_size = slicer.stripe_size();
 
             let available: Vec<SliceIndex> = (1..n).map(SliceIndex::new).collect();
-            let ref_plan = slicer
-                .repair_plan(SliceIndex::new(0), &available, &slices[1])
-                .unwrap();
-            let param_plan = slicer
-                .repair_plan_from_params(SliceIndex::new(0), &available, len, stripe_size)
+            let plan = slicer
+                .repair_plan(SliceIndex::new(0), &available, len, stripe_size)
                 .unwrap();
 
-            assert_eq!(ref_plan.num_stripes, param_plan.num_stripes, "cap {cap} len {len}");
-            assert_eq!(ref_plan.chunk_size, param_plan.chunk_size, "cap {cap} len {len}");
-            assert_eq!(ref_plan.sub_chunk_size, param_plan.sub_chunk_size, "cap {cap} len {len}");
-            for (r, p) in ref_plan.stripes.iter().zip(param_plan.stripes.iter()) {
-                assert_eq!(r.lost_shard, p.lost_shard);
-                assert_eq!(r.helpers.len(), p.helpers.len());
-                for (rh, ph) in r.helpers.iter().zip(p.helpers.iter()) {
-                    assert_eq!(rh.slice, ph.slice);
-                    assert_eq!(rh.shard, ph.shard);
-                    assert_eq!(rh.sub_chunks, ph.sub_chunks);
-                }
-            }
+            let chunk_size = plan.chunk_size as usize;
+            assert_eq!(plan.stripes.len(), num_stripes(len, stripe_size), "cap {cap} len {len}");
+            assert_eq!(
+                plan.stripes.len() * chunk_size + SliceMetadata::SIZE,
+                slices[1].len(),
+                "cap {cap} len {len}"
+            );
+            assert_eq!(
+                plan.sub_chunk_size as usize * slicer.coder.alpha(),
+                chunk_size,
+                "cap {cap} len {len}"
+            );
+            assert!(plan.stripes.iter().all(|s| s.helpers.is_some()), "cap {cap} len {len}");
         }
     }
 }

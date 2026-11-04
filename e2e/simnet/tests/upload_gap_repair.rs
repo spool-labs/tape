@@ -1,14 +1,17 @@
-//! Verifies that an owner repairs a slice missed while it was offline.
+//! Verifies that an owner restores a slice missed while it was offline, by
+//! repair, and by recovery when a holder in its y-section serves a corrupt slice.
 
 use std::time::{Duration, Instant};
 
 use tape_chain_harness::TEST_MAX_EPOCH_DURATION;
+use tape_core::encoding::ErasureCode;
 use tape_core::spooler::{GroupIndex, VirtualGroup};
 use tape_core::types::{BasisPoints, EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
 use tape_e2e_simnet::{
     NodeRuntimeMode, SimnetBuilder, SimnetHarness, TAPENET_GROUP_SIZE, run_simnet_test,
 };
+use tape_slicer::SliceMetadata;
 use tape_store::ops::SliceOps;
 
 // One group, one spool each, so stopping a node is guaranteed to strand a
@@ -23,12 +26,46 @@ const STEADY_EPOCH: u64 = 2;
 /// replays the certify it missed.
 const HEAL_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// Wait long enough for the uploader to push its slice to every holder
+const STRAGGLER_WAIT: Duration = Duration::from_secs(75);
+
+/// A slice the stopped victim missed, and what a peer holds for it
+struct Gap {
+    live_spool: SpoolIndex,
+    spool: SpoolIndex,
+    group: VirtualGroup,
+    track: Address,
+    witness_len: usize,
+}
+
 #[test]
 fn upload_gap_repair() {
     run_simnet_test(upload_gap_repair_inner);
 }
 
+// every repair of the gap asks the corrupt holder, so its leaf check fails and
+// recovery restores the slice from the other holders
+#[test]
+fn corrupt_holder() {
+    run_simnet_test(corrupt_holder_inner);
+}
+
 async fn upload_gap_repair_inner() {
+    let mut harness = start().await;
+    let gap = strand(&mut harness).await;
+    heal(&mut harness, &gap).await;
+}
+
+async fn corrupt_holder_inner() {
+    let mut harness = start().await;
+    let gap = strand(&mut harness).await;
+    corrupt_section_holder(&harness, &gap);
+    heal(&mut harness, &gap).await;
+}
+
+/// Start the network and settle ownership, so the spool the victim loses a
+/// slice for is the spool it comes back to
+async fn start() -> SimnetHarness {
     let mut harness = SimnetBuilder::new()
         .node_count(NODE_COUNT)
         .runtime_mode(NodeRuntimeMode::Full)
@@ -72,8 +109,6 @@ async fn upload_gap_repair_inner() {
         .await
         .expect("all nodes active");
 
-    // Settle ownership before taking a node away, so the spool the victim
-    // loses a slice for is the spool it comes back to.
     advance_to_epoch(&harness, EpochNumber(STEADY_EPOCH), epoch_timeout).await;
     harness
         .scenario()
@@ -81,7 +116,12 @@ async fn upload_gap_repair_inner() {
         .await
         .expect("all nodes active at the steady epoch");
 
-    let live_spool = node_spool(&harness, VICTIM);
+    harness
+}
+
+/// Stop the victim, write a track it misses, and wait out the uploader's pushes
+async fn strand(harness: &mut SimnetHarness) -> Gap {
+    let live_spool = node_spool(harness, VICTIM);
 
     harness
         .stop_nodes(&[VICTIM])
@@ -104,10 +144,10 @@ async fn upload_gap_repair_inner() {
     // Read the gap from the store, not through a node that answers for a peer.
     let spool = stored_spool(live_spool, written.group);
     assert!(
-        node_slice(&harness, VICTIM, spool, track).is_none(),
+        node_slice(harness, VICTIM, spool, track).is_none(),
         "the stopped owner should hold nothing for a track written while it was down"
     );
-    let holders = slice_holders(&harness, track, written.group);
+    let holders = slice_holders(harness, track, written.group);
     let witness_node = harness.node(0).expect("node 0");
     let certify = witness_node.context().params().thresholds.certify;
     assert!(
@@ -120,28 +160,69 @@ async fn upload_gap_repair_inner() {
         .find(|(index, _)| *index != VICTIM)
         .expect("a holder other than the victim");
 
+    tokio::time::sleep(STRAGGLER_WAIT).await;
+
+    Gap { live_spool, spool, group: written.group, track, witness_len: witness.len() }
+}
+
+/// Restart the victim and wait for its slice
+async fn heal(harness: &mut SimnetHarness, gap: &Gap) {
     harness
         .start_nodes(&[VICTIM])
         .await
         .expect("restart the victim");
 
     assert_eq!(
-        node_spool(&harness, VICTIM),
-        live_spool,
+        node_spool(harness, VICTIM),
+        gap.live_spool,
         "the victim came back on a different spool, so the repair is not the thing measured"
     );
 
-    let healed = wait_slice(&harness, VICTIM, spool, track, HEAL_TIMEOUT).await;
+    let healed = wait_slice(harness, VICTIM, gap.spool, gap.track, HEAL_TIMEOUT).await;
 
     assert_eq!(
         healed.len(),
-        witness.len(),
-        "the repaired slice is a different length to a peer's"
+        gap.witness_len,
+        "the restored slice is a different length to a peer's"
     );
     assert!(
         !healed.is_empty(),
-        "the repaired slice is empty"
+        "the restored slice is empty"
     );
+}
+
+/// Flip every payload byte of the slice that a holder in the victim's
+/// y-section keeps, leaving its metadata readable
+///
+/// A same-section helper is in every repair plan for the victim's position,
+/// so no repair of the gap can pass its leaf check.
+fn corrupt_section_holder(harness: &SimnetHarness, gap: &Gap) {
+    let profile = harness.node(0).expect("node 0").context().params().profile;
+    let clay = match profile {
+        ErasureCode::Clay(clay) => clay,
+        other => panic!("the corrupt holder case needs a Clay network, got {other:?}"),
+    };
+    let q = usize::from(clay.d()) - usize::from(clay.k()) + 1;
+    let section = position(gap.live_spool) / q;
+
+    let (index, slice) = slice_holders(harness, gap.track, gap.group)
+        .into_iter()
+        .find(|(index, _)| *index != VICTIM && position(node_spool(harness, *index)) / q == section)
+        .expect("a holder in the victim's y-section");
+
+    let mut corrupt = slice;
+    let payload = corrupt.len() - SliceMetadata::SIZE;
+    for byte in &mut corrupt[..payload] {
+        *byte ^= 0xff;
+    }
+    let spool = stored_spool(node_spool(harness, index), gap.group);
+    harness
+        .node(index)
+        .expect("holder")
+        .context()
+        .store
+        .put_slice(spool, gap.track, corrupt)
+        .expect("corrupt the holder's slice");
 }
 
 async fn advance_to_epoch(harness: &SimnetHarness, target: EpochNumber, epoch_timeout: Duration) {
@@ -171,7 +252,7 @@ async fn wait_slice(
         }
         assert!(
             start.elapsed() < timeout,
-            "spool {spool} never repaired its missing slice within {timeout:?}"
+            "spool {spool} never restored its missing slice within {timeout:?}"
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -184,13 +265,17 @@ fn node_spool(harness: &SimnetHarness, index: usize) -> SpoolIndex {
     spools.first().copied().expect("node owns a spool")
 }
 
+/// A live spool's position in its group
+fn position(live_spool: SpoolIndex) -> usize {
+    GroupIndex::containing(live_spool)
+        .position_of(live_spool)
+        .expect("a position in its group")
+}
+
 /// The stored spool a node keeps a track's slice under: the track's virtual
 /// group, at the node's position in its live group.
 fn stored_spool(live_spool: SpoolIndex, group: VirtualGroup) -> SpoolIndex {
-    let position = GroupIndex::containing(live_spool)
-        .position_of(live_spool)
-        .expect("a position in its group");
-    group.spool_at(position)
+    group.spool_at(position(live_spool))
 }
 
 /// Owners holding a slice for this track, with the slice each holds.

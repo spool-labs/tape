@@ -53,6 +53,7 @@ solana-account.workspace = true
 solana-hash.workspace = true
 solana-transaction.workspace = true
 tape-blocks.workspace = true
+tape-slicer.workspace = true
 async-trait.workspace = true
 bytemuck.workspace = true
 spl-token.workspace = true

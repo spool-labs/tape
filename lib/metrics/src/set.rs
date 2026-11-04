@@ -25,9 +25,13 @@ pub struct Metrics {
     pub blocks_processed_total: IntCounter,
     pub replay_events_total: IntCounter,
     pub epoch_transitions_total: IntCounter,
-    pub repair_escalations_total: IntCounter,
     pub spool_bytes_total: IntCounterVec,
     pub sync_tracks_total: IntCounterVec,
+    pub repair_attempts_total: IntCounterVec,
+    pub repair_missing_total: IntCounterVec,
+    pub repair_missing_helper_stripes_total: IntCounter,
+    pub recover_tries_total: IntCounterVec,
+    pub recover_rejected_slices_total: IntCounter,
 
     pub decode_duration: HistogramVec,
     pub decode_output_bytes_total: IntCounter,
@@ -96,12 +100,6 @@ impl Metrics {
                 registry
             )
             .expect("register tape_node_epoch_transitions_total"),
-            repair_escalations_total: register_int_counter_with_registry!(
-                "tape_node_repair_escalations_total",
-                "Spool repair escalations",
-                registry
-            )
-            .expect("register tape_node_repair_escalations_total"),
             spool_bytes_total: register_int_counter_vec_with_registry!(
                 "tape_node_spool_bytes_total",
                 "Spool pipeline bytes by op and stage",
@@ -116,6 +114,39 @@ impl Metrics {
                 registry
             )
             .expect("register tape_node_sync_tracks_total"),
+            repair_attempts_total: register_int_counter_vec_with_registry!(
+                "tape_node_repair_attempts_total",
+                "Spool repair attempts by outcome",
+                &["outcome"],
+                registry
+            )
+            .expect("register tape_node_repair_attempts_total"),
+            repair_missing_total: register_int_counter_vec_with_registry!(
+                "tape_node_repair_missing_total",
+                "Positions missing from a repair attempt, by cause",
+                &["cause"],
+                registry
+            )
+            .expect("register tape_node_repair_missing_total"),
+            repair_missing_helper_stripes_total: register_int_counter_with_registry!(
+                "tape_node_repair_missing_helper_stripes_total",
+                "Stripes repaired around missing helpers",
+                registry
+            )
+            .expect("register tape_node_repair_missing_helper_stripes_total"),
+            recover_tries_total: register_int_counter_vec_with_registry!(
+                "tape_node_recover_tries_total",
+                "Spool recovery tries by outcome",
+                &["outcome"],
+                registry
+            )
+            .expect("register tape_node_recover_tries_total"),
+            recover_rejected_slices_total: register_int_counter_with_registry!(
+                "tape_node_recover_rejected_slices_total",
+                "Slices recovery dropped for not matching their leaves",
+                registry
+            )
+            .expect("register tape_node_recover_rejected_slices_total"),
 
             decode_duration: register_histogram_vec_with_registry!(
                 "tape_gw_decode_duration_seconds",

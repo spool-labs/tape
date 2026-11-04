@@ -212,7 +212,11 @@ fn build_peer_api(
     tls_identity: Arc<Keypair>,
     atlas: Arc<AtlasBuffer>,
 ) -> Result<Arc<HttpApi>, NodeError> {
-    let mut builder = tape_peer_http::HttpApiBuilder::new().local_identity(tls_identity);
+    // Recovery is the node's only slice fetch, and it gives up once a holder
+    // goes quiet, so a slow holder that keeps sending finishes
+    let mut builder = tape_peer_http::HttpApiBuilder::new()
+        .local_identity(tls_identity)
+        .get_slice_timeout(tape_peer_http::TRANSFER_CEILING);
     if atlas.enabled() {
         builder = builder.transfer_sink(Arc::new(move |transfer: tape_peer_http::PeerTransfer| {
             atlas.push_transfer(transfer.node, transfer.op, transfer.sent, transfer.bytes);

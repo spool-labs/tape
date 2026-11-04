@@ -6,7 +6,7 @@ use dashmap::DashMap;
 use tape_peer_manager::PeerManager;
 use tape_crypto::ed25519::Keypair;
 
-use crate::client::TransferSink;
+use crate::client::{TransferSink, TRANSFER_IDLE};
 use crate::HttpApi;
 use crate::metrics::ApiMetrics;
 
@@ -31,7 +31,7 @@ impl HttpApiBuilder {
         Self {
             connect_timeout: Duration::from_secs(5),
             request_timeout: Duration::from_secs(30),
-            transfer_idle: Duration::from_secs(30),
+            transfer_idle: TRANSFER_IDLE,
             get_slice_timeout: Duration::from_secs(120),
             metrics: None,
             local_identity: None,

@@ -12,7 +12,8 @@ pub enum Action {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskSpool {
     Live(SpoolIndex),
-    Virtual(SpoolIndex),
+    Repair(SpoolIndex),
+    Recover(SpoolIndex),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +43,7 @@ pub enum RepairResult {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoverResult {
-    Done { remaining: usize },
+    Done { unrecovered: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +67,8 @@ impl Action {
     pub fn task_spool(self) -> TaskSpool {
         match self {
             Action::Sync { spool, .. } | Action::Scan { spool, .. } => TaskSpool::Live(spool),
-            Action::Repair { spool, .. } | Action::Recover { spool, .. } => TaskSpool::Virtual(spool),
+            Action::Repair { spool, .. } => TaskSpool::Repair(spool),
+            Action::Recover { spool, .. } => TaskSpool::Recover(spool),
         }
     }
 
@@ -83,7 +85,7 @@ impl Action {
 impl TaskSpool {
     pub fn index(self) -> SpoolIndex {
         match self {
-            TaskSpool::Live(spool) | TaskSpool::Virtual(spool) => spool,
+            TaskSpool::Live(spool) | TaskSpool::Repair(spool) | TaskSpool::Recover(spool) => spool,
         }
     }
 }

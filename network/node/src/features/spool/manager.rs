@@ -6,8 +6,9 @@ use tape_rpc::Rpc;
 use tape_store_api::Store;
 use tape_core::prelude::{EpochNumber, VirtualGroup, SpoolIndex, SpoolState, SpoolStatus};
 use tape_core::spooler::GroupFold;
+use tape_core::types::SlotNumber;
 use tape_protocol::Api;
-use tape_store::ops::{SliceOps, SpoolOps};
+use tape_store::ops::{MetaOps, REQUEUE_SLOTS, SliceOps, SpoolOps};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn, Instrument};
@@ -173,40 +174,48 @@ impl<Db: Store + 'static, Cluster: Api + 'static, Blockchain: Rpc + 'static>
 
             // Sync and Scan run once for a live spool. Rows sort Sync first, so
             // a live spool with rows in both states syncs before it scans.
-            let task_spool = match state.status {
-                SpoolStatus::Sync | SpoolStatus::Scan => {
-                    let Some(fold) = fold else {
-                        continue;
-                    };
+            if matches!(state.status, SpoolStatus::Sync | SpoolStatus::Scan) {
+                let Some(fold) = fold else {
+                    continue;
+                };
 
-                    TaskSpool::Live(fold.live_spool(spool))
-                }
-                SpoolStatus::Repair
-                | SpoolStatus::Recover
-                | SpoolStatus::Active
-                | SpoolStatus::LockedToMove => TaskSpool::Virtual(spool),
-            };
-
-            if let Some(action) = action_for_status(task_spool.index(), epoch, state.status) {
-                if !self.is_running(task_spool) && listed.insert(task_spool) {
-                    actions.push(action);
+                let live = TaskSpool::Live(fold.live_spool(spool));
+                if let Some(action) = action_for_status(live.index(), epoch, state.status) {
+                    if !self.is_running(live) && listed.insert(live) {
+                        actions.push(action);
+                    }
                 }
             }
 
-            // Queued work on an Active row (e.g. from the CertifyTrack hook) runs
-            // as a Repair or Recover task, and so does queued work on a Sync row,
-            // beside its sync. The task runs per stored spool, so it never waits
-            // on the live spool's sync.
-            let has_queued_work = matches!(state.status, SpoolStatus::Active | SpoolStatus::Sync)
-                && waiting.contains(&spool);
-            let stored_task = TaskSpool::Virtual(spool);
+            // A stored spool's queues run as a Repair task and a Recover task,
+            // each once its queue has a due row, beside each other and beside a
+            // sync. A Scan row's queues wait for the scan to settle the row.
+            let has_queues = matches!(
+                state.status,
+                SpoolStatus::Active | SpoolStatus::Sync | SpoolStatus::Repair | SpoolStatus::Recover
+            );
+            let is_busy = self.is_running(TaskSpool::Repair(spool))
+                && self.is_running(TaskSpool::Recover(spool));
+            if !has_queues || is_busy {
+                continue;
+            }
 
-            if has_queued_work && !self.is_running(stored_task) && listed.insert(stored_task) {
-                let (has_repair, has_recovery) = has_pending_work(&self.context.store, spool)?;
-                if has_repair {
-                    actions.push(Action::Repair { spool, epoch });
-                } else if has_recovery {
-                    actions.push(Action::Recover { spool, epoch });
+            let queued = if waiting.contains(&spool) {
+                ready_work(&self.context.store, spool)?
+            } else {
+                // A Repair or Recover row whose queues emptied under it runs
+                // its task once, which settles the row's status.
+                (state.status == SpoolStatus::Repair, state.status == SpoolStatus::Recover)
+            };
+
+            let (has_repair, has_recovery) = queued;
+            for (is_due, action) in [
+                (has_repair, Action::Repair { spool, epoch }),
+                (has_recovery, Action::Recover { spool, epoch }),
+            ] {
+                let task = action.task_spool();
+                if is_due && !self.is_running(task) && listed.insert(task) {
+                    actions.push(action);
                 }
             }
         }
@@ -551,12 +560,19 @@ pub fn carried_rows<Db: Store>(
     Ok(rows)
 }
 
-/// The work a spool still owes
-pub fn has_pending_work<Db: Store>(
+/// Whether the spool's repair and recovery queues hold rows it still has to finish
+///
+/// Repair rows count up to one slot ahead, so a row put back still counts. Rows
+/// in the certify grace don't.
+pub fn pending_work<Db: Store>(
     store: &tape_store::TapeStore<Db>,
     spool: SpoolIndex,
 ) -> Result<(bool, bool), NodeError> {
-    let has_repair = has_repair_due(store, spool)?;
+    let pending_by = applied_slot(store)?.saturating_add(REQUEUE_SLOTS);
+    let has_repair = !store
+        .repairs_due(spool, None, pending_by, 1)
+        .map_err(|e| NodeError::Store(format!("repairs_due({spool}): {e}")))?
+        .is_empty();
     let has_recovery = !store
         .iter_pending_recoveries(spool, 1)
         .map_err(|e| NodeError::Store(format!("iter_pending_recoveries({spool}): {e}")))?
@@ -564,25 +580,28 @@ pub fn has_pending_work<Db: Store>(
     Ok((has_repair, has_recovery))
 }
 
-fn has_repair_due<Db: Store>(
+/// Whether the spool's repair and recovery queues each have a row ready now
+fn ready_work<Db: Store>(
     store: &tape_store::TapeStore<Db>,
     spool: SpoolIndex,
-) -> Result<bool, NodeError> {
-    let queued = store
-        .iter_pending_repairs(spool, usize::MAX)
-        .map_err(|e| NodeError::Store(format!("iter_pending_repairs({spool}): {e}")))?;
+) -> Result<(bool, bool), NodeError> {
+    let applied = applied_slot(store)?;
+    let has_repair = !store
+        .repairs_due(spool, None, applied, 1)
+        .map_err(|e| NodeError::Store(format!("repairs_due({spool}): {e}")))?
+        .is_empty();
+    let has_recovery = !store
+        .recoveries_due(spool, None, applied, 1)
+        .map_err(|e| NodeError::Store(format!("recoveries_due({spool}): {e}")))?
+        .is_empty();
+    Ok((has_repair, has_recovery))
+}
 
-    for track in queued {
-        let is_held = store
-            .has_slice(spool, track)
-            .map_err(|e| NodeError::Store(format!("has_slice({spool}): {e}")))?;
-
-        if !is_held {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
+fn applied_slot<Db: Store>(store: &tape_store::TapeStore<Db>) -> Result<SlotNumber, NodeError> {
+    let cursor = store
+        .get_sync_cursor()
+        .map_err(|e| NodeError::Store(format!("get_sync_cursor: {e}")))?;
+    Ok(cursor.unwrap_or_default())
 }
 
 fn is_due(action: Action, epoch: EpochNumber, state: &SpoolState) -> bool {
@@ -590,12 +609,14 @@ fn is_due(action: Action, epoch: EpochNumber, state: &SpoolState) -> bool {
         return false;
     }
 
-    // An Active or Sync spool's repair work comes from its pending queues, so
-    // its row only has to still be Active or Sync.
-    let is_pending_work = matches!(state.status, SpoolStatus::Active | SpoolStatus::Sync)
-        && matches!(action, Action::Repair { .. } | Action::Recover { .. });
+    // Repair and Recover work comes from the spool's queues, so its row only
+    // has to still be one whose queues run.
+    let is_queue_work = matches!(
+        state.status,
+        SpoolStatus::Active | SpoolStatus::Sync | SpoolStatus::Repair | SpoolStatus::Recover
+    ) && matches!(action, Action::Repair { .. } | Action::Recover { .. });
 
-    is_pending_work || action_for_status(action.spool(), epoch, state.status) == Some(action)
+    is_queue_work || action_for_status(action.spool(), epoch, state.status) == Some(action)
 }
 
 fn action_for_status(
@@ -658,7 +679,7 @@ fn reconcile<Db: Store>(
     store: &tape_store::TapeStore<Db>,
     spool: SpoolIndex,
 ) -> Result<SpoolStatus, NodeError> {
-    let (has_repair, has_recovery) = has_pending_work(store, spool)?;
+    let (has_repair, has_recovery) = pending_work(store, spool)?;
     if has_repair {
         Ok(SpoolStatus::Repair)
     } else if has_recovery {
@@ -759,7 +780,7 @@ mod tests {
     use rpc_litesvm::LiteSvmRpc;
     use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex};
     use tape_crypto::address::Address;
-    use tape_store::ops::{SliceOps, SpoolOps};
+    use tape_store::ops::{MetaOps, SliceOps, SpoolOps};
     use tape_store_memory::MemoryStore;
     use tokio_util::sync::CancellationToken;
 
@@ -849,17 +870,21 @@ mod tests {
         );
     }
 
-    // the node that held a retired group's spool keeps it locked for the new holder to pull
+    // the node that held a retired group's spool keeps it locked for the new
+    // holder to pull, and clears its queues, rows and index alike
     #[tokio::test]
     async fn old_holder_locks_retired_spool() {
         let harness = shrunk_harness().await;
         let ctx = harness.ctx_for(WIDTH + SPOOL.as_usize());
         let track = Address::from([7; 32]);
+        let queued = Address::from([8; 32]);
 
         ctx.store
             .set_spool_state(absorbed_spool(), SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .unwrap();
         ctx.store.put_slice(absorbed_spool(), track, vec![1, 2, 3]).unwrap();
+        ctx.store.add_pending_repair(absorbed_spool(), queued).unwrap();
+        ctx.store.add_pending_recovery(absorbed_spool(), queued).unwrap();
 
         let mut manager =
             SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
@@ -868,6 +893,16 @@ mod tests {
         let state = ctx.store.get_spool_state(absorbed_spool()).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::LockedToMove);
         assert!(ctx.store.has_slice(absorbed_spool(), track).unwrap());
+        assert!(!ctx.store.has_pending_repair(absorbed_spool(), queued).unwrap());
+        assert!(!ctx.store.has_pending_recovery(absorbed_spool(), queued).unwrap());
+        assert!(ctx
+            .store
+            .repairs_due(absorbed_spool(), None, SlotNumber(u64::MAX), 10)
+            .unwrap()
+            .is_empty());
+        assert!(ctx.store.iter_pending_recoveries(absorbed_spool(), 10).unwrap().is_empty());
+        assert!(ctx.store.pending_repair_spools().unwrap().is_empty());
+        assert!(ctx.store.pending_recovery_spools().unwrap().is_empty());
     }
 
     // the epoch after the count dropped, a carried spool was this node's own
@@ -936,6 +971,7 @@ mod tests {
             .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
             .unwrap();
         ctx.store.add_pending_repair(SPOOL, track).unwrap();
+        ctx.store.add_pending_recovery(SPOOL, track).unwrap();
 
         let mut manager = SpoolManager::new(
             ctx.clone(),
@@ -945,12 +981,16 @@ mod tests {
 
         manager.advance(EPOCH).unwrap();
 
-        // Re-entered Sync for the new epoch, but the repair queue survives the
-        // refresh.
+        // Re-entered Sync for the new epoch, but both queues survive the
+        // refresh, rows and index alike.
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Sync);
         assert_eq!(state.epoch, EPOCH);
         assert!(ctx.store.has_pending_repair(SPOOL, track).unwrap());
+        assert!(ctx.store.has_pending_recovery(SPOOL, track).unwrap());
+        let rows = ctx.store.repairs_due(SPOOL, None, SlotNumber(0), 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(ctx.store.iter_pending_recoveries(SPOOL, 10).unwrap(), [track]);
     }
 
     // a sync is listed ahead of a repair, and the lowest spool first
@@ -1034,7 +1074,8 @@ mod tests {
         );
     }
 
-    // a repair queued past the first page of rows still puts the spool in Repair
+    // a due row starts repair even when its slice has since arrived, and the
+    // run drops it; the manager reads one due row, never the whole queue
     #[tokio::test]
     async fn deep_pending_repair() {
         let ctx = test_context().await;
@@ -1150,6 +1191,141 @@ mod tests {
         );
     }
 
+    // a stored spool with both queues due runs repair and recovery side by
+    // side, whichever status its row shows
+    #[tokio::test]
+    async fn side_by_side() {
+        for status in [SpoolStatus::Active, SpoolStatus::Repair, SpoolStatus::Recover] {
+            let ctx = test_context().await;
+            ctx.store.set_spool_state(SPOOL, SpoolState::new(status, EPOCH)).unwrap();
+            ctx.store.add_pending_repair(SPOOL, Address::from([1; 32])).unwrap();
+            ctx.store.add_pending_recovery(SPOOL, Address::from([2; 32])).unwrap();
+            let mut manager =
+                SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
+
+            assert_eq!(
+                manager.due_actions(EPOCH).unwrap(),
+                [
+                    Action::Repair { spool: SPOOL, epoch: EPOCH },
+                    Action::Recover { spool: SPOOL, epoch: EPOCH },
+                ],
+                "{status:?}",
+            );
+
+            manager.try_spawn(EPOCH).unwrap();
+            assert!(manager.is_running(TaskSpool::Repair(SPOOL)), "{status:?}");
+            assert!(manager.is_running(TaskSpool::Recover(SPOOL)), "{status:?}");
+            manager.stop().await;
+        }
+    }
+
+    // a row put back keeps the spool in Repair, and its run starts once the cursor moves
+    #[tokio::test]
+    async fn put_back_waits_for_cursor() {
+        let ctx = test_context().await;
+        let track = Address::from([1; 32]);
+        ctx.store.set_sync_cursor(SlotNumber(10), None).unwrap();
+        ctx.store
+            .set_spool_state(SPOOL, SpoolState::new(SpoolStatus::Repair, EPOCH))
+            .unwrap();
+        ctx.store.add_pending_repair(SPOOL, track).unwrap();
+        ctx.store.requeue_repair(SPOOL, track).unwrap();
+        let mut manager =
+            SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
+
+        manager
+            .handle_done(
+                TaskDone::Done(
+                    Action::Repair { spool: SPOOL, epoch: EPOCH },
+                    TaskResult::Repair(RepairResult::Done { unrepairable: 0 }),
+                ),
+                EPOCH,
+            )
+            .unwrap();
+        let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
+        assert_eq!(state.status, SpoolStatus::Repair);
+        assert!(manager.due_actions(EPOCH).unwrap().is_empty());
+
+        ctx.store.set_sync_cursor(SlotNumber(11), None).unwrap();
+        assert_eq!(
+            manager.due_actions(EPOCH).unwrap(),
+            [Action::Repair { spool: SPOOL, epoch: EPOCH }]
+        );
+    }
+
+    // a Repair or Recover row whose queues emptied under it runs its task once to settle
+    #[tokio::test]
+    async fn empty_status_settles() {
+        let ctx = test_context().await;
+        let (repair, recover) = (SpoolIndex(5), SpoolIndex(6));
+        ctx.store.set_spool_state(repair, SpoolState::new(SpoolStatus::Repair, EPOCH)).unwrap();
+        ctx.store.set_spool_state(recover, SpoolState::new(SpoolStatus::Recover, EPOCH)).unwrap();
+        let mut manager =
+            SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
+
+        assert_eq!(
+            manager.due_actions(EPOCH).unwrap(),
+            [
+                Action::Repair { spool: repair, epoch: EPOCH },
+                Action::Recover { spool: recover, epoch: EPOCH },
+            ]
+        );
+
+        for done in [
+            TaskDone::Done(
+                Action::Repair { spool: repair, epoch: EPOCH },
+                TaskResult::Repair(RepairResult::Done { unrepairable: 0 }),
+            ),
+            TaskDone::Done(
+                Action::Recover { spool: recover, epoch: EPOCH },
+                TaskResult::Recover(RecoverResult::Done { unrecovered: 0 }),
+            ),
+        ] {
+            manager.handle_done(done, EPOCH).unwrap();
+        }
+        for spool in [repair, recover] {
+            let state = ctx.store.get_spool_state(spool).unwrap().unwrap();
+            assert_eq!(state.status, SpoolStatus::Active);
+        }
+        assert!(manager.due_actions(EPOCH).unwrap().is_empty());
+    }
+
+    // the status a finished task leaves counts a put-back row and a recovery
+    // row, and leaves out a row still in the certify grace
+    #[tokio::test]
+    async fn status_by_rows() {
+        let ctx = test_context().await;
+        let applied = SlotNumber(100);
+        ctx.store.set_sync_cursor(applied, None).unwrap();
+        let (grace, put_back, recovery) = (SpoolIndex(5), SpoolIndex(6), SpoolIndex(7));
+        let track = Address::from([1; 32]);
+        ctx.store.defer_pending_repair(grace, track, applied.saturating_add(SlotNumber(12))).unwrap();
+        ctx.store.add_pending_repair(put_back, track).unwrap();
+        ctx.store.requeue_repair(put_back, track).unwrap();
+        ctx.store.add_pending_recovery(recovery, track).unwrap();
+        let mut manager =
+            SpoolManager::new(ctx.clone(), RecoveryConfig::default(), CancellationToken::new());
+
+        for (spool, status) in [
+            (grace, SpoolStatus::Active),
+            (put_back, SpoolStatus::Repair),
+            (recovery, SpoolStatus::Recover),
+        ] {
+            ctx.store.set_spool_state(spool, SpoolState::new(SpoolStatus::Repair, EPOCH)).unwrap();
+            manager
+                .handle_done(
+                    TaskDone::Done(
+                        Action::Repair { spool, epoch: EPOCH },
+                        TaskResult::Repair(RepairResult::Done { unrepairable: 0 }),
+                    ),
+                    EPOCH,
+                )
+                .unwrap();
+            let state = ctx.store.get_spool_state(spool).unwrap().unwrap();
+            assert_eq!(state.status, status, "spool {spool}");
+        }
+    }
+
     // a repair that finishes beside a sync or a scan leaves the row where it was
     #[tokio::test]
     async fn repair_beside_sync_keeps_row() {
@@ -1168,7 +1344,7 @@ mod tests {
                 ),
                 TaskDone::Done(
                     Action::Recover { spool: SPOOL, epoch: EPOCH },
-                    TaskResult::Recover(RecoverResult::Done { remaining: 0 }),
+                    TaskResult::Recover(RecoverResult::Done { unrecovered: 0 }),
                 ),
             ] {
                 manager.handle_done(done, EPOCH).unwrap();
@@ -1329,7 +1505,7 @@ mod tests {
 
         let state = ctx.store.get_spool_state(SPOOL).unwrap().unwrap();
         assert_eq!(state.status, SpoolStatus::Repair);
-        assert!(manager.is_running(TaskSpool::Virtual(SPOOL)));
+        assert!(manager.is_running(TaskSpool::Repair(SPOOL)));
     }
 
     /// A manager that runs one task at a time over three spools waiting to sync.
@@ -1504,7 +1680,7 @@ mod tests {
         manager.try_spawn(EPOCH).expect("try spawn");
 
         assert!(manager.is_running(TaskSpool::Live(SPOOL)));
-        assert!(manager.is_running(TaskSpool::Virtual(SPOOL)));
+        assert!(manager.is_running(TaskSpool::Repair(SPOOL)));
     }
 
     // a new epoch drops the list read in the old one

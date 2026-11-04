@@ -781,8 +781,8 @@ mod tests {
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{
-        ContentType, EpochNumber, NodeId, SlotNumber, StorageUnits, StripeCount, TapeNumber,
-        TrackNumber,
+        ContentType, EpochNumber, NodeId, SlotNumber, SpoolIndex, StorageUnits, StripeCount,
+        TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
     use tape_crypto::hash::hash;
@@ -797,7 +797,7 @@ mod tests {
     use tape_store_api::Store as _;
 
     use crate::core::error::NodeError;
-    use crate::features::spool::manager::has_pending_work;
+    use crate::features::spool::manager::pending_work;
 
     use super::{apply_slot, DeletePolicy, REPAIR_GRACE_SLOTS};
 
@@ -806,6 +806,13 @@ mod tests {
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
+    }
+
+    /// The repair rows ready at the applied slot
+    fn ready_repairs(store: &TapeStore<MemoryStore>, spool: SpoolIndex) -> Vec<Address> {
+        let applied = store.get_sync_cursor().expect("cursor").unwrap_or_default();
+        let rows = store.repairs_due(spool, None, applied, 10).expect("ready repairs");
+        rows.into_iter().map(|row| row.track).collect()
     }
 
     /// Apply a slot's events on a tapenet node.
@@ -1639,19 +1646,17 @@ mod tests {
         apply(&store, slot, None, &[certify(track)]).expect("apply slot");
 
         assert!(store.has_pending_repair(spool_id, track).expect("has pending repair"));
-        assert!(store
-            .iter_pending_repairs(spool_id, 10)
-            .expect("iter pending repairs")
-            .is_empty());
+        assert!(ready_repairs(&store, spool_id).is_empty());
         assert_eq!(
             store.get_spool_state(spool_id).expect("get state").expect("state").status,
             SpoolStatus::Active
         );
     }
 
-    // a slice that lands inside the grace leaves the spool nothing to repair
+    // a slice that lands inside the grace leaves its row owed once the grace
+    // ends, since the spool reads one due row and repair drops it on its run
     #[test]
-    fn arrival_clears_work() {
+    fn arrival_still_pending() {
         let store = test_store();
         let slot = SlotNumber(10);
         let track = Address::new_unique();
@@ -1673,10 +1678,9 @@ mod tests {
             .expect("set sync cursor");
 
         assert_eq!(
-            has_pending_work(&store, spool_id).expect("pending work"),
-            (false, false)
+            pending_work(&store, spool_id).expect("pending work"),
+            (true, false)
         );
-        // The read leaves the row alone; the repair worker drops it.
         assert!(store.has_pending_repair(spool_id, track).expect("has pending repair"));
     }
 
@@ -1700,12 +1704,9 @@ mod tests {
             .set_sync_cursor(slot.saturating_add(REPAIR_GRACE_SLOTS), None)
             .expect("set sync cursor");
 
+        assert_eq!(ready_repairs(&store, spool_id), vec![track]);
         assert_eq!(
-            store.iter_pending_repairs(spool_id, 10).expect("iter pending repairs"),
-            vec![track]
-        );
-        assert_eq!(
-            has_pending_work(&store, spool_id).expect("pending work"),
+            pending_work(&store, spool_id).expect("pending work"),
             (true, false)
         );
     }
@@ -1732,10 +1733,7 @@ mod tests {
             .set_sync_cursor(slot.saturating_add(REPAIR_GRACE_SLOTS), None)
             .expect("set sync cursor");
 
-        assert_eq!(
-            restarted.iter_pending_repairs(spool_id, 10).expect("iter pending repairs"),
-            vec![track]
-        );
+        assert_eq!(ready_repairs(&restarted, spool_id), vec![track]);
     }
 
     // a certify for a slice this node already holds queues nothing

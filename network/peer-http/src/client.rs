@@ -27,7 +27,10 @@ const CHALLENGE_TIMEOUT: Duration = Duration::from_secs(3);
 const SLICE_CONNECTIONS: usize = 8;
 
 /// A push or a sync goes quiet before this unless it trickles for a day, so it only stops a stuck one
-const TRANSFER_CEILING: Duration = Duration::from_secs(24 * 60 * 60);
+pub const TRANSFER_CEILING: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// A push, a sync or a recovery fetch gives up once its body moves no byte for this long
+pub const TRANSFER_IDLE: Duration = Duration::from_secs(30);
 
 /// Receive windows wide enough for a whole slice body in one round trip.
 const H2_STREAM_WINDOW: u32 = 16 * 1024 * 1024;

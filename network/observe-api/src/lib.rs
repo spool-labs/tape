@@ -539,7 +539,7 @@ pub struct StoreIo {
 pub struct ThroughputTotals {
     pub blocks_processed: u64,
     pub replay_events: u64,
-    pub repair_escalations: u64,
+    pub repair_to_recovery: u64,
     #[serde(default)]
     pub bytes_uploaded: u64,
 }
@@ -697,7 +697,7 @@ pub struct LastEpoch {
     pub spool_bytes_persisted: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
-    pub repair_escalations: u64,
+    pub repair_to_recovery: u64,
     pub requests: u64,
     pub egress_bytes: u64,
     #[serde(default)]

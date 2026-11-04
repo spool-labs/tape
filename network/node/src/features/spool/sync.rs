@@ -1379,7 +1379,7 @@ mod tests {
 
         // Still deferred, so the repair path can't take it yet.
         assert!(ctx.store.has_pending_repair(SPOOL, addr(1)).unwrap());
-        assert!(ctx.store.iter_pending_repairs(SPOOL, 10).unwrap().is_empty());
+        assert!(ctx.store.repairs_due(SPOOL, None, SlotNumber(u64::MAX - 1), 10).unwrap().is_empty());
     }
 
     // slices of two carried groups go in one request and land under their own stored spools

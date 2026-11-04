@@ -15,7 +15,7 @@ use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::lifecycle::types::{Action, TaskDone};
-use crate::features::spool::manager::has_pending_work;
+use crate::features::spool::manager::pending_work;
 
 // Purpose: Wait until all spools assigned to this node are Active.
 //          This is a precondition for submitting SyncSpool, the node
@@ -96,7 +96,7 @@ pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
             continue;
         }
 
-        let (has_repair, has_recovery) = has_pending_work(&ctx.store, *spool)?;
+        let (has_repair, has_recovery) = pending_work(&ctx.store, *spool)?;
         if !has_repair && !has_recovery {
             ready_count += 1;
         }
@@ -118,23 +118,77 @@ pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
 mod tests {
     use super::*;
     use tape_core::system::{SpoolState, SpoolStatus};
+    use tape_core::types::SlotNumber;
     use tape_crypto::address::Address;
+    use tape_store::ops::MetaOps;
 
     use crate::harness::{NodeHarness, TestContext};
 
     const EPOCH: EpochNumber = EpochNumber(2);
+    const APPLIED: SlotNumber = SlotNumber(100);
 
-    async fn test_context() -> (TestContext, SpoolIndex) {
-        let harness = NodeHarness::builder()
+    async fn harness() -> NodeHarness {
+        NodeHarness::builder()
             .nodes(25)
             .epoch(EPOCH)
             .phase(EpochPhase::Sync)
             .no_prev_snapshot_tape()
             .build()
             .await
-            .expect("build harness");
+            .expect("build harness")
+    }
+
+    async fn test_context() -> (TestContext, SpoolIndex) {
+        let harness = harness().await;
         let spool = harness.owned_spools(0)[0];
         (harness.ctx_for(0), spool)
+    }
+
+    fn track() -> Address {
+        Address::from([1; 32])
+    }
+
+    /// Whether the gate opens with every spool Active, once `queue` has put
+    /// rows on the first one
+    async fn is_ready_with(queue: fn(&TestContext, SpoolIndex)) -> bool {
+        let harness = harness().await;
+        let ctx = harness.ctx_for(0);
+        let spools = harness.owned_spools(0);
+        for spool in &spools {
+            ctx.store
+                .set_spool_state(*spool, SpoolState::new(SpoolStatus::Active, EPOCH))
+                .expect("spool state");
+        }
+        ctx.store.set_sync_cursor(APPLIED, None).expect("cursor");
+        queue(&ctx, spools[0]);
+        matches!(check_readiness(&ctx).expect("readiness"), Readiness::Ready)
+    }
+
+    // a row put back and a recovery row keep the gate shut, and a row still
+    // in the certify grace doesn't
+    #[tokio::test]
+    async fn gate_by_rows() {
+        assert!(is_ready_with(|_, _| {}).await);
+        assert!(
+            is_ready_with(|ctx, spool| {
+                let ready_at = APPLIED.saturating_add(SlotNumber(12));
+                ctx.store.defer_pending_repair(spool, track(), ready_at).expect("defer");
+            })
+            .await
+        );
+        assert!(
+            !is_ready_with(|ctx, spool| {
+                ctx.store.add_pending_repair(spool, track()).expect("queue");
+                ctx.store.requeue_repair(spool, track()).expect("put back");
+            })
+            .await
+        );
+        assert!(
+            !is_ready_with(|ctx, spool| {
+                ctx.store.add_pending_recovery(spool, track()).expect("queue");
+            })
+            .await
+        );
     }
 
     #[tokio::test]

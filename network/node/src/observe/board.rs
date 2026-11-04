@@ -681,7 +681,7 @@ where
         throughput: ThroughputTotals {
             blocks_processed: m.blocks_processed_total.get(),
             replay_events: m.replay_events_total.get(),
-            repair_escalations: m.repair_escalations_total.get(),
+            repair_to_recovery: m.repair_attempts_total.with_label_values(&["to_recovery"]).get(),
             bytes_uploaded: m.bytes_uploaded.get(),
         },
         http: http_stats(&gathered),

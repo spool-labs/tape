@@ -113,11 +113,13 @@ fn measure_repair() {
             .collect();
 
         let available: Vec<SliceIndex> = (1..slicer.n()).map(SliceIndex::new).collect();
-        let plan = slicer.repair_plan(SliceIndex::new(0), &available, &slices[1]).unwrap();
+        let plan = slicer
+            .repair_plan(SliceIndex::new(0), &available, len, slicer.stripe_size())
+            .unwrap();
         let helper_bytes: u64 = plan
             .stripes
             .iter()
-            .flat_map(|s| s.helpers.iter())
+            .flat_map(|s| s.helpers.iter().flatten())
             .map(|h| h.sub_chunks.len() as u64 * plan.sub_chunk_size)
             .sum();
 

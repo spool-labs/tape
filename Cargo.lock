@@ -1484,9 +1484,9 @@ checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
 name = "clay-codes"
-version = "0.2.3"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edb45096d8a3eeee8a0aaddf587f9cdb23509a7d9b03eb1842fd7c7ff0e1f7af"
+checksum = "ab6ceba364a84e0bac818628e399977974578f13540ca5652f7d5fc2d23d74d3"
 dependencies = [
  "tape-reed-solomon",
 ]
@@ -11084,6 +11084,7 @@ dependencies = [
  "tape-rpc",
  "tape-rpc-client",
  "tape-sdk",
+ "tape-slicer",
  "tape-store",
  "tape-store-api",
  "tape-store-reel",

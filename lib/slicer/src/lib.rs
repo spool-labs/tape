@@ -30,6 +30,9 @@ pub use stripe::{
 };
 pub use merkle_helpers::{BlobMerkleTree, BlobMerkleRoot, build_blob_merkle_tree, blob_merkle_root};
 pub use slice_index::SliceIndex;
-pub use repair::{RepairPlan, StripeRepair, HelperPlan, extract_repair_data};
+pub use repair::{
+    RepairPlan, StripeRepair, HelperPlan, HelperData, HelperRequest, StripeSubChunks,
+    extract_repair_data,
+};
 pub use outer::{OuterCoder, MAX_CHUNK_BYTES};
 pub use range::{stripe_window, StripeWindow};

@@ -26,7 +26,7 @@ const BLOCK_CACHE_BYTES: usize = 96 * 1024 * 1024;
 
 /// Ceiling on memtable memory across all column families of one instance
 ///
-/// Per-family write buffers only bound one family at a time. With 26 families
+/// Per-family write buffers only bound one family at a time. With 28 families
 /// on the metadata volume, the sum is what matters on a small box, and RocksDB
 /// leaves it unbounded unless this is set. Crossing it flushes the largest
 /// memtable rather than stalling writes.
@@ -54,8 +54,10 @@ const TOTAL_WRITE_BUFFER_BYTES: usize = 128 * 1024 * 1024;
 ///
 /// ## Spool Columns (NOT epoch-namespaced)
 /// - `spool_status` - 2-byte SpoolIndexKey
-/// - `spool_pending_repair` - 34-byte SliceKey with 2-byte spool prefix
-/// - `spool_pending_recovery` - 34-byte SliceKey with 2-byte spool prefix
+/// - `spool_pending_repair` - 42-byte QueueKey with 2-byte spool prefix
+/// - `spool_repair_index` - 34-byte SliceKey with 2-byte spool prefix
+/// - `spool_pending_recovery` - 42-byte QueueKey with 2-byte spool prefix
+/// - `spool_recovery_index` - 34-byte SliceKey with 2-byte spool prefix
 ///
 /// ## Slice Data Column (BlobDB)
 /// - `slice` - 34-byte SliceKey, large (~1MB) values (BlobDB with 2-byte prefix)
@@ -139,15 +141,27 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
         ColumnFamilyConfig::new("spool_status")
             .with_block_based(cache),
 
-        // Spool pending repair - 34-byte SliceKey
+        // Spool pending repair - 42-byte QueueKey in ready order
         // 2-byte spool prefix for iteration by spool
         ColumnFamilyConfig::new("spool_pending_repair")
             .with_block_based(cache)
             .with_prefix_extractor(2),
 
-        // Spool pending recovery - 34-byte SliceKey
+        // Spool repair index - 34-byte SliceKey to the row's ready slot
+        // 2-byte spool prefix for iteration by spool
+        ColumnFamilyConfig::new("spool_repair_index")
+            .with_block_based(cache)
+            .with_prefix_extractor(2),
+
+        // Spool pending recovery - 42-byte QueueKey in ready order
         // 2-byte spool prefix for iteration by spool
         ColumnFamilyConfig::new("spool_pending_recovery")
+            .with_block_based(cache)
+            .with_prefix_extractor(2),
+
+        // Spool recovery index - 34-byte SliceKey to the row's ready slot
+        // 2-byte spool prefix for iteration by spool
+        ColumnFamilyConfig::new("spool_recovery_index")
             .with_block_based(cache)
             .with_prefix_extractor(2),
 

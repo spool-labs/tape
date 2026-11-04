@@ -14,12 +14,14 @@ use tape_crypto::Address;
 
 pub struct MemoryApi {
     handler: Arc<dyn Fn(Address, PeerReq) -> PeerRes + Send + Sync>,
+    hangs: Arc<Hangs>,
 }
 
 impl MemoryApi {
     pub fn new(handler: impl Fn(Address, PeerReq) -> PeerRes + Send + Sync + 'static) -> Self {
         Self {
             handler: Arc::new(handler),
+            hangs: Arc::new(|_, _| false),
         }
     }
 
@@ -45,7 +47,16 @@ impl MemoryApi {
             PeerReq::GetHealth(_) => PeerRes::GetHealth(Err(not_impl())),
         })
     }
+
+    /// Make the calls `hangs` picks wait forever, as a peer that never answers
+    pub fn hanging(mut self, hangs: impl Fn(Address, &PeerReq) -> bool + Send + Sync + 'static) -> Self {
+        self.hangs = Arc::new(hangs);
+        self
+    }
 }
+
+/// Returns true for a call that should never answer
+type Hangs = dyn Fn(Address, &PeerReq) -> bool + Send + Sync;
 
 fn not_impl() -> ApiError {
     ApiError::Other("not implemented".into())
@@ -53,7 +64,11 @@ fn not_impl() -> ApiError {
 
 macro_rules! dispatch {
     ($self:ident, $node:ident, $req:expr, $variant:ident) => {{
-        let res = ($self.handler)($node, PeerReq::$variant($req));
+        let req = PeerReq::$variant($req);
+        if ($self.hangs)($node, &req) {
+            std::future::pending::<()>().await;
+        }
+        let res = ($self.handler)($node, req);
         match res {
             PeerRes::$variant(r) => r,
             _ => Err(ApiError::Other("handler returned wrong variant".into())),

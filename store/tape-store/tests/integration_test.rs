@@ -288,7 +288,7 @@ fn pending_repair_operations() {
     assert!(store.has_pending_repair(spool_id, track2).unwrap());
     assert!(store.has_pending_repair(spool_id, track3).unwrap());
 
-    let pending = store.iter_pending_repairs(spool_id, 100).unwrap();
+    let pending = store.repairs_due(spool_id, None, SlotNumber(0), 100).unwrap();
     assert_eq!(pending.len(), 3);
 
     store.remove_pending_repair(spool_id, track1).unwrap();

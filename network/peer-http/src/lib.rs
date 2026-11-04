@@ -7,10 +7,10 @@ mod metrics;
 mod watch;
 
 pub use builder::HttpApiBuilder;
-pub use client::{HttpApi, PeerTransfer, TransferSink};
+pub use client::{HttpApi, PeerTransfer, TransferSink, TRANSFER_CEILING, TRANSFER_IDLE};
 pub use gateway::GatewayApi;
 pub use metrics::ApiMetrics;
-pub use watch::{SliceWatch, with_slice_watch};
+pub use watch::{SliceWatch, with_idle_limit, with_slice_watch};
 
 /// The rate limit error for a 429 answer, with any advertised retry delay.
 pub(crate) fn rate_limited_error(response: &reqwest::Response) -> tape_protocol::ApiError {

@@ -179,7 +179,7 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tape_store_api::{Direction, StoreIter, Value, WriteBatch};
+    use tape_store_api::{BatchOp, Direction, StoreIter, Value, WriteBatch};
     use tape_store_memory::MemoryStore;
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::tape::TapeFlags;
@@ -362,7 +362,7 @@ mod tests {
         assert!(store.has_track(written_after).unwrap());
     }
 
-    /// A memory store that counts the deletes sent to it
+    /// A memory store that counts the deletes sent to it, alone or in a batch
     struct CountingStore {
         inner: MemoryStore,
         deletes: AtomicUsize,
@@ -386,6 +386,11 @@ mod tests {
             self.inner.contains(cf, key)
         }
         fn write_batch(&self, batch: WriteBatch) -> tape_store_api::Result<()> {
+            for op in batch.iter() {
+                if matches!(op, BatchOp::Delete { .. }) {
+                    self.deletes.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             self.inner.write_batch(batch)
         }
         fn iter(&self, cf: &str) -> tape_store_api::Result<StoreIter<'_>> {
@@ -412,7 +417,8 @@ mod tests {
     }
 
     // the gc sweep clears a dead track's repair rows every epoch, and on the reel
-    // a delete of a missing row leaves a grave, so only rows that exist get one
+    // a delete of a missing row leaves a grave, so only rows that exist get one:
+    // each row's queue key and index entry, once
     #[test]
     fn repeated_clears_delete_only_rows_that_exist() {
         let store = TapeStore::new(CountingStore {
@@ -432,6 +438,6 @@ mod tests {
 
         assert!(!store.has_pending_repair(repair, track).unwrap());
         assert!(!store.has_pending_recovery(recovery, track).unwrap());
-        assert_eq!(store.inner().inner().deletes.load(Ordering::Relaxed), 2);
+        assert_eq!(store.inner().inner().deletes.load(Ordering::Relaxed), 4);
     }
 }

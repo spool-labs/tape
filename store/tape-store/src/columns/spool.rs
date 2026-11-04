@@ -1,14 +1,16 @@
 //! Spool column families for spool tracking (NOT epoch-namespaced)
 //!
 //! - SpoolStatusCol: spool_id -> SpoolStatus
-//! - SpoolPendingRepairCol: (spool_id, track_address) -> ready slot
-//! - SpoolPendingRecoveryCol: (spool_id, track_address) -> ()
+//! - SpoolPendingRepairCol: (spool_id, ready slot, track_address) -> ()
+//! - SpoolRepairIndexCol: (spool_id, track_address) -> ready slot
+//! - SpoolPendingRecoveryCol: (spool_id, ready slot, track_address) -> ()
+//! - SpoolRecoveryIndexCol: (spool_id, track_address) -> ready slot
 
 use tape_store_api::Column;
 use tape_core::system::SpoolState;
 use tape_core::types::SlotNumber;
 
-use crate::types::{SliceKey, SpoolIndexKey};
+use crate::types::{QueueKey, SliceKey, SpoolIndexKey};
 
 /// Spool status tracking
 ///
@@ -22,26 +24,50 @@ impl Column for SpoolStatusCol {
     type Value = SpoolState;
 }
 
-/// Pending repair queue
+/// Pending repair queue, in the order its rows are ready
 ///
-/// Key: SliceKey (34 bytes: spool_id BE + track_address)
-/// Value: the first slot the repair may run in, so a deferred row survives a restart
+/// Key: QueueKey (42 bytes: spool_id BE + ready slot BE + track_address)
+/// Value: () (the key carries the row)
 pub struct SpoolPendingRepairCol;
 
 impl Column for SpoolPendingRepairCol {
     const CF_NAME: &'static str = "spool_pending_repair";
+    type Key = QueueKey;
+    type Value = ();
+}
+
+/// Each pending repair's ready slot, by track
+///
+/// Key: SliceKey (34 bytes: spool_id BE + track_address)
+/// Value: the ready slot in the row's queue key
+pub struct SpoolRepairIndexCol;
+
+impl Column for SpoolRepairIndexCol {
+    const CF_NAME: &'static str = "spool_repair_index";
     type Key = SliceKey;
     type Value = SlotNumber;
 }
 
-/// Pending recovery queue (presence-only)
+/// Pending recovery queue, in the order its rows are ready
 ///
-/// Key: SliceKey (34 bytes: spool_id BE + track_address)
-/// Value: () (presence indicates pending)
+/// Key: QueueKey (42 bytes: spool_id BE + ready slot BE + track_address)
+/// Value: () (the key carries the row)
 pub struct SpoolPendingRecoveryCol;
 
 impl Column for SpoolPendingRecoveryCol {
     const CF_NAME: &'static str = "spool_pending_recovery";
-    type Key = SliceKey;
+    type Key = QueueKey;
     type Value = ();
+}
+
+/// Each pending recovery's ready slot, by track
+///
+/// Key: SliceKey (34 bytes: spool_id BE + track_address)
+/// Value: the ready slot in the row's queue key
+pub struct SpoolRecoveryIndexCol;
+
+impl Column for SpoolRecoveryIndexCol {
+    const CF_NAME: &'static str = "spool_recovery_index";
+    type Key = SliceKey;
+    type Value = SlotNumber;
 }

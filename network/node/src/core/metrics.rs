@@ -12,7 +12,7 @@ pub struct NodeMetricsSnapshot {
     pub sync_bytes_persisted: u64,
     pub repair_bytes_fetched: u64,
     pub repair_bytes_persisted: u64,
-    pub repair_escalations: u64,
+    pub repair_to_recovery: u64,
     pub recover_bytes_fetched: u64,
     pub recover_bytes_persisted: u64,
 }
@@ -44,7 +44,7 @@ impl NodeMetrics {
                 sync_bytes_persisted: spool("sync", "persisted"),
                 repair_bytes_fetched: spool("repair", "fetched"),
                 repair_bytes_persisted: spool("repair", "persisted"),
-                repair_escalations: m.repair_escalations_total.get(),
+                repair_to_recovery: m.repair_attempts_total.with_label_values(&["to_recovery"]).get(),
                 recover_bytes_fetched: spool("recover", "fetched"),
                 recover_bytes_persisted: spool("recover", "persisted"),
             }
@@ -110,9 +110,45 @@ impl NodeMetrics {
         self.add_spool("recover", "persisted", n);
     }
 
-    pub fn inc_repair_escalations(&self) {
+    pub fn inc_repair_to_recovery(&self) {
+        self.inc_repair_attempts("to_recovery");
+    }
+
+    pub fn inc_repair_repaired(&self) {
+        self.inc_repair_attempts("repaired");
+    }
+
+    pub fn inc_repair_put_back(&self) {
+        self.inc_repair_attempts("put_back");
+    }
+
+    #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
+    pub fn inc_repair_missing(&self, cause: &str) {
         #[cfg(feature = "metrics")]
-        tape_metrics::metrics().repair_escalations_total.inc();
+        tape_metrics::metrics()
+            .repair_missing_total
+            .with_label_values(&[cause])
+            .inc();
+    }
+
+    #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
+    pub fn add_repair_missing_helper_stripes(&self, n: u64) {
+        #[cfg(feature = "metrics")]
+        tape_metrics::metrics().repair_missing_helper_stripes_total.inc_by(n);
+    }
+
+    pub fn inc_recover_recovered(&self) {
+        self.inc_recover_tries("recovered");
+    }
+
+    pub fn inc_recover_put_back(&self) {
+        self.inc_recover_tries("put_back");
+    }
+
+    #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
+    pub fn add_recover_rejected(&self, n: u64) {
+        #[cfg(feature = "metrics")]
+        tape_metrics::metrics().recover_rejected_slices_total.inc_by(n);
     }
 
     pub fn add_sync_stored(&self, n: u64) {
@@ -161,6 +197,24 @@ impl NodeMetrics {
     }
 
     #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
+    fn inc_repair_attempts(&self, outcome: &str) {
+        #[cfg(feature = "metrics")]
+        tape_metrics::metrics()
+            .repair_attempts_total
+            .with_label_values(&[outcome])
+            .inc();
+    }
+
+    #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
+    fn inc_recover_tries(&self, outcome: &str) {
+        #[cfg(feature = "metrics")]
+        tape_metrics::metrics()
+            .recover_tries_total
+            .with_label_values(&[outcome])
+            .inc();
+    }
+
+    #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
     fn add_sync_tracks(&self, outcome: &str, n: u64) {
         #[cfg(feature = "metrics")]
         tape_metrics::metrics()
@@ -192,7 +246,7 @@ mod tests {
         m.add_sync_persisted(13);
         m.add_repair_fetched(17);
         m.add_repair_persisted(19);
-        m.inc_repair_escalations();
+        m.inc_repair_to_recovery();
         m.add_recover_fetched(23);
         m.add_recover_persisted(29);
 
@@ -207,8 +261,43 @@ mod tests {
         assert_eq!(after.sync_bytes_persisted - before.sync_bytes_persisted, 13);
         assert_eq!(after.repair_bytes_fetched - before.repair_bytes_fetched, 17);
         assert_eq!(after.repair_bytes_persisted - before.repair_bytes_persisted, 19);
-        assert_eq!(after.repair_escalations - before.repair_escalations, 1);
+        assert_eq!(after.repair_to_recovery - before.repair_to_recovery, 1);
         assert_eq!(after.recover_bytes_fetched - before.recover_bytes_fetched, 23);
         assert_eq!(after.recover_bytes_persisted - before.recover_bytes_persisted, 29);
+    }
+
+    // each repair and recovery outcome lands on its own series
+    #[test]
+    fn repair_and_recover_counters() {
+        let m = NodeMetrics;
+        let set = tape_metrics::metrics();
+        let attempts = |outcome: &str| set.repair_attempts_total.with_label_values(&[outcome]).get();
+        let missing = |cause: &str| set.repair_missing_total.with_label_values(&[cause]).get();
+        let tries = |outcome: &str| set.recover_tries_total.with_label_values(&[outcome]).get();
+        let before = (
+            attempts("repaired"),
+            attempts("put_back"),
+            missing("deadline"),
+            set.repair_missing_helper_stripes_total.get(),
+            tries("recovered"),
+            tries("put_back"),
+            set.recover_rejected_slices_total.get(),
+        );
+
+        m.inc_repair_repaired();
+        m.inc_repair_put_back();
+        m.inc_repair_missing("deadline");
+        m.add_repair_missing_helper_stripes(3);
+        m.inc_recover_recovered();
+        m.inc_recover_put_back();
+        m.add_recover_rejected(2);
+
+        assert_eq!(attempts("repaired") - before.0, 1);
+        assert_eq!(attempts("put_back") - before.1, 1);
+        assert_eq!(missing("deadline") - before.2, 1);
+        assert_eq!(set.repair_missing_helper_stripes_total.get() - before.3, 3);
+        assert_eq!(tries("recovered") - before.4, 1);
+        assert_eq!(tries("put_back") - before.5, 1);
+        assert_eq!(set.recover_rejected_slices_total.get() - before.6, 2);
     }
 }

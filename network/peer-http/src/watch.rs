@@ -8,6 +8,7 @@ use std::time::Duration;
 use bytes::{Bytes, BytesMut};
 use futures::stream;
 use tape_core::types::StorageUnits;
+use tape_protocol::ApiError;
 use tokio::time::Instant;
 
 /// Bytes handed to the connection per poll, small enough that a push on a slow, shared link still moves within its idle limit
@@ -25,6 +26,25 @@ pub async fn with_slice_watch<Call: Future>(watch: Option<SliceWatch>, call: Cal
     match watch {
         Some(watch) => SLICE_WATCH.scope(watch, call).await,
         None => call.await,
+    }
+}
+
+/// Run a slice call that fails with a timeout once its body moves no byte for `idle`
+///
+/// The limit counts from the call's start, so a holder that never answers
+/// gives up after `idle` too.
+pub async fn with_idle_limit<T, Call>(idle: Duration, call: Call) -> Result<T, ApiError>
+where
+    Call: Future<Output = Result<T, ApiError>>,
+{
+    let watch = Watch::new();
+    let heard: SliceWatch = {
+        let watch = watch.clone();
+        Arc::new(move |_, _| watch.touch())
+    };
+    tokio::select! {
+        answer = with_slice_watch(Some(heard), call) => answer,
+        () = silence(&watch, idle) => Err(ApiError::Timeout),
     }
 }
 
@@ -130,5 +150,38 @@ mod tests {
         let started = Instant::now();
         silence(&watch, Duration::from_millis(300)).await;
         assert!(started.elapsed() >= Duration::from_millis(290), "{:?}", started.elapsed());
+    }
+
+    // a call that never answers gives up once the idle limit passes
+    #[tokio::test]
+    async fn idle_call_times_out() {
+        let idle = Duration::from_millis(200);
+        let started = Instant::now();
+
+        let answer = with_idle_limit(idle, std::future::pending::<Result<(), ApiError>>()).await;
+
+        assert!(matches!(answer, Err(ApiError::Timeout)), "{answer:?}");
+        assert!(started.elapsed() >= idle, "{:?}", started.elapsed());
+    }
+
+    // a call whose body keeps moving runs past the idle limit and finishes
+    #[tokio::test]
+    async fn moving_call_finishes() {
+        let idle = Duration::from_millis(200);
+        let started = Instant::now();
+        let call = async {
+            for piece in 1..=5u64 {
+                tokio::time::sleep(idle / 2).await;
+                if let Some(watch) = current_slice_watch() {
+                    watch(StorageUnits::from_bytes(piece), StorageUnits::from_bytes(5));
+                }
+            }
+            Ok::<_, ApiError>(())
+        };
+
+        let answer = with_idle_limit(idle, call).await;
+
+        assert!(answer.is_ok(), "{answer:?}");
+        assert!(started.elapsed() >= idle * 2, "{:?}", started.elapsed());
     }
 }

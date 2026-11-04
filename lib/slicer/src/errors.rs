@@ -36,6 +36,8 @@ pub enum RepairError {
     InvalidLayout(String),
     #[error("clay error: {0}")]
     Clay(String),
-    #[error("missing helper data for slice {0}")]
-    MissingHelper(SliceIndex),
+    #[error("helper {slice} sent {actual} bytes, expected {expected}")]
+    HelperLength { slice: SliceIndex, expected: usize, actual: usize },
+    #[error("{} stripes lack a plan or helper data", .0.len())]
+    ShortStripes(Vec<u32>),
 }

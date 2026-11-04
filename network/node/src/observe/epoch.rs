@@ -37,7 +37,7 @@ struct Counters {
     spool_bytes_fetched: u64,
     cache_hits: u64,
     cache_misses: u64,
-    repair_escalations: u64,
+    repair_to_recovery: u64,
     requests: u64,
     egress_bytes: u64,
     bytes_uploaded: u64,
@@ -91,7 +91,7 @@ fn read_counters(families: &[MetricFamily]) -> Counters {
         spool_bytes_fetched: spool(SPOOL_STAGE_FETCHED),
         cache_hits: m.cache_requests_total.with_label_values(&["hit"]).get(),
         cache_misses: m.cache_requests_total.with_label_values(&["miss"]).get(),
-        repair_escalations: m.repair_escalations_total.get(),
+        repair_to_recovery: m.repair_attempts_total.with_label_values(&["to_recovery"]).get(),
         requests: m.requests_total.get(),
         egress_bytes: family_counter(families, "tape_http_response_bytes_total"),
         bytes_uploaded: m.bytes_uploaded.get(),
@@ -125,7 +125,7 @@ struct Gauges {
     spool_bytes_fetched: IntGauge,
     cache_hits: IntGauge,
     cache_misses: IntGauge,
-    repair_escalations: IntGauge,
+    repair_to_recovery: IntGauge,
     requests: IntGauge,
     egress_bytes: IntGauge,
     bytes_uploaded: IntGauge,
@@ -164,7 +164,7 @@ impl Gauges {
             spool_bytes_fetched: gauge("tape_node_last_epoch_spool_bytes_fetched", "Spool bytes fetched during the last epoch"),
             cache_hits: gauge("tape_node_last_epoch_cache_hits", "Slice cache hits during the last epoch"),
             cache_misses: gauge("tape_node_last_epoch_cache_misses", "Slice cache misses during the last epoch"),
-            repair_escalations: gauge("tape_node_last_epoch_repair_escalations", "Repair escalations during the last epoch"),
+            repair_to_recovery: gauge("tape_node_last_epoch_repair_to_recovery", "Tracks repair sent to recovery during the last epoch"),
             requests: gauge("tape_node_last_epoch_requests", "Requests served during the last epoch"),
             egress_bytes: gauge("tape_node_last_epoch_egress_bytes", "Bytes served during the last epoch"),
             bytes_uploaded: gauge("tape_node_last_epoch_bytes_uploaded", "Bytes uploaded during the last epoch"),
@@ -196,7 +196,7 @@ impl Gauges {
         self.spool_bytes_fetched.set(d.spool_bytes_fetched as i64);
         self.cache_hits.set(d.cache_hits as i64);
         self.cache_misses.set(d.cache_misses as i64);
-        self.repair_escalations.set(d.repair_escalations as i64);
+        self.repair_to_recovery.set(d.repair_to_recovery as i64);
         self.requests.set(d.requests as i64);
         self.egress_bytes.set(d.egress_bytes as i64);
         self.bytes_uploaded.set(d.bytes_uploaded as i64);
@@ -263,7 +263,7 @@ fn delta(number: u64, base: &Counters, now: &Counters) -> LastEpoch {
         spool_bytes_fetched: now.spool_bytes_fetched.saturating_sub(base.spool_bytes_fetched),
         cache_hits: now.cache_hits.saturating_sub(base.cache_hits),
         cache_misses: now.cache_misses.saturating_sub(base.cache_misses),
-        repair_escalations: now.repair_escalations.saturating_sub(base.repair_escalations),
+        repair_to_recovery: now.repair_to_recovery.saturating_sub(base.repair_to_recovery),
         requests: now.requests.saturating_sub(base.requests),
         egress_bytes: now.egress_bytes.saturating_sub(base.egress_bytes),
         bytes_uploaded: now.bytes_uploaded.saturating_sub(base.bytes_uploaded),
@@ -297,7 +297,7 @@ fn accumulate(total: &mut LastEpoch, d: &LastEpoch) {
     total.spool_bytes_fetched += d.spool_bytes_fetched;
     total.cache_hits += d.cache_hits;
     total.cache_misses += d.cache_misses;
-    total.repair_escalations += d.repair_escalations;
+    total.repair_to_recovery += d.repair_to_recovery;
     total.requests += d.requests;
     total.egress_bytes += d.egress_bytes;
     total.bytes_uploaded += d.bytes_uploaded;
