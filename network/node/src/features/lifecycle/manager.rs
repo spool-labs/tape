@@ -43,12 +43,11 @@
 //
 // ── Spool readiness (WaitSpoolReady) ─────────────────────────────────
 //
-//   Before submitting SyncSpool, the node must have all its assigned
-//   spools in a ready state. This is a separate lifecycle action
-//   (WaitSpoolReady) that polls the store until all owned spools are
-//   Active. Once done, the lifecycle advances to SyncSpools.
-//   Readiness is determined by polling the store (iter_all_spools) 
-//   not via a cross-feature channel.
+//   Before submitting SyncSpool, the node must be ready to attest every
+//   spool it owns: filling is done and no handover entry is left. This is
+//   a separate lifecycle action (WaitSpoolReady) that polls the store.
+//   Once done, the lifecycle advances to SyncSpools. Readiness is read
+//   from the spool rows and the missing_list, with no cross-feature channel.
 //
 // ── No permanent failure ────────────────────────────────────────────
 //

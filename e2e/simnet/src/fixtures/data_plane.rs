@@ -72,13 +72,12 @@ impl SimnetScenario<'_> {
                     continue;
                 }
                 let ctx = node.context();
-                let spools = ctx
+                let row = ctx
                     .store
-                    .iter_all_spools()
-                    .with_context(|| format!("iter_all_spools node {}", node.id()))?;
+                    .get_spool_state(spool_id)
+                    .with_context(|| format!("get_spool_state node {}", node.id()))?;
 
-                let owns_spool = spools.iter().any(|(id, _)| *id == spool_id);
-                if !owns_spool {
+                if row.is_none() {
                     continue;
                 }
 

@@ -3,7 +3,7 @@
 //! Run with: cargo run -p tape-store --features rocks --example basic_usage
 
 use tape_core::spooler::VirtualGroup;
-use tape_core::system::{SpoolState, SpoolStatus};
+use tape_core::system::SpoolState;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
 use tape_core::types::{
     EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
@@ -62,17 +62,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spool_slices = store.iter_slices_by_spool(SpoolIndex(0))?;
     println!("Spool 0 has {} slices", spool_slices.len());
 
-    // Spool status (NOT epoch-namespaced)
-    for spool_id in 0..3u16 {
-        store.set_spool_state(
-            SpoolIndex(spool_id as u64),
-            SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
-        )?;
+    // Spool rows (NOT epoch-namespaced)
+    let mut rows = Vec::new();
+    for spool_id in 0..3u64 {
+        rows.push((SpoolIndex(spool_id), SpoolState::gained()));
     }
+    store.put_spool_states(&rows)?;
 
-    // Iterate all spools
-    let spools = store.iter_all_spools()?;
-    println!("Active spools: {:?}", spools);
+    // List every spool row
+    let spools = store.spool_states(None, STORED_SPOOL_COUNT)?;
+    println!("Owned spools: {:?}", spools);
 
     // Tape info
     let tape_info = TapeInfo {

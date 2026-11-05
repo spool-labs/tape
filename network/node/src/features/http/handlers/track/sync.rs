@@ -290,7 +290,7 @@ mod tests {
 
     use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::spooler::VirtualGroup;
-    use tape_core::system::{SpoolState, SpoolStatus};
+    use tape_core::system::SpoolState;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber};
@@ -366,9 +366,10 @@ mod tests {
 
     // a stored spool the node keeps for its next holder
     fn hold(ctx: &TestContext, spool: SpoolIndex) {
+        let row = SpoolState { locked_at: EpochNumber(1), ..SpoolState::gained() };
         ctx.store
-            .set_spool_state(spool, SpoolState::new(SpoolStatus::LockedToMove, EpochNumber(1)))
-            .expect("set spool state");
+            .put_spool_states(&[(spool, row)])
+            .expect("set spool row");
     }
 
     fn request(tracks: Vec<Address>, max_bytes: usize) -> SyncSlicesRequest {

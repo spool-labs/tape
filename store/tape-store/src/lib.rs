@@ -8,7 +8,7 @@
 //! - Track data: Locally stored track payloads
 //! - Object info: Tracked object status (blacklisted, invalid, valid)
 //! - Slice data: Raw erasure-coded data
-//! - Spool state: Spool status, sync progress, pending repair/recovery
+//! - Spool records: spool rows, the missing_list, the owner history
 //!
 //! # Column Families
 //!
@@ -16,6 +16,7 @@
 //! - `meta`: Node configuration and metadata
 //! - `tape`: Tape metadata
 //! - `track`: Track metadata
+//! - `track_group_index`: Tracks by virtual group
 //! - `track_data`: Track payload data
 //! - `object_info`: Object metadata
 //!
@@ -24,11 +25,9 @@
 //! - `gc`: GC progress tracking
 //!
 //! ## Spool Columns (NOT epoch-namespaced)
-//! - `spool_status`: Spool status
-//! - `spool_pending_repair`: Pending repair queue
-//! - `spool_repair_index`: Pending repair queue by track
-//! - `spool_pending_recovery`: Pending recovery queue
-//! - `spool_recovery_index`: Pending recovery queue by track
+//! - `spool_missing_track`: Tracks a spool still needs something for
+//! - `spool_state`: Spools owned now or in the epochs slices are kept
+//! - `spool_owner_history`: Who owned each live group's spools, by epoch
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Erasure-coded slice data
@@ -42,7 +41,6 @@ pub mod types;
 
 #[cfg(feature = "rocks")]
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
 
 use tape_store_api::{Store, TypedStore};
 #[cfg(feature = "rocks")]
@@ -52,9 +50,6 @@ use tape_store_rocks::{RocksStore, SplitStore};
 /// Wrapper around TypedStore providing tape-specific storage operations
 pub struct TapeStore<S: Store> {
     inner: TypedStore<S>,
-    /// Held across a queue row's read and its write, so a row and its index
-    /// entry never part
-    queue_lock: Mutex<()>,
 }
 
 impl<S: Store> TapeStore<S> {
@@ -62,16 +57,7 @@ impl<S: Store> TapeStore<S> {
     pub fn new(store: S) -> Self {
         Self {
             inner: TypedStore::new(store),
-            queue_lock: Mutex::new(()),
         }
-    }
-
-    /// Hold the queues for one read and write
-    ///
-    /// The lock guards no data, so a holder that panicked leaves nothing to
-    /// distrust.
-    pub fn lock_queues(&self) -> MutexGuard<'_, ()> {
-        self.queue_lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Get the inner TypedStore
@@ -241,7 +227,7 @@ mod tests {
     use crate::ops::*;
     use crate::types::{ObjectInfo, TapeInfo};
     use tape_store_memory::MemoryStore;
-    use tape_core::system::{SpoolState, SpoolStatus};
+    use tape_core::system::SpoolState;
     use tape_core::types::{EpochNumber, SlotNumber, VirtualGroup, SpoolIndex, TapeNumber, TrackNumber};
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
@@ -309,16 +295,15 @@ mod tests {
         assert_eq!(retrieved, Some(info));
     }
 
+    // a spool row reads back as it was written
     #[test]
-    fn test_spool_status() {
+    fn spool_state() {
         let store = TapeStore::new(MemoryStore::new());
         let spool_id = SpoolIndex(42);
 
-        store
-            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(0)))
-            .unwrap();
-        let state = store.get_spool_state(spool_id).unwrap();
-        assert!(state.unwrap().is_active());
+        store.put_spool_states(&[(spool_id, SpoolState::gained())]).unwrap();
+
+        assert_eq!(store.get_spool_state(spool_id).unwrap(), Some(SpoolState::gained()));
     }
 
     #[test]
@@ -530,9 +515,7 @@ mod tests {
                 .unwrap();
             tracks.push(address);
         }
-        store
-            .set_spool_state(SpoolIndex(7), SpoolState::new(SpoolStatus::Active, EpochNumber(0)))
-            .unwrap();
+        store.put_spool_states(&[(SpoolIndex(7), SpoolState::gained())]).unwrap();
 
         store.inner().inner().flush().unwrap();
 
@@ -548,7 +531,7 @@ mod tests {
         assert!(rest.iter().all(|(address, _)| *address != cursor));
 
         assert_eq!(store.iter_all_tapes().unwrap().len(), 1);
-        assert_eq!(store.iter_all_spools().unwrap().len(), 1);
+        assert_eq!(store.spool_states(None, STORED_SPOOL_COUNT).unwrap().len(), 1);
         assert!(store.get_object_info(tracks[0]).unwrap().is_some());
         drop(store);
 

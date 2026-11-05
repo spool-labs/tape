@@ -7,6 +7,7 @@
 //! - `tape`: Tape metadata (Address -> TapeInfo)
 //! - `track`: Canonical compressed-track catalog (Address -> PackedTrack)
 //! - `track_lookup`: Tape-local ordered index ((tape, tape_number, track_number) -> Address)
+//! - `track_group_index`: Tracks by virtual group ((group, track) -> ())
 //! - `track_data`: Local track payload data (Address -> BlobData)
 //! - `object_info`: Object metadata (Address -> ObjectInfo)
 //! - `object_metadata`: Named-object reverse lookup (Address -> ObjectMetadata)
@@ -17,11 +18,9 @@
 //! - `gc`: GC progress tracking (String -> EpochNumber)
 //!
 //! ## Spool Columns (NOT epoch-namespaced)
-//! - `spool_status`: Spool status (SpoolIndexKey -> SpoolStatus)
-//! - `spool_pending_repair`: Pending repair, in ready order (QueueKey -> ())
-//! - `spool_repair_index`: Pending repair by track (SliceKey -> ready slot)
-//! - `spool_pending_recovery`: Pending recovery, in ready order (QueueKey -> ())
-//! - `spool_recovery_index`: Pending recovery by track (SliceKey -> ready slot)
+//! - `spool_missing_track`: Tracks that still need something (EntryKey -> Entry)
+//! - `spool_state`: Spools owned now or lately ((position, group) -> SpoolState)
+//! - `spool_owner_history`: Live group owners by epoch ((epoch, spool) -> Address)
 //!
 //! ## Slice Data Column (BlobDB)
 //! - `slice`: Slice data, sidecar and payload under one key (SliceKey -> stored slice)
@@ -69,6 +68,7 @@ pub mod sync_cursor;
 pub mod tape;
 pub mod track;
 pub mod track_data;
+pub mod track_group_index;
 pub mod track_lookup;
 pub mod vote;
 
@@ -89,14 +89,12 @@ pub use s3_multipart::{S3MultipartPartCol, S3MultipartPartDataCol, S3MultipartUp
 pub use s3_pending::{S3PendingWriteCol, S3PendingWriteDataCol};
 pub use snapshot::SnapshotArtifactCol;
 pub use slice::SliceCol;
-pub use spool::{
-    SpoolPendingRecoveryCol, SpoolPendingRepairCol, SpoolRecoveryIndexCol, SpoolRepairIndexCol,
-    SpoolStatusCol,
-};
+pub use spool::{SpoolMissingTrackCol, SpoolOwnerHistoryCol, SpoolStateCol};
 pub use sync_cursor::{SyncCursor, SyncCursorCol};
 pub use tape::TapeCol;
 pub use track::TrackCol;
 pub use track_data::TrackDataCol;
+pub use track_group_index::TrackGroupIndexCol;
 pub use track_lookup::TrackLookupCol;
 pub use vote::VoteSigCol;
 
@@ -106,17 +104,16 @@ pub const ALL_COLUMN_FAMILIES: &[&str] = &[
     "tape",
     "track",
     "track_lookup",
+    "track_group_index",
     "track_data",
     "object_info",
     "object_metadata",
     "object_list",
     "sync_cursor",
     "gc",
-    "spool_status",
-    "spool_pending_repair",
-    "spool_repair_index",
-    "spool_pending_recovery",
-    "spool_recovery_index",
+    "spool_missing_track",
+    "spool_state",
+    "spool_owner_history",
     "slice",
     "event_log",
     "vote_sig",

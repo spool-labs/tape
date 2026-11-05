@@ -4,8 +4,8 @@
 
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::MAX_GROUP_SIZE;
-use tape_core::spooler::GroupIndex;
-use tape_core::system::{SpoolState, SpoolStatus, VoteCandidate, VoteKind};
+use tape_core::spooler::{GroupFold, GroupIndex};
+use tape_core::system::{SpoolState, VoteCandidate, VoteKind};
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
 use tape_core::types::{
@@ -112,16 +112,11 @@ fn all_column_families() {
         .put_object_info(object_address, object_info)
         .unwrap();
 
-    // Spool status (NOT epoch-namespaced)
+    // Spool row and missing_list (NOT epoch-namespaced)
     let spool = SpoolIndex(42);
-    store
-        .set_spool_state(spool, SpoolState::new(SpoolStatus::Active, EpochNumber(0)))
-        .unwrap();
-
-    // Pending recovery
-    store
-        .add_pending_recovery(spool, track_address)
-        .unwrap();
+    store.put_spool_states(&[(spool, SpoolState::gained())]).unwrap();
+    let entry = EntryKey { spool, is_handover: true, track: track_address };
+    store.put_entry(entry, Entry::never_tried()).unwrap();
 
     // Slices
     store
@@ -132,8 +127,8 @@ fn all_column_families() {
     assert!(store.get_track(track_address).unwrap().is_some());
     assert!(store.get_tape(tape_address).unwrap().is_some());
     assert!(store.get_object_info(object_address).unwrap().is_some());
-    assert!(store.get_spool_state(spool).unwrap().unwrap().is_active());
-    assert!(store.has_pending_recovery(spool, track_address).unwrap());
+    assert!(store.get_spool_state(spool).unwrap().unwrap().is_filling);
+    assert!(store.has_entry(spool, track_address).unwrap());
     assert!(store.get_slice(spool, track_address).unwrap().is_some());
 }
 
@@ -206,6 +201,7 @@ fn track_operations() {
     assert!(store.get_track(track).unwrap().is_none());
 }
 
+// spool rows write, list and delete by stored spool
 #[test]
 fn spool_ops() {
     let temp_dir = TempDir::new().unwrap();
@@ -213,88 +209,44 @@ fn spool_ops() {
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
-    // Set status (NOT epoch-namespaced)
+    let locked = SpoolState { locked_at: EpochNumber(3), ..SpoolState::gained() };
     store
-        .set_spool_state(SpoolIndex(42), SpoolState::new(SpoolStatus::Active, EpochNumber(0)))
-        .unwrap();
-    store
-        .set_spool_state(SpoolIndex(43), SpoolState::new(SpoolStatus::Sync, EpochNumber(0)))
+        .put_spool_states(&[(SpoolIndex(42), SpoolState::gained()), (SpoolIndex(43), locked)])
         .unwrap();
 
-    assert!(store.get_spool_state(SpoolIndex(42)).unwrap().unwrap().is_active());
-    assert!(store.get_spool_state(SpoolIndex(43)).unwrap().unwrap().is_syncing());
+    assert!(!store.get_spool_state(SpoolIndex(42)).unwrap().unwrap().is_locked());
+    assert!(store.get_spool_state(SpoolIndex(43)).unwrap().unwrap().is_locked());
+    assert_eq!(store.spool_states(None, STORED_SPOOL_COUNT).unwrap().len(), 2);
 
-    // Iterate all spools
-    let spools = store.iter_all_spools().unwrap();
-    assert_eq!(spools.len(), 2);
-
-    // Remove
-    store.remove_spool_state(SpoolIndex(42)).unwrap();
+    store.delete_spool_state(SpoolIndex(42)).unwrap();
     assert!(store.get_spool_state(SpoolIndex(42)).unwrap().is_none());
 }
 
+// a live spool's missing_list reads back in key order on rocks
 #[test]
-fn pending_recovery_operations() {
+fn missing_list() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test_db");
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
-    let spool_id = SpoolIndex(42);
-    let track1 = Address::new_unique();
-    let track2 = Address::new_unique();
-    let track3 = Address::new_unique();
+    let spool = VirtualGroup(2).spool_at(4);
+    let mut keys = Vec::new();
+    for byte in 1..=3u8 {
+        let key = EntryKey { spool, is_handover: byte == 3, track: Address::new([byte; 32]) };
+        store.put_entry(key, Entry::never_tried()).unwrap();
+        keys.push(key);
+    }
 
-    // Add pending recoveries
-    store.add_pending_recovery(spool_id, track1).unwrap();
-    store.add_pending_recovery(spool_id, track2).unwrap();
-    store.add_pending_recovery(spool_id, track3).unwrap();
+    let live = GroupIndex(0).spool_at(4);
+    let fold = GroupFold::new(1).unwrap();
+    let page = store.missing_page(live, fold, None, 10).unwrap();
+    let read: Vec<EntryKey> = page.iter().map(|(key, _)| *key).collect();
+    assert_eq!(read, keys);
+    assert!(store.has_handover_entries(live, fold).unwrap());
 
-    // Check existence
-    assert!(store.has_pending_recovery(spool_id, track1).unwrap());
-    assert!(store.has_pending_recovery(spool_id, track2).unwrap());
-    assert!(store.has_pending_recovery(spool_id, track3).unwrap());
-
-    // Iterate pending for spool
-    let pending = store.iter_pending_recoveries(spool_id, 100).unwrap();
-    assert_eq!(pending.len(), 3);
-
-    // Remove one
-    store.remove_pending_recovery(spool_id, track1).unwrap();
-    assert!(!store.has_pending_recovery(spool_id, track1).unwrap());
-
-    // Others still exist
-    assert!(store.has_pending_recovery(spool_id, track2).unwrap());
-    assert!(store.has_pending_recovery(spool_id, track3).unwrap());
-}
-
-#[test]
-fn pending_repair_operations() {
-    let temp_dir = TempDir::new().unwrap();
-    let db_path = temp_dir.path().join("test_db");
-
-    let store = TapeStore::open_primary(&db_path).unwrap();
-
-    let spool_id = SpoolIndex(42);
-    let track1 = Address::new_unique();
-    let track2 = Address::new_unique();
-    let track3 = Address::new_unique();
-
-    store.add_pending_repair(spool_id, track1).unwrap();
-    store.add_pending_repair(spool_id, track2).unwrap();
-    store.add_pending_repair(spool_id, track3).unwrap();
-
-    assert!(store.has_pending_repair(spool_id, track1).unwrap());
-    assert!(store.has_pending_repair(spool_id, track2).unwrap());
-    assert!(store.has_pending_repair(spool_id, track3).unwrap());
-
-    let pending = store.repairs_due(spool_id, None, SlotNumber(0), 100).unwrap();
-    assert_eq!(pending.len(), 3);
-
-    store.remove_pending_repair(spool_id, track1).unwrap();
-    assert!(!store.has_pending_repair(spool_id, track1).unwrap());
-    assert!(store.has_pending_repair(spool_id, track2).unwrap());
-    assert!(store.has_pending_repair(spool_id, track3).unwrap());
+    store.delete_entry(keys[2]).unwrap();
+    assert!(!store.has_handover_entries(live, fold).unwrap());
 }
 
 #[test]
@@ -409,27 +361,20 @@ fn tape_info_operations() {
     assert!(store.get_tape(tape).unwrap().is_none());
 }
 
-// spools with queued rows are still listed once the rows are flushed to disk
+// a live spool's handover entries are still found once flushed to disk
 #[test]
-fn pending_spools_flushed() {
+fn entries_flushed() {
     let temp_dir = TempDir::new().expect("tempdir");
     let store = TapeStore::open_primary(temp_dir.path()).expect("open");
-    store
-        .add_pending_repair(SpoolIndex(5), Address::new_unique())
-        .expect("pending repair");
-    store
-        .add_pending_repair(SpoolIndex(9), Address::new_unique())
-        .expect("pending repair");
-    store
-        .add_pending_recovery(SpoolIndex(7), Address::new_unique())
-        .expect("pending recovery");
+    let spool = VirtualGroup(9).spool_at(2);
+    let key = EntryKey { spool, is_handover: true, track: Address::new_unique() };
+    store.put_entry(key, Entry::never_tried()).expect("entry");
     store.inner().inner().flush().expect("flush");
 
-    let repair = store.pending_repair_spools().expect("repair spools");
-    let recovery = store.pending_recovery_spools().expect("recovery spools");
+    let live = GroupIndex(0).spool_at(2);
+    let fold = GroupFold::new(1).expect("fold");
 
-    assert_eq!(repair, vec![SpoolIndex(5), SpoolIndex(9)]);
-    assert_eq!(recovery, vec![SpoolIndex(7)]);
+    assert!(store.has_handover_entries(live, fold).expect("handover"));
 }
 
 // deleting one voting epoch's signatures leaves the next epoch's in place

@@ -44,6 +44,7 @@ const TOTAL_WRITE_BUFFER_BYTES: usize = 128 * 1024 * 1024;
 /// - `tape` - 32-byte Address keys
 /// - `track` - 32-byte Address keys, packed compressed-track values
 /// - `track_lookup` - 48-byte ordered tape track index with 32-byte tape prefix
+/// - `track_group_index` - 34-byte key, virtual group then track
 /// - `track_data` - 32-byte Address keys, local track payload values
 /// - `object_info` - 32-byte Address keys
 /// - `object_metadata` - 32-byte Address keys, named object reverse lookup
@@ -53,11 +54,9 @@ const TOTAL_WRITE_BUFFER_BYTES: usize = 128 * 1024 * 1024;
 /// - `gc` - String keys
 ///
 /// ## Spool Columns (NOT epoch-namespaced)
-/// - `spool_status` - 2-byte SpoolIndexKey
-/// - `spool_pending_repair` - 42-byte QueueKey with 2-byte spool prefix
-/// - `spool_repair_index` - 34-byte SliceKey with 2-byte spool prefix
-/// - `spool_pending_recovery` - 42-byte QueueKey with 2-byte spool prefix
-/// - `spool_recovery_index` - 34-byte SliceKey with 2-byte spool prefix
+/// - `spool_missing_track` - 36-byte EntryKey with a 2-byte position and handover prefix
+/// - `spool_state` - 3-byte key, position then virtual group
+/// - `spool_owner_history` - 10-byte key, epoch then stored spool
 ///
 /// ## Slice Data Column (BlobDB)
 /// - `slice` - 34-byte SliceKey, large (~1MB) values (BlobDB with 2-byte prefix)
@@ -111,6 +110,11 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
             .with_block_based(cache)
             .with_prefix_extractor(32),
 
+        // Track group index - 34-byte key, read a page at a time
+        // across runs of groups, so no prefix extractor
+        ColumnFamilyConfig::new("track_group_index")
+            .with_block_based(cache),
+
         // Track data - 32-byte Address keys, local payload values
         ColumnFamilyConfig::new("track_data")
             .with_block_based(cache),
@@ -137,33 +141,19 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
         ColumnFamilyConfig::new("gc")
             .with_block_based(cache),
 
-        // Spool status - 2-byte SpoolIndexKey
-        ColumnFamilyConfig::new("spool_status")
+        // Spool missing track - 36-byte EntryKey, read in runs of virtual groups
+        // 2-byte position and handover prefix
+        ColumnFamilyConfig::new("spool_missing_track")
+            .with_block_based(cache)
+            .with_prefix_extractor(2),
+
+        // Spool state - 3-byte key, position then virtual group
+        ColumnFamilyConfig::new("spool_state")
             .with_block_based(cache),
 
-        // Spool pending repair - 42-byte QueueKey in ready order
-        // 2-byte spool prefix for iteration by spool
-        ColumnFamilyConfig::new("spool_pending_repair")
-            .with_block_based(cache)
-            .with_prefix_extractor(2),
-
-        // Spool repair index - 34-byte SliceKey to the row's ready slot
-        // 2-byte spool prefix for iteration by spool
-        ColumnFamilyConfig::new("spool_repair_index")
-            .with_block_based(cache)
-            .with_prefix_extractor(2),
-
-        // Spool pending recovery - 42-byte QueueKey in ready order
-        // 2-byte spool prefix for iteration by spool
-        ColumnFamilyConfig::new("spool_pending_recovery")
-            .with_block_based(cache)
-            .with_prefix_extractor(2),
-
-        // Spool recovery index - 34-byte SliceKey to the row's ready slot
-        // 2-byte spool prefix for iteration by spool
-        ColumnFamilyConfig::new("spool_recovery_index")
-            .with_block_based(cache)
-            .with_prefix_extractor(2),
+        // Spool owner history - 10-byte key, epoch then stored spool
+        ColumnFamilyConfig::new("spool_owner_history")
+            .with_block_based(cache),
 
         // Slice - 34-byte SliceKey, large (~1MB) values
         // 2-byte spool prefix for iteration by spool

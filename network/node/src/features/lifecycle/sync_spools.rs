@@ -162,7 +162,7 @@ fn owned_spool_list<Db: Store, Cluster: Api, Blockchain: Rpc>(
     }
 
     // The chain keeps one sync bit per live spool. `WaitSpoolReady` has already
-    // seen every stored spool under each of them become active.
+    // seen each of them ready to attest.
     let mut spools = state.member_live_spools(node);
     spools.sort_unstable();
     spools

@@ -9,7 +9,7 @@ use tape_core::system::{NodeStatus, SpoolState};
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
-use tape_store::ops::{ObjectInfoOps, SpoolOps, TapeOps, TrackOps};
+use tape_store::ops::{ObjectInfoOps, SpoolOps, TapeOps, TrackOps, STORED_SPOOL_COUNT};
 use tape_store::types::{ObjectInfo, TapeInfo};
 use tracing::trace;
 
@@ -266,18 +266,18 @@ impl SimnetScenario<'_> {
             .harness
             .node(index)
             .with_context(|| format!("node {index} missing"))?;
-        let spools = node.context().store.iter_all_spools()
-            .with_context(|| format!("iter_all_spools node {index}"))?;
+        let spools = node.context().store.spool_states(None, STORED_SPOOL_COUNT)
+            .with_context(|| format!("spool_states node {index}"))?;
         Ok(spools.len())
     }
 
-    pub fn node_spool_statuses(&self, index: usize) -> Result<Vec<(SpoolIndex, SpoolState)>> {
+    pub fn node_spool_states(&self, index: usize) -> Result<Vec<(SpoolIndex, SpoolState)>> {
         let node = self
             .harness
             .node(index)
             .with_context(|| format!("node {index} missing"))?;
-        node.context().store.iter_all_spools()
-            .with_context(|| format!("iter_all_spools node {index}"))
+        node.context().store.spool_states(None, STORED_SPOOL_COUNT)
+            .with_context(|| format!("spool_states node {index}"))
     }
 
     pub fn total_spool_count(&self, indices: &[usize]) -> Result<usize> {

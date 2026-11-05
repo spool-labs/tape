@@ -1,26 +1,23 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
-use tape_core::types::SpoolIndex;
-use tape_core::system::{EpochPhase, SpoolStatus};
+use tape_core::system::EpochPhase;
 use tape_core::types::EpochNumber;
 use tape_protocol::Api;
-use tape_store::ops::SpoolOps;
 use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::lifecycle::types::{Action, TaskDone};
-use crate::features::spool::manager::pending_work;
+use crate::features::spool::fill::ready_to_attest;
 
-// Purpose: Wait until all spools assigned to this node are Active.
+// Purpose: Wait until this node is ready to attest every spool it owns.
 //          This is a precondition for submitting SyncSpool, the node
-//          should not attest that it has synced until all spool data
-//          is actually ready.
+//          should not attest that it has synced until it has pulled in
+//          what was on each spool when it took the spool over.
 //
 // This task does not submit any transactions. It only reads
 // local state. It exits via Done or Cancelled.
@@ -30,7 +27,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
     epoch: EpochNumber,
     cancel: CancellationToken,
 ) -> TaskDone {
-    
+
     let mut backoff = Backoff::new(RetryConfig::infinite());
 
     loop {
@@ -46,7 +43,7 @@ pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
         match check_readiness(&ctx) {
             Ok(Readiness::Ready) => {
-                info!(epoch = epoch.0, "wait_spool_ready: all spools active");
+                info!(epoch = epoch.0, "wait_spool_ready: every spool ready to attest");
                 return TaskDone::Done(Action::WaitSpoolReady, epoch);
             }
             Ok(Readiness::NotReady { ready, total }) => {
@@ -70,6 +67,7 @@ pub enum Readiness {
     NotReady { ready: usize, total: usize },
 }
 
+/// Whether every live spool this node owns is ready to attest
 pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ctx: &NodeContext<Db, Cluster, Blockchain>,
 ) -> Result<Readiness, NodeError> {
@@ -80,52 +78,44 @@ pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
         return Ok(Readiness::Ready);
     }
 
-    let assigned: Vec<SpoolIndex> = state.member_spools(node);
-    if assigned.is_empty() {
+    let owned = state.member_live_spools(node);
+    let Some(fold) = state.fold() else {
+        return Ok(Readiness::Ready);
+    };
+
+    let mut ready = 0usize;
+    for spool in &owned {
+        let is_ready = ready_to_attest(&ctx.store, *spool, fold).map_err(store_error)?;
+        if is_ready {
+            ready += 1;
+        }
+    }
+
+    if ready == owned.len() {
+        info!(ready, total = owned.len(), "check_readiness: every owned spool ready to attest");
         return Ok(Readiness::Ready);
     }
 
-    let assigned_set: HashSet<SpoolIndex> = assigned.iter().copied().collect();
-    let persisted = ctx.store
-        .iter_all_spools()
-        .map_err(|e| NodeError::Store(format!("iter_all_spools: {e}")))?;
+    info!(ready, total = owned.len(), "check_readiness: not every owned spool ready to attest");
+    Ok(Readiness::NotReady { ready, total: owned.len() })
+}
 
-    let mut ready_count = 0usize;
-    for (spool, s) in &persisted {
-        if !assigned_set.contains(spool) || s.status != SpoolStatus::Active {
-            continue;
-        }
-
-        let (has_repair, has_recovery) = pending_work(&ctx.store, *spool)?;
-        if !has_repair && !has_recovery {
-            ready_count += 1;
-        }
-    }
-
-    if ready_count >= assigned.len() {
-        info!(ready = ready_count, total = assigned.len(), "check_readiness: all assigned spools are active");
-        Ok(Readiness::Ready)
-    } else {
-        info!(ready = ready_count, total = assigned.len(), "check_readiness: not all assigned spools are active");
-        Ok(Readiness::NotReady {
-            ready: ready_count,
-            total: assigned.len(),
-        })
-    }
+fn store_error(error: impl std::fmt::Display) -> NodeError {
+    NodeError::Store(error.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::system::{SpoolState, SpoolStatus};
-    use tape_core::types::SlotNumber;
+    use tape_core::system::SpoolState;
+    use tape_core::types::SpoolIndex;
     use tape_crypto::address::Address;
-    use tape_store::ops::MetaOps;
+    use tape_store::ops::SpoolOps;
+    use tape_store::types::{Entry, EntryKey};
 
     use crate::harness::{NodeHarness, TestContext};
 
     const EPOCH: EpochNumber = EpochNumber(2);
-    const APPLIED: SlotNumber = SlotNumber(100);
 
     async fn harness() -> NodeHarness {
         NodeHarness::builder()
@@ -138,70 +128,61 @@ mod tests {
             .expect("build harness")
     }
 
-    async fn test_context() -> (TestContext, SpoolIndex) {
-        let harness = harness().await;
-        let spool = harness.owned_spools(0)[0];
-        (harness.ctx_for(0), spool)
-    }
-
     fn track() -> Address {
         Address::from([1; 32])
     }
 
-    /// Whether the gate opens with every spool Active, once `queue` has put
-    /// rows on the first one
-    async fn is_ready_with(queue: fn(&TestContext, SpoolIndex)) -> bool {
+    /// Whether the gate opens once every owned spool's filling is done and
+    /// `change` has run on the first one
+    async fn is_ready_with(change: fn(&TestContext, SpoolIndex)) -> bool {
         let harness = harness().await;
         let ctx = harness.ctx_for(0);
         let spools = harness.owned_spools(0);
+        let done = SpoolState { is_filling: false, ..SpoolState::gained() };
+        let mut rows = Vec::new();
         for spool in &spools {
-            ctx.store
-                .set_spool_state(*spool, SpoolState::new(SpoolStatus::Active, EPOCH))
-                .expect("spool state");
+            rows.push((*spool, done));
         }
-        ctx.store.set_sync_cursor(APPLIED, None).expect("cursor");
-        queue(&ctx, spools[0]);
+        ctx.store.put_spool_states(&rows).expect("spool rows");
+        change(&ctx, spools[0]);
         matches!(check_readiness(&ctx).expect("readiness"), Readiness::Ready)
     }
 
-    // a row put back and a recovery row keep the gate shut, and a row still
-    // in the certify grace doesn't
+    // a fresh upload's entry leaves the gate open, and a handover entry or a
+    // spool still filling keeps it shut
     #[tokio::test]
-    async fn gate_by_rows() {
+    async fn gate_by_entries() {
         assert!(is_ready_with(|_, _| {}).await);
         assert!(
             is_ready_with(|ctx, spool| {
-                let ready_at = APPLIED.saturating_add(SlotNumber(12));
-                ctx.store.defer_pending_repair(spool, track(), ready_at).expect("defer");
+                let key = EntryKey { spool, is_handover: false, track: track() };
+                ctx.store.put_entry(key, Entry::never_tried()).expect("entry");
             })
             .await
         );
         assert!(
             !is_ready_with(|ctx, spool| {
-                ctx.store.add_pending_repair(spool, track()).expect("queue");
-                ctx.store.requeue_repair(spool, track()).expect("put back");
+                let key = EntryKey { spool, is_handover: true, track: track() };
+                ctx.store.put_entry(key, Entry::never_tried()).expect("entry");
             })
             .await
         );
         assert!(
             !is_ready_with(|ctx, spool| {
-                ctx.store.add_pending_recovery(spool, track()).expect("queue");
+                ctx.store.put_spool_states(&[(spool, SpoolState::gained())]).expect("row");
             })
             .await
         );
     }
 
+    // a spool with no rows yet is not ready
     #[tokio::test]
-    async fn active_with_pending_not_ready() {
-        let (ctx, spool) = test_context().await;
-        ctx.store
-            .set_spool_state(spool, SpoolState::new(SpoolStatus::Active, EPOCH))
-            .unwrap();
-        ctx.store
-            .add_pending_repair(spool, Address::from([1; 32]))
-            .unwrap();
+    async fn no_rows() {
+        let harness = harness().await;
+        let ctx = harness.ctx_for(0);
 
-        let result = check_readiness(&ctx).unwrap();
+        let result = check_readiness(&ctx).expect("readiness");
+
         assert!(matches!(result, Readiness::NotReady { .. }));
     }
 }

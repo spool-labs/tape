@@ -14,7 +14,7 @@ use tape_rpc::Rpc;
 use tape_store_api::{Column, DiskVolume, Store, StoreVolume};
 use tape_protocol::{Api, api::{NodeStats, VolumeStats}};
 use tape_store::columns::TrackCol;
-use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps};
+use tape_store::ops::{MetaOps, SliceOps, SpoolOps, TrackOps, STORED_SPOOL_COUNT};
 use tape_store::TapeStore;
 
 use crate::context::NodeContext;
@@ -271,7 +271,9 @@ pub fn reuse_for(took: Duration) -> Option<Duration> {
 
 fn read_store_totals<Db: Store>(store: &TapeStore<Db>) -> Result<StoreTotals, NodeError> {
     let backend = store.inner().inner();
-    let owned_spools = store.iter_all_spools().map_err(totals_error)?;
+    let owned_spools = store
+        .spool_states(None, STORED_SPOOL_COUNT)
+        .map_err(totals_error)?;
     // Zero bytes from a backend that can't weigh the column without reading it
     let (slices_stored, slice_bytes) = store.slice_totals().map_err(totals_error)?;
 

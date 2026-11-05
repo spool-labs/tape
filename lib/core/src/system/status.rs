@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "wincode")]
 use wincode_derive::{SchemaRead, SchemaWrite};
 
-use crate::erasure::MAX_GROUP_SIZE;
 use crate::types::EpochNumber;
 use tape_crypto::Address;
 
@@ -33,51 +32,59 @@ pub enum NodeStatus {
 }
 
 
-/// Pure lifecycle status for a spool, no associated data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
-pub enum SpoolStatus {
-    Active,
-    Sync,
-    Scan,
-    Repair,
-    Recover,
-    LockedToMove,
+/// One stored spool this node owns now or owned in the epochs it keeps slices for
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpoolState {
+    /// Filling hasn't read the spool's whole track list yet
+    pub is_filling: bool,
+    /// The last track filling read, zero before its first page
+    pub fill_position: Address,
+    /// The epoch this node lost the spool, zero while it owns it
+    pub locked_at: EpochNumber,
 }
 
-/// Full spool state: status + epoch + optional handoff context.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "wincode", derive(SchemaRead, SchemaWrite))]
-pub struct SpoolState {
-    pub status: SpoolStatus,
-    pub epoch: EpochNumber,
-    pub prev_owner: Option<Address>,
-    pub prev_helpers: [Option<Address>; MAX_GROUP_SIZE],
-}
+/// A spool row's bytes on disk
+pub type PackedSpoolState = [u8; SpoolState::SIZE];
 
 impl SpoolState {
-    pub fn new(status: SpoolStatus, epoch: EpochNumber) -> Self {
+    /// Bytes a spool row takes on disk
+    pub const SIZE: usize = 41;
+
+    /// The row of a spool this node just gained, with filling at the start
+    pub fn gained() -> Self {
         Self {
-            status,
-            epoch,
-            prev_owner: None,
-            prev_helpers: [None; MAX_GROUP_SIZE],
+            is_filling: true,
+            fill_position: Address::default(),
+            locked_at: EpochNumber(0),
         }
     }
 
-    pub fn set_status(&mut self, status: SpoolStatus) {
-        self.status = status;
+    /// Once the row is locked the spool is locked_to_move: no new uploads
+    pub fn is_locked(&self) -> bool {
+        self.locked_at != EpochNumber(0)
     }
 
-    pub fn set_epoch(&mut self, epoch: EpochNumber) {
-        self.epoch = epoch;
+    /// Write the row in its fixed layout: filling, fill_position, locked_at
+    pub fn pack(&self) -> PackedSpoolState {
+        let mut bytes = [0u8; Self::SIZE];
+        bytes[0] = u8::from(self.is_filling);
+        bytes[1..33].copy_from_slice(&self.fill_position.to_bytes());
+        bytes[33..].copy_from_slice(&self.locked_at.0.to_le_bytes());
+        bytes
     }
 
-    pub fn is_locked(&self) -> bool { self.status == SpoolStatus::LockedToMove }
-    pub fn is_active(&self) -> bool { self.status == SpoolStatus::Active }
-    pub fn is_syncing(&self) -> bool { self.status == SpoolStatus::Sync }
-    pub fn is_scanning(&self) -> bool { self.status == SpoolStatus::Scan }
-    pub fn is_recovering(&self) -> bool { self.status == SpoolStatus::Recover }
+    /// Read a row back from its fixed layout
+    pub fn unpack(bytes: PackedSpoolState) -> Self {
+        let mut position = [0u8; 32];
+        position.copy_from_slice(&bytes[1..33]);
+        let mut locked = [0u8; 8];
+        locked.copy_from_slice(&bytes[33..]);
+        Self {
+            is_filling: bytes[0] != 0,
+            fill_position: Address::new(position),
+            locked_at: EpochNumber(u64::from_le_bytes(locked)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -89,34 +96,23 @@ mod tests {
         assert_eq!(NodeStatus::default(), NodeStatus::Standby);
     }
 
-    #[cfg(feature = "wincode")]
+    // a spool row comes back from its 41 bytes as it went in
     #[test]
     fn spool_state_roundtrip() {
-        let owner = Address::new([7u8; 32]);
-        let helper = Address::new([3u8; 32]);
-        let states = vec![
-            SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
-            SpoolState::new(SpoolStatus::LockedToMove, EpochNumber(42)),
+        let rows = [
+            SpoolState::gained(),
             SpoolState {
-                status: SpoolStatus::Sync,
-                epoch: EpochNumber(5),
-                prev_owner: Some(owner),
-                prev_helpers: [Some(owner); MAX_GROUP_SIZE],
-            },
-            SpoolState::new(SpoolStatus::Scan, EpochNumber(6)),
-            SpoolState {
-                status: SpoolStatus::Recover,
-                epoch: EpochNumber(7),
-                prev_owner: Some(helper),
-                prev_helpers: [None; MAX_GROUP_SIZE],
+                is_filling: false,
+                fill_position: Address::new([7u8; 32]),
+                locked_at: EpochNumber(42),
             },
         ];
 
-        for state in states {
-            let bytes = wincode::serialize(&state).unwrap();
-            let decoded: SpoolState = wincode::deserialize(&bytes).unwrap();
-            assert_eq!(state, decoded);
+        for row in rows {
+            assert_eq!(SpoolState::unpack(row.pack()), row);
         }
+        assert!(!SpoolState::gained().is_locked());
+        assert!(rows[1].is_locked());
     }
 
     #[cfg(feature = "wincode")]

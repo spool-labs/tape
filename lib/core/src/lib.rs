@@ -23,7 +23,7 @@ pub mod prelude {
     pub use crate::object::object_etag;
     pub use crate::types::{GroupIndex, SpoolIndex, VirtualGroup};
     pub use crate::system::{
-        EpochPhase, EpochState, NodeStatus, SpoolState, SpoolStatus, VoteKind,
+        EpochPhase, EpochState, NodeStatus, SpoolState, VoteKind,
     };
     pub use crate::track::blob::BlobEncoding;
     pub use crate::track::data::{

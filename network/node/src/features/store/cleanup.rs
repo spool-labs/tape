@@ -8,6 +8,7 @@ use tape_crypto::address::Address;
 use tape_store::ops::{
     ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
 };
+use tape_store::types::EntryKey;
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -28,7 +29,7 @@ pub fn delete_track_local<Db: Store>(
 
     if let Some(info) = store.get_track(track).map_err(store_error)? {
         remove_object_listing_for_track(store, track, &info)?;
-        clear_pending_repairs(store, track, info.group, profile)?;
+        remove_track_entries(store, track, info.group, profile)?;
         stats.tracks_deleted += 1;
     }
 
@@ -83,7 +84,7 @@ pub fn delete_tape_tracks<Db: Store>(
 
             let track = info.address();
             remove_object_listing_for_track(store, track, info)?;
-            clear_pending_repairs(store, track, info.group, profile)?;
+            remove_track_entries(store, track, info.group, profile)?;
             store.delete_track(track).map_err(store_error)?;
             store.delete_track_data(track).map_err(store_error)?;
             store.delete_object_info(track).map_err(store_error)?;
@@ -98,8 +99,8 @@ pub fn delete_tape_tracks<Db: Store>(
     Ok(stats)
 }
 
-/// Remove a track's pending repair and recovery entries on every spool of its group
-pub fn clear_pending_repairs<Db: Store>(
+/// Remove a track's missing_list entries on every spool of its group
+pub fn remove_track_entries<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
     group: VirtualGroup,
@@ -107,40 +108,34 @@ pub fn clear_pending_repairs<Db: Store>(
 ) -> Result<(), NodeError> {
     // A delete of a missing row still leaves a grave in the store's index, and
     // the gc sweep clears a dead track's rows again every epoch, so look first.
-    for slice_index in 0..usize::from(profile.n()) {
-        let spool_id = group.spool_at(slice_index);
-        if store.has_pending_repair(spool_id, track).map_err(store_error)? {
-            store
-                .remove_pending_repair(spool_id, track)
-                .map_err(store_error)?;
+    for position in 0..usize::from(profile.n()) {
+        let spool = group.spool_at(position);
+        if !store.has_entry(spool, track).map_err(store_error)? {
+            continue;
         }
-        if store.has_pending_recovery(spool_id, track).map_err(store_error)? {
-            store
-                .remove_pending_recovery(spool_id, track)
-                .map_err(store_error)?;
+        for is_handover in [false, true] {
+            let key = EntryKey { spool, is_handover, track };
+            store.delete_entry(key).map_err(store_error)?;
         }
     }
 
     Ok(())
 }
 
+/// Delete a stored spool's slices and its missing_list, a page at a time,
+/// then its row
 pub fn purge_spool_local<Db: Store>(
     store: &TapeStore<Db>,
     spool_id: SpoolIndex,
+    page: usize,
 ) -> Result<(), NodeError> {
     store
         .delete_all_slices_for_spool(spool_id)
         .map_err(store_error)?;
 
-    store
-        .clear_all_pending_repairs(spool_id)
-        .map_err(store_error)?;
+    while store.delete_spool_entries(spool_id, page).map_err(store_error)? > 0 {}
 
-    store
-        .clear_all_pending_recoveries(spool_id)
-        .map_err(store_error)?;
-
-    store.remove_spool_state(spool_id).map_err(store_error)
+    store.delete_spool_state(spool_id).map_err(store_error)
 }
 
 pub fn remove_object_listing_for_track<Db: Store>(
@@ -186,7 +181,7 @@ mod tests {
     use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::Hash;
-    use tape_store::types::TapeInfo;
+    use tape_store::types::{Entry, TapeInfo};
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -416,9 +411,9 @@ mod tests {
         }
     }
 
-    // the gc sweep clears a dead track's repair rows every epoch, and on the reel
-    // a delete of a missing row leaves a grave, so only rows that exist get one:
-    // each row's queue key and index entry, once
+    // the gc sweep clears a dead track's entries every epoch, and on the reel
+    // a delete of a missing row leaves a grave, so only spools that hold an
+    // entry for the track get deletes, once
     #[test]
     fn repeated_clears_delete_only_rows_that_exist() {
         let store = TapeStore::new(CountingStore {
@@ -427,17 +422,17 @@ mod tests {
         });
         let group = VirtualGroup::from(3);
         let track = Address::new_unique();
-        let repair = group.spool_at(2);
-        let recovery = group.spool_at(5);
-        store.add_pending_repair(repair, track).unwrap();
-        store.add_pending_recovery(recovery, track).unwrap();
+        let handover = EntryKey { spool: group.spool_at(2), is_handover: true, track };
+        let fresh = EntryKey { spool: group.spool_at(5), is_handover: false, track };
+        store.put_entry(handover, Entry::never_tried()).unwrap();
+        store.put_entry(fresh, Entry::never_tried()).unwrap();
 
         for _ in 0..EXPIRY.0 {
-            clear_pending_repairs(&store, track, group, TAPENET_PROFILE).unwrap();
+            remove_track_entries(&store, track, group, TAPENET_PROFILE).unwrap();
         }
 
-        assert!(!store.has_pending_repair(repair, track).unwrap());
-        assert!(!store.has_pending_recovery(recovery, track).unwrap());
+        assert!(!store.has_entry(handover.spool, track).unwrap());
+        assert!(!store.has_entry(fresh.spool, track).unwrap());
         assert_eq!(store.inner().inner().deletes.load(Ordering::Relaxed), 4);
     }
 }

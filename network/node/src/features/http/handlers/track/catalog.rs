@@ -521,7 +521,7 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_peer_manager::PeerNode;
     use tape_core::spooler::VirtualGroup;
-    use tape_core::system::{SpoolState, SpoolStatus};
+    use tape_core::system::SpoolState;
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
@@ -565,12 +565,10 @@ mod tests {
         let refused = call_get_track_data(&ctx, track).await;
         assert!(matches!(refused, Err(RouteError::NotResponsible)));
 
+        let row = SpoolState { locked_at: EpochNumber(1), ..SpoolState::gained() };
         ctx.store
-            .set_spool_state(
-                VirtualGroup(0).spool_at(3),
-                SpoolState::new(SpoolStatus::LockedToMove, EpochNumber(1)),
-            )
-            .expect("spool state");
+            .put_spool_states(&[(VirtualGroup(0).spool_at(3), row)])
+            .expect("spool row");
 
         assert!(call_get_track_data(&ctx, track).await.is_ok());
     }

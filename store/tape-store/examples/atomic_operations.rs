@@ -3,13 +3,12 @@
 //! Run with: cargo run -p tape-store --features rocks --example atomic_operations
 
 use tape_core::spooler::VirtualGroup;
-use tape_core::system::{SpoolState, SpoolStatus};
+use tape_core::system::SpoolState;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-use tape_core::types::{
-    EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
-};
+use tape_core::types::{SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
+use tape_store::types::{Entry, EntryKey};
 use tape_store::{error::Result, ops::*, TapeStore};
 
 fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
@@ -69,24 +68,24 @@ fn main() -> Result<()> {
     println!("Deleted slice (9, track1)");
 
     // SpoolOps - NOT epoch-namespaced
-    for spool_id in [0u16, 5, 10] {
-        store.set_spool_state(
-            SpoolIndex(spool_id as u64),
-            SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
-        )?;
+    let mut rows = Vec::new();
+    for spool_id in [0u64, 5, 10] {
+        rows.push((SpoolIndex(spool_id), SpoolState::gained()));
     }
-    println!("Set 3 spools as Active");
+    store.put_spool_states(&rows)?;
+    println!("Wrote 3 spool rows");
 
-    // Iterate all spools
-    let spools = store.iter_all_spools()?;
+    // List every spool row
+    let spools = store.spool_states(None, STORED_SPOOL_COUNT)?;
     println!("All spools: {:?}", spools);
 
-    // Pending recovery operations
-    store.add_pending_recovery(SpoolIndex(5), track_address)?;
-    println!("Added pending recovery for spool 5");
+    // The missing_list
+    let entry = EntryKey { spool: SpoolIndex(5), is_handover: true, track: track_address };
+    store.put_entry(entry, Entry::never_tried())?;
+    println!("Added a missing_list entry for spool 5");
 
-    let has_pending = store.has_pending_recovery(SpoolIndex(5), track_address)?;
-    println!("Has pending recovery: {}", has_pending);
+    let has_entry = store.has_entry(SpoolIndex(5), track_address)?;
+    println!("Has entry: {}", has_entry);
 
     // MetaOps - node state
     store.set_sync_cursor(SlotNumber(12345), None)?;

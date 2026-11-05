@@ -1,7 +1,13 @@
+pub mod attempt;
+pub mod epoch;
+pub mod error;
+pub mod fetch;
+pub mod fill;
+#[cfg(test)]
+pub mod fixture;
 pub mod manager;
-pub mod missing;
+pub mod peers;
 pub mod recover;
 pub mod repair;
-pub mod scan;
 pub mod sync;
-pub mod types;
+pub mod transfer;

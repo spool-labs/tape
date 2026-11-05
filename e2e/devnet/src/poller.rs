@@ -14,7 +14,7 @@ use tape_core::system::EpochPhase;
 use tape_crypto::Address;
 use tape_node::context::NodeContext;
 use tape_node::runtime::NodeRuntimeStatus;
-use tape_store::ops::{SliceOps, SpoolOps};
+use tape_store::ops::{SliceOps, SpoolOps, STORED_SPOOL_COUNT};
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration};
 use tracing::{info, warn};
@@ -370,23 +370,23 @@ async fn poll_once(
         }
     }
 
-    // Build per-spool availability: a spool is available if ANY node has it Active.
-    // Multiple nodes may have the same spool (Active on the current owner,
-    // LockedToMove on the former owner), so we must not let a non-Active
-    // status overwrite an Active one.
+    // Build per-spool availability: a spool is available if ANY node owns it
+    // with filling done. Multiple nodes may have the same spool (owned by the
+    // current owner, locked on the former owner), so we must not let a locked
+    // row overwrite an owned one.
     let mut counted_spools = HashSet::new();
     for tracked in &state.nodes {
         if !tracked.runtime_status.is_running() {
             continue;
         }
 
-        if let Ok(local_spools) = tracked.ctx.store.iter_all_spools() {
+        if let Ok(local_spools) = tracked.ctx.store.spool_states(None, STORED_SPOOL_COUNT) {
             for (spool_id, spool_state) in local_spools {
                 // A retired group's spool shows under the live spool that carries it.
                 let live_spool = fold.map_or(spool_id, |fold: GroupFold| fold.live_spool(spool_id));
                 let index = live_spool.as_usize();
                 if let Some(spool) = spools.get_mut(index) {
-                    if spool_state.is_active() {
+                    if !spool_state.is_locked() && !spool_state.is_filling {
                         spool.available = true;
                         if counted_spools.insert(spool_id) {
                             let group = GroupIndex::containing(live_spool).0 as usize;

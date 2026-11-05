@@ -1,6 +1,6 @@
 use tape_core::track::data::BlobData;
 use tape_e2e_simnet::TestNode;
-use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
+use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps, STORED_SPOOL_COUNT};
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::{SpoolIndex, StorageUnits};
@@ -18,9 +18,9 @@ pub fn verify_spool_integrity(nodes: &[TestNode]) {
         }
         let store = &node.context().store;
 
-        let spools = store.iter_all_spools().expect("iter spools");
-        for (spool_id, state) in &spools {
-            if !state.is_active() {
+        let spools = store.spool_states(None, STORED_SPOOL_COUNT).expect("spool rows");
+        for (spool_id, row) in &spools {
+            if row.is_locked() || row.is_filling {
                 continue;
             }
 

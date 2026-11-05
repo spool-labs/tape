@@ -12,7 +12,7 @@ use tape_store::{
     TapeStore,
     ops::{
         ObjectInfoOps, RemovalOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
-        track_has_left,
+        track_has_left, STORED_SPOOL_COUNT,
     },
     types::ObjectInfo,
 };
@@ -22,7 +22,7 @@ use crate::config::store::GcConfig;
 use crate::core::error::NodeError;
 use crate::features::block::pending_tracks::PendingTracks;
 use crate::features::store::cleanup::{
-    clear_pending_repairs, delete_tape_tracks, delete_track_local, CleanupStats,
+    delete_tape_tracks, delete_track_local, remove_track_entries, CleanupStats,
 };
 
 const UNCERTIFIED_RETENTION_EPOCHS: u64 = 2;
@@ -51,8 +51,6 @@ pub async fn sweep_epoch<Db: Store>(
             .await?;
     stats += sweep_orphan_tracks(store, config, current_epoch, at_tip, profile).await?;
     stats += sweep_orphan_slices(store, config, current_epoch, pending, at_tip).await?;
-
-    sweep_stale_recoveries(store, current_epoch, pending, at_tip).await?;
 
     // A removal entry is read by its own epoch's assignment round and by this
     // sweep, and the store only reaches an epoch once the round before it is over.
@@ -208,14 +206,6 @@ fn cleanup_unowned_track_slices<Db: Store>(
         store
             .delete_slice(spool_id, track)
             .map_err(store_error)?;
-
-        store
-            .remove_pending_repair(spool_id, track)
-            .map_err(store_error)?;
-
-        store
-            .remove_pending_recovery(spool_id, track)
-            .map_err(store_error)?;
     }
 
     Ok(deleted_slices)
@@ -315,7 +305,7 @@ async fn sweep_orphan_tracks<Db: Store>(
             };
 
             if is_dead {
-                clear_pending_repairs(store, *track, info.group, profile)?;
+                remove_track_entries(store, *track, info.group, profile)?;
             }
         }
 
@@ -337,7 +327,9 @@ async fn sweep_orphan_slices<Db: Store>(
     at_tip: bool,
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
-    let spools = store.iter_all_spools().map_err(store_error)?;
+    let spools = store
+        .spool_states(None, STORED_SPOOL_COUNT)
+        .map_err(store_error)?;
     for (index, (spool_id, _)) in spools.into_iter().enumerate() {
         let mut cursor: Option<Vec<u8>> = None;
 
@@ -375,34 +367,6 @@ async fn sweep_orphan_slices<Db: Store>(
     Ok(stats)
 }
 
-async fn sweep_stale_recoveries<Db: Store>(
-    store: &TapeStore<Db>,
-    current_epoch: EpochNumber,
-    pending: &PendingTracks,
-    at_tip: bool,
-) -> Result<(), NodeError> {
-    let spools = store.iter_all_spools().map_err(store_error)?;
-    for (index, (spool_id, _)) in spools.into_iter().enumerate() {
-        let queued = store
-            .iter_pending_recoveries(spool_id, usize::MAX)
-            .map_err(store_error)?;
-
-        for track in queued {
-            if recovery_is_stale(store, pending, current_epoch, at_tip, spool_id, track)? {
-                store
-                    .remove_pending_recovery(spool_id, track)
-                    .map_err(store_error)?;
-            }
-        }
-
-        if should_yield(index) {
-            yield_now().await;
-        }
-    }
-
-    Ok(())
-}
-
 /// Whether one slice has outlived the track it belongs to
 ///
 /// A track that was deleted or invalidated keeps its slices through the
@@ -438,27 +402,6 @@ fn should_delete_slice(
             .is_none_or(|epoch| epoch < current_epoch),
         None => at_tip,
     }
-}
-
-fn recovery_is_stale<Db: Store>(
-    store: &TapeStore<Db>,
-    pending: &PendingTracks,
-    current_epoch: EpochNumber,
-    at_tip: bool,
-    spool_id: SpoolIndex,
-    track: Address,
-) -> Result<bool, NodeError> {
-    let in_store = store.get_track(track).map_err(store_error)?;
-    let object = store.get_object_info(track).map_err(store_error)?;
-    Ok(should_delete_slice(
-        pending,
-        current_epoch,
-        at_tip,
-        spool_id,
-        track,
-        in_store,
-        object,
-    ))
 }
 
 fn track_batch(config: &GcConfig) -> usize {
@@ -501,7 +444,7 @@ mod tests {
 
     use tape_store_memory::MemoryStore;
     use tape_core::spooler::VirtualGroup;
-    use tape_core::system::{SpoolState, SpoolStatus};
+    use tape_core::system::SpoolState;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
         EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
@@ -512,7 +455,7 @@ mod tests {
         ops::{
             ObjectInfoOps, RemovalOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
         },
-        types::{CountedTrack, ObjectInfo, SystemObjectKind, TapeInfo},
+        types::{CountedTrack, Entry, EntryKey, ObjectInfo, SystemObjectKind, TapeInfo},
         TapeStore,
     };
 
@@ -539,6 +482,10 @@ mod tests {
 
     fn owned_spools(spools: &[SpoolIndex]) -> HashSet<SpoolIndex> {
         spools.iter().copied().collect()
+    }
+
+    fn entry_key(spool: SpoolIndex, track: Address) -> EntryKey {
+        EntryKey { spool, is_handover: false, track }
     }
 
     fn valid_object(track: Address, epoch: EpochNumber, slot: SlotNumber) -> ObjectInfo {
@@ -576,7 +523,7 @@ mod tests {
         let slot = SlotNumber(10);
 
         store
-            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
+            .put_spool_states(&[(spool_id, SpoolState::gained())])
             .unwrap();
         store
             .put_tape(
@@ -681,7 +628,7 @@ mod tests {
         let spool_id = SpoolIndex(20);
 
         store
-            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
+            .put_spool_states(&[(spool_id, SpoolState::gained())])
             .unwrap();
         store.put_track(track, info).unwrap();
         store
@@ -708,7 +655,7 @@ mod tests {
         let spool_id = SpoolIndex(20);
 
         store
-            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
+            .put_spool_states(&[(spool_id, SpoolState::gained())])
             .unwrap();
         store
             .put_tape(
@@ -760,7 +707,7 @@ mod tests {
         let spool_id = SpoolIndex(20);
 
         store
-            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
+            .put_spool_states(&[(spool_id, SpoolState::gained())])
             .unwrap();
         store
             .put_tape(
@@ -793,7 +740,7 @@ mod tests {
             )
             .unwrap();
         store.put_slice(spool_id, track, vec![8, 8, 8]).unwrap();
-        store.add_pending_recovery(spool_id, track).unwrap();
+        store.put_entry(entry_key(spool_id, track), Entry::never_tried()).unwrap();
 
         sweep_epoch(&store, &config, EpochNumber(6), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
@@ -808,11 +755,12 @@ mod tests {
             })
         ));
         assert!(store.get_slice(spool_id, track).unwrap().is_some());
-        assert!(store.has_pending_recovery(spool_id, track).unwrap());
+        assert!(store.has_entry(spool_id, track).unwrap());
     }
 
+    // a dead track's missing_list entries go with it
     #[tokio::test]
-    async fn removes_stale_recovery() {
+    async fn removes_dead_entry() {
         let store = test_store();
         let config = test_config();
         let tape = Address::new_unique();
@@ -821,7 +769,7 @@ mod tests {
         let spool_id = SpoolIndex(20);
 
         store
-            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
+            .put_spool_states(&[(spool_id, SpoolState::gained())])
             .unwrap();
         store
             .put_tape(
@@ -849,13 +797,13 @@ mod tests {
                 },
             )
             .unwrap();
-        store.add_pending_recovery(spool_id, track).unwrap();
+        store.put_entry(entry_key(spool_id, track), Entry::never_tried()).unwrap();
 
         sweep_epoch(&store, &config, EpochNumber(6), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
             .unwrap();
 
-        assert!(!store.has_pending_recovery(spool_id, track).unwrap());
+        assert!(!store.has_entry(spool_id, track).unwrap());
     }
 
     #[tokio::test]
@@ -868,7 +816,7 @@ mod tests {
         let spool_id = SpoolIndex(20);
 
         store
-            .set_spool_state(spool_id, SpoolState::new(SpoolStatus::Active, EpochNumber(1)))
+            .put_spool_states(&[(spool_id, SpoolState::gained())])
             .unwrap();
         store
             .put_tape(
@@ -919,10 +867,10 @@ mod tests {
         let unowned_spool = group.spool_at(1);
 
         store
-            .set_spool_state(owned_spool, SpoolState::new(SpoolStatus::Active, EpochNumber(5)))
+            .put_spool_states(&[(owned_spool, SpoolState::gained())])
             .unwrap();
         store
-            .set_spool_state(unowned_spool, SpoolState::new(SpoolStatus::Active, EpochNumber(5)))
+            .put_spool_states(&[(unowned_spool, SpoolState::gained())])
             .unwrap();
         store
             .put_tape(tape, TapeInfo::new(TapeNumber(1), 0, EpochNumber(20), TrackNumber(0)))
@@ -943,8 +891,6 @@ mod tests {
             .unwrap();
         store.put_slice(owned_spool, track_stale, vec![1, 2, 3]).unwrap();
         store.put_slice(unowned_spool, track_stale, vec![3, 2, 1]).unwrap();
-        store.add_pending_repair(unowned_spool, track_stale).unwrap();
-        store.add_pending_recovery(unowned_spool, track_stale).unwrap();
 
         // Recent uncertified: registered epoch 4, current epoch 5 -> age 1 < threshold 2
         store.put_track(track_recent, info_recent).unwrap();
@@ -978,8 +924,6 @@ mod tests {
         assert!(store.get_object_info(track_stale).unwrap().is_some());
         assert!(store.get_slice(owned_spool, track_stale).unwrap().is_some());
         assert!(store.get_slice(unowned_spool, track_stale).unwrap().is_none());
-        assert!(!store.has_pending_repair(unowned_spool, track_stale).unwrap());
-        assert!(!store.has_pending_recovery(unowned_spool, track_stale).unwrap());
 
         // Recent track should remain
         assert!(store.get_track(track_recent).unwrap().is_some());
@@ -1076,7 +1020,7 @@ mod tests {
         let spool = group.spool_at(0);
 
         store
-            .set_spool_state(spool, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
+            .put_spool_states(&[(spool, SpoolState::gained())])
             .unwrap();
         store.put_tape(tape, live_tape()).unwrap();
         store.put_track(track, info).unwrap();
@@ -1123,7 +1067,7 @@ mod tests {
         let invalid = |counted| ObjectInfo::Invalid { epoch: EpochNumber(6), slot: SlotNumber(60), counted };
 
         store
-            .set_spool_state(spool, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
+            .put_spool_states(&[(spool, SpoolState::gained())])
             .unwrap();
         store.put_tape(tape, live_tape()).unwrap();
         store.put_track(track, info).unwrap();
@@ -1220,7 +1164,7 @@ mod tests {
         assert_ne!(first, second);
 
         store
-            .set_spool_state(spool, SpoolState::new(SpoolStatus::Active, EpochNumber(2)))
+            .put_spool_states(&[(spool, SpoolState::gained())])
             .unwrap();
         store.put_tape(tape, live_tape()).unwrap();
         for (track, info) in [(first, written), (second, again)] {

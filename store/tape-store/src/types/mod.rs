@@ -1,11 +1,13 @@
 //! Type definitions for tape-store
 //!
 //! This module provides all the types used throughout the tape-store crate:
-//! - Enums: NodeStatus, SpoolState, ObjectInfo
-//! - Keys: EpochKey, UnitKey, SpoolIndexKey, SliceKey, QueueKey, TrackLookupKey, vote/snapshot keys
+//! - Enums: NodeStatus, ObjectInfo
+//! - Keys: EpochKey, UnitKey, SliceKey, TrackLookupKey, vote/snapshot keys
 //! - Values: TapeInfo, PackedTrack, snapshot artifacts
+//! - The missing_list: Entry, EntryKey and what an attempt records
 mod enums;
 pub mod keys;
+pub mod missing;
 pub mod slice;
 mod values;
 
@@ -19,8 +21,12 @@ pub use enums::{
 pub use keys::{
     AuditKey, EpochKey, EventLogKey, LedgerReservationKey,
     MultipartPartChunkKey, MultipartPartKey, PendingWriteChunkKey, PendingWriteKey,
-    ObjectListKey, PolicyRuleKey, QueueKey, RemovalKey, SliceKey, SnapshotArtifactKey, SpoolIndexKey,
+    ObjectListKey, PolicyRuleKey, RemovalKey, SliceKey, SnapshotArtifactKey,
     TrackLookupKey, UnitKey, VoteSigKey,
+};
+
+pub use missing::{
+    Attempt, AttemptResult, Entry, EntryKey, FailureCount, Method, PackedEntry, WallTime,
 };
 
 // Re-export value types

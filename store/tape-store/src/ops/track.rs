@@ -5,8 +5,9 @@ use tape_store_api::{Column, Store};
 use tape_crypto::address::Address;
 use tape_core::types::{TapeNumber, TrackNumber};
 
-use crate::columns::{TrackCol, TrackLookupCol};
+use crate::columns::{TrackCol, TrackGroupIndexCol, TrackLookupCol};
 use crate::error::{Result, TapeStoreError};
+use crate::ops::spool::track_group_key;
 use crate::types::TrackLookupKey;
 use crate::TapeStore;
 
@@ -81,6 +82,8 @@ impl<S: Store> TrackOps for TapeStore<S> {
         self.put::<TrackCol>(&track_address, &track.pack())?;
         let lookup = TrackLookupKey::new(track.tape, track.tape_number, track.track_number);
         self.put::<TrackLookupCol>(&lookup, &track_address)?;
+        let by_group = track_group_key(track.group, track_address)?;
+        self.inner().inner().put(TrackGroupIndexCol::CF_NAME, &by_group, &[])?;
         Ok(())
     }
 
@@ -88,6 +91,8 @@ impl<S: Store> TrackOps for TapeStore<S> {
         if let Some(track) = self.get_track(track_address)? {
             let lookup = TrackLookupKey::new(track.tape, track.tape_number, track.track_number);
             self.delete::<TrackLookupCol>(&lookup)?;
+            let by_group = track_group_key(track.group, track_address)?;
+            self.inner().inner().delete(TrackGroupIndexCol::CF_NAME, &by_group)?;
         }
         self.delete::<TrackCol>(&track_address)?;
         Ok(())

@@ -13,7 +13,7 @@ use tape_chain_harness::{
     ChainHarness, ChainHarnessBuilder, HarnessNode, HarnessNodeSpec, IntoEpochNumber,
 };
 use tape_core::encoding::ErasureCode;
-use tape_core::prelude::{EpochNumber, EpochPhase, SlotNumber, SpoolIndex, SpoolState, SpoolStatus};
+use tape_core::prelude::{EpochNumber, EpochPhase, SlotNumber, SpoolIndex, SpoolState};
 use tape_core::thresholds::TrustModel;
 use tape_crypto::ed25519::Keypair;
 use tape_store::TapeStore;
@@ -125,27 +125,19 @@ impl NodeHarness {
         self.chain.owned_spools(index)
     }
 
-    pub fn set_spool_status(
-        &self,
-        index: usize,
-        spool: SpoolIndex,
-        status: SpoolStatus,
-    ) -> Result<()> {
+    /// Write one spool row for every stored spool a node owns
+    pub fn set_owned_spool_states(&self, index: usize, row: SpoolState) -> Result<()> {
         let ctx = self
             .contexts
             .get(index)
             .ok_or_else(|| anyhow!("node index {index} out of range"))?;
-        ctx.store
-            .set_spool_state(spool, SpoolState::new(status, self.epoch()))
-            .map_err(|error| anyhow!("set_spool_state({spool}): {error}"))
-    }
-
-    pub fn set_all_owned_spools_status(&self, index: usize, status: SpoolStatus) -> Result<()> {
+        let mut rows = Vec::new();
         for spool in self.owned_spools(index) {
-            self.set_spool_status(index, spool, status)?;
+            rows.push((spool, row));
         }
-
-        Ok(())
+        ctx.store
+            .put_spool_states(&rows)
+            .map_err(|error| anyhow!("put_spool_states: {error}"))
     }
 }
 

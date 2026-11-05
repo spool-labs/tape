@@ -9,11 +9,9 @@
 
 use tape_store_memory::MemoryStore;
 use tape_core::spooler::VirtualGroup;
-use tape_core::system::{SpoolState, SpoolStatus};
+use tape_core::system::SpoolState;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
-use tape_core::types::{
-    EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
-};
+use tape_core::types::{SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use tape_store::{ops::*, TapeStore};
@@ -66,15 +64,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Spool {} has {} slices", spool_id, slices.len());
     }
 
-    // Spool status (NOT epoch-namespaced)
-    for spool_id in 0..3u16 {
-        store.set_spool_state(
-            SpoolIndex(spool_id as u64),
-            SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
-        )?;
+    // Spool rows (NOT epoch-namespaced)
+    let mut rows = Vec::new();
+    for spool_id in 0..3u64 {
+        rows.push((SpoolIndex(spool_id), SpoolState::gained()));
     }
+    store.put_spool_states(&rows)?;
 
-    let spools = store.iter_all_spools()?;
+    let spools = store.spool_states(None, STORED_SPOOL_COUNT)?;
     println!("All spools: {:?}", spools);
 
     // Metadata

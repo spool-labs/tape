@@ -112,7 +112,7 @@ mod tests {
     use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress};
     use tape_core::encoding::TAPENET_PROFILE;
     use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
-    use tape_core::prelude::{SpoolState, SpoolStatus};
+    use tape_core::prelude::SpoolState;
     use tape_snapshot::snapshot_chunk_key;
     use tape_core::spooler::VirtualGroup;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
@@ -244,11 +244,8 @@ mod tests {
             .expect("seed helper slice");
 
         ctx.store
-            .set_spool_state(
-                helper_spool,
-                SpoolState::new(SpoolStatus::Active, EpochNumber(0)),
-            )
-            .expect("set spool state");
+            .put_spool_states(&[(helper_spool, SpoolState::gained())])
+            .expect("set spool row");
 
         let request = RepairRequest {
             helper_spool,

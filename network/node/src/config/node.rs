@@ -535,10 +535,10 @@ gateway:
     stale_entry_secs: 120
     trusted_proxies: ["203.0.113.7", "173.245.48.0/20"]
 recovery:
-  max_workers: 42
-  scan_batch: 77
-  repair_batch: 8
-  recover_batch: 6
+  max_fetches: 42
+  fetch_tracks: 77
+  turn_entries: 8
+  fill_page: 6
 logging:
   filter: "debug"
   format: "json"
@@ -612,10 +612,10 @@ metrics:
                 "173.245.48.0/20".parse::<CidrBlock>().unwrap(),
             ]
         );
-        assert_eq!(config.recovery.max_workers, 42);
-        assert_eq!(config.recovery.scan_batch, 77);
-        assert_eq!(config.recovery.repair_batch, 8);
-        assert_eq!(config.recovery.recover_batch, 6);
+        assert_eq!(config.recovery.max_fetches, 42);
+        assert_eq!(config.recovery.fetch_tracks, 77);
+        assert_eq!(config.recovery.turn_entries, 8);
+        assert_eq!(config.recovery.fill_page, 6);
         assert_eq!(config.logging.filter, "debug");
         assert_eq!(config.logging.format, LoggingFormat::Json);
         assert!(!config.metrics.enabled);
@@ -780,15 +780,15 @@ node:
 network:
   host: "test"
 recovery:
-  max_workers: 42
-  repair_batch: 12
+  max_fetches: 42
+  turn_entries: 12
 "#,
         )
         .unwrap();
 
-        assert_eq!(config.recovery.max_workers, 42);
-        assert_eq!(config.recovery.repair_batch, 12);
-        assert_eq!(config.recovery.scan_batch, 100);
+        assert_eq!(config.recovery.max_fetches, 42);
+        assert_eq!(config.recovery.turn_entries, 12);
+        assert_eq!(config.recovery.fill_page, 512);
     }
 
     // challenge rounds are off unless the yaml turns them on

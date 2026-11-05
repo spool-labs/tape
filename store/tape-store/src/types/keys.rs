@@ -4,9 +4,7 @@
 //! them in numeric order:
 //! - EpochKey: epoch BE (8 bytes)
 //! - UnitKey: empty (0 bytes)
-//! - SpoolIndexKey: spool_id BE (2 bytes)
 //! - SliceKey: (spool_id BE, track_address) (34 bytes)
-//! - QueueKey: (spool_id BE, ready slot BE, track_address) (42 bytes)
 //! - TrackLookupKey: (tape, tape_number BE, track_number BE) (48 bytes)
 //! - RemovalKey: (tape, tape_number BE, epoch BE) (48 bytes)
 //! - SnapshotArtifactKey: (epoch BE, group BE, chunk BE) (24 bytes)
@@ -17,7 +15,7 @@ use std::mem::MaybeUninit;
 use serde::{Deserialize, Serialize};
 use tape_core::spooler::GroupIndex;
 use tape_core::system::{VoteCandidate, VoteKind};
-use tape_core::types::{EpochNumber, SlotNumber, SpoolIndex, TapeNumber, TrackNumber};
+use tape_core::types::{EpochNumber, SpoolIndex, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 use wincode::error::write_length_encoding_overflow;
@@ -114,45 +112,7 @@ impl<'de> SchemaRead<'de> for UnitKey {
     }
 }
 
-/// Key for spool-indexed data (2 bytes)
-///
-/// Format: [spool_id BE 2 bytes]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SpoolIndexKey(pub SpoolIndex);
-
-impl SpoolIndexKey {
-    pub const SIZE: usize = 2;
-
-    pub fn new(spool_id: SpoolIndex) -> Self {
-        Self(spool_id)
-    }
-}
-
-impl SchemaWrite for SpoolIndexKey {
-    type Src = Self;
-
-    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
-        Ok(Self::SIZE)
-    }
-
-    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        writer.write_exact(&encoded_spool(src.0)?)?;
-        Ok(())
-    }
-}
-
-impl<'de> SchemaRead<'de> for SpoolIndexKey {
-    type Dst = Self;
-
-    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<SpoolIndexKey>) -> ReadResult<()> {
-        let bytes: [u8; 2] = unsafe { reader.get_t()? };
-        let spool_id = u16::from_be_bytes(bytes);
-        dst.write(SpoolIndexKey(SpoolIndex(spool_id as u64)));
-        Ok(())
-    }
-}
-
-/// Key for slice data and the queue indexes (34 bytes)
+/// Key for slice data (34 bytes)
 ///
 /// Format: [spool_id BE 2 bytes][track_address 32 bytes]
 ///
@@ -337,67 +297,6 @@ impl<'de> SchemaRead<'de> for SliceKey {
         let spool_id = u16::from_be_bytes(spool_bytes);
         dst.write(SliceKey {
             spool_id: SpoolIndex(spool_id as u64),
-            track_address: Address::from(track_bytes),
-        });
-        Ok(())
-    }
-}
-
-/// Key for a spool's repair and recovery queues (42 bytes)
-///
-/// Format: [spool_id BE 2 bytes][ready slot BE 8 bytes][track_address 32 bytes]
-///
-/// A spool's rows sort by the slot they are ready in, so the rows due by a slot
-/// are one seek from the spool's prefix.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct QueueKey {
-    pub spool_id: SpoolIndex,
-    pub ready: SlotNumber,
-    pub track_address: Address,
-}
-
-impl QueueKey {
-    pub const SIZE: usize = 42;
-
-    pub fn new(spool_id: SpoolIndex, ready: SlotNumber, track_address: Address) -> Self {
-        Self {
-            spool_id,
-            ready,
-            track_address,
-        }
-    }
-
-    /// Create prefix bytes for spool-based iteration
-    pub fn spool_prefix(spool_id: SpoolIndex) -> Result<[u8; 2], TapeStoreError> {
-        spool_prefix_bytes(spool_id)
-    }
-}
-
-impl SchemaWrite for QueueKey {
-    type Src = Self;
-
-    fn size_of(_src: &Self::Src) -> WriteResult<usize> {
-        Ok(Self::SIZE)
-    }
-
-    fn write(writer: &mut Writer, src: &Self::Src) -> WriteResult<()> {
-        writer.write_exact(&encoded_spool(src.spool_id)?)?;
-        writer.write_exact(&src.ready.0.to_be_bytes())?;
-        writer.write_exact(src.track_address.as_ref())?;
-        Ok(())
-    }
-}
-
-impl<'de> SchemaRead<'de> for QueueKey {
-    type Dst = Self;
-
-    fn read(reader: &mut Reader<'de>, dst: &mut MaybeUninit<QueueKey>) -> ReadResult<()> {
-        let spool_bytes: [u8; 2] = unsafe { reader.get_t()? };
-        let ready_bytes: [u8; 8] = unsafe { reader.get_t()? };
-        let track_bytes: [u8; 32] = unsafe { reader.get_t()? };
-        dst.write(QueueKey {
-            spool_id: SpoolIndex(u64::from(u16::from_be_bytes(spool_bytes))),
-            ready: SlotNumber(u64::from_be_bytes(ready_bytes)),
             track_address: Address::from(track_bytes),
         });
         Ok(())
@@ -1149,7 +1048,6 @@ mod tests {
         assert!(SliceKey::spool_prefix(wide).is_err());
         assert!(SliceKey::spool_key_range(wide).is_err());
         assert!(wincode::serialize(&SliceKey::new(wide, peer)).is_err());
-        assert!(wincode::serialize(&SpoolIndexKey::new(wide)).is_err());
     }
 
     // a reservation key round-trips at its fixed size
@@ -1206,32 +1104,6 @@ mod tests {
     }
 
     #[test]
-    fn test_spool_index_key_size() {
-        let key = SpoolIndexKey::new(SpoolIndex(42));
-        let bytes = wincode::serialize(&key).unwrap();
-        assert_eq!(bytes.len(), SpoolIndexKey::SIZE);
-    }
-
-    #[test]
-    fn test_spool_index_key_ordering() {
-        let key1 = SpoolIndexKey::new(SpoolIndex(1));
-        let key2 = SpoolIndexKey::new(SpoolIndex(256));
-
-        let bytes1 = wincode::serialize(&key1).unwrap();
-        let bytes2 = wincode::serialize(&key2).unwrap();
-
-        assert!(bytes1 < bytes2, "spool_id should sort numerically");
-    }
-
-    #[test]
-    fn test_spool_index_key_roundtrip() {
-        let key = SpoolIndexKey::new(SpoolIndex(1023));
-        let bytes = wincode::serialize(&key).unwrap();
-        let decoded: SpoolIndexKey = wincode::deserialize(&bytes).unwrap();
-        assert_eq!(key, decoded);
-    }
-
-    #[test]
     fn test_slice_key_size() {
         let key = SliceKey::new(SpoolIndex(42), Address::new([1u8; 32]));
         let bytes = wincode::serialize(&key).unwrap();
@@ -1256,28 +1128,6 @@ mod tests {
         let bytes = wincode::serialize(&key).unwrap();
         let decoded: SliceKey = wincode::deserialize(&bytes).unwrap();
         assert_eq!(key, decoded);
-    }
-
-    // a queue key round-trips at its fixed size
-    #[test]
-    fn queue_key_encoding() {
-        let key = QueueKey::new(SpoolIndex(42), SlotNumber(1_000), Address::new([0xAB; 32]));
-        let bytes = wincode::serialize(&key).expect("serialize");
-        assert_eq!(bytes.len(), QueueKey::SIZE);
-        let decoded: QueueKey = wincode::deserialize(&bytes).expect("deserialize");
-        assert_eq!(key, decoded);
-    }
-
-    // queue keys sort by spool, then ready slot, then track
-    #[test]
-    fn queue_key_order() {
-        let encode = |spool: u64, ready: u64, byte: u8| {
-            wincode::serialize(&QueueKey::new(SpoolIndex(spool), SlotNumber(ready), Address::new([byte; 32])))
-                .expect("serialize")
-        };
-        assert!(encode(1, u64::MAX, 0xFF) < encode(2, 0, 0));
-        assert!(encode(1, 255, 0xFF) < encode(1, 256, 0));
-        assert!(encode(1, 256, 0) < encode(1, 256, 1));
     }
 
     #[test]
