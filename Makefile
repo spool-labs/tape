@@ -4,6 +4,7 @@
 #   make programs     - Build SBPFv3 Solana programs into target/deploy
 #   make node         - Build tape-node release binary with metrics enabled
 #   make node-rocks   - Build the RocksDB node as target/release/tape-node-rocks
+#   make migrate      - Build tape-migrate, the offline store migration tool, on RocksDB
 #   make rocks-check  - Test and compile the RocksDB store, which no other target builds
 #   make explorer     - Build and test the separate explorer workspace
 #   make localnet      - Build the localnet orchestrator release binary
@@ -25,6 +26,7 @@
 #   make node-linux   - Build tape-node for x86_64 Linux (native on Linux; on
 #                       macOS builds inside a linux container via docker)
 #   make node-rocks-linux - Same, for the RocksDB node, as tape-node-rocks
+#   make migrate-linux - Same, for tape-migrate
 #   make cache-linux  - Same, for rpc-cache
 #   make gateway-linux - Same, for tape-gateway
 #   make explorer-linux - Same, for tapedrive-explorer
@@ -75,7 +77,7 @@ EXPLORER_RPC ?= http://$(CACHE_BIND)?api=$(CACHE_API_KEY)
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: programs node node-rocks rocks-check node-rocks-linux explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape tape-linux node-linux cache-linux gateway-linux collector-linux explorer-linux dashboard-linux dashboard-check dashboard-dev moderation-linux linux-binaries atlas-web s3-bench deploy-tools install uninstall
+.PHONY: programs node node-rocks migrate rocks-check node-rocks-linux migrate-linux explorer cache localnet reset run-solana run-localnet run-cache run-explorer run-localnet-samply run-localnet-upload-file run-devnet run-devnet-debug run-devnet-samply admin network tape tape-linux node-linux cache-linux gateway-linux collector-linux explorer-linux dashboard-linux dashboard-check dashboard-dev moderation-linux linux-binaries atlas-web s3-bench deploy-tools install uninstall
 
 programs:
 	$(MAKE) -C $(PROGRAMS_DIR) build
@@ -90,12 +92,18 @@ node-rocks:
 	cp target/release/tape-node target/release/tape-node-rocks
 	cargo build --release -p tape-node --features metrics
 
+# Every migration so far is for RocksDB stores, so the binary needs the
+# feature. It lands on target/release/tape-migrate.
+migrate:
+	cargo build --release -p tape-migrate --features rocks
+
 # RocksDB sits outside the default build and the workspace, so nothing else
 # compiles or tests it. store-rocks is its own workspace and builds RocksDB a
 # second time, into store/store-rocks/target.
 rocks-check:
 	cargo test --manifest-path store/store-rocks/Cargo.toml --features metrics
 	cargo test -p tape-store --features rocks
+	cargo test -p tape-migrate --features rocks
 	cargo test -p tape-node --features "metrics rocks" --lib core::startup
 
 # Separate workspace (own Cargo.lock); build and test from within explorer/.
@@ -235,6 +243,10 @@ node-linux:
 # tape-node from this directory, and this build leaves that file alone.
 node-rocks-linux:
 	$(call linux-cargo,.,--features "metrics rocks" -p tape-node,tape-node,tape-node-rocks)
+
+# The offline store migration tool, which only builds on RocksDB
+migrate-linux:
+	$(call linux-cargo,.,--features rocks -p tape-migrate,tape-migrate)
 
 tape-linux:
 	$(call linux-cargo,.,-p tape,tape)

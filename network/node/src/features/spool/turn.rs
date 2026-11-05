@@ -5,7 +5,7 @@
 //! to the fetches that have finished.
 //!
 //! ```text
-//! for the next 128 missing tracks, starting where the last turn stopped:
+//! for the next 1,024 missing tracks, starting where the last turn stopped:
 //!   skip the track if it is already being fetched
 //!   skip it if it is still waiting after a failure
 //!   drop it from the list if the track is gone or isn't missing anything

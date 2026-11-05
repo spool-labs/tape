@@ -9,6 +9,7 @@ use tape_core::types::{
 };
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
+use tape_recover::time::WallTime;
 use wincode::containers::{Pod, Vec as WincodeVec};
 use wincode::len::BincodeLen;
 use wincode_derive::{SchemaRead, SchemaWrite};
@@ -16,8 +17,12 @@ use wincode_derive::{SchemaRead, SchemaWrite};
 use super::enums::{
     AuditDecision, AuditOp, CredentialScope, CredentialStatus, PolicyAction, PolicyEffect,
 };
+use crate::error::TapeStoreError;
 
 const SLICE_BYTES_LIMIT: usize = 10 * 1024 * 1024;
+
+/// An applied migration's record starts with this many bytes of wall time
+const APPLIED_AT_SIZE: usize = size_of::<u64>();
 
 /// A wrapper around a byte vector with a widened decode limit for track slice data
 type SliceBytes = WincodeVec<Pod<u8>, BincodeLen<SLICE_BYTES_LIMIT>>;
@@ -505,6 +510,51 @@ pub struct PendingWriteChunk {
     /// This slice of the object bytes, exactly as the client sent them
     #[wincode(with = "PendingWriteChunkBytes")]
     pub data: Vec<u8>,
+}
+
+/// tape-migrate keeps this record for each migration it applied
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppliedMigration {
+    /// The git sha of the tape-migrate build that applied it
+    pub build_sha: String,
+    /// When the migration finished
+    pub applied_at: WallTime,
+}
+
+impl AppliedMigration {
+    /// Write the record: the wall time, then the build sha
+    pub fn pack(&self) -> Vec<u8> {
+        let capacity = APPLIED_AT_SIZE + self.build_sha.len();
+        let mut bytes = Vec::with_capacity(capacity);
+        bytes.extend_from_slice(&self.applied_at.0.to_le_bytes());
+        bytes.extend_from_slice(self.build_sha.as_bytes());
+        bytes
+    }
+
+    /// Read a record back from its bytes
+    pub fn unpack(bytes: &[u8]) -> Result<Self, TapeStoreError> {
+        if bytes.len() < APPLIED_AT_SIZE {
+            return Err(TapeStoreError::InvalidDataLength {
+                expected: APPLIED_AT_SIZE,
+                actual: bytes.len(),
+            });
+        }
+        let (applied_at, build_sha) = bytes.split_at(APPLIED_AT_SIZE);
+        let mut applied_at_bytes = [0u8; APPLIED_AT_SIZE];
+        applied_at_bytes.copy_from_slice(applied_at);
+
+        let build_sha = match String::from_utf8(build_sha.to_vec()) {
+            Ok(build_sha) => build_sha,
+            Err(error) => {
+                let message = format!("migration build sha: {error}");
+                return Err(TapeStoreError::Serialization(message));
+            }
+        };
+        Ok(Self {
+            build_sha,
+            applied_at: WallTime(u64::from_le_bytes(applied_at_bytes)),
+        })
+    }
 }
 
 #[cfg(test)]

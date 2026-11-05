@@ -1,4 +1,4 @@
-//! A fetch is one request to one or more peers for a batch of up to 64 tracks
+//! A fetch is one request to one or more peers for a batch of up to 256 tracks
 //! that we get the same way: by sync, transfer, repair or recover. Each fetch
 //! runs in its own task, so that the spool manager never has to wait for a
 //! peer to answer.

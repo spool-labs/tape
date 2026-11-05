@@ -57,6 +57,7 @@ members = [
   "tools/tape-recover-assignment",
   "tools/tape-cue",
   "tools/tape-measure",
+  "tools/tape-migrate",
 ]
 
 # store-rocks compiles RocksDB from scratch, about 20 minutes, and nothing in a
@@ -110,6 +111,7 @@ default-members = [
   "tools/tape-recover-assignment",
   "tools/tape-cue",
   "tools/tape-measure",
+  "tools/tape-migrate",
 ]
 
 [workspace.package]

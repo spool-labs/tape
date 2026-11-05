@@ -46,6 +46,11 @@ use tape_store_api::{Store, TypedStore};
 #[cfg(feature = "rocks")]
 use tape_store_rocks::{RocksStore, SplitStore};
 
+/// This build reads and writes the store layout at this version
+///
+/// A store with no version key is at version 0. tape-migrate brings an older
+/// store up to this version, and the node refuses to start on any other.
+pub const SCHEMA_VERSION: u64 = 1;
 
 /// Wrapper around TypedStore providing tape-specific storage operations
 pub struct TapeStore<S: Store> {

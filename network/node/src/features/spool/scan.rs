@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! each time a turn reaches the end of the spool's missing_list:
-//!   read the next 512 of the spool's tracks
+//!   read the next 2,048 of the spool's tracks
 //!   add each track that is missing its track_data or our slice
 //!   remember how far we got
 //! (we scan only one page each time, so the list grows only as fast as the

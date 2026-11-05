@@ -11200,6 +11200,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tape-migrate"
+version = "0.5.5"
+dependencies = [
+ "clap",
+ "rocksdb",
+ "tape-core",
+ "tape-crypto",
+ "tape-recover",
+ "tape-store",
+ "tape-store-api",
+ "tape-store-rocks",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tape-moderation"
 version = "0.5.5"
 dependencies = [

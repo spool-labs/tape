@@ -250,7 +250,7 @@ mod tests {
         PeerOutcome::Worked { bytes: StorageUnits(bytes), elapsed }
     }
 
-    // a failing peer rests 5 s, doubled per failure, and a success clears it
+    // a failing peer rests 2 s, doubled per failure, and a success clears it
     #[test]
     fn rest_doubles() {
         let mut scores = PeerScores::default();
@@ -260,17 +260,17 @@ mod tests {
         for _ in 0..3 {
             scores.record_peer_outcome(peer, PeerOutcome::Down, secs(0), &limits);
         }
-        let resting = scores.get_peer_status(peer, secs(19), &limits);
-        let rested = scores.get_peer_status(peer, secs(20), &limits);
-        scores.record_peer_outcome(peer, worked(1_000), secs(20), &limits);
+        let resting = scores.get_peer_status(peer, secs(7), &limits);
+        let rested = scores.get_peer_status(peer, secs(8), &limits);
+        scores.record_peer_outcome(peer, worked(1_000), secs(8), &limits);
 
         assert_eq!(resting, PeerStatus::Resting);
         assert!(rested.is_free());
         let free = PeerStatus::Free { speed: Some(1_000) };
-        assert_eq!(scores.get_peer_status(peer, secs(20), &limits), free);
+        assert_eq!(scores.get_peer_status(peer, secs(8), &limits), free);
     }
 
-    // a peer failing 10 min straight is gone, and takes a probe once rested
+    // a peer failing 2 min straight is gone, and takes a probe once rested
     #[test]
     fn gone_peer() {
         let mut scores = PeerScores::default();
@@ -278,15 +278,15 @@ mod tests {
         let limits = SpoolLimits::default();
         scores.record_peer_outcome(peer, PeerOutcome::TooSlow, secs(0), &limits);
 
-        let probe = scores.get_peer_status(peer, secs(600), &limits);
+        let probe = scores.get_peer_status(peer, secs(120), &limits);
         scores.start_fetch(peer);
-        let serving = scores.get_peer_status(peer, secs(600), &limits);
+        let serving = scores.get_peer_status(peer, secs(120), &limits);
 
         assert_eq!(probe, PeerStatus::Gone { can_probe: true });
         assert_eq!(serving, PeerStatus::Gone { can_probe: false });
     }
 
-    // wrong data rests a peer 30 min, and a refusal waits as long as it asks
+    // wrong data rests a peer 5 min, and a refusal waits as long as it asks
     #[test]
     fn long_rests() {
         let mut scores = PeerScores::default();
@@ -300,8 +300,8 @@ mod tests {
         scores.record_peer_outcome(refused, refusal, secs(0), &limits);
 
         let status = |peer, at| scores.get_peer_status(peer, secs(at), &limits);
-        assert_eq!(status(wrong, 1_799), PeerStatus::Gone { can_probe: false });
-        assert_eq!(status(wrong, 1_800), PeerStatus::Gone { can_probe: true });
+        assert_eq!(status(wrong, 299), PeerStatus::Gone { can_probe: false });
+        assert_eq!(status(wrong, 300), PeerStatus::Gone { can_probe: true });
         assert_eq!(status(refused, 59), PeerStatus::Resting);
         assert!(status(refused, 60).is_free());
     }

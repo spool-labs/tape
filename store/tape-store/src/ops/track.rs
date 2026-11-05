@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use tape_core::spooler::VirtualGroup;
 use tape_core::track::types::{CompressedTrack, PackedTrack};
-use tape_store_api::{Column, Store};
+use tape_store_api::{Column, Store, WriteBatch};
 use tape_crypto::address::Address;
 use tape_core::types::{TapeNumber, TrackNumber};
 
@@ -28,6 +28,12 @@ pub trait TrackOps {
 
     /// Delete track metadata.
     fn delete_track(&self, track_address: Address) -> Result<()>;
+
+    /// Index these tracks by virtual group in one batch, as `put_track` does
+    fn put_track_group_index(
+        &self,
+        tracks: &[(Address, CompressedTrack)],
+    ) -> Result<()>;
 
     /// Up to `limit` tracks of runs of virtual groups, by group then address,
     /// from the track after `after`
@@ -108,6 +114,20 @@ impl<S: Store> TrackOps for TapeStore<S> {
             self.inner().inner().delete(TrackGroupIndexCol::CF_NAME, &by_group)?;
         }
         self.delete::<TrackCol>(&track_address)?;
+        Ok(())
+    }
+
+    fn put_track_group_index(
+        &self,
+        tracks: &[(Address, CompressedTrack)],
+    ) -> Result<()> {
+        let mut batch = WriteBatch::new();
+        let cf = TrackGroupIndexCol::CF_NAME;
+        for (address, track) in tracks {
+            let by_group = TrackGroupKey::new(track.group, *address).pack()?;
+            batch.put_owned(cf, by_group.to_vec(), Vec::new());
+        }
+        self.inner().inner().write_batch(batch)?;
         Ok(())
     }
 
@@ -342,7 +362,7 @@ mod tests {
     use super::*;
     use tape_core::track::types::TrackFlags;
     use tape_core::types::{StorageUnits, TapeNumber};
-    use tape_core::spooler::VirtualGroup;
+    use tape_core::spooler::{VirtualGroup, VIRTUAL_GROUP_COUNT};
     use tape_crypto::Hash;
     use tape_store_memory::MemoryStore;
 
@@ -642,5 +662,29 @@ mod tests {
         let bytes: Vec<u8> = page.iter().map(|(_, track)| track.to_bytes()[0]).collect();
         assert_eq!(bytes, vec![2, 3]);
         assert_eq!(all.len(), 4);
+    }
+
+    // index rows for tracks stored without them let the group read find them
+    #[test]
+    fn group_index_rows() {
+        let store = test_store();
+        let mut tracks = Vec::new();
+        let mut expected = Vec::new();
+        for byte in 1..=3u8 {
+            let mut track = make_track_info();
+            track.group = VirtualGroup(u64::from(byte));
+            let address = Address::new([byte; 32]);
+            store.put::<TrackCol>(&address, &track.pack()).expect("put track");
+            tracks.push((address, track));
+            expected.push((track.group, address));
+        }
+        let runs = [VirtualGroup(0)..VirtualGroup(VIRTUAL_GROUP_COUNT)];
+        let before = store.get_group_tracks(&runs, None, 10).expect("page");
+
+        store.put_track_group_index(&tracks).expect("put index rows");
+
+        let after = store.get_group_tracks(&runs, None, 10).expect("page");
+        assert!(before.is_empty());
+        assert_eq!(after, expected);
     }
 }

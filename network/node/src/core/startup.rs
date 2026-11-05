@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
@@ -16,7 +17,10 @@ use tape_core::system::{NodeKind, NodePreferences};
 use tape_core::types::network::NetworkAddress;
 use tape_core::types::tls::NetworkTlsPubkey;
 use tape_crypto::ed25519::Keypair;
-use tape_store::TapeStore;
+use tape_store::error::TapeStoreError;
+use tape_store::ops::MetaOps;
+use tape_store::{TapeStore, SCHEMA_VERSION};
+use tape_store_api::Store;
 use tracing::{info, warn};
 
 use crate::chain::register_node::submit_register_node;
@@ -173,6 +177,37 @@ pub fn open_primary_store(config: &NodeConfig) -> Result<TapeStore<NodeStore>, N
     Ok(store)
 }
 
+/// Stamp a fresh store with the schema version, and refuse any other version
+///
+/// A store with no version key and no sync cursor is fresh. Any other store
+/// at an older version goes through tape-migrate before this build runs on it.
+pub fn ensure_schema_version<S: Store>(
+    store: &TapeStore<S>,
+) -> Result<(), NodeError> {
+    let to_node_error = |error: TapeStoreError| {
+        NodeError::Store(format!("schema version: {error}"))
+    };
+    let version = store.get_schema_version().map_err(to_node_error)?;
+    let cursor = store.get_sync_cursor().map_err(to_node_error)?;
+
+    if version.is_none() && cursor.is_none() {
+        info!(version = SCHEMA_VERSION, "fresh store gets the schema version");
+        return store.set_schema_version(SCHEMA_VERSION).map_err(to_node_error);
+    }
+
+    let found = version.unwrap_or_default();
+    let advice = match found.cmp(&SCHEMA_VERSION) {
+        Ordering::Equal => return Ok(()),
+        Ordering::Less => "run tape-migrate",
+        Ordering::Greater => "run a newer build",
+    };
+    let message = format!(
+        "store is at schema version {found}, \
+         this build needs {SCHEMA_VERSION}: {advice}"
+    );
+    Err(NodeError::Store(message))
+}
+
 /// Close the volume once every service has joined
 ///
 /// Syncs the tails and journals, and trims each segment to its written end. A
@@ -265,6 +300,7 @@ pub async fn build_context(config: &NodeConfig, kind: NodeKind) -> Result<AppCon
     let store = open_primary_store(config)?;
     // After the open, which is what creates the root the tally sits in.
     restarts::record(&config.store.path);
+    ensure_schema_version(&store)?;
 
     let rpc = build_rpc_client(config)?;
 
@@ -494,8 +530,13 @@ mod tests {
     use tape_core::types::tls::NetworkTlsPubkey;
     use tape_core::types::{BasisPoints, EpochNumber, SlotNumber};
     use tape_crypto::ed25519::Keypair;
+    use tape_store::ops::MetaOps;
+    use tape_store::{TapeStore, SCHEMA_VERSION};
+    use tape_store_memory::MemoryStore;
 
-    use super::{ensure_registered, resolve_network_address};
+    use super::{
+        ensure_registered, ensure_schema_version, resolve_network_address,
+    };
     use crate::chain::register_node::submit_register_node;
     use crate::config::node::NodeConfig;
     use crate::core::error::NodeError;
@@ -606,6 +647,39 @@ mod tests {
 
         assert!(opened.is_err_and(|error| error.to_string().contains("reel")));
         assert!(!super::holds_rocks_store(&config.store.path));
+    }
+
+    // a fresh store gets the schema version this build needs
+    #[test]
+    fn fresh_store() {
+        let store = TapeStore::new(MemoryStore::new());
+
+        ensure_schema_version(&store).expect("fresh store starts");
+
+        let version = store.get_schema_version().expect("read version");
+        assert_eq!(version, Some(SCHEMA_VERSION));
+    }
+
+    // a store that has synced and holds no version is sent to tape-migrate
+    #[test]
+    fn unversioned_store() {
+        let store = TapeStore::new(MemoryStore::new());
+        store.set_sync_cursor(SlotNumber(100), None).expect("set cursor");
+
+        let refused = ensure_schema_version(&store).expect_err("refused");
+
+        assert!(refused.to_string().contains("run tape-migrate"));
+        assert!(store.get_schema_version().expect("read version").is_none());
+    }
+
+    // a store at this build's version starts
+    #[test]
+    fn matching_version() {
+        let store = TapeStore::new(MemoryStore::new());
+        store.set_sync_cursor(SlotNumber(100), None).expect("set cursor");
+        store.set_schema_version(SCHEMA_VERSION).expect("set version");
+
+        ensure_schema_version(&store).expect("matching store starts");
     }
 
     // -- resolve_network_address tests --

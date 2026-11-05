@@ -230,7 +230,7 @@ pub fn can_recover(
 /// Whether the turn can try a missing track now. A never-tried handover
 /// goes at once, and a never-tried upload waits `upload_wait` for the
 /// uploader to deliver. After a failure of the track's own a sync, repair
-/// or recovery waits 2 s doubled per failure; after a failure of the peer,
+/// or recovery waits 1 s doubled per failure; after a failure of the peer,
 /// the peer's rest decides.
 pub fn can_try_now(
     missing: &MissingTrack,
@@ -592,7 +592,7 @@ mod tests {
         assert!(try_now(&down, 10));
     }
 
-    // a failure of the track's own waits 2 s doubled per failure, up to 5 min
+    // a failure of the track's own waits 1 s doubled per failure, up to 1 min
     #[test]
     fn track_wait_doubles() {
         let not_held = AttemptFailure::NotHeld;
@@ -602,11 +602,11 @@ mod tests {
         let try_now = |missing: &MissingTrack, at| {
             can_try_now(missing, secs(at), UPLOAD_WAIT, &limits())
         };
-        assert!(!try_now(&missing, 107));
-        assert!(try_now(&missing, 108));
+        assert!(!try_now(&missing, 103));
+        assert!(try_now(&missing, 104));
         missing.failures = 20;
-        assert!(!try_now(&missing, 399));
-        assert!(try_now(&missing, 400));
+        assert!(!try_now(&missing, 159));
+        assert!(try_now(&missing, 160));
     }
 
     // holders go newest first, and a resting newest holder keeps the track

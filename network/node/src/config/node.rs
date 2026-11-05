@@ -788,7 +788,7 @@ recovery:
 
         assert_eq!(config.recovery.max_fetches, 42);
         assert_eq!(config.recovery.turn_tracks, 12);
-        assert_eq!(config.recovery.scan_page, 512);
+        assert_eq!(config.recovery.scan_page, 2_048);
     }
 
     // challenge rounds are off unless the yaml turns them on

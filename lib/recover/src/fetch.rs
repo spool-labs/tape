@@ -349,7 +349,7 @@ mod tests {
         assert_eq!(sync, track.size);
     }
 
-    // a fetch gets 5 s, plus 1 s per MiB it asked for
+    // a fetch gets 10 s, plus 8 s per MiB it asked for
     #[test]
     fn limit_grows() {
         let limits = SpoolLimits::default();
@@ -357,7 +357,7 @@ mod tests {
         let empty = get_time_limit(StorageUnits(0), &limits);
         let full = get_time_limit(StorageUnits::mb(8), &limits);
 
-        assert_eq!(empty, Duration::from_secs(5));
-        assert_eq!(full, Duration::from_secs(13));
+        assert_eq!(empty, Duration::from_secs(10));
+        assert_eq!(full, Duration::from_secs(74));
     }
 }

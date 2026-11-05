@@ -7,6 +7,7 @@
 //! - Node address
 //! - Sync cursor (last processed slot and the block it stands on)
 //! - GC progress (started/completed epochs)
+//! - Schema version and the migrations tape-migrate applied
 
 use crate::columns::{GcCol, MetaCol, SyncCursor, SyncCursorCol};
 use crate::error::{Result, TapeStoreError};
@@ -16,12 +17,13 @@ use tape_core::types::{EpochNumber, NodeId, SlotNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
 
-use crate::types::{InvalidationProof, UnitKey};
+use crate::types::{AppliedMigration, InvalidationProof, UnitKey};
 
 // Meta keys
 const CLUSTER_HASH_KEY: &str = "cluster_hash";
 const NODE_ADDRESS_KEY: &str = "node_address";
 const NODE_ID_KEY: &str = "node_id";
+const SCHEMA_VERSION_KEY: &str = "schema_version";
 const SNAPSHOT_BOOTSTRAP_TARGET_EPOCH_KEY: &str = "snapshot_bootstrap_target_epoch";
 const OBSERVE_LAST_EPOCH_KEY: &str = "observe_last_epoch";
 const OBSERVE_LIFETIME_KEY: &str = "observe_lifetime";
@@ -77,6 +79,18 @@ pub trait MetaOps {
     fn set_epoch_nonce(&self, epoch: EpochNumber, nonce: Hash) -> Result<()>;
     fn get_epoch_start_ts(&self, epoch: EpochNumber) -> Result<Option<i64>>;
     fn set_epoch_start_ts(&self, epoch: EpochNumber, ts: i64) -> Result<()>;
+
+    // Schema version, none on a store written before versions were kept
+    fn get_schema_version(&self) -> Result<Option<u64>>;
+    fn set_schema_version(&self, version: u64) -> Result<()>;
+
+    // tape-migrate keeps a record for each migration it applied
+    fn get_applied_migration(&self, number: u64) -> Result<Option<AppliedMigration>>;
+    fn set_applied_migration(
+        &self,
+        number: u64,
+        applied: &AppliedMigration,
+    ) -> Result<()>;
 }
 
 impl<S: Store> MetaOps for TapeStore<S> {
@@ -303,6 +317,48 @@ impl<S: Store> MetaOps for TapeStore<S> {
         self.put::<MetaCol>(&key, &ts.to_le_bytes().to_vec())?;
         Ok(())
     }
+
+    fn get_schema_version(&self) -> Result<Option<u64>> {
+        let key = SCHEMA_VERSION_KEY.to_string();
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => {
+                if bytes.len() != 8 {
+                    return Err(TapeStoreError::InvalidDataLength {
+                        expected: 8,
+                        actual: bytes.len(),
+                    });
+                }
+                let mut version_bytes = [0u8; 8];
+                version_bytes.copy_from_slice(&bytes);
+                Ok(Some(u64::from_le_bytes(version_bytes)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn set_schema_version(&self, version: u64) -> Result<()> {
+        let key = SCHEMA_VERSION_KEY.to_string();
+        self.put::<MetaCol>(&key, &version.to_le_bytes().to_vec())?;
+        Ok(())
+    }
+
+    fn get_applied_migration(&self, number: u64) -> Result<Option<AppliedMigration>> {
+        let key = format!("migration:{number}");
+        match self.get::<MetaCol>(&key)? {
+            Some(bytes) => Ok(Some(AppliedMigration::unpack(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn set_applied_migration(
+        &self,
+        number: u64,
+        applied: &AppliedMigration,
+    ) -> Result<()> {
+        let key = format!("migration:{number}");
+        self.put::<MetaCol>(&key, &applied.pack())?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -311,6 +367,9 @@ mod tests {
     use tape_store_memory::MemoryStore;
     use tape_core::bls::BlsSignature;
     use tape_crypto::bls12254::min_sig::G1CompressedPoint;
+    use tape_recover::time::WallTime;
+
+    use crate::SCHEMA_VERSION;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -415,6 +474,32 @@ mod tests {
         assert!(store.get_epoch_start_ts(epoch).unwrap().is_none());
         store.set_epoch_start_ts(epoch, 1_700_000_000).unwrap();
         assert_eq!(store.get_epoch_start_ts(epoch).unwrap(), Some(1_700_000_000));
+    }
+
+    // a store with no version key reads as none, then as the version written
+    #[test]
+    fn schema_version() {
+        let store = test_store();
+
+        assert!(store.get_schema_version().unwrap().is_none());
+
+        store.set_schema_version(SCHEMA_VERSION).unwrap();
+        assert_eq!(store.get_schema_version().unwrap(), Some(SCHEMA_VERSION));
+    }
+
+    // each migration's record reads back under its own number
+    #[test]
+    fn applied_migration() {
+        let store = test_store();
+        let applied = AppliedMigration {
+            build_sha: "fe26288f-dirty".to_string(),
+            applied_at: WallTime(1_700_000_000_000),
+        };
+
+        store.set_applied_migration(1, &applied).unwrap();
+
+        assert_eq!(store.get_applied_migration(1).unwrap(), Some(applied));
+        assert!(store.get_applied_migration(2).unwrap().is_none());
     }
 
     #[test]

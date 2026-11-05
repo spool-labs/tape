@@ -25,7 +25,8 @@ pub use keys::{
 
 // Re-export value types
 pub use values::{
-    AuditEntry, AuthState, BudgetLimits, CountedTrack, Credential, CredentialCaps, InvalidationProof,
+    AppliedMigration, AuditEntry, AuthState, BudgetLimits, CountedTrack, Credential,
+    CredentialCaps, InvalidationProof,
     LedgerEntry, LedgerReservation, MultipartPart, MultipartPartChunk, MultipartUpload,
     MULTIPART_CHUNK_BYTES, ObjectListEntry, ObjectMetadata, PendingOp, PendingState, PendingWrite,
     PendingWriteChunk, PENDING_WRITE_CHUNK_BYTES, PolicyRule, SliceWrite,
