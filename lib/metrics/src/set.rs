@@ -29,7 +29,6 @@ pub struct Metrics {
     pub sync_tracks_total: IntCounterVec,
     pub repair_attempts_total: IntCounterVec,
     pub repair_missing_total: IntCounterVec,
-    pub repair_missing_helper_stripes_total: IntCounter,
     pub recover_tries_total: IntCounterVec,
     pub recover_rejected_slices_total: IntCounter,
     pub spool_missing_encoding_total: IntCounter,
@@ -129,12 +128,6 @@ impl Metrics {
                 registry
             )
             .expect("register tape_node_repair_missing_total"),
-            repair_missing_helper_stripes_total: register_int_counter_with_registry!(
-                "tape_node_repair_missing_helper_stripes_total",
-                "Stripes repaired around missing helpers",
-                registry
-            )
-            .expect("register tape_node_repair_missing_helper_stripes_total"),
             recover_tries_total: register_int_counter_vec_with_registry!(
                 "tape_node_recover_tries_total",
                 "Spool recovery tries by outcome",

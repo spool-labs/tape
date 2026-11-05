@@ -82,6 +82,15 @@ impl MissingTrack {
         self.last_attempt = Some(Attempt { at: now, method, failure });
     }
 
+    /// Whether the last attempt was a repair, so a recovery now takes the
+    /// track over from repair
+    pub fn is_after_repair(&self) -> bool {
+        let Some(attempt) = self.last_attempt else {
+            return false;
+        };
+        attempt.method == Method::Repair
+    }
+
     /// Write the facts in their fixed layout; a field with nothing to say is
     /// zero. The store keys them by spool, origin and track.
     pub fn pack(&self) -> [u8; Self::SIZE] {
@@ -211,6 +220,25 @@ mod tests {
             assert_eq!(read, missing);
         }
         assert_eq!(fresh.pack(), [0u8; MissingTrack::SIZE]);
+    }
+
+    // only a track whose last attempt was a repair is one a recovery takes
+    // over from repair
+    #[test]
+    fn after_repair() {
+        let at = WallTime(1_000);
+        let fresh = MissingTrack::new_handover(SpoolIndex(0), address(1), at);
+        let not_held = AttemptFailure::NotHeld;
+        let none = EpochNumber(0);
+
+        let mut repaired = fresh;
+        repaired.record_failure(Method::Repair, not_held, none, at);
+        let mut recovered = repaired;
+        recovered.record_failure(Method::Recover, not_held, none, at);
+
+        assert!(!fresh.is_after_repair());
+        assert!(repaired.is_after_repair());
+        assert!(!recovered.is_after_repair());
     }
 
     // a holder that said no moves the holders on, a failed repair starts the

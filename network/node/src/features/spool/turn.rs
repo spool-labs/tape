@@ -237,7 +237,6 @@ where
                 self.add_to_req(turn, Method::Repair, helpers, track)
             }
             NextAttempt::Recover { peers } => {
-                self.context.metrics.inc_repair_to_recovery();
                 self.add_to_req(turn, Method::Recover, peers, track)
             }
         }
@@ -312,8 +311,20 @@ where
         for peer in &req.peers {
             self.peer_scores.start_fetch(peer.peer);
         }
+        if req.method == Method::Recover {
+            self.count_repair_handovers(&req);
+        }
         self.fetch_pool.add(id, req);
         true
+    }
+
+    /// Count each track that a starting recovery takes over from repair
+    fn count_repair_handovers(&self, req: &FetchReq) {
+        for track in &req.tracks {
+            if track.missing_track.is_after_repair() {
+                self.context.metrics.inc_repair_to_recovery();
+            }
+        }
     }
 }
 

@@ -131,12 +131,6 @@ impl NodeMetrics {
             .inc();
     }
 
-    #[cfg_attr(not(feature = "metrics"), allow(unused_variables))]
-    pub fn add_repair_missing_helper_stripes(&self, n: u64) {
-        #[cfg(feature = "metrics")]
-        tape_metrics::metrics().repair_missing_helper_stripes_total.inc_by(n);
-    }
-
     pub fn inc_spool_missing_encoding(&self) {
         #[cfg(feature = "metrics")]
         tape_metrics::metrics().spool_missing_encoding_total.inc();
@@ -283,7 +277,6 @@ mod tests {
             attempts("repaired"),
             attempts("put_back"),
             missing("deadline"),
-            set.repair_missing_helper_stripes_total.get(),
             tries("recovered"),
             tries("put_back"),
             set.recover_rejected_slices_total.get(),
@@ -292,7 +285,6 @@ mod tests {
         m.inc_repair_repaired();
         m.inc_repair_put_back();
         m.inc_repair_missing("deadline");
-        m.add_repair_missing_helper_stripes(3);
         m.inc_recover_recovered();
         m.inc_recover_put_back();
         m.add_recover_rejected(2);
@@ -300,9 +292,8 @@ mod tests {
         assert_eq!(attempts("repaired") - before.0, 1);
         assert_eq!(attempts("put_back") - before.1, 1);
         assert_eq!(missing("deadline") - before.2, 1);
-        assert_eq!(set.repair_missing_helper_stripes_total.get() - before.3, 3);
-        assert_eq!(tries("recovered") - before.4, 1);
-        assert_eq!(tries("put_back") - before.5, 1);
-        assert_eq!(set.recover_rejected_slices_total.get() - before.6, 2);
+        assert_eq!(tries("recovered") - before.3, 1);
+        assert_eq!(tries("put_back") - before.4, 1);
+        assert_eq!(set.recover_rejected_slices_total.get() - before.5, 2);
     }
 }
