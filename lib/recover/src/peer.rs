@@ -189,6 +189,15 @@ impl PeerScore {
         elapsed: Duration,
         now: WallTime,
     ) {
+        if !bytes.is_zero() {
+            self.record_speed(bytes, elapsed);
+        }
+        self.failures_in_a_row = 0;
+        self.failing_since = None;
+        self.resting_until = now;
+    }
+
+    fn record_speed(&mut self, bytes: StorageUnits, elapsed: Duration) {
         let millis = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
         let rate = bytes.as_u64().saturating_mul(MILLIS_PER_SECOND);
         let rate = rate / millis.max(1);
@@ -197,9 +206,6 @@ impl PeerScore {
             None => rate,
         };
         self.speed = Some(speed);
-        self.failures_in_a_row = 0;
-        self.failing_since = None;
-        self.resting_until = now;
     }
 
     fn record_failed(
@@ -312,6 +318,21 @@ mod tests {
 
         let status = scores.get_peer_status(peer, secs(0), &limits);
         assert_eq!(status, PeerStatus::Free { speed: Some(2_000) });
+    }
+
+    // an answer with nothing in it ends the peer's rest and keeps its speed
+    #[test]
+    fn empty_answer() {
+        let mut scores = PeerScores::default();
+        let peer = address(1);
+        let limits = SpoolLimits::default();
+
+        scores.record_peer_outcome(peer, worked(1_000), secs(0), &limits);
+        scores.record_peer_outcome(peer, PeerOutcome::Down, secs(0), &limits);
+        scores.record_peer_outcome(peer, worked(0), secs(1), &limits);
+
+        let status = scores.get_peer_status(peer, secs(1), &limits);
+        assert_eq!(status, PeerStatus::Free { speed: Some(1_000) });
     }
 
     // a peer serving as many fetches as it may is busy, one never seen is free

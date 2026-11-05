@@ -136,7 +136,7 @@ pub fn choose_attempt(
     if let Some(attempt) = repair {
         return attempt;
     }
-    can_recover(group_peers, scores, profile, now, limits)
+    can_recover(missing, group_peers, scores, profile, now, limits)
 }
 
 /// Ask the holders newest first, only those older than the last that said
@@ -167,7 +167,8 @@ pub fn can_transfer(
 }
 
 /// Rebuild our slice from d helpers at other positions, while repairs
-/// haven't failed for too long; nothing means recovery may start
+/// haven't failed for too long; nothing means recovery may start. Each
+/// failure of the track moves it on to the next helpers in speed order.
 pub fn can_repair(
     missing: &MissingTrack,
     group_peers: &[PositionPeer],
@@ -185,7 +186,8 @@ pub fn can_repair(
     if usable.len() < helpers {
         return None;
     }
-    let mut free = get_fastest_free(group_peers, scores, now, limits);
+    let start = usize::from(missing.failures);
+    let mut free = get_free_helpers(group_peers, scores, now, limits, start);
     if free.len() >= helpers {
         free.truncate(helpers);
         return Some(NextAttempt::Repair { helpers: free });
@@ -197,8 +199,10 @@ pub fn can_repair(
     Some(NextAttempt::NotNow)
 }
 
-/// Get k whole slices from k positions
+/// Get k whole slices from k positions. Each failure of the track moves it
+/// on to the next peers in speed order.
 pub fn can_recover(
+    missing: &MissingTrack,
     group_peers: &[PositionPeer],
     scores: &PeerScores,
     profile: ErasureCode,
@@ -210,7 +214,8 @@ pub fn can_recover(
     if usable.len() < k {
         return NextAttempt::NotNow;
     }
-    let mut free = get_fastest_free(group_peers, scores, now, limits);
+    let start = usize::from(missing.failures);
+    let mut free = get_free_helpers(group_peers, scores, now, limits, start);
     if free.len() >= k {
         free.truncate(k);
         return NextAttempt::Recover { peers: free };
@@ -247,9 +252,12 @@ pub fn can_try_now(
     }
 }
 
-/// The fastest free sync_peer, a probe when none is free, busy while one
-/// serves our other fetches, and not_now otherwise
+/// A free sync_peer, a probe when none is free, busy while one serves our
+/// other fetches, and not_now otherwise. The free peers go in speed order,
+/// and each failure of the track moves it on to the next one, so a track
+/// that one peer didn't have goes to another.
 pub fn pick_sync_peer(
+    missing: &MissingTrack,
     peers: &[Address],
     scores: &PeerScores,
     now: WallTime,
@@ -259,8 +267,10 @@ pub fn pick_sync_peer(
     for peer in peers {
         statuses.push(scores.get_peer_status(*peer, now, limits));
     }
-    if let Some(peer) = get_fastest_peer(peers, &statuses) {
-        return NextAttempt::Sync { peer };
+    let free = get_free_peers(peers, scores, now, limits);
+    if !free.is_empty() {
+        let start = usize::from(missing.failures);
+        return NextAttempt::Sync { peer: free[start % free.len()] };
     }
     for (peer, status) in peers.iter().zip(&statuses) {
         if status.can_probe() {
@@ -365,18 +375,40 @@ fn is_awake(status: PeerStatus) -> bool {
     matches!(status, PeerStatus::Free { .. } | PeerStatus::Busy)
 }
 
-/// The fastest free peer of each position that has one, fastest first
-fn get_fastest_free(
+/// One free peer for each position that has one. The walk goes through the
+/// free peers in speed order from the `start`-th on, wrapping round, and
+/// takes the first peer it meets at each position.
+fn get_free_helpers(
+    group_peers: &[PositionPeer],
+    scores: &PeerScores,
+    now: WallTime,
+    limits: &SpoolLimits,
+    start: usize,
+) -> Vec<PositionPeer> {
+    let free = get_free_by_speed(group_peers, scores, now, limits);
+    let mut helpers: Vec<PositionPeer> = Vec::new();
+    for offset in 0..free.len() {
+        let helper = free[(start + offset) % free.len()];
+        if !has_position(&helpers, helper.position) {
+            helpers.push(helper);
+        }
+    }
+    helpers
+}
+
+/// Every free peer of the group, fastest first; one never measured counts
+/// as fastest
+fn get_free_by_speed(
     group_peers: &[PositionPeer],
     scores: &PeerScores,
     now: WallTime,
     limits: &SpoolLimits,
 ) -> Vec<PositionPeer> {
-    let mut free: Vec<PositionPeer> = Vec::new();
+    let mut free = Vec::new();
     for helper in group_peers {
         let status = scores.get_peer_status(helper.peer, now, limits);
         if status.is_free() {
-            add_if_faster(&mut free, *helper, scores, now, limits);
+            free.push(*helper);
         }
     }
     let get_rank = |helper: &PositionPeer| {
@@ -387,28 +419,13 @@ fn get_fastest_free(
     free
 }
 
-/// Keep `helper` as its position's peer when the position has none yet, or
-/// when it is faster than the one kept
-fn add_if_faster(
-    free: &mut Vec<PositionPeer>,
-    helper: PositionPeer,
-    scores: &PeerScores,
-    now: WallTime,
-    limits: &SpoolLimits,
-) {
-    let rank = |peer: Address| {
-        scores.get_peer_status(peer, now, limits).get_speed_rank()
-    };
-    for kept in free.iter_mut() {
-        if kept.position != helper.position {
-            continue;
+fn has_position(helpers: &[PositionPeer], position: usize) -> bool {
+    for helper in helpers {
+        if helper.position == position {
+            return true;
         }
-        if rank(helper.peer) > rank(kept.peer) {
-            *kept = helper;
-        }
-        return;
     }
-    free.push(helper);
+    false
 }
 
 /// A never-tried missing track: a handover goes at once, and an upload once
@@ -426,24 +443,25 @@ fn can_try_first(
     }
 }
 
-/// The fastest free peer, never measured counting as fastest
-fn get_fastest_peer(
+/// The free peers, fastest first; one never measured counts as fastest
+fn get_free_peers(
     peers: &[Address],
-    statuses: &[PeerStatus],
-) -> Option<Address> {
-    let mut fastest = None;
-    let mut best = 0;
-    for (peer, status) in peers.iter().zip(statuses) {
-        if !status.is_free() {
-            continue;
-        }
-        let rank = status.get_speed_rank();
-        if fastest.is_none() || rank > best {
-            fastest = Some(*peer);
-            best = rank;
+    scores: &PeerScores,
+    now: WallTime,
+    limits: &SpoolLimits,
+) -> Vec<Address> {
+    let mut free = Vec::new();
+    for peer in peers {
+        if scores.get_peer_status(*peer, now, limits).is_free() {
+            free.push(*peer);
         }
     }
-    fastest
+    let get_rank = |peer: &Address| {
+        let status = scores.get_peer_status(*peer, now, limits);
+        Reverse(status.get_speed_rank())
+    };
+    free.sort_by_key(get_rank);
+    free
 }
 
 #[cfg(test)]
@@ -772,12 +790,17 @@ mod tests {
             measure(&mut scores, helper.peer, 900);
         }
 
-        let quick = can_recover(&fastest, &scores, SMALL, now, &limits);
+        let missing = fresh();
+        let recover = |peers: &[PositionPeer], scores: &PeerScores| {
+            can_recover(&missing, peers, scores, SMALL, now, &limits)
+        };
+
+        let quick = recover(&fastest, &scores);
         occupy(&mut scores, fastest[3].peer);
-        let busy = can_recover(&fastest[1..], &scores, SMALL, now, &limits);
+        let busy = recover(&fastest[1..], &scores);
         lose(&mut scores, fastest[2].peer);
         lose(&mut scores, fastest[3].peer);
-        let short = can_recover(&fastest, &scores, SMALL, now, &limits);
+        let short = recover(&fastest, &scores);
 
         let expected = vec![fastest[1], fastest[2], fastest[3]];
         assert_eq!(quick, NextAttempt::Recover { peers: expected });
@@ -797,13 +820,61 @@ mod tests {
         measure(&mut scores, measured, 5);
         occupy(&mut scores, busy);
         rest(&mut scores, resting);
+        let missing = fresh();
+        let pick = |peers: &[Address]| {
+            pick_sync_peer(&missing, peers, &scores, now, &limits)
+        };
 
-        let first = pick_sync_peer(&[measured, unseen], &scores, now, &limits);
-        let waiting = pick_sync_peer(&[busy, resting], &scores, now, &limits);
-        let rested = pick_sync_peer(&[resting], &scores, now, &limits);
+        let first = pick(&[measured, unseen]);
+        let waiting = pick(&[busy, resting]);
+        let rested = pick(&[resting]);
 
         assert_eq!(first, NextAttempt::Sync { peer: unseen });
         assert_eq!(waiting, NextAttempt::Busy);
         assert_eq!(rested, NextAttempt::NotNow);
+    }
+
+    // each failure of a track moves its sync on to the next free peer in
+    // speed order, and the order wraps round
+    #[test]
+    fn sync_moves_on() {
+        let mut scores = PeerScores::default();
+        let now = secs(NOW);
+        let limits = limits();
+        let (fast, slow) = (address(1), address(2));
+        measure(&mut scores, fast, 900);
+        measure(&mut scores, slow, 10);
+        let mut missing = tried(Method::Sync, AttemptFailure::NotHeld, now);
+        let mut pick = |failures: u16| {
+            missing.failures = failures;
+            pick_sync_peer(&missing, &[slow, fast], &scores, now, &limits)
+        };
+
+        assert_eq!(pick(0), NextAttempt::Sync { peer: fast });
+        assert_eq!(pick(1), NextAttempt::Sync { peer: slow });
+        assert_eq!(pick(2), NextAttempt::Sync { peer: fast });
+    }
+
+    // each failure of a track moves its recovery on through the free peers
+    // in speed order, so a position's second peer gets its turn
+    #[test]
+    fn recovery_moves_on() {
+        let scores = PeerScores::default();
+        let now = secs(NOW);
+        let limits = limits();
+        let at = |position: usize, byte: u8| {
+            PositionPeer { position, peer: address(byte) }
+        };
+        let peers = [at(1, 1), at(1, 2), at(2, 3), at(3, 4)];
+        let mut missing = tried(Method::Recover, AttemptFailure::NotHeld, now);
+
+        let first = can_recover(&missing, &peers, &scores, SMALL, now, &limits);
+        missing.failures = 1;
+        let next = can_recover(&missing, &peers, &scores, SMALL, now, &limits);
+
+        let owner = vec![peers[0], peers[2], peers[3]];
+        assert_eq!(first, NextAttempt::Recover { peers: owner });
+        let holder = vec![peers[1], peers[2], peers[3]];
+        assert_eq!(next, NextAttempt::Recover { peers: holder });
     }
 }

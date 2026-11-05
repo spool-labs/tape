@@ -187,6 +187,7 @@ where
             self.context.metrics.inc_spool_missing_encoding();
             return Ok(NextAttempt::NotNow);
         }
+
         let me = self.context.node_address();
         let position = leaf_position(missing.spool).as_usize();
         let profile = self.context.params().profile;
@@ -196,15 +197,19 @@ where
         let history =
             turn.get_owner_history(store, missing.spool, profile, limits)?;
         let scores = &self.peer_scores;
+
         if live.track.is_inline() {
             let peers = get_sync_peers(history, position, me);
-            return Ok(pick_sync_peer(&peers, scores, now, limits));
+            let peer = pick_sync_peer(missing, &peers, scores, now, limits);
+            return Ok(peer);
         }
+
         let holders = get_holders(history, position, me);
         let peers = get_group_peers(history, position, me);
         let attempt = choose_attempt(
             missing, &holders, &peers, scores, profile, now, limits,
         );
+
         Ok(attempt)
     }
 
