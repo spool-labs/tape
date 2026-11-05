@@ -4,10 +4,8 @@
 //! - Enums: NodeStatus, ObjectInfo
 //! - Keys: EpochKey, UnitKey, SliceKey, TrackLookupKey, vote/snapshot keys
 //! - Values: TapeInfo, PackedTrack, snapshot artifacts
-//! - The missing_list: Entry, EntryKey and what an attempt records
 mod enums;
 pub mod keys;
-pub mod missing;
 pub mod slice;
 mod values;
 
@@ -23,10 +21,6 @@ pub use keys::{
     MultipartPartChunkKey, MultipartPartKey, PendingWriteChunkKey, PendingWriteKey,
     ObjectListKey, PolicyRuleKey, RemovalKey, SliceKey, SnapshotArtifactKey,
     TrackLookupKey, UnitKey, VoteSigKey,
-};
-
-pub use missing::{
-    Attempt, AttemptResult, Entry, EntryKey, FailureCount, Method, PackedEntry, WallTime,
 };
 
 // Re-export value types

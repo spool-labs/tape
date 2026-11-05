@@ -10,7 +10,7 @@
 //! - `ObjectInfoOps`: Object info (blacklisted, invalid, valid)
 //! - `ObjectMetadataOps`: Named-object reverse lookup
 //! - `RemovalOps`: Tapes closed or rewound in the current epoch
-//! - `SpoolOps`: Spool rows, the missing_list and the owner_history (NOT epoch-namespaced)
+//! - `SpoolOps`: Spool states, the missing_list and the owner_history (NOT epoch-namespaced)
 //! - `SliceOps`: Slice data storage
 //! - `CredentialOps`: S3 write credentials (put/get/revoke/list)
 //! - `PolicyOps`: Write-authorization policy engine (rule CRUD + evaluate)
@@ -30,6 +30,7 @@ mod object_info;
 mod object_list;
 mod object_metadata;
 mod policy;
+mod range;
 mod removal;
 mod s3_multipart;
 mod s3_pending;
@@ -58,7 +59,7 @@ pub use s3_multipart::MultipartOps;
 pub use s3_pending::PendingWriteOps;
 pub use snapshot::SnapshotOps;
 pub use slice::SliceOps;
-pub use spool::{track_group_key, GroupTrack, SpoolOps, STORED_SPOOL_COUNT};
+pub use spool::{SpoolOps, STORED_SPOOL_COUNT};
 pub use tape::TapeOps;
 pub use track::{TrackOps, tape_numbers_at, tape_track_numbers};
 pub use track_data::TrackDataOps;

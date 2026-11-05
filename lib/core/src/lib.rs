@@ -22,9 +22,7 @@ pub mod prelude {
     pub use crate::thresholds::{validate_profile, NetworkParams, Thresholds, TrustModel};
     pub use crate::object::object_etag;
     pub use crate::types::{GroupIndex, SpoolIndex, VirtualGroup};
-    pub use crate::system::{
-        EpochPhase, EpochState, NodeStatus, SpoolState, VoteKind,
-    };
+    pub use crate::system::{EpochPhase, EpochState, NodeStatus, VoteKind};
     pub use crate::track::blob::BlobEncoding;
     pub use crate::track::data::{
         BlobData, BlobDataSlice, BlobInfo, BlobInfoSlice, TrackObjectInfo, TrackObjectInfoSlice,

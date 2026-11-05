@@ -19,6 +19,7 @@ tape-sdk = { workspace = true }
 tape-store = { workspace = true }
 tape-blocks = { workspace = true }
 tape-spooler = { workspace = true }
+tape-recover = { workspace = true }
 tape-store-api = { workspace = true }
 tape-store-rocks = { workspace = true, optional = true }
 reel = { workspace = true }

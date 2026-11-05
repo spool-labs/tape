@@ -209,8 +209,8 @@ pub async fn put_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
         .map_err(store_error)?
         .ok_or(RouteError::NotResponsible)?;
 
-    // A spool we lost is locked_to_move and takes no new uploads
-    if spool_state.is_locked() {
+    // A spool we lost takes no new uploads
+    if spool_state.is_lost() {
         return Err(RouteError::NotResponsible);
     }
 
@@ -310,7 +310,7 @@ mod tests {
     use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress};
     use tape_core::cert::track::TrackWriteMessage;
     use tape_core::erasure::{slice_root, MAX_GROUP_SIZE, SLICE_TREE_HEIGHT};
-    use tape_core::prelude::SpoolState;
+    use tape_recover::state::SpoolState;
     use tape_snapshot::snapshot_chunk_key;
     use tape_core::spooler::VirtualGroup;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
@@ -423,7 +423,7 @@ mod tests {
             .put_slice(owned_spool, track_address, slice_bytes.clone())
             .expect("seed slice");
         ctx.store
-            .put_spool_states(&[(owned_spool, SpoolState::gained())])
+            .put_spool_states(&[(owned_spool, SpoolState::new_scanning())])
             .expect("set spool row");
 
         (track_address, owned_spool, slice_bytes)
@@ -505,7 +505,7 @@ mod tests {
             .put_slice(owned_spool, track_address, HIDDEN_SLICE.to_vec())
             .expect("seed slice");
         ctx.store
-            .put_spool_states(&[(owned_spool, SpoolState::gained())])
+            .put_spool_states(&[(owned_spool, SpoolState::new_scanning())])
             .expect("set spool row");
 
         (track_address, owned_spool, tape, key)
@@ -736,7 +736,7 @@ mod tests {
             .put_slice(owned_spool, track_address, slice_bytes.clone())
             .expect("seed slice");
         ctx.store
-            .put_spool_states(&[(owned_spool, SpoolState::gained())])
+            .put_spool_states(&[(owned_spool, SpoolState::new_scanning())])
             .expect("set spool row");
 
         // The record lives only in pending, as it would between confirmation and
@@ -849,7 +849,7 @@ mod tests {
             .expect("seed track data");
 
         ctx.store
-            .put_spool_states(&[(owned_spool, SpoolState::gained())])
+            .put_spool_states(&[(owned_spool, SpoolState::new_scanning())])
             .expect("set spool row");
 
         (

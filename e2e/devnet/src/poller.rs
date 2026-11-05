@@ -380,13 +380,13 @@ async fn poll_once(
             continue;
         }
 
-        if let Ok(local_spools) = tracked.ctx.store.spool_states(None, STORED_SPOOL_COUNT) {
+        if let Ok(local_spools) = tracked.ctx.store.get_spool_states(None, STORED_SPOOL_COUNT) {
             for (spool_id, spool_state) in local_spools {
                 // A retired group's spool shows under the live spool that carries it.
                 let live_spool = fold.map_or(spool_id, |fold: GroupFold| fold.live_spool(spool_id));
                 let index = live_spool.as_usize();
                 if let Some(spool) = spools.get_mut(index) {
-                    if !spool_state.is_locked() && !spool_state.is_filling {
+                    if !spool_state.is_lost() && !spool_state.is_scanning {
                         spool.available = true;
                         if counted_spools.insert(spool_id) {
                             let group = GroupIndex::containing(live_spool).0 as usize;

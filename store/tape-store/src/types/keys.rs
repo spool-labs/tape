@@ -9,15 +9,21 @@
 //! - RemovalKey: (tape, tape_number BE, epoch BE) (48 bytes)
 //! - SnapshotArtifactKey: (epoch BE, group BE, chunk BE) (24 bytes)
 //! - VoteSigKey: (voting_epoch BE, kind BE, target_epoch BE, hash, group BE, signer) (96 bytes)
+//! - MissingTrackKey: (position, origin, virtual group BE, track) (36 bytes)
+//! - SpoolStateKey: (position, virtual group BE) (3 bytes)
+//! - OwnerKey: (epoch BE, stored spool BE) (10 bytes)
+//! - TrackGroupKey: (virtual group BE, track) (34 bytes)
 
 use std::mem::MaybeUninit;
 
 use serde::{Deserialize, Serialize};
-use tape_core::spooler::GroupIndex;
+use tape_core::erasure::leaf_position;
+use tape_core::spooler::{GroupIndex, VirtualGroup};
 use tape_core::system::{VoteCandidate, VoteKind};
 use tape_core::types::{EpochNumber, SpoolIndex, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
+use tape_recover::track::TrackOrigin;
 use wincode::error::write_length_encoding_overflow;
 use wincode::{
     io::{Reader, Writer},
@@ -1030,9 +1036,198 @@ impl<'de> SchemaRead<'de> for MultipartPartChunkKey {
     }
 }
 
+/// Key for one missing track (36 bytes)
+///
+/// Format: [position 1 byte][origin 1 byte][virtual group BE 2 bytes][track 32 bytes]
+///
+/// Position comes first, so the stored spools a live spool carries sit in a
+/// few runs of keys. The handover ones sit apart, so whether any is left is
+/// one read.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct MissingTrackKey {
+    pub spool: SpoolIndex,
+    pub origin: TrackOrigin,
+    pub track: Address,
+}
+
+impl MissingTrackKey {
+    pub const SIZE: usize = 36;
+
+    pub fn new(spool: SpoolIndex, origin: TrackOrigin, track: Address) -> Self {
+        Self { spool, origin, track }
+    }
+
+    /// Write the key in its sort order
+    pub fn pack(&self) -> Result<[u8; Self::SIZE], TapeStoreError> {
+        let [high, low] = get_group_bytes(VirtualGroup::containing(self.spool))?;
+        let mut bytes = [0u8; Self::SIZE];
+        bytes[0] = get_position_byte(self.spool);
+        bytes[1] = self.origin.to_byte();
+        bytes[2] = high;
+        bytes[3] = low;
+        bytes[4..].copy_from_slice(&self.track.to_bytes());
+        Ok(bytes)
+    }
+
+    /// Read a key back from its bytes
+    pub fn unpack(bytes: &[u8]) -> Result<Self, TapeStoreError> {
+        let bytes = <[u8; Self::SIZE]>::try_from(bytes)
+            .map_err(|_| TapeStoreError::Serialization("missing track key length".into()))?;
+        let Some(origin) = TrackOrigin::from_byte(bytes[1]) else {
+            let error = format!("missing track origin {}", bytes[1]);
+            return Err(TapeStoreError::Serialization(error));
+        };
+        let group = read_group(bytes[2], bytes[3]);
+        let mut track = [0u8; 32];
+        track.copy_from_slice(&bytes[4..]);
+        Ok(Self {
+            spool: group.spool_at(usize::from(bytes[0])),
+            origin,
+            track: Address::new(track),
+        })
+    }
+}
+
+/// Key for one stored spool's state (3 bytes)
+///
+/// Format: [position 1 byte][virtual group BE 2 bytes]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SpoolStateKey(pub SpoolIndex);
+
+impl SpoolStateKey {
+    pub const SIZE: usize = 3;
+
+    /// Write the key in its sort order
+    pub fn pack(&self) -> Result<[u8; Self::SIZE], TapeStoreError> {
+        let [high, low] = get_group_bytes(VirtualGroup::containing(self.0))?;
+        Ok([get_position_byte(self.0), high, low])
+    }
+
+    /// Read a key back from its bytes
+    pub fn unpack(bytes: &[u8]) -> Result<Self, TapeStoreError> {
+        let [position, high, low] = <[u8; Self::SIZE]>::try_from(bytes)
+            .map_err(|_| TapeStoreError::Serialization("spool state key length".into()))?;
+        let group = read_group(high, low);
+        Ok(Self(group.spool_at(usize::from(position))))
+    }
+}
+
+/// Key for one owner in the owner_history (10 bytes)
+///
+/// Format: [epoch BE 8 bytes][a live group's own stored spool BE 2 bytes]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct OwnerKey {
+    pub epoch: EpochNumber,
+    pub spool: SpoolIndex,
+}
+
+impl OwnerKey {
+    pub const SIZE: usize = 10;
+
+    pub fn new(epoch: EpochNumber, spool: SpoolIndex) -> Self {
+        Self { epoch, spool }
+    }
+
+    /// Write the key in its sort order
+    pub fn pack(&self) -> Result<[u8; Self::SIZE], TapeStoreError> {
+        let mut bytes = [0u8; Self::SIZE];
+        bytes[..8].copy_from_slice(&self.epoch.0.to_be_bytes());
+        bytes[8..].copy_from_slice(&spool_prefix_bytes(self.spool)?);
+        Ok(bytes)
+    }
+}
+
+/// Key for one track in the track group index (34 bytes)
+///
+/// Format: [virtual group BE 2 bytes][track 32 bytes]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TrackGroupKey {
+    pub group: VirtualGroup,
+    pub track: Address,
+}
+
+impl TrackGroupKey {
+    pub const SIZE: usize = 34;
+
+    pub fn new(group: VirtualGroup, track: Address) -> Self {
+        Self { group, track }
+    }
+
+    /// Write the key in its sort order
+    pub fn pack(&self) -> Result<[u8; Self::SIZE], TapeStoreError> {
+        let mut bytes = [0u8; Self::SIZE];
+        bytes[..2].copy_from_slice(&get_group_bytes(self.group)?);
+        bytes[2..].copy_from_slice(&self.track.to_bytes());
+        Ok(bytes)
+    }
+
+    /// Read a key back from its bytes
+    pub fn unpack(bytes: &[u8]) -> Result<Self, TapeStoreError> {
+        let bytes = <[u8; Self::SIZE]>::try_from(bytes)
+            .map_err(|_| TapeStoreError::Serialization("track group key length".into()))?;
+        let mut track = [0u8; 32];
+        track.copy_from_slice(&bytes[2..]);
+        Ok(Self {
+            group: read_group(bytes[0], bytes[1]),
+            track: Address::new(track),
+        })
+    }
+}
+
+/// A stored spool's position in its group, one byte
+fn get_position_byte(spool: SpoolIndex) -> u8 {
+    leaf_position(spool).as_u64() as u8
+}
+
+/// A virtual group's two key bytes, big endian
+fn get_group_bytes(group: VirtualGroup) -> Result<[u8; 2], TapeStoreError> {
+    let Ok(group) = u16::try_from(group.as_u64()) else {
+        let error = format!("virtual group {group} past the two-byte key");
+        return Err(TapeStoreError::Serialization(error));
+    };
+    Ok(group.to_be_bytes())
+}
+
+fn read_group(high: u8, low: u8) -> VirtualGroup {
+    VirtualGroup(u64::from(u16::from_be_bytes([high, low])))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // a missing track key comes back from its bytes, and keys sort by
+    // position, origin, group, track
+    #[test]
+    fn missing_track_order() {
+        let track = Address::new([9; 32]);
+        let spool = VirtualGroup(300).spool_at(4);
+        let low = MissingTrackKey::new(spool, TrackOrigin::Upload, track);
+        let handover = MissingTrackKey { origin: TrackOrigin::Handover, ..low };
+        let next_group = MissingTrackKey { spool: VirtualGroup(301).spool_at(4), ..low };
+        let next_position = MissingTrackKey { spool: VirtualGroup(0).spool_at(5), ..low };
+
+        let packed = low.pack().expect("pack");
+        let pack = |key: MissingTrackKey| key.pack().expect("pack");
+
+        assert_eq!(MissingTrackKey::unpack(&packed).expect("unpack"), low);
+        assert!(packed < pack(next_group));
+        assert!(pack(next_group) < pack(handover));
+        assert!(pack(handover) < pack(next_position));
+    }
+
+    // a spool state key and a track group key come back from their bytes
+    #[test]
+    fn spool_keys_roundtrip() {
+        let state = SpoolStateKey(VirtualGroup(2_047).spool_at(19));
+        let indexed = TrackGroupKey::new(VirtualGroup(7), Address::new([4; 32]));
+
+        let state_bytes = state.pack().expect("pack");
+        let indexed_bytes = indexed.pack().expect("pack");
+
+        assert_eq!(SpoolStateKey::unpack(&state_bytes).expect("unpack"), state);
+        assert_eq!(TrackGroupKey::unpack(&indexed_bytes).expect("unpack"), indexed);
+    }
 
     // a spool past the two-byte key is refused by every key that encodes it
     #[test]

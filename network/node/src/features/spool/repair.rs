@@ -1,8 +1,16 @@
-//! Repair: our slice rebuilt with Clay's bandwidth-optimal flow, each
-//! helper sending part of its own slice
+//! Repair is the method we use when none of the spool's past owners can give
+//! us our slice. It rebuilds the slice from small parts of 16 other slices of
+//! the same track, which reads far fewer bytes than rebuilding the whole
+//! track.
 //!
-//! Build the requests, send them, check what came back, write it, report.
-//! A repair request carries one track, so a repair fetch holds one.
+//! ```text
+//! plan which parts each of the 16 helpers, the nodes that hold those slices,
+//!   needs to send
+//! ask all of the helpers for their parts at the same time
+//! rebuild our slice from what they sent
+//! keep the slice if it matches its hash in the encoding
+//! if a helper sent wrong data, the track goes to recovery next
+//! ```
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,223 +21,82 @@ use tape_core::erasure::leaf_position;
 use tape_core::track::blob::BlobEncoding;
 use tape_core::types::StorageUnits;
 use tape_crypto::address::Address;
-use tape_protocol::api::{RepairReq, RepairRes, StripeSubChunkRequest};
-use tape_protocol::Api;
-use tape_rpc::Rpc;
-use tape_slicer::extract_repair_data as extract_sub_chunks;
-use tape_slicer::{
-    ClayCoder, HelperData, HelperRequest, RepairPlan, SliceIndex,
-    SliceMetadata, Slicer, StripeSubChunks,
+use tape_protocol::api::{
+    ApiError, RepairReq, RepairRes, StripeSubChunkRequest,
 };
-use tape_store::types::AttemptResult;
+use tape_protocol::Api;
+use tape_recover::attempt::AttemptFailure;
+use tape_recover::fetch::{FetchReq, FetchRes, FetchTrack};
+use tape_recover::history::PositionPeer;
+use tape_recover::peer::PeerOutcome;
+use tape_rpc::Rpc;
+use tape_slicer::{
+    ClayCoder, HelperData, HelperRequest, RepairError, RepairPlan,
+    SliceIndex, SliceMetadata, Slicer, StripeSubChunks,
+};
 use tape_store_api::Store;
 use tokio::task::spawn_blocking;
 use tracing::warn;
 
 use crate::context::NodeContext;
-use crate::features::spool::attempt::PlanRepair;
 use crate::features::spool::fetch::{
-    failed_track, send, Answer, CallFailure, Fetch, FetchReport, FetchTrack,
-    TrackOutcome,
+    get_call_failure, get_call_outcome, is_slice_of, send_with_time_limit,
+    write_slice_once,
 };
-use crate::features::spool::peers::PeerOutcome;
-use crate::features::spool::transfer::{is_slice_of, write_slice};
-
-/// The slicer a Clay network repairs with
-pub type ClaySlicer = Arc<Slicer<ClayCoder>>;
-
-/// Plans a repair of one track's slice at one position
-pub struct RepairPlanner {
-    slicer: ClaySlicer,
-    lost: SliceIndex,
-    blob_len: usize,
-    stripe_size: usize,
-}
-
-/// A repair plan with the requests it sends
-struct PlannedRepair {
-    plan: RepairPlan,
-    requests: Vec<HelperRequest>,
-}
-
-/// What one helper's answer gave the repair
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum HelperOutcome {
-    Sent(StorageUnits),
-    Wrong,
-    NotHeld,
-    Failed(PeerOutcome),
-}
-
-/// How a repair's helpers did, for the track
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct Helped {
-    is_wrong: bool,
-    is_not_held: bool,
-    failure: Option<PeerOutcome>,
-    received: StorageUnits,
-}
-
-/// The slicer to repair with, on a Clay network
-pub fn clay_slicer(profile: ErasureCode) -> Option<ClaySlicer> {
-    let ErasureCode::Clay(params) = profile else {
-        return None;
-    };
-    let coder = ClayCoder::from_params(params);
-    Some(Arc::new(Slicer::with_rotation(coder)))
-}
-
-impl RepairPlanner {
-    /// A planner for the slice at `position` of the track `blob` encodes
-    pub fn new(
-        slicer: ClaySlicer,
-        position: usize,
-        blob: &BlobEncoding,
-    ) -> Self {
-        Self {
-            slicer,
-            lost: SliceIndex::new(position),
-            blob_len: blob.size.as_usize(),
-            stripe_size: blob.stripe_size.as_usize(),
-        }
-    }
-
-    /// A plan from `available`, in order of preference, with every stripe
-    /// planned
-    fn full_plan(&self, available: &[usize]) -> Option<RepairPlan> {
-        let mut slices = Vec::with_capacity(available.len());
-        for position in available {
-            slices.push(SliceIndex::new(*position));
-        }
-        let (blob_len, stripe_size) = (self.blob_len, self.stripe_size);
-        let planned =
-            self.slicer.repair_plan(self.lost, &slices, blob_len, stripe_size);
-        let plan = planned.ok()?;
-        for stripe in &plan.stripes {
-            stripe.helpers.as_ref()?;
-        }
-        Some(plan)
-    }
-}
-
-impl PlanRepair for RepairPlanner {
-    fn helpers(&self) -> usize {
-        self.slicer.coder.d()
-    }
-
-    fn plan(&self, available: &[usize]) -> Option<Vec<usize>> {
-        let plan = self.full_plan(available)?;
-        let mut positions = Vec::new();
-        for request in plan.requests(&HelperData::new(&plan)) {
-            positions.push(*request.slice);
-        }
-        Some(positions)
-    }
-}
 
 /// Run one repair fetch for its one track
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    fetch: Fetch,
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    req: FetchReq,
     limit: Duration,
-    slicer: ClaySlicer,
-) -> FetchReport {
-    let mut report = FetchReport::new(fetch);
-    let Some(track) = report.fetch.tracks.first().cloned() else {
-        return report;
+) -> FetchRes {
+    let mut res = FetchRes::new(req);
+    let Some(track) = res.req.tracks.first().cloned() else {
+        return res;
     };
-    let planner = Arc::clone(&slicer);
-    let Some(planned) = plan_fetch(&report.fetch, &track, planner) else {
-        let not_held = AttemptResult::NotHeld;
-        report.every_track(TrackOutcome::Failed(not_held));
-        return report;
+    let profile = context.params().profile;
+    let position = leaf_position(res.req.spool).as_usize();
+    let encoding = track.encoding.as_ref();
+    let helpers = &res.req.peers;
+    let planned = RepairPlanner::try_new(profile, position, encoding, helpers);
+    let Some(planner) = planned else {
+        res.fail_every_track(AttemptFailure::NotHeld);
+        return res;
     };
 
-    let fetch = &report.fetch;
-    let answers = ask_helpers(&ctx, fetch, &track, &planned, limit).await;
-    let mut held = HelperData::new(&planned.plan);
-    let helped = gather(&ctx, &mut report, &planned, &mut held, answers);
-    ctx.metrics.add_repair_fetched(helped.received.as_u64());
-
-    let outcome = match helped_outcome(helped) {
-        Some(outcome) => outcome,
-        None => {
-            let fetch = &report.fetch;
-            let plan = planned.plan;
-            rebuild(&ctx, fetch, &track, slicer, plan, held).await
-        }
+    let requests = planner.get_requests();
+    let wire = build_repair_requests(&track, &requests);
+    let answers = send_repair_requests(&context, &res.req, &wire, limit).await;
+    let mut data = HelperData::new(&planner.plan);
+    let failures = check_helper_data(&mut res, &requests, answers, &mut data);
+    let outcome = match get_repair_failure(&failures) {
+        Some(failure) => Err(failure),
+        None => write_repaired_slice(&context, &track, planner, data).await,
     };
-    count(&ctx, outcome);
-    report.track(track.key, outcome);
-    report
+    add_repair_metrics(&context, &res, &failures, outcome);
+    res.add_track_result(track.missing_track.track, outcome);
+    res
 }
 
-fn plan_fetch(
-    fetch: &Fetch,
+/// Each helper's request on the wire, asking at its own stored spool
+fn build_repair_requests(
     track: &FetchTrack,
-    slicer: ClaySlicer,
-) -> Option<PlannedRepair> {
-    let blob = track.blob.as_ref()?;
-    let position = leaf_position(fetch.spool).as_usize();
-    let planner = RepairPlanner::new(slicer, position, blob);
-    let mut available = Vec::with_capacity(fetch.peers.len());
-    for helper in &fetch.peers {
-        available.push(helper.position);
+    requests: &[HelperRequest],
+) -> Vec<RepairReq> {
+    let mut wire = Vec::with_capacity(requests.len());
+    for request in requests {
+        wire.push(RepairReq {
+            track: track.missing_track.track,
+            helper_spool: track.track.group.spool_at(*request.slice),
+            stripes: get_wire_stripes(&request.stripes),
+        });
     }
-    let plan = planner.full_plan(&available)?;
-    let requests = plan.requests(&HelperData::new(&plan));
-    Some(PlannedRepair { plan, requests })
+    wire
 }
 
-/// Send each helper its request at once
-async fn ask_helpers<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    fetch: &Fetch,
-    track: &FetchTrack,
-    planned: &PlannedRepair,
-    limit: Duration,
-) -> Vec<Option<Answer<RepairRes>>> {
-    let mut requests = Vec::with_capacity(planned.requests.len());
-    for request in &planned.requests {
-        requests.push(wire_request(track, request));
-    }
-
-    let mut calls = Vec::with_capacity(requests.len());
-    for (planned, request) in planned.requests.iter().zip(&requests) {
-        let peer = helper_peer(fetch, *planned.slice);
-        calls.push(ask_one(ctx, peer, request, limit));
-    }
-    join_all(calls).await
-}
-
-async fn ask_one<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    peer: Option<Address>,
-    request: &RepairReq,
-    limit: Duration,
-) -> Option<Answer<RepairRes>> {
-    let call = ctx.api.repair(peer?, request);
-    Some(send(limit, call).await)
-}
-
-fn helper_peer(fetch: &Fetch, position: usize) -> Option<Address> {
-    for helper in &fetch.peers {
-        if helper.position == position {
-            return Some(helper.peer);
-        }
-    }
-    None
-}
-
-fn wire_request(track: &FetchTrack, request: &HelperRequest) -> RepairReq {
-    RepairReq {
-        track: track.key.track,
-        helper_spool: track.track.group.spool_at(*request.slice),
-        stripes: wire_stripes(&request.stripes),
-    }
-}
-
-fn wire_stripes(stripes: &[StripeSubChunks]) -> Vec<StripeSubChunkRequest> {
+fn get_wire_stripes(
+    stripes: &[StripeSubChunks],
+) -> Vec<StripeSubChunkRequest> {
     let mut wire = Vec::with_capacity(stripes.len());
     for stripe in stripes {
         let sub_chunks = stripe.sub_chunks.clone();
@@ -239,186 +106,232 @@ fn wire_stripes(stripes: &[StripeSubChunks]) -> Vec<StripeSubChunkRequest> {
     wire
 }
 
-/// Hold what each helper sent and record how it did
-fn gather<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    report: &mut FetchReport,
-    planned: &PlannedRepair,
-    held: &mut HelperData,
-    answers: Vec<Option<Answer<RepairRes>>>,
-) -> Helped {
-    let mut helped = Helped::default();
-    for (request, answer) in planned.requests.iter().zip(answers) {
-        let peer = helper_peer(&report.fetch, *request.slice);
-        let (Some(peer), Some(answer)) = (peer, answer) else {
+/// Send each helper its request at once; a request whose position has no
+/// helper in the fetch gets no answer
+async fn send_repair_requests<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    req: &FetchReq,
+    wire: &[RepairReq],
+    limit: Duration,
+) -> Vec<Option<(Result<RepairRes, ApiError>, Duration)>> {
+    let mut calls = Vec::with_capacity(wire.len());
+    for request in wire {
+        let position = leaf_position(request.helper_spool).as_usize();
+        let peer = get_helper_peer(req, position);
+        calls.push(send_to_helper(context, peer, request, limit));
+    }
+    join_all(calls).await
+}
+
+fn get_helper_peer(req: &FetchReq, position: usize) -> Option<Address> {
+    for helper in &req.peers {
+        if helper.position == position {
+            return Some(helper.peer);
+        }
+    }
+    None
+}
+
+async fn send_to_helper<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    peer: Option<Address>,
+    request: &RepairReq,
+    limit: Duration,
+) -> Option<(Result<RepairRes, ApiError>, Duration)> {
+    let call = context.api.repair(peer?, request);
+    Some(send_with_time_limit(limit, call).await)
+}
+
+/// Keep what each helper sent and record how it did; give the failures of
+/// the helpers that fell short
+fn check_helper_data(
+    res: &mut FetchRes,
+    requests: &[HelperRequest],
+    answers: Vec<Option<(Result<RepairRes, ApiError>, Duration)>>,
+    data: &mut HelperData,
+) -> Vec<AttemptFailure> {
+    let mut failures = Vec::new();
+    for (request, answer) in requests.iter().zip(answers) {
+        let Some(answer) = answer else {
             continue;
         };
-        let outcome = gather_one(held, request, answer.response);
-        report.peer(peer, peer_outcome(outcome, answer.elapsed));
-        add_helper(&mut helped, outcome);
-        count_missing(ctx, outcome);
+        let Some(peer) = get_helper_peer(&res.req, *request.slice) else {
+            continue;
+        };
+        let (response, elapsed) = answer;
+        let outcome = check_helper_answer(
+            data,
+            request,
+            response,
+            elapsed,
+            &mut failures,
+        );
+        res.add_peer_result(peer, outcome);
     }
-    helped
+    failures
 }
 
-fn gather_one(
-    held: &mut HelperData,
+/// Keep one helper's sub-chunks, and say how the helper did: wrong data
+/// when they don't fit the plan, and its failure when it fell short
+fn check_helper_answer(
+    data: &mut HelperData,
     request: &HelperRequest,
-    response: Result<RepairRes, CallFailure>,
-) -> HelperOutcome {
-    let response = match response {
-        Ok(response) => response,
-        Err(CallFailure::NotHeld) => return HelperOutcome::NotHeld,
-        Err(CallFailure::Peer(outcome)) => {
-            return HelperOutcome::Failed(outcome);
+    response: Result<RepairRes, ApiError>,
+    elapsed: Duration,
+    failures: &mut Vec<AttemptFailure>,
+) -> PeerOutcome {
+    let sent = match response {
+        Ok(sent) => sent,
+        Err(error) => {
+            failures.push(get_call_failure(&error));
+            return get_call_outcome(&error, elapsed);
         }
     };
-    let size = StorageUnits(response.data.len() as u64);
-    match held.insert(request, response.data) {
-        Ok(()) => HelperOutcome::Sent(size),
-        Err(_) => HelperOutcome::Wrong,
+    let bytes = StorageUnits(sent.data.len() as u64);
+    if data.insert(request, sent.data).is_err() {
+        failures.push(AttemptFailure::WrongData);
+        return PeerOutcome::WrongData;
     }
+    PeerOutcome::Worked { bytes, elapsed }
 }
 
-fn peer_outcome(outcome: HelperOutcome, elapsed: Duration) -> PeerOutcome {
-    match outcome {
-        HelperOutcome::Sent(bytes) => PeerOutcome::Worked { bytes, elapsed },
-        HelperOutcome::Wrong => PeerOutcome::WrongData,
-        HelperOutcome::NotHeld => {
-            let bytes = StorageUnits(0);
-            PeerOutcome::Worked { bytes, elapsed }
-        }
-        HelperOutcome::Failed(outcome) => outcome,
+/// The track's failure when a helper fell short: wrong data first, then
+/// doesn't have it, then the last peer failure
+fn get_repair_failure(failures: &[AttemptFailure]) -> Option<AttemptFailure> {
+    if failures.contains(&AttemptFailure::WrongData) {
+        return Some(AttemptFailure::WrongData);
     }
+    if failures.contains(&AttemptFailure::NotHeld) {
+        return Some(AttemptFailure::NotHeld);
+    }
+    failures.last().copied()
 }
 
-fn add_helper(helped: &mut Helped, outcome: HelperOutcome) {
-    match outcome {
-        HelperOutcome::Sent(bytes) => {
-            helped.received = helped.received.saturating_add(bytes);
-        }
-        HelperOutcome::Wrong => helped.is_wrong = true,
-        HelperOutcome::NotHeld => helped.is_not_held = true,
-        HelperOutcome::Failed(outcome) => helped.failure = Some(outcome),
-    }
-}
-
-/// The track's outcome when a helper fell short, or nothing to rebuild on
-fn helped_outcome(helped: Helped) -> Option<TrackOutcome> {
-    if helped.is_wrong {
-        return Some(TrackOutcome::Failed(AttemptResult::WrongData));
-    }
-    if helped.is_not_held {
-        return Some(TrackOutcome::Failed(AttemptResult::NotHeld));
-    }
-    helped.failure.map(failed_track)
-}
-
-/// Rebuild our slice from what the helpers sent, check it, and write it
-async fn rebuild<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    fetch: &Fetch,
+/// Rebuild our slice from what the helpers sent, check it, and keep it
+async fn write_repaired_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
     track: &FetchTrack,
-    slicer: ClaySlicer,
-    plan: RepairPlan,
-    held: HelperData,
-) -> TrackOutcome {
-    let Some(blob) = track.blob else {
-        return wrong(track, "no encoding".to_string());
+    planner: RepairPlanner,
+    data: HelperData,
+) -> Result<(), AttemptFailure> {
+    let address = track.missing_track.track;
+    let Some(encoding) = track.encoding else {
+        return log_wrong_data(address, "no encoding".to_string());
     };
-    let size = blob.size.as_usize();
-    let metadata = SliceMetadata::new(size, blob.stripe_size.as_usize());
-    let bytes = metadata.to_bytes();
-    let repair = move || slicer.repair(&plan, &held, &bytes);
-    let rebuilt = match spawn_blocking(repair).await {
+    let rebuild = move || planner.rebuild(&encoding, data);
+    let rebuilt = match spawn_blocking(rebuild).await {
         Ok(Ok(slice)) => slice,
-        Ok(Err(error)) => return wrong(track, error.to_string()),
-        Err(error) => return wrong(track, error.to_string()),
+        Ok(Err(error)) => return log_wrong_data(address, error.to_string()),
+        Err(error) => return log_wrong_data(address, error.to_string()),
     };
 
-    let ours = leaf_position(fetch.spool);
+    let ours = leaf_position(track.missing_track.spool);
     if !is_slice_of(track, ours, &rebuilt) {
-        return wrong(track, "repaired slice fails its leaf".to_string());
+        let error = "repaired slice fails its leaf".to_string();
+        return log_wrong_data(address, error);
     }
-    let size = rebuilt.len() as u64;
-    let key = track.key;
-    if let Err(error) = write_slice(ctx, key.spool, key.track, rebuilt) {
-        return wrong(track, error.to_string());
+    let spool = track.missing_track.spool;
+    let store = &context.store;
+    if let Err(error) = write_slice_once(store, spool, address, &rebuilt) {
+        return log_wrong_data(address, error.to_string());
     }
-    ctx.metrics.add_repair_persisted(size);
-    TrackOutcome::Got
+    context.metrics.add_repair_persisted(rebuilt.len() as u64);
+    Ok(())
 }
 
-fn wrong(track: &FetchTrack, error: String) -> TrackOutcome {
-    warn!(track = %track.key.track, %error, "spool: repair failed");
-    TrackOutcome::Failed(AttemptResult::WrongData)
+fn log_wrong_data(
+    track: Address,
+    error: String,
+) -> Result<(), AttemptFailure> {
+    warn!(%track, %error, "spool: repair failed");
+    Err(AttemptFailure::WrongData)
 }
 
-fn count<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    outcome: TrackOutcome,
+fn add_repair_metrics<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    res: &FetchRes,
+    failures: &[AttemptFailure],
+    outcome: Result<(), AttemptFailure>,
 ) {
+    let metrics = &context.metrics;
+    let mut fetched = StorageUnits(0);
+    for (_, outcome) in &res.peers {
+        if let PeerOutcome::Worked { bytes, .. } = outcome {
+            fetched = fetched.saturating_add(*bytes);
+        }
+    }
+    metrics.add_repair_fetched(fetched.as_u64());
+    for failure in failures {
+        metrics.inc_repair_missing(get_miss_cause(*failure));
+    }
     match outcome {
-        TrackOutcome::Got => ctx.metrics.inc_repair_repaired(),
-        TrackOutcome::Failed(_) => ctx.metrics.inc_repair_put_back(),
+        Ok(()) => metrics.inc_repair_repaired(),
+        Err(_) => metrics.inc_repair_put_back(),
     }
 }
 
-fn count_missing<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    outcome: HelperOutcome,
-) {
-    let cause = match outcome {
-        HelperOutcome::Sent(_) => return,
-        HelperOutcome::Wrong => "wrong_data",
-        HelperOutcome::NotHeld => "not_held",
-        HelperOutcome::Failed(PeerOutcome::TooSlow) => "deadline",
-        HelperOutcome::Failed(PeerOutcome::Down) => "down",
-        HelperOutcome::Failed(
-            PeerOutcome::Refused { .. }
-            | PeerOutcome::WrongData
-            | PeerOutcome::Worked { .. },
-        ) => "refused",
-    };
-    ctx.metrics.inc_repair_missing(cause);
-}
-
-/// Cut the sub-chunks a repair request asks for out of a helper's slice
-pub fn extract_repair_data(
-    profile: ErasureCode,
-    stripes: &[StripeSubChunkRequest],
-    slice_data: &[u8],
-) -> Result<Vec<u8>, String> {
-    let ErasureCode::Clay(params) = profile else {
-        return Err("repair needs a clay network".to_string());
-    };
-    let coder = ClayCoder::from_params(params);
-    let metadata = SliceMetadata::parse(slice_data).map_err(to_text)?;
-    let stripe_size = metadata.stripe_size();
-    let chunk_size = coder.track_chunk_size(stripe_size, metadata.blob_len());
-    let plan = RepairPlan {
-        lost: SliceIndex::new(0),
-        chunk_size: chunk_size as u64,
-        sub_chunk_size: (chunk_size / coder.alpha().max(1)) as u64,
-        stripes: Vec::new(),
-    };
-    let slice = SliceIndex::new(0);
-    let request = HelperRequest { slice, stripes: sub_chunks(stripes) };
-    extract_sub_chunks(slice_data, &plan, &request).map_err(to_text)
-}
-
-fn sub_chunks(stripes: &[StripeSubChunkRequest]) -> Vec<StripeSubChunks> {
-    let mut wanted = Vec::with_capacity(stripes.len());
-    for stripe in stripes {
-        let sub_chunks = stripe.sub_chunks.clone();
-        let stripe = stripe.stripe;
-        wanted.push(StripeSubChunks { stripe, sub_chunks });
+/// The cause a helper that fell short counts under
+fn get_miss_cause(failure: AttemptFailure) -> &'static str {
+    match failure {
+        AttemptFailure::WrongData => "wrong_data",
+        AttemptFailure::NotHeld => "not_held",
+        AttemptFailure::TooSlow => "deadline",
+        AttemptFailure::Down => "down",
+        AttemptFailure::Refused => "refused",
     }
-    wanted
 }
 
-fn to_text(error: impl std::fmt::Display) -> String {
-    error.to_string()
+/// The Clay plan for one track's slice at one position, from d helpers
+struct RepairPlanner {
+    slicer: Slicer<ClayCoder>,
+    plan: RepairPlan,
+}
+
+impl RepairPlanner {
+    /// The plan from these helpers, or nothing off a Clay code, without the
+    /// track's encoding, or when the helpers give no plan for every stripe
+    fn try_new(
+        profile: ErasureCode,
+        position: usize,
+        encoding: Option<&BlobEncoding>,
+        helpers: &[PositionPeer],
+    ) -> Option<Self> {
+        let ErasureCode::Clay(params) = profile else {
+            return None;
+        };
+        let encoding = encoding?;
+        let slicer = Slicer::with_rotation(ClayCoder::from_params(params));
+        let mut available = Vec::with_capacity(helpers.len());
+        for helper in helpers {
+            available.push(SliceIndex::new(helper.position));
+        }
+        let lost = SliceIndex::new(position);
+        let size = encoding.size.as_usize();
+        let stripe_size = encoding.stripe_size.as_usize();
+        let planned = slicer.repair_plan(lost, &available, size, stripe_size);
+        let plan = planned.ok()?;
+        for stripe in &plan.stripes {
+            stripe.helpers.as_ref()?;
+        }
+        Some(Self { slicer, plan })
+    }
+
+    /// What the plan asks of each helper it needs
+    fn get_requests(&self) -> Vec<HelperRequest> {
+        self.plan.requests(&HelperData::new(&self.plan))
+    }
+
+    /// Rebuild the lost slice from the sub-chunks the helpers sent
+    fn rebuild(
+        self,
+        encoding: &BlobEncoding,
+        data: HelperData,
+    ) -> Result<Vec<u8>, RepairError> {
+        let size = encoding.size.as_usize();
+        let stripe_size = encoding.stripe_size.as_usize();
+        let metadata = SliceMetadata::new(size, stripe_size).to_bytes();
+        self.slicer.repair(&self.plan, &data, &metadata)
+    }
 }
 
 #[cfg(test)]
@@ -429,18 +342,30 @@ mod tests {
 
     use super::*;
     use crate::features::challenge::fixture::{coded, payload, Coded};
+    use crate::features::http::handlers::track::repair::extract_repair_data;
 
     const LOST: usize = 3;
 
-    /// Every position of a tapenet group but the lost one
-    fn others() -> Vec<usize> {
-        let mut others = Vec::new();
-        for position in 0..usize::from(TAPENET_PROFILE.n()) {
-            if position != LOST {
-                others.push(position);
+    fn has_position(helpers: &[PositionPeer], position: usize) -> bool {
+        for helper in helpers {
+            if helper.position == position {
+                return true;
             }
         }
-        others
+        false
+    }
+
+    /// d helpers of a tapenet group, none at the lost position
+    fn helpers() -> Vec<PositionPeer> {
+        let d = usize::from(TAPENET_CLAY.d());
+        let mut helpers = Vec::new();
+        for position in 0..usize::from(TAPENET_PROFILE.n()) {
+            if position != LOST && helpers.len() < d {
+                let peer = Address::new([position as u8; 32]);
+                helpers.push(PositionPeer { position, peer });
+            }
+        }
+        helpers
     }
 
     fn track(seed: u8) -> Coded {
@@ -448,53 +373,55 @@ mod tests {
         coded(TAPENET_PROFILE, seed, 0, VirtualGroup(0), &data)
     }
 
-    // a plan from every other position asks d helpers on a one-stripe track
+    // a plan from d helpers asks only the helpers it was given
     #[test]
     fn plans_helpers() {
         let track = track(1);
-        let slicer = clay_slicer(TAPENET_PROFILE).expect("clay");
-        let planner = RepairPlanner::new(slicer, LOST, &track.blob);
-        let helpers = usize::from(TAPENET_CLAY.d());
+        let helpers = helpers();
+        let blob = Some(&track.blob);
 
-        let needed = planner.plan(&others()).expect("a plan");
+        let planner = RepairPlanner::try_new(TAPENET_PROFILE, LOST, blob, &helpers);
 
-        assert_eq!(planner.helpers(), helpers);
-        assert_eq!(needed.len(), helpers);
-        assert!(!needed.contains(&LOST));
+        let requests = planner.expect("a plan").get_requests();
+        assert!(!requests.is_empty());
+        for request in requests {
+            let position = *request.slice;
+            assert_ne!(position, LOST);
+            assert!(has_position(&helpers, position));
+        }
     }
 
     // what each helper cuts from its slice rebuilds the slice we lack
     #[test]
     fn repairs_slice() {
         let track = track(2);
-        let slicer = clay_slicer(TAPENET_PROFILE).expect("clay");
-        let shared = Arc::clone(&slicer);
-        let planner = RepairPlanner::new(shared, LOST, &track.blob);
-        let plan = planner.full_plan(&others()).expect("a plan");
-        let mut held = HelperData::new(&plan);
+        let blob = Some(&track.blob);
+        let planner = RepairPlanner::try_new(TAPENET_PROFILE, LOST, blob, &helpers());
+        let planner = planner.expect("a plan");
+        let mut data = HelperData::new(&planner.plan);
 
-        for request in plan.requests(&HelperData::new(&plan)) {
-            let wire = wire_stripes(&request.stripes);
+        for request in planner.get_requests() {
+            let wire = get_wire_stripes(&request.stripes);
             let helper = &track.slices[*request.slice];
             let cut = extract_repair_data(TAPENET_PROFILE, &wire, helper);
-            held.insert(&request, cut.expect("cut")).expect("insert");
+            data.insert(&request, cut.expect("cut")).expect("insert");
         }
-        let size = track.blob.size.as_usize();
-        let stripe_size = track.blob.stripe_size.as_usize();
-        let metadata = SliceMetadata::new(size, stripe_size).to_bytes();
-        let rebuilt = slicer.repair(&plan, &held, &metadata).expect("repair");
+        let rebuilt = planner.rebuild(&track.blob, data).expect("repair");
 
         assert_eq!(rebuilt, track.slices[LOST]);
         let lost = SpoolIndex(LOST as u64);
         assert!(track.blob.verify_slice(lost, &rebuilt));
     }
 
-    // a helper slice on a network with no Clay code has nothing to cut
+    // a network with no Clay code has no repair plan
     #[test]
     fn needs_clay() {
+        let track = track(3);
         let profile = ErasureCode::ReedSolomon(RSParams::new(3, 1));
+        let blob = Some(&track.blob);
 
-        assert!(clay_slicer(profile).is_none());
-        assert!(extract_repair_data(profile, &[], &[0; 64]).is_err());
+        let planner = RepairPlanner::try_new(profile, LOST, blob, &helpers());
+
+        assert!(planner.is_none());
     }
 }

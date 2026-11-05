@@ -137,6 +137,11 @@ impl NodeMetrics {
         tape_metrics::metrics().repair_missing_helper_stripes_total.inc_by(n);
     }
 
+    pub fn inc_spool_missing_encoding(&self) {
+        #[cfg(feature = "metrics")]
+        tape_metrics::metrics().spool_missing_encoding_total.inc();
+    }
+
     pub fn inc_recover_recovered(&self) {
         self.inc_recover_tries("recovered");
     }

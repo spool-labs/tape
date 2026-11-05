@@ -32,6 +32,7 @@ pub struct Metrics {
     pub repair_missing_helper_stripes_total: IntCounter,
     pub recover_tries_total: IntCounterVec,
     pub recover_rejected_slices_total: IntCounter,
+    pub spool_missing_encoding_total: IntCounter,
 
     pub decode_duration: HistogramVec,
     pub decode_output_bytes_total: IntCounter,
@@ -147,6 +148,12 @@ impl Metrics {
                 registry
             )
             .expect("register tape_node_recover_rejected_slices_total"),
+            spool_missing_encoding_total: register_int_counter_with_registry!(
+                "tape_node_spool_missing_encoding_total",
+                "Coded tracks a turn found with no encoding in the store",
+                registry
+            )
+            .expect("register tape_node_spool_missing_encoding_total"),
 
             decode_duration: register_histogram_vec_with_registry!(
                 "tape_gw_decode_duration_seconds",

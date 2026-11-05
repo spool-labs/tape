@@ -7,9 +7,14 @@ use axum::response::IntoResponse;
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
+use tape_core::encoding::ErasureCode;
 use tape_core::track::data::BlobData;
 use tape_protocol::Api;
-use tape_protocol::api::{BINARY_CONTENT, RepairRequest};
+use tape_protocol::api::{BINARY_CONTENT, RepairRequest, StripeSubChunkRequest};
+use tape_slicer::extract_repair_data as extract_sub_chunks;
+use tape_slicer::{
+    ClayCoder, HelperRequest, RepairPlan, SliceIndex, SliceMetadata, StripeSubChunks,
+};
 use tape_store::ops::{SliceOps, SpoolOps, TrackDataOps, TrackOps};
 
 use crate::features::blacklist::refuses_object;
@@ -19,7 +24,6 @@ use crate::features::http::handlers::track::parse_track;
 use crate::features::http::share::check_share_token;
 use crate::features::http::peer_identity::PeerIdentity;
 use crate::features::http::state::AppState;
-use crate::features::spool::repair::extract_repair_data;
 
 pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     State(state): State<AppState<Db, Cluster, Blockchain>>,
@@ -98,6 +102,44 @@ pub async fn repair<Db: Store, Cluster: Api, Blockchain: Rpc>(
     ))
 }
 
+/// Cut the sub-chunks a repair request asks for out of a helper's slice
+pub fn extract_repair_data(
+    profile: ErasureCode,
+    stripes: &[StripeSubChunkRequest],
+    slice_data: &[u8],
+) -> Result<Vec<u8>, String> {
+    let ErasureCode::Clay(params) = profile else {
+        return Err("repair needs a clay network".to_string());
+    };
+    let coder = ClayCoder::from_params(params);
+    let metadata = SliceMetadata::parse(slice_data).map_err(to_text)?;
+    let stripe_size = metadata.stripe_size();
+    let chunk_size = coder.track_chunk_size(stripe_size, metadata.blob_len());
+    let plan = RepairPlan {
+        lost: SliceIndex::new(0),
+        chunk_size: chunk_size as u64,
+        sub_chunk_size: (chunk_size / coder.alpha().max(1)) as u64,
+        stripes: Vec::new(),
+    };
+    let slice = SliceIndex::new(0);
+    let request = HelperRequest { slice, stripes: get_sub_chunks(stripes) };
+    extract_sub_chunks(slice_data, &plan, &request).map_err(to_text)
+}
+
+fn get_sub_chunks(stripes: &[StripeSubChunkRequest]) -> Vec<StripeSubChunks> {
+    let mut wanted = Vec::with_capacity(stripes.len());
+    for stripe in stripes {
+        let sub_chunks = stripe.sub_chunks.clone();
+        let stripe = stripe.stripe;
+        wanted.push(StripeSubChunks { stripe, sub_chunks });
+    }
+    wanted
+}
+
+fn to_text(error: impl Display) -> String {
+    error.to_string()
+}
+
 fn store_error(error: impl Display) -> RouteError {
     RouteError::Internal(error.to_string())
 }
@@ -110,9 +152,9 @@ mod tests {
     use axum::response::IntoResponse;
 
     use tape_api::program::tapedrive::{snapshot_tape_pda, TrackAddress};
-    use tape_core::encoding::TAPENET_PROFILE;
+    use tape_core::encoding::{RSParams, TAPENET_PROFILE};
     use tape_core::erasure::{MAX_GROUP_SIZE, SLICE_TREE_HEIGHT, slice_root};
-    use tape_core::prelude::SpoolState;
+    use tape_recover::state::SpoolState;
     use tape_snapshot::snapshot_chunk_key;
     use tape_core::spooler::VirtualGroup;
     use tape_core::tape::{snapshot_tape_number, TapeFlags};
@@ -244,7 +286,7 @@ mod tests {
             .expect("seed helper slice");
 
         ctx.store
-            .put_spool_states(&[(helper_spool, SpoolState::gained())])
+            .put_spool_states(&[(helper_spool, SpoolState::new_scanning())])
             .expect("set spool row");
 
         let request = RepairRequest {
@@ -283,5 +325,13 @@ mod tests {
             .await
             .expect("read response body");
         assert!(!bytes.is_empty());
+    }
+
+    // a helper slice on a network with no Clay code has nothing to cut
+    #[test]
+    fn needs_clay() {
+        let profile = ErasureCode::ReedSolomon(RSParams::new(3, 1));
+
+        assert!(extract_repair_data(profile, &[], &[0; 64]).is_err());
     }
 }

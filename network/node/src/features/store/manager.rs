@@ -267,7 +267,7 @@ mod tests {
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber, TrackNumber};
-    use tape_core::system::SpoolState;
+    use tape_recover::state::SpoolState;
     use tape_crypto::address::Address;
     use tape_crypto::tx::Txid;
     use tape_crypto::Hash;
@@ -346,7 +346,7 @@ mod tests {
         let raw = vec![1, 2, 3, 4];
 
         store
-            .put_spool_states(&[(group.spool_at(0), SpoolState::gained())])
+            .put_spool_states(&[(group.spool_at(0), SpoolState::new_scanning())])
             .expect("set spool row");
 
         let batch = ReplayBatch {

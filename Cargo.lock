@@ -11081,6 +11081,7 @@ dependencies = [
  "tape-peer-tls",
  "tape-protocol",
  "tape-rack",
+ "tape-recover",
  "tape-rpc",
  "tape-rpc-client",
  "tape-sdk",
@@ -11310,6 +11311,7 @@ dependencies = [
  "tape-peer-manager",
  "tape-peer-tls",
  "tape-protocol",
+ "tape-recover",
  "tape-reel",
  "tape-retry",
  "tape-rpc",
@@ -11440,6 +11442,14 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "tape-recover"
+version = "0.5.5"
+dependencies = [
+ "tape-core",
+ "tape-crypto",
 ]
 
 [[package]]
@@ -11714,6 +11724,7 @@ dependencies = [
  "serde",
  "tape-core",
  "tape-crypto",
+ "tape-recover",
  "tape-store-api",
  "tape-store-memory",
  "tape-store-reel",
@@ -11756,6 +11767,7 @@ dependencies = [
  "tape-core",
  "tape-crypto",
  "tape-metrics",
+ "tape-recover",
  "tape-reel",
  "tape-reel-core",
  "tape-store",

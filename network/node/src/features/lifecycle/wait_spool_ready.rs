@@ -4,15 +4,19 @@ use tracing::{debug, info};
 
 use tape_rpc::Rpc;
 use tape_store_api::Store;
+use tape_core::spooler::{GroupFold, GroupIndex};
 use tape_core::system::EpochPhase;
-use tape_core::types::EpochNumber;
+use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_protocol::Api;
+use tape_recover::state::is_ready_to_attest;
 use tape_retry::{Backoff, RetryConfig, backoff_or_cancel};
+use tape_store::error::TapeStoreError;
+use tape_store::ops::SpoolOps;
+use tape_store::TapeStore;
 
 use crate::context::NodeContext;
 use crate::core::error::NodeError;
 use crate::features::lifecycle::types::{Action, TaskDone};
-use crate::features::spool::fill::ready_to_attest;
 
 // Purpose: Wait until this node is ready to attest every spool it owns.
 //          This is a precondition for submitting SyncSpool, the node
@@ -85,8 +89,7 @@ pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
 
     let mut ready = 0usize;
     for spool in &owned {
-        let is_ready = ready_to_attest(&ctx.store, *spool, fold).map_err(store_error)?;
-        if is_ready {
+        if is_spool_ready(&ctx.store, *spool, fold).map_err(store_error)? {
             ready += 1;
         }
     }
@@ -100,6 +103,19 @@ pub fn check_readiness<Db: Store, Cluster: Api, Blockchain: Rpc>(
     Ok(Readiness::NotReady { ready, total: owned.len() })
 }
 
+/// Whether a live spool is ready to attest, by the spool_states of the
+/// stored spools it carries and its handover missing tracks
+fn is_spool_ready<Db: Store>(
+    store: &TapeStore<Db>,
+    spool: SpoolIndex,
+    fold: GroupFold,
+) -> Result<bool, TapeStoreError> {
+    let states = store.get_live_spool_states(spool, fold)?;
+    let has_handover = store.has_handover_tracks(spool, fold)?;
+    let carried = fold.carried_count(GroupIndex::containing(spool));
+    Ok(is_ready_to_attest(&states, carried, has_handover))
+}
+
 fn store_error(error: impl std::fmt::Display) -> NodeError {
     NodeError::Store(error.to_string())
 }
@@ -107,11 +123,10 @@ fn store_error(error: impl std::fmt::Display) -> NodeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tape_core::system::SpoolState;
-    use tape_core::types::SpoolIndex;
     use tape_crypto::address::Address;
-    use tape_store::ops::SpoolOps;
-    use tape_store::types::{Entry, EntryKey};
+    use tape_recover::state::SpoolState;
+    use tape_recover::track::MissingTrack;
+    use tape_recover::time::WallTime;
 
     use crate::harness::{NodeHarness, TestContext};
 
@@ -138,7 +153,7 @@ mod tests {
         let harness = harness().await;
         let ctx = harness.ctx_for(0);
         let spools = harness.owned_spools(0);
-        let done = SpoolState { is_filling: false, ..SpoolState::gained() };
+        let done = SpoolState { is_scanning: false, ..SpoolState::new_scanning() };
         let mut rows = Vec::new();
         for spool in &spools {
             rows.push((*spool, done));
@@ -155,21 +170,22 @@ mod tests {
         assert!(is_ready_with(|_, _| {}).await);
         assert!(
             is_ready_with(|ctx, spool| {
-                let key = EntryKey { spool, is_handover: false, track: track() };
-                ctx.store.put_entry(key, Entry::never_tried()).expect("entry");
+                let upload = MissingTrack::new_upload(spool, track(), WallTime(1));
+                ctx.store.put_missing_track(&upload).expect("entry");
             })
             .await
         );
         assert!(
             !is_ready_with(|ctx, spool| {
-                let key = EntryKey { spool, is_handover: true, track: track() };
-                ctx.store.put_entry(key, Entry::never_tried()).expect("entry");
+                let handover = MissingTrack::new_handover(spool, track(), WallTime(1));
+                ctx.store.put_missing_track(&handover).expect("entry");
             })
             .await
         );
         assert!(
             !is_ready_with(|ctx, spool| {
-                ctx.store.put_spool_states(&[(spool, SpoolState::gained())]).expect("row");
+                let scanning = SpoolState::new_scanning();
+                ctx.store.put_spool_states(&[(spool, scanning)]).expect("row");
             })
             .await
         );

@@ -272,7 +272,7 @@ pub fn reuse_for(took: Duration) -> Option<Duration> {
 fn read_store_totals<Db: Store>(store: &TapeStore<Db>) -> Result<StoreTotals, NodeError> {
     let backend = store.inner().inner();
     let owned_spools = store
-        .spool_states(None, STORED_SPOOL_COUNT)
+        .get_spool_states(None, STORED_SPOOL_COUNT)
         .map_err(totals_error)?;
     // Zero bytes from a backend that can't weigh the column without reading it
     let (slices_stored, slice_bytes) = store.slice_totals().map_err(totals_error)?;

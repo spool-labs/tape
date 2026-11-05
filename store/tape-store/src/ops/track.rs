@@ -1,5 +1,8 @@
 //! Canonical compressed-track catalog operations.
 
+use std::ops::Range;
+
+use tape_core::spooler::VirtualGroup;
 use tape_core::track::types::{CompressedTrack, PackedTrack};
 use tape_store_api::{Column, Store};
 use tape_crypto::address::Address;
@@ -7,7 +10,8 @@ use tape_core::types::{TapeNumber, TrackNumber};
 
 use crate::columns::{TrackCol, TrackGroupIndexCol, TrackLookupCol};
 use crate::error::{Result, TapeStoreError};
-use crate::ops::spool::track_group_key;
+use crate::ops::range::{read_range, KeyRange};
+use crate::types::keys::TrackGroupKey;
 use crate::types::TrackLookupKey;
 use crate::TapeStore;
 
@@ -24,6 +28,15 @@ pub trait TrackOps {
 
     /// Delete track metadata.
     fn delete_track(&self, track_address: Address) -> Result<()>;
+
+    /// Up to `limit` tracks of runs of virtual groups, by group then address,
+    /// from the track after `after`
+    fn get_group_tracks(
+        &self,
+        groups: &[Range<VirtualGroup>],
+        after: Option<(VirtualGroup, Address)>,
+        limit: usize,
+    ) -> Result<Vec<(VirtualGroup, Address)>>;
 
     /// Check if track metadata exists without loading data.
     fn has_track(&self, track_address: Address) -> Result<bool>;
@@ -82,7 +95,7 @@ impl<S: Store> TrackOps for TapeStore<S> {
         self.put::<TrackCol>(&track_address, &track.pack())?;
         let lookup = TrackLookupKey::new(track.tape, track.tape_number, track.track_number);
         self.put::<TrackLookupCol>(&lookup, &track_address)?;
-        let by_group = track_group_key(track.group, track_address)?;
+        let by_group = TrackGroupKey::new(track.group, track_address).pack()?;
         self.inner().inner().put(TrackGroupIndexCol::CF_NAME, &by_group, &[])?;
         Ok(())
     }
@@ -91,11 +104,39 @@ impl<S: Store> TrackOps for TapeStore<S> {
         if let Some(track) = self.get_track(track_address)? {
             let lookup = TrackLookupKey::new(track.tape, track.tape_number, track.track_number);
             self.delete::<TrackLookupCol>(&lookup)?;
-            let by_group = track_group_key(track.group, track_address)?;
+            let by_group = TrackGroupKey::new(track.group, track_address).pack()?;
             self.inner().inner().delete(TrackGroupIndexCol::CF_NAME, &by_group)?;
         }
         self.delete::<TrackCol>(&track_address)?;
         Ok(())
+    }
+
+    fn get_group_tracks(
+        &self,
+        groups: &[Range<VirtualGroup>],
+        after: Option<(VirtualGroup, Address)>,
+        limit: usize,
+    ) -> Result<Vec<(VirtualGroup, Address)>> {
+        let after_key = match after {
+            Some((group, track)) => TrackGroupKey::new(group, track).pack()?.to_vec(),
+            None => Vec::new(),
+        };
+        let mut tracks = Vec::new();
+        for run in groups {
+            let start = TrackGroupKey::new(run.start, Address::default()).pack()?;
+            let end = TrackGroupKey::new(run.end, Address::default()).pack()?;
+            let range = KeyRange { start: start.to_vec(), end: end.to_vec() };
+            let left = limit - tracks.len();
+            let cf = TrackGroupIndexCol::CF_NAME;
+            for (key, _) in read_range(self, cf, &range, &after_key, left)? {
+                let key = TrackGroupKey::unpack(&key)?;
+                tracks.push((key.group, key.track));
+            }
+            if tracks.len() == limit {
+                break;
+            }
+        }
+        Ok(tracks)
     }
 
     fn has_track(&self, track_address: Address) -> Result<bool> {
@@ -581,5 +622,25 @@ mod tests {
         assert_eq!(tape_numbers_at(&store, tape).unwrap(), expected);
         assert_eq!(tape_numbers_at(&store, neighbour).unwrap(), vec![TapeNumber(u64::MAX)]);
         assert!(tape_numbers_at(&store, Address::from([9u8; 32])).unwrap().is_empty());
+    }
+
+    // a group's track list reads across runs of groups from the track after the start
+    #[test]
+    fn group_track_pages() {
+        let store = test_store();
+        for (group, byte) in [(0, 1), (0, 2), (2, 3), (4, 4), (5, 5)] {
+            let mut track = make_track_info();
+            track.group = VirtualGroup(group);
+            store.put_track(Address::new([byte; 32]), track).expect("put track");
+        }
+        let runs = [VirtualGroup(0)..VirtualGroup(1), VirtualGroup(2)..VirtualGroup(5)];
+        let after = (VirtualGroup(0), Address::new([1; 32]));
+
+        let page = store.get_group_tracks(&runs, Some(after), 2).expect("page");
+        let all = store.get_group_tracks(&runs, None, 10).expect("page");
+
+        let bytes: Vec<u8> = page.iter().map(|(_, track)| track.to_bytes()[0]).collect();
+        assert_eq!(bytes, vec![2, 3]);
+        assert_eq!(all.len(), 4);
     }
 }

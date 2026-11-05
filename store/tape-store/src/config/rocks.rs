@@ -54,7 +54,7 @@ const TOTAL_WRITE_BUFFER_BYTES: usize = 128 * 1024 * 1024;
 /// - `gc` - String keys
 ///
 /// ## Spool Columns (NOT epoch-namespaced)
-/// - `spool_missing_track` - 36-byte EntryKey with a 2-byte position and handover prefix
+/// - `spool_missing_track` - 36-byte MissingTrackKey with a 2-byte position and origin prefix
 /// - `spool_state` - 3-byte key, position then virtual group
 /// - `spool_owner_history` - 10-byte key, epoch then stored spool
 ///
@@ -141,8 +141,8 @@ pub fn tape_store_column_configs(cache: &Cache) -> Vec<ColumnFamilyConfig> {
         ColumnFamilyConfig::new("gc")
             .with_block_based(cache),
 
-        // Spool missing track - 36-byte EntryKey, read in runs of virtual groups
-        // 2-byte position and handover prefix
+        // Spool missing track - 36-byte MissingTrackKey, read in runs of virtual groups
+        // 2-byte position and origin prefix
         ColumnFamilyConfig::new("spool_missing_track")
             .with_block_based(cache)
             .with_prefix_extractor(2),

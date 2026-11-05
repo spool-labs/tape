@@ -13,9 +13,10 @@ use tape_chain_harness::{
     ChainHarness, ChainHarnessBuilder, HarnessNode, HarnessNodeSpec, IntoEpochNumber,
 };
 use tape_core::encoding::ErasureCode;
-use tape_core::prelude::{EpochNumber, EpochPhase, SlotNumber, SpoolIndex, SpoolState};
+use tape_core::prelude::{EpochNumber, EpochPhase, SlotNumber, SpoolIndex};
 use tape_core::thresholds::TrustModel;
 use tape_crypto::ed25519::Keypair;
+use tape_recover::state::SpoolState;
 use tape_store::TapeStore;
 use tape_store::ops::SpoolOps;
 

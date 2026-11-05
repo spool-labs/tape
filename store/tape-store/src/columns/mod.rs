@@ -18,7 +18,7 @@
 //! - `gc`: GC progress tracking (String -> EpochNumber)
 //!
 //! ## Spool Columns (NOT epoch-namespaced)
-//! - `spool_missing_track`: Tracks that still need something (EntryKey -> Entry)
+//! - `spool_missing_track`: Tracks that still need something (MissingTrackKey -> MissingTrack)
 //! - `spool_state`: Spools owned now or lately ((position, group) -> SpoolState)
 //! - `spool_owner_history`: Live group owners by epoch ((epoch, spool) -> Address)
 //!

@@ -8,7 +8,7 @@
 //! - Track data: Locally stored track payloads
 //! - Object info: Tracked object status (blacklisted, invalid, valid)
 //! - Slice data: Raw erasure-coded data
-//! - Spool records: spool rows, the missing_list, the owner history
+//! - Spool records: spool states, the missing_lists, the owner history
 //!
 //! # Column Families
 //!
@@ -227,7 +227,7 @@ mod tests {
     use crate::ops::*;
     use crate::types::{ObjectInfo, TapeInfo};
     use tape_store_memory::MemoryStore;
-    use tape_core::system::SpoolState;
+    use tape_recover::state::SpoolState;
     use tape_core::types::{EpochNumber, SlotNumber, VirtualGroup, SpoolIndex, TapeNumber, TrackNumber};
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::StorageUnits;
@@ -295,15 +295,15 @@ mod tests {
         assert_eq!(retrieved, Some(info));
     }
 
-    // a spool row reads back as it was written
+    // a spool state reads back as it was written
     #[test]
     fn spool_state() {
         let store = TapeStore::new(MemoryStore::new());
         let spool_id = SpoolIndex(42);
 
-        store.put_spool_states(&[(spool_id, SpoolState::gained())]).unwrap();
+        store.put_spool_states(&[(spool_id, SpoolState::new_scanning())]).unwrap();
 
-        assert_eq!(store.get_spool_state(spool_id).unwrap(), Some(SpoolState::gained()));
+        assert_eq!(store.get_spool_state(spool_id).unwrap(), Some(SpoolState::new_scanning()));
     }
 
     #[test]
@@ -515,7 +515,7 @@ mod tests {
                 .unwrap();
             tracks.push(address);
         }
-        store.put_spool_states(&[(SpoolIndex(7), SpoolState::gained())]).unwrap();
+        store.put_spool_states(&[(SpoolIndex(7), SpoolState::new_scanning())]).unwrap();
 
         store.inner().inner().flush().unwrap();
 
@@ -531,7 +531,7 @@ mod tests {
         assert!(rest.iter().all(|(address, _)| *address != cursor));
 
         assert_eq!(store.iter_all_tapes().unwrap().len(), 1);
-        assert_eq!(store.spool_states(None, STORED_SPOOL_COUNT).unwrap().len(), 1);
+        assert_eq!(store.get_spool_states(None, STORED_SPOOL_COUNT).unwrap().len(), 1);
         assert!(store.get_object_info(tracks[0]).unwrap().is_some());
         drop(store);
 

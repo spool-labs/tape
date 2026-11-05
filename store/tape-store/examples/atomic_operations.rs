@@ -3,12 +3,13 @@
 //! Run with: cargo run -p tape-store --features rocks --example atomic_operations
 
 use tape_core::spooler::VirtualGroup;
-use tape_core::system::SpoolState;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
 use tape_core::types::{SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
-use tape_store::types::{Entry, EntryKey};
+use tape_recover::state::SpoolState;
+use tape_recover::track::MissingTrack;
+use tape_recover::time::WallTime;
 use tape_store::{error::Result, ops::*, TapeStore};
 
 fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
@@ -70,22 +71,23 @@ fn main() -> Result<()> {
     // SpoolOps - NOT epoch-namespaced
     let mut rows = Vec::new();
     for spool_id in [0u64, 5, 10] {
-        rows.push((SpoolIndex(spool_id), SpoolState::gained()));
+        rows.push((SpoolIndex(spool_id), SpoolState::new_scanning()));
     }
     store.put_spool_states(&rows)?;
     println!("Wrote 3 spool rows");
 
     // List every spool row
-    let spools = store.spool_states(None, STORED_SPOOL_COUNT)?;
+    let spools = store.get_spool_states(None, STORED_SPOOL_COUNT)?;
     println!("All spools: {:?}", spools);
 
     // The missing_list
-    let entry = EntryKey { spool: SpoolIndex(5), is_handover: true, track: track_address };
-    store.put_entry(entry, Entry::never_tried())?;
-    println!("Added a missing_list entry for spool 5");
+    let now = WallTime::now();
+    let missing = MissingTrack::new_handover(SpoolIndex(5), track_address, now);
+    store.put_missing_track(&missing)?;
+    println!("Added a missing track for spool 5");
 
-    let has_entry = store.has_entry(SpoolIndex(5), track_address)?;
-    println!("Has entry: {}", has_entry);
+    let is_listed = store.has_missing_track(SpoolIndex(5), track_address)?;
+    println!("Is listed: {}", is_listed);
 
     // MetaOps - node state
     store.set_sync_cursor(SlotNumber(12345), None)?;

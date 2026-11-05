@@ -19,6 +19,7 @@ required-features = ["rocks"]
 [dependencies]
 tape-core = { workspace = true, features = ["wincode"] }
 tape-crypto = { workspace = true, features = ["wincode"] }
+tape-recover.workspace = true
 tape-store-api.workspace = true
 tape-store-memory.workspace = true
 tape-store-rocks = { workspace = true, optional = true }

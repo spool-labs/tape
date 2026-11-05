@@ -328,7 +328,7 @@ async fn sweep_orphan_slices<Db: Store>(
 ) -> Result<GcSweepStats, NodeError> {
     let mut stats = GcSweepStats::default();
     let spools = store
-        .spool_states(None, STORED_SPOOL_COUNT)
+        .get_spool_states(None, STORED_SPOOL_COUNT)
         .map_err(store_error)?;
     for (index, (spool_id, _)) in spools.into_iter().enumerate() {
         let mut cursor: Option<Vec<u8>> = None;
@@ -444,18 +444,20 @@ mod tests {
 
     use tape_store_memory::MemoryStore;
     use tape_core::spooler::VirtualGroup;
-    use tape_core::system::SpoolState;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{
         EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
     };
     use tape_crypto::address::Address;
     use tape_crypto::Hash;
+    use tape_recover::state::SpoolState;
+    use tape_recover::track::MissingTrack;
+    use tape_recover::time::WallTime;
     use tape_store::{
         ops::{
             ObjectInfoOps, RemovalOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
         },
-        types::{CountedTrack, Entry, EntryKey, ObjectInfo, SystemObjectKind, TapeInfo},
+        types::{CountedTrack, ObjectInfo, SystemObjectKind, TapeInfo},
         TapeStore,
     };
 
@@ -484,8 +486,8 @@ mod tests {
         spools.iter().copied().collect()
     }
 
-    fn entry_key(spool: SpoolIndex, track: Address) -> EntryKey {
-        EntryKey { spool, is_handover: false, track }
+    fn uploaded(spool: SpoolIndex, track: Address) -> MissingTrack {
+        MissingTrack::new_upload(spool, track, WallTime(1))
     }
 
     fn valid_object(track: Address, epoch: EpochNumber, slot: SlotNumber) -> ObjectInfo {
@@ -523,7 +525,7 @@ mod tests {
         let slot = SlotNumber(10);
 
         store
-            .put_spool_states(&[(spool_id, SpoolState::gained())])
+            .put_spool_states(&[(spool_id, SpoolState::new_scanning())])
             .unwrap();
         store
             .put_tape(
@@ -628,7 +630,7 @@ mod tests {
         let spool_id = SpoolIndex(20);
 
         store
-            .put_spool_states(&[(spool_id, SpoolState::gained())])
+            .put_spool_states(&[(spool_id, SpoolState::new_scanning())])
             .unwrap();
         store.put_track(track, info).unwrap();
         store
@@ -655,7 +657,7 @@ mod tests {
         let spool_id = SpoolIndex(20);
 
         store
-            .put_spool_states(&[(spool_id, SpoolState::gained())])
+            .put_spool_states(&[(spool_id, SpoolState::new_scanning())])
             .unwrap();
         store
             .put_tape(
@@ -707,7 +709,7 @@ mod tests {
         let spool_id = SpoolIndex(20);
 
         store
-            .put_spool_states(&[(spool_id, SpoolState::gained())])
+            .put_spool_states(&[(spool_id, SpoolState::new_scanning())])
             .unwrap();
         store
             .put_tape(
@@ -740,7 +742,7 @@ mod tests {
             )
             .unwrap();
         store.put_slice(spool_id, track, vec![8, 8, 8]).unwrap();
-        store.put_entry(entry_key(spool_id, track), Entry::never_tried()).unwrap();
+        store.put_missing_track(&uploaded(spool_id, track)).unwrap();
 
         sweep_epoch(&store, &config, EpochNumber(6), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
@@ -755,7 +757,7 @@ mod tests {
             })
         ));
         assert!(store.get_slice(spool_id, track).unwrap().is_some());
-        assert!(store.has_entry(spool_id, track).unwrap());
+        assert!(store.has_missing_track(spool_id, track).unwrap());
     }
 
     // a dead track's missing_list entries go with it
@@ -769,7 +771,7 @@ mod tests {
         let spool_id = SpoolIndex(20);
 
         store
-            .put_spool_states(&[(spool_id, SpoolState::gained())])
+            .put_spool_states(&[(spool_id, SpoolState::new_scanning())])
             .unwrap();
         store
             .put_tape(
@@ -797,13 +799,13 @@ mod tests {
                 },
             )
             .unwrap();
-        store.put_entry(entry_key(spool_id, track), Entry::never_tried()).unwrap();
+        store.put_missing_track(&uploaded(spool_id, track)).unwrap();
 
         sweep_epoch(&store, &config, EpochNumber(6), &owned_spools(&[]), &PendingTracks::new(), true, TAPENET_PROFILE)
             .await
             .unwrap();
 
-        assert!(!store.has_entry(spool_id, track).unwrap());
+        assert!(!store.has_missing_track(spool_id, track).unwrap());
     }
 
     #[tokio::test]
@@ -816,7 +818,7 @@ mod tests {
         let spool_id = SpoolIndex(20);
 
         store
-            .put_spool_states(&[(spool_id, SpoolState::gained())])
+            .put_spool_states(&[(spool_id, SpoolState::new_scanning())])
             .unwrap();
         store
             .put_tape(
@@ -867,10 +869,10 @@ mod tests {
         let unowned_spool = group.spool_at(1);
 
         store
-            .put_spool_states(&[(owned_spool, SpoolState::gained())])
+            .put_spool_states(&[(owned_spool, SpoolState::new_scanning())])
             .unwrap();
         store
-            .put_spool_states(&[(unowned_spool, SpoolState::gained())])
+            .put_spool_states(&[(unowned_spool, SpoolState::new_scanning())])
             .unwrap();
         store
             .put_tape(tape, TapeInfo::new(TapeNumber(1), 0, EpochNumber(20), TrackNumber(0)))
@@ -1020,7 +1022,7 @@ mod tests {
         let spool = group.spool_at(0);
 
         store
-            .put_spool_states(&[(spool, SpoolState::gained())])
+            .put_spool_states(&[(spool, SpoolState::new_scanning())])
             .unwrap();
         store.put_tape(tape, live_tape()).unwrap();
         store.put_track(track, info).unwrap();
@@ -1067,7 +1069,7 @@ mod tests {
         let invalid = |counted| ObjectInfo::Invalid { epoch: EpochNumber(6), slot: SlotNumber(60), counted };
 
         store
-            .put_spool_states(&[(spool, SpoolState::gained())])
+            .put_spool_states(&[(spool, SpoolState::new_scanning())])
             .unwrap();
         store.put_tape(tape, live_tape()).unwrap();
         store.put_track(track, info).unwrap();
@@ -1164,7 +1166,7 @@ mod tests {
         assert_ne!(first, second);
 
         store
-            .put_spool_states(&[(spool, SpoolState::gained())])
+            .put_spool_states(&[(spool, SpoolState::new_scanning())])
             .unwrap();
         store.put_tape(tape, live_tape()).unwrap();
         for (track, info) in [(first, written), (second, again)] {

@@ -5,7 +5,7 @@
 use tape_core::bls::BlsSignature;
 use tape_core::erasure::MAX_GROUP_SIZE;
 use tape_core::spooler::{GroupFold, GroupIndex};
-use tape_core::system::{SpoolState, VoteCandidate, VoteKind};
+use tape_core::system::{VoteCandidate, VoteKind};
 use tape_core::track::blob::BlobEncoding;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
 use tape_core::types::{
@@ -15,6 +15,9 @@ use tape_core::types::{
 use tape_crypto::address::Address;
 use tape_crypto::bls12254::min_sig::G1CompressedPoint;
 use tape_crypto::hash::{hash, Hash};
+use tape_recover::state::SpoolState;
+use tape_recover::track::MissingTrack;
+use tape_recover::time::WallTime;
 use tape_store::{ops::*, types::*, TapeStore};
 use tempfile::TempDir;
 
@@ -114,9 +117,9 @@ fn all_column_families() {
 
     // Spool row and missing_list (NOT epoch-namespaced)
     let spool = SpoolIndex(42);
-    store.put_spool_states(&[(spool, SpoolState::gained())]).unwrap();
-    let entry = EntryKey { spool, is_handover: true, track: track_address };
-    store.put_entry(entry, Entry::never_tried()).unwrap();
+    store.put_spool_states(&[(spool, SpoolState::new_scanning())]).unwrap();
+    let missing = MissingTrack::new_handover(spool, track_address, WallTime(1));
+    store.put_missing_track(&missing).unwrap();
 
     // Slices
     store
@@ -127,8 +130,8 @@ fn all_column_families() {
     assert!(store.get_track(track_address).unwrap().is_some());
     assert!(store.get_tape(tape_address).unwrap().is_some());
     assert!(store.get_object_info(object_address).unwrap().is_some());
-    assert!(store.get_spool_state(spool).unwrap().unwrap().is_filling);
-    assert!(store.has_entry(spool, track_address).unwrap());
+    assert!(store.get_spool_state(spool).unwrap().unwrap().is_scanning);
+    assert!(store.has_missing_track(spool, track_address).unwrap());
     assert!(store.get_slice(spool, track_address).unwrap().is_some());
 }
 
@@ -209,14 +212,14 @@ fn spool_ops() {
 
     let store = TapeStore::open_primary(&db_path).unwrap();
 
-    let locked = SpoolState { locked_at: EpochNumber(3), ..SpoolState::gained() };
+    let lost = SpoolState { lost_at: EpochNumber(3), ..SpoolState::new_scanning() };
     store
-        .put_spool_states(&[(SpoolIndex(42), SpoolState::gained()), (SpoolIndex(43), locked)])
+        .put_spool_states(&[(SpoolIndex(42), SpoolState::new_scanning()), (SpoolIndex(43), lost)])
         .unwrap();
 
-    assert!(!store.get_spool_state(SpoolIndex(42)).unwrap().unwrap().is_locked());
-    assert!(store.get_spool_state(SpoolIndex(43)).unwrap().unwrap().is_locked());
-    assert_eq!(store.spool_states(None, STORED_SPOOL_COUNT).unwrap().len(), 2);
+    assert!(!store.get_spool_state(SpoolIndex(42)).unwrap().unwrap().is_lost());
+    assert!(store.get_spool_state(SpoolIndex(43)).unwrap().unwrap().is_lost());
+    assert_eq!(store.get_spool_states(None, STORED_SPOOL_COUNT).unwrap().len(), 2);
 
     store.delete_spool_state(SpoolIndex(42)).unwrap();
     assert!(store.get_spool_state(SpoolIndex(42)).unwrap().is_none());
@@ -231,22 +234,25 @@ fn missing_list() {
     let store = TapeStore::open_primary(&db_path).unwrap();
 
     let spool = VirtualGroup(2).spool_at(4);
-    let mut keys = Vec::new();
+    let mut listed = Vec::new();
     for byte in 1..=3u8 {
-        let key = EntryKey { spool, is_handover: byte == 3, track: Address::new([byte; 32]) };
-        store.put_entry(key, Entry::never_tried()).unwrap();
-        keys.push(key);
+        let track = Address::new([byte; 32]);
+        let mut missing = MissingTrack::new_upload(spool, track, WallTime(1));
+        if byte == 3 {
+            missing = MissingTrack::new_handover(spool, track, WallTime(1));
+        }
+        store.put_missing_track(&missing).unwrap();
+        listed.push(missing);
     }
 
     let live = GroupIndex(0).spool_at(4);
     let fold = GroupFold::new(1).unwrap();
-    let page = store.missing_page(live, fold, None, 10).unwrap();
-    let read: Vec<EntryKey> = page.iter().map(|(key, _)| *key).collect();
-    assert_eq!(read, keys);
-    assert!(store.has_handover_entries(live, fold).unwrap());
+    let page = store.get_missing_tracks(live, fold, None, 10).unwrap();
+    assert_eq!(page, listed);
+    assert!(store.has_handover_tracks(live, fold).unwrap());
 
-    store.delete_entry(keys[2]).unwrap();
-    assert!(!store.has_handover_entries(live, fold).unwrap());
+    store.delete_missing_track(&listed[2]).unwrap();
+    assert!(!store.has_handover_tracks(live, fold).unwrap());
 }
 
 #[test]
@@ -367,14 +373,14 @@ fn entries_flushed() {
     let temp_dir = TempDir::new().expect("tempdir");
     let store = TapeStore::open_primary(temp_dir.path()).expect("open");
     let spool = VirtualGroup(9).spool_at(2);
-    let key = EntryKey { spool, is_handover: true, track: Address::new_unique() };
-    store.put_entry(key, Entry::never_tried()).expect("entry");
+    let missing = MissingTrack::new_handover(spool, Address::new_unique(), WallTime(1));
+    store.put_missing_track(&missing).expect("missing track");
     store.inner().inner().flush().expect("flush");
 
     let live = GroupIndex(0).spool_at(2);
     let fold = GroupFold::new(1).expect("fold");
 
-    assert!(store.has_handover_entries(live, fold).expect("handover"));
+    assert!(store.has_handover_tracks(live, fold).expect("handover"));
 }
 
 // deleting one voting epoch's signatures leaves the next epoch's in place

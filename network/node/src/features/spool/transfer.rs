@@ -1,146 +1,152 @@
-//! Transfer: our slice whole from a holder
+//! Transfer is the method that copies our whole slice from a node that owned
+//! the spool before us. A node keeps a spool's slices for 4 epochs after it
+//! loses the spool, and we try this method first because it reads the fewest
+//! bytes, one slice for each track.
 //!
-//! Build the request, send it, check what came back, write it, report.
+//! ```text
+//! ask one of the spool's past owners for our slice of each track in the fetch
+//! keep each slice that matches its hash in the track's encoding
+//! write the slices that we don't have yet
+//! ```
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use tape_core::erasure::leaf_position;
-use tape_core::types::{SpoolIndex, StorageUnits};
+use tape_core::types::StorageUnits;
 use tape_crypto::address::Address;
-use tape_protocol::api::{SyncSlicesReq, SyncSlicesRes};
+use tape_protocol::api::{SyncSliceEntry, SyncSlicesReq, SyncSlicesRes};
 use tape_protocol::Api;
+use tape_recover::attempt::AttemptFailure;
+use tape_recover::fetch::{FetchReq, FetchRes};
 use tape_rpc::Rpc;
-use tape_store::error::TapeStoreError;
-use tape_store::ops::SliceOps;
+use tape_store::TapeStore;
 use tape_store_api::Store;
 use tracing::warn;
 
 use crate::context::NodeContext;
 use crate::features::spool::fetch::{
-    send, Checked, Fetch, FetchReport, FetchTrack, Fetched, Written,
+    get_call_failure, get_call_outcome, is_slice_of, send_with_time_limit,
+    write_slice_once,
 };
 
 /// Run one transfer fetch to its one holder
 pub async fn run<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: Arc<NodeContext<Db, Cluster, Blockchain>>,
-    fetch: Fetch,
+    context: Arc<NodeContext<Db, Cluster, Blockchain>>,
+    req: FetchReq,
     limit: Duration,
-) -> FetchReport {
-    let mut report = FetchReport::new(fetch);
-    let Some(helper) = report.fetch.peers.first().copied() else {
-        return report;
+) -> FetchRes {
+    let mut res = FetchRes::new(req);
+    let Some(peer) = res.req.peers.first().copied() else {
+        return res;
     };
 
-    let request = build_request(&report.fetch, report.fetch.spool);
-    let call = ctx.api.sync_slices(helper.peer, &request);
-    let answer = send(limit, call).await;
-    let response = match answer.response {
+    let request = build_transfer_request(&res.req);
+    let call = context.api.sync_slices(peer.peer, &request);
+    let (response, elapsed) = send_with_time_limit(limit, call).await;
+    let response = match response {
         Ok(response) => response,
-        Err(failure) => {
-            report.failed_call(helper.peer, failure, answer.elapsed);
-            return report;
+        Err(error) => {
+            let outcome = get_call_outcome(&error, elapsed);
+            res.add_failed_call(peer.peer, outcome, get_call_failure(&error));
+            return res;
         }
     };
 
-    let position = leaf_position(report.fetch.spool);
-    let mut checked = check(&report.fetch, position, response);
-    let written = write(&ctx, &mut checked);
-    count(&ctx, &checked, &written);
-    report.answered(helper.peer, &checked, &written.keys, answer.elapsed);
-    report
+    let slices = check_slices(&res.req, response);
+    let written = write_slices(&context.store, &res.req, &slices);
+    add_transfer_metrics(&context, &slices, &written);
+    let is_wrong = !slices.wrong.is_empty();
+    res.add_peer_answer(peer.peer, slices.bytes, elapsed, is_wrong);
+    res.add_track_results(&written, Ok(()));
+    res.add_track_results(&slices.wrong, Err(AttemptFailure::WrongData));
+    res.add_track_results(&slices.not_held, Err(AttemptFailure::NotHeld));
+    res
 }
 
-/// Ask for the fetch's tracks' slices at the live spool `spool`
-pub fn build_request(fetch: &Fetch, spool: SpoolIndex) -> SyncSlicesReq {
+/// Ask for the fetch's tracks' slices at our live spool
+fn build_transfer_request(req: &FetchReq) -> SyncSlicesReq {
     SyncSlicesReq {
-        spool_index: spool,
-        live_groups: fetch.live_groups,
-        tracks: fetch.addresses(),
-        max_bytes: fetch.bytes,
+        spool_index: req.spool,
+        live_groups: req.live_groups,
+        tracks: req.get_addresses(),
+        max_bytes: req.bytes,
     }
 }
 
-/// A slice passes when it matches its leaf in the track's encoding
-pub fn check(
-    fetch: &Fetch,
-    position: SpoolIndex,
-    response: SyncSlicesRes,
-) -> Checked {
-    let mut checked = Checked::default();
+/// A slice passes when it matches our position's leaf in the encoding
+fn check_slices(req: &FetchReq, response: SyncSlicesRes) -> ReceivedSlices {
+    let position = leaf_position(req.spool);
+    let mut slices = ReceivedSlices::default();
     for entry in response.entries {
         let address = Address::new(entry.track_address);
-        let Some(track) = fetch.track(address) else {
+        let Some(track) = req.get_track(address) else {
             continue;
         };
         let size = StorageUnits(entry.slice_data.len() as u64);
-        checked.received = checked.received.saturating_add(size);
+        slices.bytes = slices.bytes.saturating_add(size);
         if !is_slice_of(track, position, &entry.slice_data) {
-            checked.wrong.push(track.key);
+            slices.wrong.push(address);
             continue;
         }
-        checked.good.push(Fetched { key: track.key, bytes: entry.slice_data });
+        slices.good.push(entry);
     }
     for address in response.missing {
-        if let Some(track) = fetch.track(address) {
-            checked.not_held.push(track.key);
+        if req.get_track(address).is_some() {
+            slices.not_held.push(address);
         }
     }
-    checked
+    slices
 }
 
-/// Whether bytes are the slice at `position` of a track
-pub fn is_slice_of(
-    track: &FetchTrack,
-    position: SpoolIndex,
-    bytes: &[u8],
-) -> bool {
-    match &track.blob {
-        Some(blob) => blob.verify_slice(position, bytes),
-        None => false,
-    }
-}
-
-/// Write each slice that passed, unless one is already on disk
-pub fn write<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    checked: &mut Checked,
-) -> Written {
-    let mut written = Written::default();
-    for fetched in std::mem::take(&mut checked.good) {
-        let key = fetched.key;
-        let size = StorageUnits(fetched.bytes.len() as u64);
-        let track = key.track;
-        match write_slice(ctx, key.spool, track, fetched.bytes) {
-            Ok(()) => written.add(key, size),
+/// Write each slice that passed, unless one is already on disk, giving the
+/// tracks written
+fn write_slices<Db: Store>(
+    store: &TapeStore<Db>,
+    req: &FetchReq,
+    slices: &ReceivedSlices,
+) -> Vec<Address> {
+    let mut written = Vec::with_capacity(slices.good.len());
+    for entry in &slices.good {
+        let track = Address::new(entry.track_address);
+        let Some(fetched) = req.get_track(track) else {
+            continue;
+        };
+        let spool = fetched.missing_track.spool;
+        let slice = &entry.slice_data;
+        match write_slice_once(store, spool, track, slice) {
+            Ok(()) => written.push(track),
             Err(error) => warn!(%track, %error, "spool: slice write failed"),
         }
     }
     written
 }
 
-/// Write a checked slice, never over one already on disk
-pub fn write_slice<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    spool: SpoolIndex,
-    track: Address,
-    bytes: Vec<u8>,
-) -> Result<(), TapeStoreError> {
-    if ctx.store.has_slice(spool, track)? {
-        return Ok(());
+fn add_transfer_metrics<Db: Store, Cluster: Api, Blockchain: Rpc>(
+    context: &NodeContext<Db, Cluster, Blockchain>,
+    slices: &ReceivedSlices,
+    written: &[Address],
+) {
+    let mut persisted = 0;
+    for entry in &slices.good {
+        let track = Address::new(entry.track_address);
+        if written.contains(&track) {
+            persisted += entry.slice_data.len() as u64;
+        }
     }
-    ctx.store.put_slice(spool, track, bytes)
+    let metrics = &context.metrics;
+    metrics.add_sync_fetched(slices.bytes.as_u64());
+    metrics.add_sync_persisted(persisted);
+    metrics.add_sync_stored(written.len() as u64);
+    metrics.add_sync_missing(slices.not_held.len() as u64);
+    metrics.add_sync_invalid(slices.wrong.len() as u64);
 }
 
-fn count<Db: Store, Cluster: Api, Blockchain: Rpc>(
-    ctx: &NodeContext<Db, Cluster, Blockchain>,
-    checked: &Checked,
-    written: &Written,
-) {
-    let metrics = &ctx.metrics;
-    metrics.add_sync_fetched(checked.received.as_u64());
-    metrics.add_sync_persisted(written.bytes.as_u64());
-    metrics.add_sync_stored(written.keys.len() as u64);
-    metrics.add_sync_missing(checked.not_held.len() as u64);
-    metrics.add_sync_invalid(checked.wrong.len() as u64);
+/// What one holder sent, sorted by the check
+#[derive(Debug, Default)]
+struct ReceivedSlices {
+    good: Vec<SyncSliceEntry>,
+    wrong: Vec<Address>,
+    not_held: Vec<Address>,
+    bytes: StorageUnits,
 }

@@ -1,6 +1,11 @@
-//! Nodes and peers for the spool tests: a harness node at the tip with a
-//! coded track it lacks its slice of, and fake peers that serve, lack, or
-//! are down
+//! These are the test nodes and fake peers that the spool tests use, so that
+//! each test can set up a node that is missing a slice and choose how its
+//! peers behave.
+//!
+//! ```text
+//! a node at the tip that is missing its slice of one coded track
+//! fake peers that serve the slice, don't have it, or are down
+//! ```
 
 use std::sync::Arc;
 
@@ -21,7 +26,7 @@ use crate::core::ingest::IngestState;
 use crate::features::challenge::fixture::{
     coded, payload, put_tape, write_coded, Coded,
 };
-use crate::features::spool::repair::extract_repair_data;
+use crate::features::http::handlers::track::repair::extract_repair_data;
 use crate::harness::{NodeHarness, TestContext};
 
 /// The tape the fixture's tracks go on

@@ -5,10 +5,11 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use tape_peer_tls::{apply_pinned_tls, install_default_provider};
 use tape_core::tape::{tape_namespace, TapeFlags};
-use tape_core::system::{NodeStatus, SpoolState};
+use tape_core::system::NodeStatus;
 use tape_core::track::types::CompressedTrack;
 use tape_core::types::SpoolIndex;
 use tape_crypto::address::Address;
+use tape_recover::state::SpoolState;
 use tape_store::ops::{ObjectInfoOps, SpoolOps, TapeOps, TrackOps, STORED_SPOOL_COUNT};
 use tape_store::types::{ObjectInfo, TapeInfo};
 use tracing::trace;
@@ -266,7 +267,7 @@ impl SimnetScenario<'_> {
             .harness
             .node(index)
             .with_context(|| format!("node {index} missing"))?;
-        let spools = node.context().store.spool_states(None, STORED_SPOOL_COUNT)
+        let spools = node.context().store.get_spool_states(None, STORED_SPOOL_COUNT)
             .with_context(|| format!("spool_states node {index}"))?;
         Ok(spools.len())
     }
@@ -276,7 +277,7 @@ impl SimnetScenario<'_> {
             .harness
             .node(index)
             .with_context(|| format!("node {index} missing"))?;
-        node.context().store.spool_states(None, STORED_SPOOL_COUNT)
+        node.context().store.get_spool_states(None, STORED_SPOOL_COUNT)
             .with_context(|| format!("spool_states node {index}"))
     }
 

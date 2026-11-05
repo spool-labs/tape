@@ -18,9 +18,9 @@ pub fn verify_spool_integrity(nodes: &[TestNode]) {
         }
         let store = &node.context().store;
 
-        let spools = store.spool_states(None, STORED_SPOOL_COUNT).expect("spool rows");
+        let spools = store.get_spool_states(None, STORED_SPOOL_COUNT).expect("spool rows");
         for (spool_id, row) in &spools {
-            if row.is_locked() || row.is_filling {
+            if row.is_lost() || row.is_scanning {
                 continue;
             }
 

@@ -3,13 +3,13 @@
 //! Run with: cargo run -p tape-store --features rocks --example basic_usage
 
 use tape_core::spooler::VirtualGroup;
-use tape_core::system::SpoolState;
 use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
 use tape_core::types::{
     EpochNumber, SlotNumber, SpoolIndex, StorageUnits, TapeNumber, TrackNumber,
 };
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
+use tape_recover::state::SpoolState;
 use tape_store::{ops::*, types::*, TapeStore};
 
 fn sample_track(tape: Address, track_number: u64) -> CompressedTrack {
@@ -65,12 +65,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spool rows (NOT epoch-namespaced)
     let mut rows = Vec::new();
     for spool_id in 0..3u64 {
-        rows.push((SpoolIndex(spool_id), SpoolState::gained()));
+        rows.push((SpoolIndex(spool_id), SpoolState::new_scanning()));
     }
     store.put_spool_states(&rows)?;
 
     // List every spool row
-    let spools = store.spool_states(None, STORED_SPOOL_COUNT)?;
+    let spools = store.get_spool_states(None, STORED_SPOOL_COUNT)?;
     println!("Owned spools: {:?}", spools);
 
     // Tape info

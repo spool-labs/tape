@@ -290,12 +290,12 @@ mod tests {
 
     use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::spooler::VirtualGroup;
-    use tape_core::system::SpoolState;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::types::{CompressedTrack, TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, StorageUnits, StripeCount, TapeNumber, TrackNumber};
     use tape_core::types::tls::NetworkTlsPubkey;
     use tape_crypto::Hash;
+    use tape_recover::state::SpoolState;
 
     use super::*;
     use crate::features::blacklist::tests::seed_entry;
@@ -366,7 +366,7 @@ mod tests {
 
     // a stored spool the node keeps for its next holder
     fn hold(ctx: &TestContext, spool: SpoolIndex) {
-        let row = SpoolState { locked_at: EpochNumber(1), ..SpoolState::gained() };
+        let row = SpoolState { lost_at: EpochNumber(1), ..SpoolState::new_scanning() };
         ctx.store
             .put_spool_states(&[(spool, row)])
             .expect("set spool row");

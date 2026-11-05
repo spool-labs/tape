@@ -6,198 +6,183 @@
 
 use std::ops::Range;
 
+use tape_core::encoding::ErasureCode;
 use tape_core::erasure::{leaf_position, MAX_GROUP_SIZE};
 use tape_core::spooler::{GroupFold, GroupIndex, VirtualGroup, VIRTUAL_GROUP_COUNT};
-use tape_core::system::{PackedSpoolState, SpoolState};
 use tape_core::types::{EpochNumber, SpoolIndex};
 use tape_crypto::address::Address;
-use tape_store_api::{Column, Direction, KeyValue, Store, WriteBatch};
+use tape_recover::state::SpoolState;
+use tape_recover::track::{MissingTrack, TrackOrigin};
+use tape_store_api::{Column, Store, WriteBatch};
 
-use crate::columns::{SpoolMissingTrackCol, SpoolOwnerHistoryCol, SpoolStateCol, TrackGroupIndexCol};
+use crate::columns::{SpoolMissingTrackCol, SpoolOwnerHistoryCol, SpoolStateCol};
 use crate::error::{Result, TapeStoreError};
-use crate::types::missing::{
-    entry_prefix, group_bytes, stored_group, stored_position, Entry, EntryKey, PackedEntry,
-};
+use crate::ops::range::{read_range, KeyRange};
+use crate::types::keys::{MissingTrackKey, OwnerKey, SpoolStateKey};
 use crate::TapeStore;
 
-/// How many stored spools there are, and so the most spool rows a store holds
+/// How many stored spools there are, and so the most spool states a store holds
 pub const STORED_SPOOL_COUNT: usize = VIRTUAL_GROUP_COUNT as usize * MAX_GROUP_SIZE;
 
-/// One track of a virtual group's track list
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GroupTrack {
-    pub group: VirtualGroup,
-    pub track: Address,
-}
-
-/// The keys from `start` up to `end`
-struct KeyRange {
-    start: Vec<u8>,
-    end: Vec<u8>,
-}
-
-/// A live spool as the store keeps it: one position, a few runs of groups
-struct LiveRuns {
-    position: u8,
-    runs: Vec<Range<VirtualGroup>>,
-}
+/// Each origin of a missing track, in key order
+const ORIGINS: [TrackOrigin; 2] = [TrackOrigin::Upload, TrackOrigin::Handover];
 
 /// Operations on the spool records
 pub trait SpoolOps {
-    /// A stored spool's row
+    /// A stored spool's state
     fn get_spool_state(&self, spool: SpoolIndex) -> Result<Option<SpoolState>>;
 
-    /// Write stored spools' rows in one batch
-    fn put_spool_states(&self, rows: &[(SpoolIndex, SpoolState)]) -> Result<()>;
-
-    /// Delete a stored spool's row
-    fn delete_spool_state(&self, spool: SpoolIndex) -> Result<()>;
-
-    /// The rows of the stored spools a live spool carries, in key order
-    fn live_spool_states(
-        &self,
-        spool: SpoolIndex,
-        fold: GroupFold,
-    ) -> Result<Vec<(SpoolIndex, SpoolState)>>;
-
-    /// Up to `limit` of every row the store holds, from the row after `after`
-    fn spool_states(
+    /// Up to `limit` of every state the store holds, from the one after `after`
+    fn get_spool_states(
         &self,
         after: Option<SpoolIndex>,
         limit: usize,
     ) -> Result<Vec<(SpoolIndex, SpoolState)>>;
 
-    /// Up to `limit` entries of a live spool's missing_list after `after`
-    fn missing_page(
+    /// The states of the stored spools a live spool carries, in key order
+    fn get_live_spool_states(
         &self,
         spool: SpoolIndex,
         fold: GroupFold,
-        after: Option<EntryKey>,
-        limit: usize,
-    ) -> Result<Vec<(EntryKey, Entry)>>;
+    ) -> Result<Vec<(SpoolIndex, SpoolState)>>;
 
-    /// Whether a stored spool's missing_list has an entry for a track
-    fn has_entry(&self, spool: SpoolIndex, track: Address) -> Result<bool>;
+    /// Write stored spools' states in one batch
+    fn put_spool_states(&self, states: &[(SpoolIndex, SpoolState)]) -> Result<()>;
 
-    /// Write one entry
-    fn put_entry(&self, key: EntryKey, entry: Entry) -> Result<()>;
+    /// Delete a stored spool's state
+    fn delete_spool_state(&self, spool: SpoolIndex) -> Result<()>;
 
-    /// Delete one entry
-    fn delete_entry(&self, key: EntryKey) -> Result<()>;
-
-    /// Whether any entry filling added is left in a live spool's missing_list
-    fn has_handover_entries(&self, spool: SpoolIndex, fold: GroupFold) -> Result<bool>;
-
-    /// Delete up to `limit` entries of a stored spool, returning how many went
-    fn delete_spool_entries(&self, spool: SpoolIndex, limit: usize) -> Result<usize>;
-
-    /// Up to `limit` tracks of runs of virtual groups, from the track after `after`
-    fn group_tracks(
+    /// Up to `limit` missing tracks of a live spool, from the one after `after`
+    fn get_missing_tracks(
         &self,
-        runs: &[Range<VirtualGroup>],
-        after: Option<GroupTrack>,
+        spool: SpoolIndex,
+        fold: GroupFold,
+        after: Option<&MissingTrack>,
         limit: usize,
-    ) -> Result<Vec<GroupTrack>>;
+    ) -> Result<Vec<MissingTrack>>;
 
-    /// Add the entries filling found that aren't there yet, never tried, and
-    /// write the rows it moved on, in one write
-    fn write_fill(&self, entries: &[EntryKey], rows: &[(SpoolIndex, SpoolState)]) -> Result<()>;
+    /// A stored spool's missing track for a track
+    fn get_missing_track(&self, spool: SpoolIndex, track: Address) -> Result<Option<MissingTrack>>;
+
+    /// Whether a stored spool's missing_list holds a track
+    fn has_missing_track(&self, spool: SpoolIndex, track: Address) -> Result<bool>;
+
+    /// Write one missing track
+    fn put_missing_track(&self, missing: &MissingTrack) -> Result<()>;
+
+    /// Delete one missing track
+    fn delete_missing_track(&self, missing: &MissingTrack) -> Result<()>;
+
+    /// Whether any handover missing track is left in a live spool's missing_list
+    fn has_handover_tracks(&self, spool: SpoolIndex, fold: GroupFold) -> Result<bool>;
+
+    /// Delete up to `limit` missing tracks of a stored spool, returning how many went
+    fn delete_missing_tracks(&self, spool: SpoolIndex, limit: usize) -> Result<usize>;
+
+    /// Add the scan page's missing tracks that aren't listed yet, and write the
+    /// states it moved on, in one write
+    fn put_scan_page(
+        &self,
+        missing: &[MissingTrack],
+        states: &[(SpoolIndex, SpoolState)],
+    ) -> Result<()>;
 
     /// Record an epoch's owners, keyed by each live group's own stored spools
     fn put_owners(&self, epoch: EpochNumber, owners: &[(SpoolIndex, Address)]) -> Result<()>;
 
-    /// The owners, by position, of the live group that carried a virtual
-    /// group in an epoch, or nothing for an epoch the history doesn't hold
-    fn group_owners_at(
+    /// The owners, by position, of a live group's own stored spools in an
+    /// epoch, or nothing when the epoch has no record for the group
+    fn get_owners(
         &self,
         epoch: EpochNumber,
         group: VirtualGroup,
-        width: usize,
+        profile: ErasureCode,
     ) -> Result<Option<Vec<Address>>>;
 
-    /// Forget every epoch before `epoch`
-    fn forget_owners_before(&self, epoch: EpochNumber) -> Result<()>;
+    /// Delete every epoch before `epoch`
+    fn delete_owners_before(&self, epoch: EpochNumber) -> Result<()>;
 
-    /// Every node the history records, reading up to `limit` records
-    fn history_owners(&self, limit: usize) -> Result<Vec<Address>>;
+    /// Every node the owner_history records, reading up to `limit` records
+    fn get_recorded_owners(&self, limit: usize) -> Result<Vec<Address>>;
 }
 
 impl<S: Store> SpoolOps for TapeStore<S> {
     fn get_spool_state(&self, spool: SpoolIndex) -> Result<Option<SpoolState>> {
-        let key = row_key(spool)?;
+        let key = SpoolStateKey(spool).pack()?;
         let raw = self.inner().inner();
         let Some(value) = raw.get(SpoolStateCol::CF_NAME, &key)? else {
             return Ok(None);
         };
-        Ok(Some(decode_row(&value)?))
+        Ok(Some(decode_state(&value)?))
     }
 
-    fn put_spool_states(&self, rows: &[(SpoolIndex, SpoolState)]) -> Result<()> {
+    fn get_spool_states(
+        &self,
+        after: Option<SpoolIndex>,
+        limit: usize,
+    ) -> Result<Vec<(SpoolIndex, SpoolState)>> {
+        let after_key = match after {
+            Some(spool) => SpoolStateKey(spool).pack()?.to_vec(),
+            None => Vec::new(),
+        };
+        let range = KeyRange { start: Vec::new(), end: vec![u8::MAX; SpoolStateKey::SIZE + 1] };
+        let mut states = Vec::new();
+        for (key, value) in read_range(self, SpoolStateCol::CF_NAME, &range, &after_key, limit)? {
+            states.push((SpoolStateKey::unpack(&key)?.0, decode_state(&value)?));
+        }
+        Ok(states)
+    }
+
+    fn get_live_spool_states(
+        &self,
+        spool: SpoolIndex,
+        fold: GroupFold,
+    ) -> Result<Vec<(SpoolIndex, SpoolState)>> {
+        let position = leaf_position(spool).as_usize();
+        let mut states = Vec::new();
+        for run in get_live_runs(spool, fold) {
+            let range = get_state_range(position, &run)?;
+            let width = (run.end.0 - run.start.0) as usize;
+            for (key, value) in read_range(self, SpoolStateCol::CF_NAME, &range, &[], width)? {
+                states.push((SpoolStateKey::unpack(&key)?.0, decode_state(&value)?));
+            }
+        }
+        Ok(states)
+    }
+
+    fn put_spool_states(&self, states: &[(SpoolIndex, SpoolState)]) -> Result<()> {
         let mut batch = WriteBatch::new();
-        for (spool, row) in rows {
-            let key = row_key(*spool)?;
-            batch.put_owned(SpoolStateCol::CF_NAME, key.to_vec(), row.pack().to_vec());
+        for (spool, state) in states {
+            let key = SpoolStateKey(*spool).pack()?;
+            batch.put_owned(SpoolStateCol::CF_NAME, key.to_vec(), state.pack().to_vec());
         }
         self.inner().inner().write_batch(batch)?;
         Ok(())
     }
 
     fn delete_spool_state(&self, spool: SpoolIndex) -> Result<()> {
-        let key = row_key(spool)?;
+        let key = SpoolStateKey(spool).pack()?;
         self.inner().inner().delete(SpoolStateCol::CF_NAME, &key)?;
         Ok(())
     }
 
-    fn live_spool_states(
+    fn get_missing_tracks(
         &self,
         spool: SpoolIndex,
         fold: GroupFold,
-    ) -> Result<Vec<(SpoolIndex, SpoolState)>> {
-        let live = live_runs(spool, fold);
-        let mut rows = Vec::new();
-        for run in &live.runs {
-            let range = row_range(live.position, run)?;
-            let width = (run.end.0 - run.start.0) as usize;
-            for (key, value) in read_range(self, SpoolStateCol::CF_NAME, &range, &[], width)? {
-                rows.push((row_spool(&key)?, decode_row(&value)?));
-            }
-        }
-        Ok(rows)
-    }
-
-    fn spool_states(
-        &self,
-        after: Option<SpoolIndex>,
+        after: Option<&MissingTrack>,
         limit: usize,
-    ) -> Result<Vec<(SpoolIndex, SpoolState)>> {
+    ) -> Result<Vec<MissingTrack>> {
         let after_key = match after {
-            Some(spool) => row_key(spool)?.to_vec(),
-            None => Vec::new(),
-        };
-        let range = KeyRange { start: Vec::new(), end: vec![u8::MAX; 4] };
-        let mut rows = Vec::new();
-        for (key, value) in read_range(self, SpoolStateCol::CF_NAME, &range, &after_key, limit)? {
-            rows.push((row_spool(&key)?, decode_row(&value)?));
-        }
-        Ok(rows)
-    }
-
-    fn missing_page(
-        &self,
-        spool: SpoolIndex,
-        fold: GroupFold,
-        after: Option<EntryKey>,
-        limit: usize,
-    ) -> Result<Vec<(EntryKey, Entry)>> {
-        let after_key = match after {
-            Some(key) => key.pack()?.to_vec(),
+            Some(missing) => get_missing_key(missing).pack()?.to_vec(),
             None => Vec::new(),
         };
         let mut page = Vec::new();
-        for range in entry_ranges(live_runs(spool, fold))? {
+        for range in get_missing_ranges(spool, fold)? {
             let left = limit - page.len();
-            for (key, value) in read_range(self, SpoolMissingTrackCol::CF_NAME, &range, &after_key, left)? {
-                page.push((EntryKey::unpack(&key)?, decode_entry(&value)?));
+            let cf = SpoolMissingTrackCol::CF_NAME;
+            for (key, value) in read_range(self, cf, &range, &after_key, left)? {
+                page.push(decode_missing(&key, &value)?);
             }
             if page.len() == limit {
                 break;
@@ -206,10 +191,21 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         Ok(page)
     }
 
-    fn has_entry(&self, spool: SpoolIndex, track: Address) -> Result<bool> {
+    fn get_missing_track(&self, spool: SpoolIndex, track: Address) -> Result<Option<MissingTrack>> {
         let raw = self.inner().inner();
-        for is_handover in [false, true] {
-            let key = EntryKey { spool, is_handover, track }.pack()?;
+        for origin in ORIGINS {
+            let key = MissingTrackKey::new(spool, origin, track).pack()?;
+            if let Some(value) = raw.get(SpoolMissingTrackCol::CF_NAME, &key)? {
+                return Ok(Some(decode_missing(&key, &value)?));
+            }
+        }
+        Ok(None)
+    }
+
+    fn has_missing_track(&self, spool: SpoolIndex, track: Address) -> Result<bool> {
+        let raw = self.inner().inner();
+        for origin in ORIGINS {
+            let key = MissingTrackKey::new(spool, origin, track).pack()?;
             if raw.contains(SpoolMissingTrackCol::CF_NAME, &key)? {
                 return Ok(true);
             }
@@ -217,36 +213,42 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         Ok(false)
     }
 
-    fn put_entry(&self, key: EntryKey, entry: Entry) -> Result<()> {
+    fn put_missing_track(&self, missing: &MissingTrack) -> Result<()> {
+        let key = get_missing_key(missing).pack()?;
         let raw = self.inner().inner();
-        raw.put(SpoolMissingTrackCol::CF_NAME, &key.pack()?, &entry.pack())?;
+        raw.put(SpoolMissingTrackCol::CF_NAME, &key, &missing.pack())?;
         Ok(())
     }
 
-    fn delete_entry(&self, key: EntryKey) -> Result<()> {
-        self.inner().inner().delete(SpoolMissingTrackCol::CF_NAME, &key.pack()?)?;
+    fn delete_missing_track(&self, missing: &MissingTrack) -> Result<()> {
+        let key = get_missing_key(missing).pack()?;
+        self.inner().inner().delete(SpoolMissingTrackCol::CF_NAME, &key)?;
         Ok(())
     }
 
-    fn has_handover_entries(&self, spool: SpoolIndex, fold: GroupFold) -> Result<bool> {
-        let live = live_runs(spool, fold);
-        for run in &live.runs {
-            let range = entry_range(live.position, true, run)?;
-            if !read_range(self, SpoolMissingTrackCol::CF_NAME, &range, &[], 1)?.is_empty() {
+    fn has_handover_tracks(&self, spool: SpoolIndex, fold: GroupFold) -> Result<bool> {
+        let position = leaf_position(spool).as_usize();
+        for run in get_live_runs(spool, fold) {
+            let range = get_missing_range(position, TrackOrigin::Handover, &run)?;
+            let cf = SpoolMissingTrackCol::CF_NAME;
+            if !read_range(self, cf, &range, &[], 1)?.is_empty() {
                 return Ok(true);
             }
         }
         Ok(false)
     }
 
-    fn delete_spool_entries(&self, spool: SpoolIndex, limit: usize) -> Result<usize> {
+    fn delete_missing_tracks(&self, spool: SpoolIndex, limit: usize) -> Result<usize> {
+        let position = leaf_position(spool).as_usize();
+        let group = VirtualGroup::containing(spool);
+        let run = group..VirtualGroup(group.0 + 1);
         let mut batch = WriteBatch::new();
         let mut count = 0;
-        for is_handover in [false, true] {
-            let prefix = entry_prefix(spool, is_handover)?;
-            let range = KeyRange { start: prefix.to_vec(), end: prefix_end(&prefix) };
-            for (key, _) in read_range(self, SpoolMissingTrackCol::CF_NAME, &range, &[], limit - count)? {
-                batch.delete_owned(SpoolMissingTrackCol::CF_NAME, key);
+        for origin in ORIGINS {
+            let range = get_missing_range(position, origin, &run)?;
+            let cf = SpoolMissingTrackCol::CF_NAME;
+            for (key, _) in read_range(self, cf, &range, &[], limit - count)? {
+                batch.delete_owned(cf, key);
                 count += 1;
             }
         }
@@ -256,42 +258,22 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         Ok(count)
     }
 
-    fn group_tracks(
+    fn put_scan_page(
         &self,
-        runs: &[Range<VirtualGroup>],
-        after: Option<GroupTrack>,
-        limit: usize,
-    ) -> Result<Vec<GroupTrack>> {
-        let after_key = match after {
-            Some(after) => track_group_key(after.group, after.track)?.to_vec(),
-            None => Vec::new(),
-        };
-        let mut tracks = Vec::new();
-        for run in runs {
-            let range = group_range(run)?;
-            let left = limit - tracks.len();
-            for (key, _) in read_range(self, TrackGroupIndexCol::CF_NAME, &range, &after_key, left)? {
-                tracks.push(decode_group_track(&key)?);
-            }
-            if tracks.len() == limit {
-                break;
-            }
-        }
-        Ok(tracks)
-    }
-
-    fn write_fill(&self, entries: &[EntryKey], rows: &[(SpoolIndex, SpoolState)]) -> Result<()> {
+        missing: &[MissingTrack],
+        states: &[(SpoolIndex, SpoolState)],
+    ) -> Result<()> {
         let mut batch = WriteBatch::new();
-        let fresh = Entry::never_tried().pack();
-        for key in entries {
-            if self.has_entry(key.spool, key.track)? {
+        for listed in missing {
+            if self.has_missing_track(listed.spool, listed.track)? {
                 continue;
             }
-            batch.put_owned(SpoolMissingTrackCol::CF_NAME, key.pack()?.to_vec(), fresh.to_vec());
+            let key = get_missing_key(listed).pack()?;
+            batch.put_owned(SpoolMissingTrackCol::CF_NAME, key.to_vec(), listed.pack().to_vec());
         }
-        for (spool, row) in rows {
-            let key = row_key(*spool)?;
-            batch.put_owned(SpoolStateCol::CF_NAME, key.to_vec(), row.pack().to_vec());
+        for (spool, state) in states {
+            let key = SpoolStateKey(*spool).pack()?;
+            batch.put_owned(SpoolStateCol::CF_NAME, key.to_vec(), state.pack().to_vec());
         }
         self.inner().inner().write_batch(batch)?;
         Ok(())
@@ -300,29 +282,33 @@ impl<S: Store> SpoolOps for TapeStore<S> {
     fn put_owners(&self, epoch: EpochNumber, owners: &[(SpoolIndex, Address)]) -> Result<()> {
         let mut batch = WriteBatch::new();
         for (spool, owner) in owners {
-            let key = owner_key(epoch, *spool)?;
-            batch.put_owned(SpoolOwnerHistoryCol::CF_NAME, key.to_vec(), owner.to_bytes().to_vec());
+            let key = OwnerKey::new(epoch, *spool).pack()?;
+            let value = owner.to_bytes().to_vec();
+            batch.put_owned(SpoolOwnerHistoryCol::CF_NAME, key.to_vec(), value);
         }
         self.inner().inner().write_batch(batch)?;
         Ok(())
     }
 
-    fn group_owners_at(
+    fn get_owners(
         &self,
         epoch: EpochNumber,
         group: VirtualGroup,
-        width: usize,
+        profile: ErasureCode,
     ) -> Result<Option<Vec<Address>>> {
-        let Some(carrier) = carrier_at(self, epoch, group)? else {
+        let raw = self.inner().inner();
+        let first = OwnerKey::new(epoch, group.spool_at(0)).pack()?;
+        if !raw.contains(SpoolOwnerHistoryCol::CF_NAME, &first)? {
             return Ok(None);
-        };
+        }
 
+        let width = usize::from(profile.n()).min(MAX_GROUP_SIZE);
         let mut keys = Vec::with_capacity(width);
-        for position in 0..width.min(MAX_GROUP_SIZE) {
-            keys.push(owner_key(epoch, carrier.spool_at(position))?);
+        for position in 0..width {
+            keys.push(OwnerKey::new(epoch, group.spool_at(position)).pack()?);
         }
         let asked: Vec<&[u8]> = keys.iter().map(|key| key.as_slice()).collect();
-        let values = self.inner().inner().get_many(SpoolOwnerHistoryCol::CF_NAME, &asked)?;
+        let values = raw.get_many(SpoolOwnerHistoryCol::CF_NAME, &asked)?;
 
         let mut owners = Vec::with_capacity(values.len());
         for value in values {
@@ -331,14 +317,14 @@ impl<S: Store> SpoolOps for TapeStore<S> {
         Ok(Some(owners))
     }
 
-    fn forget_owners_before(&self, epoch: EpochNumber) -> Result<()> {
-        let end = owner_key(epoch, SpoolIndex(0))?;
+    fn delete_owners_before(&self, epoch: EpochNumber) -> Result<()> {
+        let end = OwnerKey::new(epoch, SpoolIndex(0)).pack()?;
         self.inner().inner().delete_range(SpoolOwnerHistoryCol::CF_NAME, &[], &end)?;
         Ok(())
     }
 
-    fn history_owners(&self, limit: usize) -> Result<Vec<Address>> {
-        let range = KeyRange { start: Vec::new(), end: vec![u8::MAX; 11] };
+    fn get_recorded_owners(&self, limit: usize) -> Result<Vec<Address>> {
+        let range = KeyRange { start: Vec::new(), end: vec![u8::MAX; OwnerKey::SIZE + 1] };
         let rows = read_range(self, SpoolOwnerHistoryCol::CF_NAME, &range, &[], limit)?;
         let mut owners = Vec::new();
         for (_, value) in rows {
@@ -351,162 +337,59 @@ impl<S: Store> SpoolOps for TapeStore<S> {
     }
 }
 
-/// The live group that carried `group` in `epoch`
-///
-/// An epoch's records cover every position of every group live in it. The
-/// carrier is the first of `group` and its ancestors with a record: under a
-/// fold of `n` groups, `live_group` gives the next ancestor below `n`.
-fn carrier_at<S: Store>(
-    store: &TapeStore<S>,
-    epoch: EpochNumber,
-    group: VirtualGroup,
-) -> Result<Option<VirtualGroup>> {
-    let raw = store.inner().inner();
-    let mut carrier = group;
-    loop {
-        let first = owner_key(epoch, carrier.spool_at(0))?;
-        if raw.contains(SpoolOwnerHistoryCol::CF_NAME, &first)? {
-            return Ok(Some(carrier));
-        }
-        let Some(fold) = GroupFold::new(carrier.0) else {
-            return Ok(None);
-        };
-        let Some(parent) = fold.virtual_group(fold.live_group(group)) else {
-            return Ok(None);
-        };
-        carrier = parent;
-    }
+/// The runs of virtual groups a live spool carries
+fn get_live_runs(spool: SpoolIndex, fold: GroupFold) -> Vec<Range<VirtualGroup>> {
+    fold.carried_ranges(GroupIndex::containing(spool))
 }
 
-/// Up to `limit` rows of `range` that sort after `after`, read in key order
-fn read_range<S: Store>(
-    store: &TapeStore<S>,
-    cf: &str,
-    range: &KeyRange,
-    after: &[u8],
-    limit: usize,
-) -> Result<Vec<KeyValue>> {
-    let mut rows = Vec::new();
-    let start = range.start.as_slice().max(after);
-    if limit == 0 || start >= range.end.as_slice() {
-        return Ok(rows);
-    }
-
-    for (key, value) in store.inner().inner().iter_from(cf, start, Direction::Asc)? {
-        if key.as_slice() >= range.end.as_slice() {
-            break;
-        }
-        if key.as_slice() == after {
-            continue;
-        }
-        rows.push((key, value));
-        if rows.len() == limit {
-            break;
-        }
-    }
-    Ok(rows)
-}
-
-fn live_runs(spool: SpoolIndex, fold: GroupFold) -> LiveRuns {
-    LiveRuns {
-        position: leaf_position(spool).as_u64() as u8,
-        runs: fold.carried_ranges(GroupIndex::containing(spool)),
-    }
-}
-
-/// A live spool's entry ranges in key order: every run without handover,
-/// then every run with it
-fn entry_ranges(live: LiveRuns) -> Result<Vec<KeyRange>> {
-    let mut ranges = Vec::with_capacity(live.runs.len() * 2);
-    for is_handover in [false, true] {
-        for run in &live.runs {
-            ranges.push(entry_range(live.position, is_handover, run)?);
+/// A live spool's missing track ranges in key order: every run of the
+/// uploads, then every run of the handovers
+fn get_missing_ranges(spool: SpoolIndex, fold: GroupFold) -> Result<Vec<KeyRange>> {
+    let position = leaf_position(spool).as_usize();
+    let runs = get_live_runs(spool, fold);
+    let mut ranges = Vec::with_capacity(runs.len() * ORIGINS.len());
+    for origin in ORIGINS {
+        for run in &runs {
+            ranges.push(get_missing_range(position, origin, run)?);
         }
     }
     Ok(ranges)
 }
 
-fn entry_range(position: u8, is_handover: bool, run: &Range<VirtualGroup>) -> Result<KeyRange> {
-    let head = [position, u8::from(is_handover)];
-    Ok(KeyRange {
-        start: [head.as_slice(), &group_bytes(run.start)?].concat(),
-        end: [head.as_slice(), &group_bytes(run.end)?].concat(),
-    })
+/// The missing track keys of one position and origin over a run of groups
+fn get_missing_range(
+    position: usize,
+    origin: TrackOrigin,
+    run: &Range<VirtualGroup>,
+) -> Result<KeyRange> {
+    let track = Address::default();
+    let start = MissingTrackKey::new(run.start.spool_at(position), origin, track);
+    let end = MissingTrackKey::new(run.end.spool_at(position), origin, track);
+    Ok(KeyRange { start: start.pack()?.to_vec(), end: end.pack()?.to_vec() })
 }
 
-fn row_range(position: u8, run: &Range<VirtualGroup>) -> Result<KeyRange> {
-    Ok(KeyRange {
-        start: [[position].as_slice(), &group_bytes(run.start)?].concat(),
-        end: [[position].as_slice(), &group_bytes(run.end)?].concat(),
-    })
+/// The state keys of one position over a run of groups
+fn get_state_range(position: usize, run: &Range<VirtualGroup>) -> Result<KeyRange> {
+    let start = SpoolStateKey(run.start.spool_at(position)).pack()?;
+    let end = SpoolStateKey(run.end.spool_at(position)).pack()?;
+    Ok(KeyRange { start: start.to_vec(), end: end.to_vec() })
 }
 
-fn group_range(run: &Range<VirtualGroup>) -> Result<KeyRange> {
-    Ok(KeyRange {
-        start: group_bytes(run.start)?.to_vec(),
-        end: group_bytes(run.end)?.to_vec(),
-    })
+fn get_missing_key(missing: &MissingTrack) -> MissingTrackKey {
+    MissingTrackKey::new(missing.spool, missing.origin, missing.track)
 }
 
-/// The first key past every key that starts with `prefix`
-fn prefix_end(prefix: &[u8]) -> Vec<u8> {
-    let mut end = prefix.to_vec();
-    end.push(u8::MAX);
-    end.push(u8::MAX);
-    end
-}
-
-fn row_key(spool: SpoolIndex) -> Result<[u8; 3]> {
-    let [high, low] = stored_group(spool)?;
-    Ok([stored_position(spool), high, low])
-}
-
-fn row_spool(key: &[u8]) -> Result<SpoolIndex> {
-    let [position, high, low] = <[u8; 3]>::try_from(key)
-        .map_err(|_| TapeStoreError::Serialization("spool row key length".into()))?;
-    let group = VirtualGroup(u64::from(u16::from_be_bytes([high, low])));
-    Ok(group.spool_at(usize::from(position)))
-}
-
-fn owner_key(epoch: EpochNumber, spool: SpoolIndex) -> Result<[u8; 10]> {
-    let spool = u16::try_from(spool.as_u64())
-        .map_err(|_| TapeStoreError::SpoolKeyOverflow(spool))?;
-    let mut key = [0u8; 10];
-    key[..8].copy_from_slice(&epoch.0.to_be_bytes());
-    key[8..].copy_from_slice(&spool.to_be_bytes());
-    Ok(key)
-}
-
-/// The group track key, also written by the track catalog
-pub fn track_group_key(group: VirtualGroup, track: Address) -> Result<[u8; 34]> {
-    let mut key = [0u8; 34];
-    key[..2].copy_from_slice(&group_bytes(group)?);
-    key[2..].copy_from_slice(&track.to_bytes());
-    Ok(key)
-}
-
-fn decode_group_track(key: &[u8]) -> Result<GroupTrack> {
-    if key.len() != 34 {
-        return Err(TapeStoreError::Serialization("group track key length".into()));
-    }
-    let mut track = [0u8; 32];
-    track.copy_from_slice(&key[2..]);
-    Ok(GroupTrack {
-        group: VirtualGroup(u64::from(u16::from_be_bytes([key[0], key[1]]))),
-        track: Address::new(track),
-    })
-}
-
-fn decode_row(value: &[u8]) -> Result<SpoolState> {
-    let bytes = PackedSpoolState::try_from(value)
-        .map_err(|_| TapeStoreError::Serialization("spool row length".into()))?;
+fn decode_state(value: &[u8]) -> Result<SpoolState> {
+    let bytes = <[u8; SpoolState::SIZE]>::try_from(value)
+        .map_err(|_| TapeStoreError::Serialization("spool state length".into()))?;
     Ok(SpoolState::unpack(bytes))
 }
 
-fn decode_entry(value: &[u8]) -> Result<Entry> {
-    let bytes = PackedEntry::try_from(value)
-        .map_err(|_| TapeStoreError::Serialization("entry length".into()))?;
-    Ok(Entry::unpack(bytes))
+fn decode_missing(key: &[u8], value: &[u8]) -> Result<MissingTrack> {
+    let key = MissingTrackKey::unpack(key)?;
+    let bytes = <[u8; MissingTrack::SIZE]>::try_from(value)
+        .map_err(|_| TapeStoreError::Serialization("missing track length".into()))?;
+    Ok(MissingTrack::unpack(key.spool, key.origin, key.track, bytes))
 }
 
 fn decode_owner(value: Option<&[u8]>) -> Result<Address> {
@@ -522,13 +405,17 @@ fn decode_owner(value: Option<&[u8]>) -> Result<Address> {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use tape_store_api::{StoreEngine, StoreIter, Value};
+    use tape_core::encoding::{RSParams, TAPENET_PROFILE};
+    use tape_recover::time::WallTime;
+    use tape_store_api::{Direction, KeyValue, StoreEngine, StoreIter, Value};
     use tape_store_memory::MemoryStore;
 
     use super::*;
-    use crate::types::missing::WallTime;
 
     const POSITION: usize = 3;
+
+    /// Four spools a group, so four owners a record
+    const FOUR_WIDE: ErasureCode = ErasureCode::ReedSolomon(RSParams::new(3, 1));
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -542,155 +429,150 @@ mod tests {
         Address::new([byte; 32])
     }
 
-    fn key(group: u64, position: usize, is_handover: bool, byte: u8) -> EntryKey {
-        EntryKey {
-            spool: VirtualGroup(group).spool_at(position),
-            is_handover,
-            track: address(byte),
+    fn missing(group: u64, position: usize, is_handover: bool, byte: u8) -> MissingTrack {
+        let spool = VirtualGroup(group).spool_at(position);
+        if is_handover {
+            return MissingTrack::new_handover(spool, address(byte), WallTime(1));
         }
+        MissingTrack::new_upload(spool, address(byte), WallTime(1))
     }
 
-    fn put(store: &TapeStore<MemoryStore>, key: EntryKey) {
-        store.put_entry(key, Entry::never_tried()).expect("put entry");
+    fn put(store: &TapeStore<MemoryStore>, listed: MissingTrack) {
+        store.put_missing_track(&listed).expect("put missing track");
     }
 
-    fn tracks(page: &[(EntryKey, Entry)]) -> Vec<u8> {
-        page.iter().map(|(key, _)| key.track.to_bytes()[0]).collect()
+    fn tracks(page: &[MissingTrack]) -> Vec<u8> {
+        page.iter().map(|listed| listed.track.to_bytes()[0]).collect()
     }
 
-    // a live spool's page holds its own position's entries from every group
-    // it carries, plain ones before handover ones, and none of another's
+    // a live spool's page holds its own position's missing tracks from every
+    // group it carries, uploads before handover ones, and none of another's
     #[test]
     fn page_by_runs() {
         let store = test_store();
         let live = GroupIndex(0).spool_at(POSITION);
-        put(&store, key(0, POSITION, true, 1));
-        put(&store, key(2, POSITION, false, 2));
-        put(&store, key(6, POSITION, false, 3));
-        put(&store, key(1, POSITION, false, 4));
-        put(&store, key(2, POSITION + 1, false, 5));
+        put(&store, missing(0, POSITION, true, 1));
+        put(&store, missing(2, POSITION, false, 2));
+        put(&store, missing(6, POSITION, false, 3));
+        put(&store, missing(1, POSITION, false, 4));
+        put(&store, missing(2, POSITION + 1, false, 5));
 
-        let page = store.missing_page(live, fold(2), None, 10).expect("page");
+        let page = store.get_missing_tracks(live, fold(2), None, 10).expect("page");
 
         assert_eq!(tracks(&page), vec![2, 1]);
-        let all = store.missing_page(live, fold(1), None, 10).expect("page");
+        let all = store.get_missing_tracks(live, fold(1), None, 10).expect("page");
         assert_eq!(tracks(&all), vec![4, 2, 3, 1]);
     }
 
-    // a page resumes after the key it was handed and stops at its limit
+    // a page resumes after the missing track it was handed and stops at its limit
     #[test]
     fn page_resume() {
         let store = test_store();
         let live = GroupIndex(0).spool_at(POSITION);
         for byte in 1..=5 {
-            put(&store, key(0, POSITION, false, byte));
+            put(&store, missing(0, POSITION, false, byte));
         }
 
-        let first = store.missing_page(live, fold(1), None, 2).expect("page");
-        let after = first.last().map(|(key, _)| *key);
-        let rest = store.missing_page(live, fold(1), after, 10).expect("page");
+        let first = store.get_missing_tracks(live, fold(1), None, 2).expect("page");
+        let rest = store.get_missing_tracks(live, fold(1), first.last(), 10).expect("page");
 
         assert_eq!(tracks(&first), vec![1, 2]);
         assert_eq!(tracks(&rest), vec![3, 4, 5]);
     }
 
-    // the handover check sees only the live spool's handover entries
+    // the handover check sees only the live spool's handover missing tracks
     #[test]
     fn handover_left() {
         let store = test_store();
         let live = GroupIndex(1).spool_at(POSITION);
-        put(&store, key(1, POSITION, false, 1));
-        put(&store, key(0, POSITION, true, 2));
+        put(&store, missing(1, POSITION, false, 1));
+        put(&store, missing(0, POSITION, true, 2));
 
-        assert!(!store.has_handover_entries(live, fold(2)).expect("check"));
+        assert!(!store.has_handover_tracks(live, fold(2)).expect("check"));
 
-        put(&store, key(3, POSITION, true, 3));
-        assert!(store.has_handover_entries(live, fold(2)).expect("check"));
+        put(&store, missing(3, POSITION, true, 3));
+        assert!(store.has_handover_tracks(live, fold(2)).expect("check"));
     }
 
-    // filling adds what isn't there, keeps an entry the certify hook wrote,
-    // and moves its row in the same write
+    // a missing track reads back under either flag, and goes once deleted
     #[test]
-    fn fill_keeps_entries() {
+    fn point_reads() {
         let store = test_store();
-        let hooked = key(0, POSITION, false, 1);
-        let uploaded = Entry::uploaded(WallTime(7));
-        store.put_entry(hooked, uploaded).expect("put entry");
-        let spool = VirtualGroup(0).spool_at(POSITION);
-        let row = SpoolState { is_filling: false, ..SpoolState::gained() };
+        let listed = missing(4, POSITION, true, 7);
+        put(&store, listed);
 
-        let entries = [EntryKey { is_handover: true, ..hooked }, key(0, POSITION, true, 2)];
-        store.write_fill(&entries, &[(spool, row)]).expect("fill");
+        let read = store.get_missing_track(listed.spool, listed.track).expect("read");
+        assert_eq!(read, Some(listed));
+        assert!(store.has_missing_track(listed.spool, listed.track).expect("has"));
+
+        store.delete_missing_track(&listed).expect("delete");
+        assert!(!store.has_missing_track(listed.spool, listed.track).expect("has"));
+    }
+
+    // a scan page adds what isn't listed, keeps a missing track the certify
+    // hook wrote, and moves its state in the same write
+    #[test]
+    fn scan_keeps_listed() {
+        let store = test_store();
+        let uploaded = missing(0, POSITION, false, 1);
+        put(&store, uploaded);
+        let spool = VirtualGroup(0).spool_at(POSITION);
+        let state = SpoolState { is_scanning: false, ..SpoolState::new_scanning() };
+
+        let found = [missing(0, POSITION, true, 1), missing(0, POSITION, true, 2)];
+        store.put_scan_page(&found, &[(spool, state)]).expect("scan");
 
         let live = GroupIndex(0).spool_at(POSITION);
-        let page = store.missing_page(live, fold(1), None, 10).expect("page");
-        assert_eq!(page, vec![(hooked, uploaded), (entries[1], Entry::never_tried())]);
-        assert_eq!(store.get_spool_state(spool).expect("row"), Some(row));
+        let page = store.get_missing_tracks(live, fold(1), None, 10).expect("page");
+        assert_eq!(page, vec![uploaded, found[1]]);
+        assert_eq!(store.get_spool_state(spool).expect("state"), Some(state));
     }
 
-    // a stored spool's entries go a page at a time, and its neighbours stay
+    // a stored spool's missing tracks go a page at a time, and its neighbours stay
     #[test]
     fn delete_by_page() {
         let store = test_store();
         for byte in 1..=3 {
-            put(&store, key(5, POSITION, false, byte));
-            put(&store, key(5, POSITION, true, byte + 10));
+            put(&store, missing(5, POSITION, false, byte));
+            put(&store, missing(5, POSITION, true, byte + 10));
         }
-        put(&store, key(6, POSITION, false, 20));
+        put(&store, missing(6, POSITION, false, 20));
         let spool = VirtualGroup(5).spool_at(POSITION);
+        let neighbour = VirtualGroup(6).spool_at(POSITION);
 
-        assert_eq!(store.delete_spool_entries(spool, 4).expect("delete"), 4);
-        assert_eq!(store.delete_spool_entries(spool, 4).expect("delete"), 2);
-        assert_eq!(store.delete_spool_entries(spool, 4).expect("delete"), 0);
-        assert!(store.has_entry(VirtualGroup(6).spool_at(POSITION), address(20)).expect("entry"));
+        assert_eq!(store.delete_missing_tracks(spool, 4).expect("delete"), 4);
+        assert_eq!(store.delete_missing_tracks(spool, 4).expect("delete"), 2);
+        assert_eq!(store.delete_missing_tracks(spool, 4).expect("delete"), 0);
+        assert!(store.has_missing_track(neighbour, address(20)).expect("has"));
     }
 
-    // a live spool's rows come back by its runs, and every row pages in key order
+    // a live spool's states come back by its runs, and every state pages in key order
     #[test]
-    fn rows_by_runs() {
+    fn states_by_runs() {
         let store = test_store();
-        let rows: Vec<(SpoolIndex, SpoolState)> = [0, 1, 2, 3, 6]
-            .iter()
-            .map(|group| (VirtualGroup(*group).spool_at(POSITION), SpoolState::gained()))
-            .collect();
-        store.put_spool_states(&rows).expect("rows");
+        let mut states = Vec::new();
+        for group in [0, 1, 2, 3, 6] {
+            let spool = VirtualGroup(group).spool_at(POSITION);
+            states.push((spool, SpoolState::new_scanning()));
+        }
+        store.put_spool_states(&states).expect("states");
 
         let live = GroupIndex(1).spool_at(POSITION);
-        let carried = store.live_spool_states(live, fold(2)).expect("rows");
-        let first = store.spool_states(None, 2).expect("page");
-        let rest = store.spool_states(Some(first[1].0), 10).expect("page");
+        let carried = store.get_live_spool_states(live, fold(2)).expect("states");
+        let first = store.get_spool_states(None, 2).expect("page");
+        let rest = store.get_spool_states(Some(first[1].0), 10).expect("page");
 
         let spools: Vec<SpoolIndex> = carried.iter().map(|(spool, _)| *spool).collect();
-        assert_eq!(spools, vec![rows[1].0, rows[3].0, rows[4].0]);
-        assert_eq!(first.len() + rest.len(), rows.len());
+        assert_eq!(spools, vec![states[1].0, states[3].0, states[4].0]);
+        assert_eq!(first.len() + rest.len(), states.len());
     }
 
-    // a track list reads across runs of groups from the track after the start
+    // a live group's owners at an epoch read back by position, an epoch or a
+    // group the history lacks has none, and a forgotten epoch is gone
     #[test]
-    fn group_track_pages() {
+    fn owners_by_group() {
         let store = test_store();
-        let raw = store.inner().inner();
-        for (group, byte) in [(0, 1), (0, 2), (2, 3), (4, 4), (5, 5)] {
-            let key = track_group_key(VirtualGroup(group), address(byte)).expect("key");
-            raw.put(TrackGroupIndexCol::CF_NAME, &key, &[]).expect("put");
-        }
-        let runs = [VirtualGroup(0)..VirtualGroup(1), VirtualGroup(2)..VirtualGroup(5)];
-        let after = GroupTrack { group: VirtualGroup(0), track: address(1) };
-
-        let page = store.group_tracks(&runs, Some(after), 2).expect("page");
-        let all = store.group_tracks(&runs, None, 10).expect("page");
-
-        let bytes: Vec<u8> = page.iter().map(|row| row.track.to_bytes()[0]).collect();
-        assert_eq!(bytes, vec![2, 3]);
-        assert_eq!(all.len(), 4);
-    }
-
-    // a group's owners at an epoch come from the live group that carried it
-    // then, and an epoch the history lacks has none
-    #[test]
-    fn owners_by_carrier() {
-        let store = test_store();
-        let width = 4;
+        let width = usize::from(FOUR_WIDE.n());
         let mut owners = Vec::new();
         for group in 0..2u64 {
             for position in 0..width {
@@ -701,17 +583,20 @@ mod tests {
         store.put_owners(EpochNumber(8), &owners[..width]).expect("one group");
         store.put_owners(EpochNumber(9), &owners).expect("two groups");
 
-        let split = store.group_owners_at(EpochNumber(9), VirtualGroup(7), width).expect("read");
-        let whole = store.group_owners_at(EpochNumber(8), VirtualGroup(7), width).expect("read");
-        let unknown = store.group_owners_at(EpochNumber(7), VirtualGroup(7), width).expect("read");
+        let second = store.get_owners(EpochNumber(9), VirtualGroup(1), FOUR_WIDE);
+        let first = store.get_owners(EpochNumber(8), VirtualGroup(0), FOUR_WIDE);
+        let split = store.get_owners(EpochNumber(8), VirtualGroup(1), FOUR_WIDE);
+        let unknown = store.get_owners(EpochNumber(7), VirtualGroup(0), FOUR_WIDE);
 
-        assert_eq!(split.expect("recorded")[0], address(11));
-        assert_eq!(whole.expect("recorded")[0], address(1));
-        assert!(unknown.is_none());
+        assert_eq!(second.expect("read").expect("recorded")[0], address(11));
+        assert_eq!(first.expect("read").expect("recorded").len(), width);
+        assert!(split.expect("read").is_none());
+        assert!(unknown.expect("read").is_none());
 
-        store.forget_owners_before(EpochNumber(9)).expect("forget");
-        let gone = store.group_owners_at(EpochNumber(8), VirtualGroup(7), width).expect("read");
-        assert!(gone.is_none());
+        store.delete_owners_before(EpochNumber(9)).expect("forget");
+        let gone = store.get_owners(EpochNumber(8), VirtualGroup(0), TAPENET_PROFILE);
+        assert!(gone.expect("read").is_none());
+        assert_eq!(store.get_recorded_owners(100).expect("owners").len(), 8);
     }
 
     /// A memory store that counts the rows its walks hand out
@@ -776,7 +661,7 @@ mod tests {
         }
     }
 
-    // with many entries listed, a page takes no more rows than it returns
+    // with many missing tracks listed, a page takes no more rows than it returns
     #[test]
     fn bounded_page() {
         const LISTED: u64 = 10_000;
@@ -786,12 +671,13 @@ mod tests {
         for number in 0..LISTED {
             let mut bytes = [0u8; 32];
             bytes[..8].copy_from_slice(&number.to_be_bytes());
-            let key = EntryKey { spool, is_handover: false, track: Address::new(bytes) };
-            store.put_entry(key, Entry::never_tried()).expect("put entry");
+            let track = Address::new(bytes);
+            let listed = MissingTrack::new_upload(spool, track, WallTime(1));
+            store.put_missing_track(&listed).expect("put missing track");
         }
         let live = GroupIndex(0).spool_at(POSITION);
 
-        let page = store.missing_page(live, fold(1), None, 128).expect("page");
+        let page = store.get_missing_tracks(live, fold(1), None, 128).expect("page");
 
         assert_eq!(page.len(), 128);
         assert_eq!(store.inner().inner().pulled.load(Ordering::Relaxed), 128);

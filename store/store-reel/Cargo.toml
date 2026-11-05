@@ -29,6 +29,7 @@ metrics = ["dep:tape-metrics", "tape-store-api/metrics"]
 lz4_flex = { version = "0.11", default-features = false, features = ["safe-encode", "safe-decode"] }
 tape-core.workspace = true
 tape-crypto.workspace = true
+tape-recover.workspace = true
 tempfile = "3.10"
 libc = "0.2"
 # The downgrade to posix is announced and nowhere else recorded, so a test

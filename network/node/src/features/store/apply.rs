@@ -12,18 +12,18 @@ use tape_core::track::types::{CompressedTrack, TrackState};
 use tape_core::types::{EpochNumber, SlotNumber, TapeNumber, TrackNumber};
 use tape_crypto::address::Address;
 use tape_crypto::Hash;
+use tape_recover::time::WallTime;
 use tape_store::ops::{
     ObjectInfoOps, ObjectListOps, ObjectMetadataOps, RemovalOps, TapeOps, TrackDataOps, TrackOps,
 };
 use tape_store::types::{
     CountedTrack, ObjectInfo, ObjectListEntry, ObjectMetadata, SystemObjectKind, TapeInfo,
-    WallTime,
 };
 use tape_store::TapeStore;
 use tracing::{error, warn};
 
 use crate::core::error::NodeError;
-use crate::features::spool::fill::add_upload_entry;
+use crate::features::spool::scan::add_uploaded_track;
 use crate::features::store::cleanup::{
     delete_track_local, remove_object_listing_for_track, remove_track_entries,
 };
@@ -602,7 +602,7 @@ fn set_certified<Db: Store>(
 }
 
 /// The certify hook: on every spool of the track's group this node owns, an
-/// entry for what it lacks, with the upload as the first attempt
+/// upload missing track for what it lacks, added at the certify
 fn certify_hook<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
@@ -613,7 +613,7 @@ fn certify_hook<Db: Store>(
 
     for position in 0..usize::from(profile.n()) {
         let spool = info.group.spool_at(position);
-        add_upload_entry(store, spool, track, info, now).map_err(store_error)?;
+        add_uploaded_track(store, spool, track, info, now).map_err(store_error)?;
     }
 
     Ok(())
@@ -758,9 +758,7 @@ mod tests {
     use tape_core::erasure::MAX_GROUP_SIZE;
     use tape_core::snapshot::replay::{ReplayTrack, ReplayTrackObject, ReplayableEvent};
     use bytemuck::Zeroable;
-    use tape_core::erasure::leaf_position;
     use tape_core::spooler::{GroupFold, GroupIndex, VirtualGroup};
-    use tape_core::system::SpoolState;
     use tape_core::tape::{blacklist_tape_number, TapeFlags};
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
@@ -773,14 +771,15 @@ mod tests {
     use tape_crypto::address::Address;
     use tape_crypto::hash::hash;
     use tape_crypto::Hash;
+    use tape_recover::state::SpoolState;
+    use tape_recover::track::{MissingTrack, TrackOrigin};
+    use tape_recover::time::WallTime;
     use tape_store::columns::ALL_COLUMN_FAMILIES;
     use tape_store::ops::{
         ObjectInfoOps, ObjectListOps, ObjectMetadataOps, RemovalOps, SliceOps, SpoolOps,
         TapeOps, TrackDataOps, TrackOps, track_has_left,
     };
-    use tape_store::types::{
-        CountedTrack, Entry, EntryKey, Method, ObjectInfo, SystemObjectKind, TapeInfo,
-    };
+    use tape_store::types::{CountedTrack, ObjectInfo, SystemObjectKind, TapeInfo};
     use tape_store::TapeStore;
     use tape_store_api::Store as _;
 
@@ -809,15 +808,12 @@ mod tests {
     }
 
     /// The entry a stored spool's missing_list holds for a track
-    fn entry_of(store: &TapeStore<MemoryStore>, spool: SpoolIndex, track: Address) -> Option<Entry> {
-        let position = leaf_position(spool).as_usize();
-        let page = store.missing_page(live_spool(position), fold(), None, 10).expect("page");
-        for (key, entry) in page {
-            if key.spool == spool && key.track == track {
-                return Some(entry);
-            }
-        }
-        None
+    fn entry_of(
+        store: &TapeStore<MemoryStore>,
+        spool: SpoolIndex,
+        track: Address,
+    ) -> Option<MissingTrack> {
+        store.get_missing_track(spool, track).expect("read")
     }
 
     /// Apply a slot's events on a tapenet node.
@@ -1633,8 +1629,8 @@ mod tests {
         assert!(store.get_tape(tape).expect("get tape").is_none());
     }
 
-    // a certify with the slice missing adds an entry whose first attempt is
-    // the upload, apart from the handover entries
+    // a certify with the slice missing adds an upload missing track, never
+    // tried, apart from the handover ones
     #[test]
     fn certify_adds_entry() {
         let store = test_store();
@@ -1644,15 +1640,15 @@ mod tests {
         let group = VirtualGroup::from(7);
         let spool_id = group.spool_at(0);
 
-        own(&store, spool_id, SpoolState::gained());
+        own(&store, spool_id, SpoolState::new_scanning());
         stage_certify(&store, track, tape, group, slot);
 
         apply(&store, slot, None, &[certify(track)]).expect("apply slot");
 
         let entry = entry_of(&store, spool_id, track).expect("an entry");
-        let upload = entry.last_attempt.expect("the upload");
-        assert_eq!(upload.method, Method::Upload);
-        assert!(store.has_entry(spool_id, track).expect("has entry"));
+        assert_eq!(entry.origin, TrackOrigin::Upload);
+        assert!(entry.last_attempt.is_none());
+        assert!(store.has_missing_track(spool_id, track).expect("has entry"));
         assert!(entry_of(&store, group.spool_at(1), track).is_none());
     }
 
@@ -1666,15 +1662,15 @@ mod tests {
         let group = VirtualGroup::from(7);
         let spool_id = group.spool_at(0);
 
-        own(&store, spool_id, SpoolState::gained());
+        own(&store, spool_id, SpoolState::new_scanning());
         stage_certify(&store, track, tape, group, slot);
-        let handover = EntryKey { spool: spool_id, is_handover: true, track };
-        store.put_entry(handover, Entry::never_tried()).expect("put entry");
+        let handover = MissingTrack::new_handover(spool_id, track, WallTime(1));
+        store.put_missing_track(&handover).expect("put entry");
 
         apply(&store, slot, None, &[certify(track)]).expect("apply slot");
 
-        let page = store.missing_page(live_spool(0), fold(), None, 10).expect("page");
-        assert_eq!(page, vec![(handover, Entry::never_tried())]);
+        let page = store.get_missing_tracks(live_spool(0), fold(), None, 10).expect("page");
+        assert_eq!(page, vec![handover]);
     }
 
     // an entry added at certify outlives the process that added it
@@ -1687,13 +1683,13 @@ mod tests {
         let group = VirtualGroup::from(7);
         let spool_id = group.spool_at(0);
 
-        own(&store, spool_id, SpoolState::gained());
+        own(&store, spool_id, SpoolState::new_scanning());
         stage_certify(&store, track, tape, group, slot);
 
         apply(&store, slot, None, &[certify(track)]).expect("apply slot");
 
         let restarted = reopen(&store);
-        assert!(restarted.has_entry(spool_id, track).expect("has entry"));
+        assert!(restarted.has_missing_track(spool_id, track).expect("has entry"));
     }
 
     // a certify for a track this node already holds whole adds nothing
@@ -1706,7 +1702,7 @@ mod tests {
         let group = VirtualGroup::from(7);
         let spool_id = group.spool_at(0);
 
-        own(&store, spool_id, SpoolState::gained());
+        own(&store, spool_id, SpoolState::new_scanning());
         stage_certify(&store, track, tape, group, slot);
         store
             .put_track_data(track, BlobData::Coded(BlobEncoding::zeroed()))
@@ -1717,7 +1713,7 @@ mod tests {
 
         apply(&store, slot, None, &[certify(track)]).expect("apply slot");
 
-        assert!(!store.has_entry(spool_id, track).expect("has entry"));
+        assert!(!store.has_missing_track(spool_id, track).expect("has entry"));
     }
 
     // a certify adds nothing on a spool this node lost, or holds no row for
@@ -1728,8 +1724,8 @@ mod tests {
         let track = Address::new_unique();
         let tape = Address::new_unique();
         let group = VirtualGroup::from(7);
-        let locked = SpoolState { locked_at: EpochNumber(4), ..SpoolState::gained() };
-        own(&store, group.spool_at(0), locked);
+        let lost = SpoolState { lost_at: EpochNumber(4), ..SpoolState::new_scanning() };
+        own(&store, group.spool_at(0), lost);
 
         stage_certify(&store, track, tape, group, slot);
 
@@ -1737,7 +1733,7 @@ mod tests {
 
         for slice in 0..WIDTH {
             let spool = group.spool_at(slice);
-            assert!(!store.has_entry(spool, track).expect("has entry"));
+            assert!(!store.has_missing_track(spool, track).expect("has entry"));
         }
     }
 

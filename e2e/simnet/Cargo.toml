@@ -22,6 +22,7 @@ tape-rack.workspace = true
 tape-node.workspace = true
 tape-gateway.workspace = true
 tape-store.workspace = true
+tape-recover.workspace = true
 tape-protocol.workspace = true
 tape-peer-manager.workspace = true
 tape-peer-http.workspace = true

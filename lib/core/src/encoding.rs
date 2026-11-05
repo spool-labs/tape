@@ -192,6 +192,15 @@ impl ErasureCode {
         }
     }
 
+    /// Helpers a repair asks, on a Clay code; the other codes have no repair
+    #[inline]
+    pub const fn d(&self) -> Option<u8> {
+        match self {
+            Self::Clay(params) => Some(params.d()),
+            Self::ReedSolomon(_) | Self::Replication(_) => None,
+        }
+    }
+
     /// Check the parameters against the code's own rules.
     pub const fn validate(&self) -> Result<(), ProfileError> {
         match self {

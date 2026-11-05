@@ -3,12 +3,11 @@ use tape_api::program::tapedrive::TrackAddress;
 use tape_core::encoding::ErasureCode;
 use tape_core::spooler::VirtualGroup;
 use tape_core::track::types::CompressedTrack;
-use tape_core::types::{EpochNumber, SpoolIndex};
+use tape_core::types::EpochNumber;
 use tape_crypto::address::Address;
 use tape_store::ops::{
-    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SliceOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
+    ObjectInfoOps, ObjectListOps, ObjectMetadataOps, SpoolOps, TapeOps, TrackDataOps, TrackOps,
 };
-use tape_store::types::EntryKey;
 use tape_store::TapeStore;
 
 use crate::core::error::NodeError;
@@ -99,7 +98,7 @@ pub fn delete_tape_tracks<Db: Store>(
     Ok(stats)
 }
 
-/// Remove a track's missing_list entries on every spool of its group
+/// Remove a track's missing tracks on every spool of its group
 pub fn remove_track_entries<Db: Store>(
     store: &TapeStore<Db>,
     track: Address,
@@ -110,32 +109,14 @@ pub fn remove_track_entries<Db: Store>(
     // the gc sweep clears a dead track's rows again every epoch, so look first.
     for position in 0..usize::from(profile.n()) {
         let spool = group.spool_at(position);
-        if !store.has_entry(spool, track).map_err(store_error)? {
+        let read = store.get_missing_track(spool, track).map_err(store_error)?;
+        let Some(missing) = read else {
             continue;
-        }
-        for is_handover in [false, true] {
-            let key = EntryKey { spool, is_handover, track };
-            store.delete_entry(key).map_err(store_error)?;
-        }
+        };
+        store.delete_missing_track(&missing).map_err(store_error)?;
     }
 
     Ok(())
-}
-
-/// Delete a stored spool's slices and its missing_list, a page at a time,
-/// then its row
-pub fn purge_spool_local<Db: Store>(
-    store: &TapeStore<Db>,
-    spool_id: SpoolIndex,
-    page: usize,
-) -> Result<(), NodeError> {
-    store
-        .delete_all_slices_for_spool(spool_id)
-        .map_err(store_error)?;
-
-    while store.delete_spool_entries(spool_id, page).map_err(store_error)? > 0 {}
-
-    store.delete_spool_state(spool_id).map_err(store_error)
 }
 
 pub fn remove_object_listing_for_track<Db: Store>(
@@ -181,7 +162,10 @@ mod tests {
     use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
     use tape_core::types::{EpochNumber, StorageUnits, TapeNumber, TrackNumber};
     use tape_crypto::Hash;
-    use tape_store::types::{Entry, TapeInfo};
+    use tape_recover::track::MissingTrack;
+    use tape_recover::time::WallTime;
+    use tape_store::ops::SliceOps;
+    use tape_store::types::TapeInfo;
 
     fn test_store() -> TapeStore<MemoryStore> {
         TapeStore::new(MemoryStore::new())
@@ -422,17 +406,18 @@ mod tests {
         });
         let group = VirtualGroup::from(3);
         let track = Address::new_unique();
-        let handover = EntryKey { spool: group.spool_at(2), is_handover: true, track };
-        let fresh = EntryKey { spool: group.spool_at(5), is_handover: false, track };
-        store.put_entry(handover, Entry::never_tried()).unwrap();
-        store.put_entry(fresh, Entry::never_tried()).unwrap();
+        let now = WallTime(1);
+        let handover = MissingTrack::new_handover(group.spool_at(2), track, now);
+        let fresh = MissingTrack::new_upload(group.spool_at(5), track, now);
+        store.put_missing_track(&handover).unwrap();
+        store.put_missing_track(&fresh).unwrap();
 
         for _ in 0..EXPIRY.0 {
             remove_track_entries(&store, track, group, TAPENET_PROFILE).unwrap();
         }
 
-        assert!(!store.has_entry(handover.spool, track).unwrap());
-        assert!(!store.has_entry(fresh.spool, track).unwrap());
-        assert_eq!(store.inner().inner().deletes.load(Ordering::Relaxed), 4);
+        assert!(!store.has_missing_track(handover.spool, track).unwrap());
+        assert!(!store.has_missing_track(fresh.spool, track).unwrap());
+        assert_eq!(store.inner().inner().deletes.load(Ordering::Relaxed), 2);
     }
 }

@@ -521,13 +521,13 @@ mod tests {
     use bytemuck::Zeroable;
     use tape_peer_manager::PeerNode;
     use tape_core::spooler::VirtualGroup;
-    use tape_core::system::SpoolState;
     use tape_core::track::archive::TrackArchive;
     use tape_core::track::blob::BlobEncoding;
     use tape_core::track::data::BlobData;
     use tape_core::track::types::{TrackFlags, TrackKind, TrackState};
     use tape_core::types::coin::TAPE;
     use tape_core::types::{EpochNumber, SlotNumber, StorageUnits, TapeNumber};
+    use tape_recover::state::SpoolState;
     use tape_store::ops::{SpoolOps, TapeOps, TrackOps};
     use tape_store::types::TapeInfo;
 
@@ -565,7 +565,7 @@ mod tests {
         let refused = call_get_track_data(&ctx, track).await;
         assert!(matches!(refused, Err(RouteError::NotResponsible)));
 
-        let row = SpoolState { locked_at: EpochNumber(1), ..SpoolState::gained() };
+        let row = SpoolState { lost_at: EpochNumber(1), ..SpoolState::new_scanning() };
         ctx.store
             .put_spool_states(&[(VirtualGroup(0).spool_at(3), row)])
             .expect("spool row");
