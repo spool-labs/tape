@@ -8,6 +8,12 @@ description = "Tapedrive storage node runtime (v2)"
 name = "tape-node"
 path = "src/bin/node/main.rs"
 
+# Fetches a live spool's tracks with the spool manager's code and reports the
+# timings. It reads the track list from a RocksDB node store.
+[[example]]
+name = "spool_probe"
+required-features = ["rocks"]
+
 [dependencies]
 tape-blacklist = { workspace = true }
 tape-forwarded = { workspace = true }

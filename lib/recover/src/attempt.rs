@@ -526,8 +526,9 @@ mod tests {
 
     /// A peer serving as many of our fetches as it may
     fn occupy(scores: &mut PeerScores, peer: Address) {
-        scores.start_fetch(peer);
-        scores.start_fetch(peer);
+        for _ in 0..limits().max_peer_fetches {
+            scores.start_fetch(peer);
+        }
     }
 
     /// A peer failing for 10 min, whose rest has ended
@@ -656,8 +657,9 @@ mod tests {
         let only = &holders[..1];
         let passed = can_transfer(&fresh(), &holders, &scores, now, &limits());
         let none = can_transfer(&fresh(), only, &scores, now, &limits());
-        scores.finish_fetch(address(1));
-        scores.finish_fetch(address(1));
+        for _ in 0..limits().max_peer_fetches {
+            scores.finish_fetch(address(1));
+        }
         let probed = can_transfer(&fresh(), only, &scores, now, &limits());
 
         let next = NextAttempt::Transfer { holder: holders[1] };

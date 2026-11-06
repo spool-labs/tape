@@ -64,10 +64,10 @@ impl Default for SpoolLimits {
     /// The limits every node starts from
     fn default() -> Self {
         Self {
-            max_fetches: 32,
+            max_fetches: 64,
             max_fetch_bytes: StorageUnits::mb(128),
             max_recoveries: 4,
-            max_peer_fetches: 2,
+            max_peer_fetches: 32,
             fetch_tracks: 256,
             fetch_bytes: StorageUnits::mb(8),
             fetch_timeout: Duration::from_secs(10),

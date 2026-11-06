@@ -343,8 +343,9 @@ mod tests {
         let limits = SpoolLimits::default();
 
         let unseen = scores.get_peer_status(peer, secs(0), &limits);
-        scores.start_fetch(peer);
-        scores.start_fetch(peer);
+        for _ in 0..limits.max_peer_fetches {
+            scores.start_fetch(peer);
+        }
 
         assert_eq!(unseen, PeerStatus::Free { speed: None });
         let busy = scores.get_peer_status(peer, secs(0), &limits);

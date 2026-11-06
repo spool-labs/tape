@@ -154,6 +154,24 @@ where
             .store
             .get_sync_parent()
             .map_err(|error| NodeError::Store(format!("get_sync_parent: {error}")))?;
+        let snapshot_epoch = context
+            .store
+            .get_bootstrap_target_epoch()
+            .map_err(|error| NodeError::Store(format!("get_bootstrap_target_epoch: {error}")))?;
+
+        let resumable = get_resumable_snapshot(cursor, parent, snapshot_epoch, checkpoint.slot);
+        if let Some(applied) = resumable {
+            return resume_snapshot_replay(
+                context,
+                &mut replay,
+                checkpoint,
+                applied,
+                cursor,
+                cancel,
+                persist,
+            )
+            .await;
+        }
 
         let start = if cursor < checkpoint.slot {
             let start_slot = cursor.next();
@@ -161,10 +179,6 @@ where
 
             // A cursor left by a snapshot stops one slot short of the
             // snapshot's last block, which this replay then reads again.
-            let snapshot_epoch = context
-                .store
-                .get_bootstrap_target_epoch()
-                .map_err(|error| NodeError::Store(format!("get_bootstrap_target_epoch: {error}")))?;
             replay.set_snapshot_epoch(snapshot_epoch);
 
             let parent = execute_block_phase(
@@ -266,6 +280,74 @@ where
             ).await?
         }
     };
+
+    Ok(LiveStart { slot: checkpoint.slot.next(), parent })
+}
+
+/// The last snapshot epoch applied, when a restart cut a snapshot replay short
+///
+/// A snapshot writes the cursor with no parent block, and every block replay
+/// and live batch writes one. So a cursor with no parent and a snapshot epoch
+/// on record still sits where the last snapshot left it.
+fn get_resumable_snapshot(
+    cursor: SlotNumber,
+    parent: Option<Hash>,
+    snapshot_epoch: Option<EpochNumber>,
+    checkpoint_slot: SlotNumber,
+) -> Option<EpochNumber> {
+    if parent.is_some() || cursor >= checkpoint_slot {
+        return None;
+    }
+    snapshot_epoch
+}
+
+/// Pick up a snapshot replay a restart cut short: replay the snapshot epochs
+/// after the last one applied, then the blocks from the last snapshot's end to
+/// the checkpoint. The cursor sits one slot short of that end.
+async fn resume_snapshot_replay<Db, Cluster, Blockchain>(
+    context: &Arc<NodeContext<Db, Cluster, Blockchain>>,
+    replay: &mut ReplayEngine<'_, Db>,
+    checkpoint: &ProtocolCheckpoint,
+    applied: EpochNumber,
+    cursor: SlotNumber,
+    cancel: &CancellationToken,
+    persist: ReplayPersistFn<Db>,
+) -> Result<LiveStart, NodeError>
+where
+    Db: Store + 'static,
+    Cluster: Api + 'static,
+    Blockchain: Rpc + 'static,
+{
+    info!(applied = applied.0, cursor = cursor.0, "bootstrap: resuming snapshot replay");
+    replay.set_snapshot_epoch(Some(applied));
+
+    let snapshot_epochs =
+        discovery::discover_missing_epochs(context.as_ref(), checkpoint.state.epoch()).await?;
+    let mut last_snapshot = (applied, cursor.next());
+    for epoch in snapshot_epochs {
+        last_snapshot = execute_snapshot_phase(
+            context,
+            replay,
+            BootstrapReplayPhase::SnapshotReplay { epoch },
+            cancel,
+        )
+        .await?;
+    }
+
+    let (epoch, end_slot) = last_snapshot;
+    let parent = execute_block_phase(
+        context,
+        replay,
+        BootstrapReplayPhase::BlockReplay {
+            start_slot: end_slot,
+            end_slot: checkpoint.slot,
+            start_epoch: epoch,
+        },
+        None,
+        cancel,
+        persist,
+    )
+    .await?;
 
     Ok(LiveStart { slot: checkpoint.slot.next(), parent })
 }
@@ -568,7 +650,7 @@ mod tests {
     use crate::config::node::NodeConfig;
     use crate::harness::{NodeHarness, TestContext};
 
-    use super::{advance_cursors, run, FIRST_LIVE_EPOCH, LiveStart};
+    use super::{advance_cursors, get_resumable_snapshot, run, FIRST_LIVE_EPOCH, LiveStart};
     use crate::chain::submit_set_network_tls;
     use crate::core::error::NodeError;
     use tape_crypto::Hash;
@@ -750,6 +832,59 @@ mod tests {
 
         assert_eq!(before, after);
         assert!(after.is_none());
+    }
+
+    // only a cursor a snapshot left, behind the checkpoint, resumes snapshots
+    #[test]
+    fn resumable_snapshot() {
+        let (cursor, checkpoint) = (SlotNumber(100), SlotNumber(200));
+        let applied = Some(EpochNumber(7));
+        let block = Some(Hash::new_unique());
+
+        let resumed = get_resumable_snapshot(cursor, None, applied, checkpoint);
+        let after_blocks = get_resumable_snapshot(cursor, block, applied, checkpoint);
+        let never_snapshot = get_resumable_snapshot(cursor, None, None, checkpoint);
+        let caught_up = get_resumable_snapshot(checkpoint, None, applied, checkpoint);
+
+        assert_eq!(resumed, applied);
+        assert_eq!(after_blocks, None);
+        assert_eq!(never_snapshot, None);
+        assert_eq!(caught_up, None);
+    }
+
+    // a restart cut short after a snapshot picks up from the snapshot's end
+    // and replays the blocks to the checkpoint
+    #[tokio::test]
+    async fn resumes_after_snapshot() {
+        let harness = NodeHarness::builder()
+            .nodes(25)
+            .epoch(EpochNumber(5))
+            .no_prev_snapshot_tape()
+            .build()
+            .await
+            .expect("build harness");
+        let context = harness.ctx_for(0);
+        let config = NodeConfig::default();
+        let cancel = CancellationToken::new();
+
+        // The snapshot's last block is the checkpoint, so the cursor sits one
+        // slot short of it
+        let tip = context.rpc.get_slot().await.expect("tip");
+        harness.rpc().warp_to_slot(tip + 4).expect("move the chain on");
+        harness.rpc().set_finalized_tip(tip + 4).expect("finalize");
+        let checkpoint = SlotNumber(tip + 4);
+        let applied = EpochNumber(3);
+        advance_cursors(&context, applied, checkpoint).unwrap();
+
+        let start = timeout(Duration::from_secs(1), run(&context, &config, &cancel))
+            .await
+            .expect("bootstrap completed in time")
+            .expect("bootstrap returned ok");
+
+        assert_eq!(start.slot, checkpoint.next());
+        assert_eq!(context.store.get_sync_cursor().unwrap(), Some(checkpoint));
+        let target = context.store.get_bootstrap_target_epoch().unwrap();
+        assert_eq!(target, Some(applied));
     }
 
     #[tokio::test]
